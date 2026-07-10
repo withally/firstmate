@@ -93,7 +93,42 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+test_pause_verb_override_renders_all_brief_scaffolds() {
+  local home kind id brief
+  home="$TMP_ROOT/pause-verb-home"
+  mkdir -p "$home/data"
+
+  for kind in ship scout secondmate; do
+    id="brief-pause-verb-$kind"
+    case "$kind" in
+      ship)
+        FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate >/dev/null 2>&1
+        ;;
+      scout)
+        FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate firstmate >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_grep "States: working, needs-decision, blocked, awaiting, done, failed." "$brief" \
+      "$kind brief did not render the configured pause verb in its states list"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'Use `awaiting: {why}`' "$brief" \
+      "$kind brief did not instruct the configured pause status"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_no_grep '`paused: {why}`' "$brief" \
+      "$kind brief still instructs the default paused status"
+  done
+  pass "fm-brief.sh: custom pause verb renders in every scaffold"
+}
+
 test_script_parses
 test_ship_modes_generate_clean_briefs
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_pause_verb_override_renders_all_brief_scaffolds

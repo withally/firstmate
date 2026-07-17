@@ -1087,6 +1087,41 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+# A paused secondmate's stale pane must also defer to the daemon in AFK mode:
+# the watcher hands off the plain stale identity one-shot instead of running
+# pause_state_class/handle_paused_stale itself. The status file is left fresh so
+# the normal-mode pause path would ABSORB (no exit); a surfaced plain stale
+# therefore proves the AFK gate bypassed the watcher-side pause triage.
+test_afk_paused_secondmate_stale_hands_off_plain_stale() {
+  local dir state fakebin out drain_out capture_file statusf window key pane_hash sig pid
+  dir=$(make_case afk-paused-secondmate-stale); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-afk-secondmate-held"
+  printf 'idle awaiting external\n' > "$capture_file"
+  printf 'window=%s\nkind=secondmate\n' "$window" > "$state/afk-secondmate-held.meta"
+  statusf="$state/afk-secondmate-held.status"
+  printf 'paused: awaiting the upstream release\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-afk-secondmate-held_status"
+  date '+%s' > "$state/.afk"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  pane_hash=$(hash_text "idle awaiting external")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting the upstream release' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "AFK paused secondmate stale was not handed off to the daemon"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK paused secondmate stale did not preserve its plain window identity: $(cat "$out")"
+  grep -F "awaiting external" "$out" >/dev/null && fail "AFK watcher pause-triaged a secondmate instead of handing it to the daemon"
+  [ ! -e "$state/.paused-$key" ] || fail "AFK watcher recorded normal-mode secondmate pause tracking instead of handing off"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after AFK paused secondmate stale failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "stale: $window" >/dev/null \
+    || fail "AFK paused secondmate stale was not queued with the plain window identity"
+  pass "AFK paused secondmate stale panes hand off plain stale identities for daemon-owned pause triage"
+}
+
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
@@ -1120,3 +1155,4 @@ test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing
 test_afk_present_reverts_watcher_to_one_shot
 test_afk_paused_changed_pane_hands_off_plain_stale
+test_afk_paused_secondmate_stale_hands_off_plain_stale

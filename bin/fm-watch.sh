@@ -297,6 +297,13 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
+# Shared window-to-marker-key sanitization for the pause/stale marker files
+# (.paused-*, .stale-*, .hash-*, ...): every site must use the same mapping or
+# markers written under one key are silently orphaned under another.
+pause_key() {  # <window> -> sanitized key on stdout
+  printf '%s' "$1" | tr ':/.' '___'
+}
+
 # Absorb a stale pane whose crew is in a DECLARED external-wait pause (paused:),
 # and re-surface it once every PAUSE_RESURFACE_SECS for a recheck so it cannot rot
 # invisibly. Called on any stale poll once the crew is known paused (first sight,
@@ -309,7 +316,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
 # every poll. Advances the stale suppressor to <hash> and flags the key paused.
 handle_paused_stale() {  # <window> <task> <hash>
   local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
-  key=$(printf '%s' "$win" | tr ':/.' '___')
+  key=$(pause_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
@@ -330,26 +337,20 @@ handle_paused_stale() {  # <window> <task> <hash>
 
 clear_pause_state() {  # <window>
   local win=$1 key
-  key=${win//:/_}
-  key=${key//\//_}
-  key=${key//./_}
+  key=$(pause_key "$win")
   rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
 }
 
 clear_pause_tracking() {  # <window>
   local win=$1 key
-  key=${win//:/_}
-  key=${key//\//_}
-  key=${key//./_}
+  key=$(pause_key "$win")
   clear_pause_state "$win"
   rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
 }
 
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class
-  key=${win//:/_}
-  key=${key//\//_}
-  key=${key//./_}
+  key=$(pause_key "$win")
   last=$(last_status_line "$STATE/$task.status")
   recheck_file="$STATE/.paused-rechecked-$key"
   if ! status_is_paused "$last"; then
@@ -371,7 +372,7 @@ pause_state_class() {  # <window> <task>
 
 surface_nonterminal_stale() {  # <window> <hash>
   local win=$1 h=$2 key
-  key=$(printf '%s' "$win" | tr ':/.' '___')
+  key=$(pause_key "$win")
   fm_wake_append stale "$win" "stale: $win" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
@@ -429,7 +430,7 @@ run_check() {
 # surface and absorb), .hb-surfaced is advanced ONLY on surface, so the heartbeat
 # fleet-scan can tell apart a captain-relevant status that already woke firstmate
 # from one that has not - the latter being a per-wake-path miss it must surface.
-_hb_surfaced_path() { printf '%s/.hb-surfaced-%s' "$STATE" "$(printf '%s' "$1" | tr ':/.' '___')"; }
+_hb_surfaced_path() { printf '%s/.hb-surfaced-%s' "$STATE" "$(pause_key "$1")"; }
 
 # Record a status file's captain-relevant last line as surfaced (no-op for a
 # non-captain-relevant or empty status). Call AFTER the wake is enqueued, so the
@@ -573,9 +574,7 @@ EOF
   while IFS= read -r w; do
     kind=$(window_kind "$w")
     task=$(window_to_task "$w" "$STATE")
-    key=${w//:/_}
-    key=${key//\//_}
-    key=${key//./_}
+    key=$(pause_key "$w")
     last=$(last_status_line "$STATE/$task.status")
     if ! status_is_paused "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$w"
@@ -585,7 +584,6 @@ EOF
     fi
     tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
     h=$(printf '%s' "$tail40" | hash_pane)
-    key=$(printf '%s' "$w" | tr ':/.' '___')
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
     sf="$STATE/.stale-$key"
@@ -603,7 +601,7 @@ EOF
       if [ "$n" -ge 2 ] && ! window_is_busy "$w" "$tail40"; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
         # firstmate. Detection itself is unchanged from above.
-        if [ "$kind" = secondmate ]; then
+        if [ "$kind" = secondmate ] && ! afk_present; then
           case "$(pause_state_class "$w" "$task")" in
             paused) handle_paused_stale "$w" "$task" "$h" ;;
             *)      clear_pause_tracking "$w" ;;

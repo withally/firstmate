@@ -183,7 +183,35 @@ test_hook_blocks_when_fresh_beacon_has_no_live_lock() {
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "hook must block when a fresh beacon has no live watcher lock"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  assert_contains "$out" "TURN WOULD END BLIND - SUPERVISION IS OFF" "fresh beacon without a queued wake must retain the loud alarm"
   pass "fm-turnend-guard: blocks when a fresh beacon has no live watcher lock"
+}
+
+test_hook_classifies_clean_handoff_with_pending_wake() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-pending-handoff")
+  : > "$dir/state/task1.meta"
+  printf 'wake\n' > "$dir/state/.wake-queue"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "hook must still block during a clean pending-wake hand-off"
+  assert_contains "$out" "WAKE PENDING DELIVERY - drain and pick it up" "clean hand-off must use the pending-delivery banner"
+  assert_not_contains "$out" "SUPERVISION IS OFF" "clean hand-off must not use the lapsed-supervision alarm"
+  assert_contains "$out" "$REQUIRED_REASON" "pending-delivery block must retain the exact recovery instruction"
+  pass "fm-turnend-guard: classifies a fresh queued wake with a cleanly absent lock as pending delivery"
+}
+
+test_hook_keeps_loud_alarm_for_stale_pending_wake() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-stale-pending")
+  : > "$dir/state/task1.meta"
+  printf 'wake\n' > "$dir/state/.wake-queue"
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "hook must block a stale pending wake with no watcher lock"
+  assert_contains "$out" "TURN WOULD END BLIND - SUPERVISION IS OFF" "stale pending wake must retain the loud alarm"
+  assert_not_contains "$out" "WAKE PENDING DELIVERY" "stale pending wake must not look like a healthy hand-off"
+  pass "fm-turnend-guard: keeps the loud alarm for a genuinely lapsed chain with a queued wake"
 }
 
 test_hook_blocks_when_dead_lock_has_fresh_beacon() {
@@ -191,11 +219,14 @@ test_hook_blocks_when_dead_lock_has_fresh_beacon() {
   dir=$(make_primary_dir "$TMP_ROOT/hook-dead-lock-fresh")
   dead=$(nonexistent_pid)
   : > "$dir/state/task1.meta"
+  printf 'wake\n' > "$dir/state/.wake-queue"
   record_watcher_lock "$dir" "$dead" "dead watcher identity"
   touch "$dir/state/.last-watcher-beat"
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "hook must block when the watcher lock pid is dead despite a fresh beacon"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  assert_contains "$out" "TURN WOULD END BLIND - SUPERVISION IS OFF" "a present dead lock must retain the loud alarm despite a queued wake"
+  assert_not_contains "$out" "WAKE PENDING DELIVERY" "a present dead lock must not look like a clean hand-off"
   pass "fm-turnend-guard: blocks on a dead watcher lock even when the beacon is fresh"
 }
 
@@ -719,6 +750,8 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
+test_hook_classifies_clean_handoff_with_pending_wake
+test_hook_keeps_loud_alarm_for_stale_pending_wake
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_blocks_with_live_lock_and_stale_beacon

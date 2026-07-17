@@ -111,6 +111,7 @@ make_fake_fleet_sync_root() {
 [ -z "${FM_FAKE_FLEET_SYNC_STARTED_MARKER:-}" ] || : > "$FM_FAKE_FLEET_SYNC_STARTED_MARKER"
 printf '%s\n' 'alpha: synced'
 printf '%s\n' 'beta: skipped: no origin remote'
+[ -z "${FM_FAKE_FLEET_SYNC_OUTPUT_MARKER:-}" ] || : > "$FM_FAKE_FLEET_SYNC_OUTPUT_MARKER"
 exec perl -e 'sleep 300'
 SH
   chmod +x "$fake_root/bin/fm-fleet-sync.sh"
@@ -150,7 +151,17 @@ run_bootstrap_timeout_case() {
   (
     # shellcheck disable=SC2317,SC2329 # Exported and invoked by the bootstrap subprocess.
     sleep() {
-      local inc=${1:-1}
+      local inc=${1:-1} tries
+      # The fake clock outruns real time, so a timeout case that expects the
+      # background fake fleet-sync's partial output must not advance until that
+      # output has actually landed (bounded wait; the marker appears once).
+      if [ -n "${FM_FAKE_FLEET_SYNC_OUTPUT_MARKER:-}" ]; then
+        tries=0
+        while [ "$tries" -lt 100 ] && [ ! -e "$FM_FAKE_FLEET_SYNC_OUTPUT_MARKER" ]; do
+          command sleep 0.01
+          tries=$((tries + 1))
+        done
+      fi
       SECONDS=$((SECONDS + inc))
       if [ "${FM_FAKE_SLEEP_YIELDS:-0}" -lt 5 ]; then
         FM_FAKE_SLEEP_YIELDS=$((${FM_FAKE_SLEEP_YIELDS:-0} + 1))
@@ -320,7 +331,8 @@ test_fleet_sync_timeout_scales_with_origin_backed_project_count() {
   fakebin=$(make_fake_toolchain "$case_dir")
   fake_root=$(make_fake_fleet_sync_root "$case_dir")
 
-  out=$(run_bootstrap_timeout_case "$home" "$fake_root" "$fakebin")
+  out=$(FM_FAKE_FLEET_SYNC_OUTPUT_MARKER="$case_dir/fleet-output-ready" \
+    run_bootstrap_timeout_case "$home" "$fake_root" "$fakebin")
 
   expected=$'FLEET_SYNC: alpha: synced\nFLEET_SYNC: beta: skipped: no origin remote\nFLEET_SYNC: fleet: skipped: bootstrap refresh timed out (timeout=59s elapsed=59s)'
   assert_contains "$out" "$expected" "bootstrap timeout should scale to 59s for 18 origin-backed projects and relay partial output first"

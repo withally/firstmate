@@ -57,7 +57,7 @@ When changing any primary turn-end hook, validate the real harness behavior in a
 
 ## Primary pre-arm (PreToolUse) seatbelt
 
-Every verified primary harness also has a wired PreToolUse-equivalent hook that denies a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
+Every verified primary harness also has a wired PreToolUse-equivalent hook that applies the command-position watcher policy (`bin/fm-arm-command-policy.mjs` via the `bin/fm-arm-pretool-check.sh` transport) before the command runs: a protected watcher command in executed position is denied when backgrounded, piped, redirected, bundled, nested, or broadly killed, while the same bytes in a data position (a quoted string, an argument, a read-only probe) stay allowed.
 `claude` and `codex` block directly through PreToolUse hooks; `grok` blocks the same way but requires every `$VAR` reference in its hook `command` string to carry an inline `:-default` or it fails to launch the hook entirely.
 `opencode` and `pi` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`.
 The exact hook files, commands, output-shaping quirks (Claude Code only honors the deny when stdout is empty), and validation transcripts are owned by `docs/arm-pretool-check.md`.

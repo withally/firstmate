@@ -63,6 +63,9 @@ matrix_case R16 allow $'# bin/fm-watch-arm.sh &\necho ok'
 matrix_case R17 allow "printf '%s\\n' 'fm-watch.sh; a && b || c > out' | sed -n '1p'"
 matrix_case R18 allow "sh -c 'tmux send-keys -t lab \"bin/fm-watch-arm.sh &\" Enter'"
 matrix_case R19 allow "eval 'printf \"%s\\n\" \"bin/fm-watch-arm.sh &\"'"
+matrix_case R20 allow "grep -n 'wake' bin/fm-watch.sh | head -20"
+matrix_case R21 allow "bin/fm-wake-drain.sh >/dev/null; grep -n 'wake' bin/fm-watch.sh | head -20"
+matrix_case R22 allow "bin/fm-send.sh crew-a 'run bin/fm-watch-arm.sh & then report'"
 
 matrix_case D01 deny 'bin/fm-watch-arm.sh &'
 matrix_case D02 deny 'nohup bin/fm-watch-arm.sh'

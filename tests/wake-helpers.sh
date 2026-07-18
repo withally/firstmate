@@ -194,7 +194,11 @@ case "${1:-}" in
       shift
     done
     if [ "$is_enter" = 1 ]; then
-      if [ -n "${FM_FAKE_SWALLOW:-}" ] && [ -f "$FM_FAKE_SWALLOW" ]; then
+      if [ -n "${FM_FAKE_SWALLOW_COUNT_FILE:-}" ] && [ -f "$FM_FAKE_SWALLOW_COUNT_FILE" ] \
+        && [ "$(cat "$FM_FAKE_SWALLOW_COUNT_FILE")" -gt 0 ]; then
+        count=$(cat "$FM_FAKE_SWALLOW_COUNT_FILE")
+        printf '%s\n' "$((count - 1))" > "$FM_FAKE_SWALLOW_COUNT_FILE"
+      elif [ -n "${FM_FAKE_SWALLOW:-}" ] && [ -f "$FM_FAKE_SWALLOW" ]; then
         [ "${FM_FAKE_PERSIST_SWALLOW:-0}" = 1 ] || rm -f "$FM_FAKE_SWALLOW"
       else
         [ -n "${FM_FAKE_SENT:-}" ] && printf '[ENTER]\n' >> "$FM_FAKE_SENT"

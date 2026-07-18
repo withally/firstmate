@@ -17,7 +17,8 @@
 # instead of silently leaving an unsubmitted instruction.
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
-# Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).
+# Tune with FM_SEND_RETRIES (default 3 for ordinary text, 6 for long text) /
+# FM_SEND_SLEEP (0.4). Long text also gets a 1.2 second pre-Enter settle.
 # Slash commands, and codex `$...` skill invocations resolved through harness
 # meta, get a longer pre-Enter settle so completion popups do not swallow Enter.
 #
@@ -203,6 +204,7 @@ if [ "${1:-}" = "--key" ]; then
     exit 1
   fi
 else
+  message="${MARK_PREFIX}$*"
   # Slash commands open a completion popup in some TUIs (verified on codex);
   # submitting too fast selects nothing, so give the popup time to settle before
   # the (retried) Enter. Codex opens the same kind of popup for a `$<skill>`
@@ -211,7 +213,7 @@ else
   # starts ordinary text ("$5/month", "$HOME"), so a universal `$` rule would
   # needlessly slow plain text to claude/opencode/pi. The target backend's
   # verified submit retry still backs the settle up either way.
-  case "$*" in
+  case "$message" in
     /*) settle=1.2 ;;
     \$*)
       if [ "$TARGET_HARNESS" = codex ]; then settle=1.2; else settle=0.3; fi
@@ -220,9 +222,20 @@ else
   esac
   retries=${FM_SEND_RETRIES:-3}
   sleep_s=${FM_SEND_SLEEP:-0.4}
+  # A busy Codex pane can take longer to render a multi-line instruction than
+  # the ordinary 0.3 second settle. Its first few Enters then land while the
+  # composer is still settling and are swallowed. Give a long instruction the
+  # same render budget as a command popup and, unless the caller explicitly
+  # tuned retries, keep retrying Enter long enough for that render to finish.
+  # The submit core re-reads the cursor row after every Enter and still accepts
+  # only an empty composer as proof that the text submitted.
+  if [ "${#message}" -ge 240 ]; then
+    settle=1.2
+    [ -n "${FM_SEND_RETRIES:-}" ] || retries=6
+  fi
   # Type once, submit, verify. Lenient: only a positively-confirmed swallow
   # (text still in the composer) is an error; an unreadable pane is assumed sent.
-  if ! verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MARK_PREFIX$*" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
+  if ! verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$message" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi

@@ -1052,6 +1052,28 @@ test_fm_send_exits_nonzero_on_confirmed_swallow() {
   pass "fm-send exits non-zero on a confirmed swallow, zero on a clean submit"
 }
 
+test_fm_send_long_message_retries_past_busy_settle() {
+  # A long steer to a busy Codex pane can swallow several early Enters while
+  # its multi-line composer is settling. fm-send must keep the typed text in
+  # place, re-read the composer after each Enter, and submit without requiring
+  # firstmate to issue a separate --key Enter retry.
+  local dir fakebin err long_message count enters
+  dir=$(make_bordered_case send-long-busy)
+  fakebin="$dir/fakebin"; err="$dir/send.err"; count="$dir/swallow-count"
+  long_message=$(printf 'fix the busy-pane retry regression and preserve cursor-row verification %.0s' {1..5})
+  printf '4\n' > "$count"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_FAKE_COMPOSER="$dir/composer" \
+    FM_FAKE_SENT="$dir/sent.log" FM_FAKE_SWALLOW_COUNT_FILE="$count" FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
+    "$ROOT/bin/fm-send.sh" sess:win "$long_message" >/dev/null 2>"$err" \
+    || fail "fm-send did not absorb the long-message busy-pane retries: $(cat "$err")"
+  enters=$(grep -c '\[ENTER\]' "$dir/sent.log")
+  [ "$enters" -eq 1 ] || fail "long busy-pane retry should submit exactly once, got $enters submits"
+  [ "$(cat "$count")" = 0 ] || fail "long busy-pane retry stopped before all swallowed Enters were retried"
+  [ "$(grep -cv '\[ENTER\]' "$dir/sent.log")" -eq 1 ] || fail "long busy-pane retry retyped the message"
+  pass "fm-send long message: absorbs four busy-pane swallowed Enters without retyping"
+}
+
 test_fm_send_exits_nonzero_on_initial_send_failure() {
   local dir fakebin err
   dir=$(make_bordered_case send-type-failure)
@@ -1297,6 +1319,7 @@ test_normal_flush_clears_stale_wedge_marker
 test_below_max_defer_does_nothing
 test_max_defer_afk_inactive_does_not_flush_or_alarm
 test_fm_send_exits_nonzero_on_confirmed_swallow
+test_fm_send_long_message_retries_past_busy_settle
 test_fm_send_exits_nonzero_on_initial_send_failure
 test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr

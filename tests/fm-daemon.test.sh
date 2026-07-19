@@ -330,7 +330,7 @@ test_housekeeping_pause_resurface_backs_off_and_resets_on_status_change() {
   state="$dir/state"; fakebin="$dir/fakebin"
   win="sess:fm-held-backoff"; pane="$dir/pane.txt"; key=held-backoff
   marker="$state/.subsuper-paused-$key"
-  backoff="$state/.subsuper-paused-backoff-$key"
+  backoff="$state/.subsuper-pause-backoff-$key"
   printf 'window=%s\nkind=ship\n' "$win" > "$state/$key.meta"
   printf 'paused: waiting for release one\n' > "$state/$key.status"
   printf 'idle prompt $\n' > "$pane"
@@ -362,6 +362,25 @@ test_housekeeping_pause_resurface_backs_off_and_resets_on_status_change() {
   [ "$(pause_backoff_count "$backoff")" = 0 ] || fail "changed pause status did not reset the repeat count"
   pause_backoff_matches "$backoff" 'paused: waiting for release two' || fail "changed pause status was not recorded in backoff state"
   pass "daemon pause re-surfaces use bounded exponential backoff and reset when the status changes"
+}
+
+# A task id starting with "backoff-" must not be skipped by the pause loop or
+# collide with another task's backoff file (marker-namespace regression).
+test_housekeeping_pause_resurfaces_backoff_prefixed_task() {
+  local dir state fakebin win pane key
+  dir=$(make_supercase paused-backoff-prefix)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-backoff-x1"; pane="$dir/pane.txt"; key=backoff-x1
+  printf 'window=%s\nkind=ship\n' "$win" > "$state/$key.meta"
+  printf 'paused: waiting on the upstream release\n' > "$state/$key.status"
+  printf 'idle prompt $\n' > "$pane"
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=240 housekeeping "$state"
+  grep -F "awaiting external" "$state/.subsuper-escalations" >/dev/null 2>&1 || fail "backoff-prefixed task's pause was never re-surfaced"
+  [ -e "$state/.subsuper-pause-backoff-$key" ] || fail "backoff-prefixed task did not get its own backoff file"
+  [ ! -e "$state/.subsuper-pause-backoff-x1" ] || fail "backoff-prefixed task collided with task x1's backoff file"
+  pass "housekeeping re-surfaces a pause for a task id starting with backoff-"
 }
 
 # A pause whose pane became busy again (the crew resumed) drops its marker without
@@ -1372,6 +1391,7 @@ test_housekeeping_persistent_stale_escalates
 test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_pause_resurface_backs_off_and_resets_on_status_change
+test_housekeeping_pause_resurfaces_backoff_prefixed_task
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_stale_marker_transitions_to_pause

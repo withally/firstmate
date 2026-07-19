@@ -451,14 +451,14 @@ stale_marker_remove() {  # <window> <state>
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared pause was
-# first observed or last re-surfaced. The adjacent paused-backoff marker holds the
+# first observed or last re-surfaced. The adjacent pause-backoff marker holds the
 # repeat count and exact status line so unchanged repeats back off exponentially.
 pause_marker_record() {  # <window> <state> - create if absent
   local win=$1 state=$2 task key marker backoff last
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
-  backoff="$state/.subsuper-paused-backoff-$key"
+  backoff="$state/.subsuper-pause-backoff-$key"
   last=$(last_status_line "$state/$task.status")
   [ -e "$marker" ] || _now > "$marker"
   if [ ! -e "$backoff" ]; then
@@ -472,7 +472,7 @@ pause_marker_record() {  # <window> <state> - create if absent
 pause_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-paused-backoff-$key"
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-backoff-$key"
 }
 
 clear_pause_tracking() {  # <window> <state>
@@ -480,7 +480,7 @@ clear_pause_tracking() {  # <window> <state>
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
-  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-paused-backoff-$key" "$state/.subsuper-stale-$key" \
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-backoff-$key" "$state/.subsuper-stale-$key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" "$state/.paused-resurface-backoff-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
 }
@@ -637,7 +637,8 @@ escalate_flush() {  # <state>
   local state=$1 buf n msg preview
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
-  n=$(wc -l < "$buf" 2>/dev/null | tr -d '[:space:]' || echo 0)
+  n=$(wc -l < "$buf" 2>/dev/null || echo 0)
+  n=${n//[[:space:]]/}
   # Join buffered items with the literal " | " separator into one digest line.
   msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
@@ -783,9 +784,8 @@ housekeeping() {  # <state>
   pause_max=${FM_PAUSE_RESURFACE_MAX_SECS:-$FM_PAUSE_RESURFACE_MAX_SECS_DEFAULT}
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
-    case "$marker" in *.subsuper-paused-backoff-*) continue ;; esac
     key="${marker##*.subsuper-paused-}"
-    backoff="$state/.subsuper-paused-backoff-$key"
+    backoff="$state/.subsuper-pause-backoff-$key"
     win=$(window_for_task "$key" "$state" 2>/dev/null || true)
     if [ -z "$win" ]; then
       rm -f "$marker" "$backoff"; continue

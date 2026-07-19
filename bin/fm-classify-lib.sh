@@ -53,11 +53,56 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 
 # Bounded re-surface cadence for a declared pause. Far longer than the wedge
 # threshold (FM_STALE_ESCALATE_SECS, default 240s) so a deliberate wait is not
-# nagged like a wedge, yet finite so a forgotten pause cannot rot invisibly - it
-# re-surfaces once for a recheck every window. One hour by default; both consumers
-# read FM_PAUSE_RESURFACE_SECS with this default so the cadence has one owner.
+# nagged like a wedge, yet finite so a forgotten pause cannot rot invisibly.
+# The first recheck uses the base cadence, then an unchanged status line doubles
+# the cadence up to the maximum. Both consumers read these defaults here so the
+# policy has one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
+# shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
+FM_PAUSE_RESURFACE_MAX_SECS_DEFAULT=14400
+
+# Return the pause re-surface delay after <count> prior re-surfaces with the same
+# status line. Count zero is the base cadence, then each repeat doubles until the
+# configured maximum. Invalid inputs fall back to the shared defaults.
+pause_resurface_delay() {  # <prior-count> [base-seconds] [max-seconds]
+  local count=${1:-0} base=${2:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  local max=${3:-$FM_PAUSE_RESURFACE_MAX_SECS_DEFAULT} delay i=0
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  case "$base" in ''|*[!0-9]*|0) base=$FM_PAUSE_RESURFACE_SECS_DEFAULT ;; esac
+  case "$max" in ''|*[!0-9]*|0) max=$FM_PAUSE_RESURFACE_MAX_SECS_DEFAULT ;; esac
+  [ "$max" -ge "$base" ] || max=$base
+  delay=$base
+  while [ "$i" -lt "$count" ] && [ "$delay" -lt "$max" ]; do
+    if [ "$delay" -gt $((max / 2)) ]; then delay=$max
+    else delay=$((delay * 2))
+    fi
+    i=$((i + 1))
+  done
+  [ "$delay" -le "$max" ] || delay=$max
+  printf '%s' "$delay"
+}
+
+# Backoff markers use two lines: prior re-surface count, then the exact status
+# line that count belongs to. Status lines are single-line by contract.
+pause_backoff_count() {  # <marker>
+  local marker=$1 count
+  count=$(sed -n '1p' "$marker" 2>/dev/null || true)
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  printf '%s' "$count"
+}
+
+pause_backoff_matches() {  # <marker> <status-line>
+  local marker=$1 status=$2 stored
+  [ -r "$marker" ] || return 1
+  stored=$(sed -n '2p' "$marker" 2>/dev/null || true)
+  [ "$stored" = "$status" ]
+}
+
+pause_backoff_write() {  # <marker> <prior-count> <status-line>
+  local marker=$1 count=$2 status=$3
+  printf '%s\n%s\n' "$count" "$status" > "$marker"
+}
 
 # Return the last non-blank line of a status file (empty if missing/blank).
 last_status_line() {

@@ -135,7 +135,7 @@ Classify each wake this way:
   (`done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged`)
   -> self-handle. Captain-relevant verb -> escalate.
 - `signal` or `stale` for a declared `paused:` external wait -> self-handle and track the pause rather than a wedge.
-  If it remains declared and idle past `FM_PAUSE_RESURFACE_SECS` (default 3600s), housekeeping sends one awaiting-external recheck and resets the pause window.
+  If it remains declared and idle past the current pause cadence, housekeeping sends one awaiting-external recheck; an unchanged status line doubles the cadence from `FM_PAUSE_RESURFACE_SECS` (default 3600s) up to `FM_PAUSE_RESURFACE_MAX_SECS` (default 14400s), and a changed status or resumed busy pane resets it to the base.
 - `check` -> always escalate. Check scripts print only when firstmate should wake.
 - `stale` with a terminal status -> escalate. Non-terminal stale is transient:
   record a marker and self-handle. If the pane is still idle past

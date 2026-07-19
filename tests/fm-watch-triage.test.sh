@@ -187,6 +187,14 @@ test_status_is_paused_classifier() {
   pass "status_is_paused: only the leading paused verb matches, and paused is not captain-relevant"
 }
 
+test_pause_resurface_delay_progression_is_bounded() {
+  [ "$(pause_resurface_delay 0 100 400)" = 100 ] || fail "first pause delay was not the base cadence"
+  [ "$(pause_resurface_delay 1 100 400)" = 200 ] || fail "first unchanged repeat did not double the cadence"
+  [ "$(pause_resurface_delay 2 100 400)" = 400 ] || fail "second unchanged repeat did not double to the cap"
+  [ "$(pause_resurface_delay 9 100 400)" = 400 ] || fail "pause delay exceeded the configured cap"
+  pass "shared pause re-surface cadence doubles unchanged repeats and remains bounded"
+}
+
 # crew_absorb_class: the single fm-crew-state.sh read that returns BOTH absorb
 # reasons - working (active run/busy pane), paused (declared external wait), or none
 # (surface it) - so the watcher's stale path gets both for one bounded call.
@@ -523,7 +531,7 @@ test_nonterminal_stale_not_working_surfaced() {
 # the pause's own status-file age, so a churny idle pane cannot reset the cadence)
 # for a recheck, so a forgotten pause cannot rot invisibly.
 test_nonterminal_stale_paused_absorbed_then_resurfaced() {
-  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back statusf
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back statusf backoff
   dir=$(make_case nonterminal-stale-paused); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-held"
@@ -535,6 +543,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   printf 'paused: holding for the upstream tool release\n' > "$statusf"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
+  backoff="$state/.paused-resurface-backoff-$key"
   pane_hash=$(hash_text "idle, holding for upstream")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
@@ -575,10 +584,38 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   grep -F "awaiting external" "$out" >/dev/null || fail "re-surface was not labeled a paused/awaiting-external recheck"
   grep -F "possible wedge" "$out" >/dev/null && fail "a declared pause was mislabeled a possible wedge"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the paused re-surface throttle marker was not recorded"
+  [ "$(pause_backoff_count "$backoff")" = 1 ] || fail "the first watcher re-surface did not advance the backoff count"
   [ ! -e "$state/.stale-since-$key" ] || fail "a paused re-surface must not use the wedge timer"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the paused re-surface failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "paused re-surface was not queued"
-  pass "a declared pause is absorbed on first sight, then re-surfaced as a recheck past the threshold, never wedge-escalated"
+
+  # Phase C: the unchanged pause must not immediately re-fire because its next
+  # window doubled. A new pane hash makes the watcher revisit the pause path.
+  : > "$out"
+  printf 'idle, holding for upstream (token 3)' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_PAUSE_RESURFACE_MAX_SECS=960 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 20 || { reap "$pid"; fail "unchanged pause re-fired before its doubled watcher cadence: $(cat "$out")"; }
+  [ "$(pause_backoff_count "$backoff")" = 1 ] || { reap "$pid"; fail "suppressed unchanged pause changed its backoff count"; }
+  reap "$pid"
+
+  # Phase D: changing the exact paused status resets both the count and throttle
+  # to the base cadence without surfacing immediately.
+  printf 'paused: holding for a different upstream release\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  : > "$out"
+  printf 'idle, holding for upstream (token 4)' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_PAUSE_RESURFACE_MAX_SECS=960 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 20 || { reap "$pid"; fail "changed pause surfaced instead of resetting watcher backoff: $(cat "$out")"; }
+  [ "$(pause_backoff_count "$backoff")" = 0 ] || { reap "$pid"; fail "changed pause status did not reset watcher backoff"; }
+  [ ! -e "$state/.paused-resurfaced-$key" ] || { reap "$pid"; fail "changed pause status retained the old watcher throttle"; }
+  reap "$pid"
+  pass "a declared pause re-surfaces once, backs off unchanged repeats, and resets when its status changes"
 }
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
@@ -1128,6 +1165,7 @@ test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
+test_pause_resurface_delay_progression_is_bounded
 test_crew_absorb_class_classifier
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed

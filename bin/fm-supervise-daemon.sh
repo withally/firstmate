@@ -86,6 +86,8 @@
 #                                   as a possible wedge (default 240)
 #          FM_PAUSE_RESURFACE_SECS  idle seconds before a declared external wait
 #                                   re-surfaces as a recheck (default 3600)
+#          FM_PAUSE_RESURFACE_MAX_SECS maximum backoff between unchanged pause
+#                                   rechecks (default 14400)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
 #                                   digests; 0 = flush immediately (default 90)
 #          FM_HEARTBEAT_SCAN_SECS   cadence for the catch-all status scan
@@ -449,21 +451,28 @@ stale_marker_remove() {  # <window> <state>
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared pause was
-# first observed idle. Housekeeping ages it against PAUSE_RESURFACE_SECS (much
-# longer than a wedge) and re-surfaces the pause once per window. Recording is
-# create-if-absent so the timestamp is stable across a churny idle pane (many
-# distinct stale hashes map to one marker), keeping the cadence hash-immune.
+# first observed or last re-surfaced. The adjacent paused-backoff marker holds the
+# repeat count and exact status line so unchanged repeats back off exponentially.
 pause_marker_record() {  # <window> <state> - create if absent
-  local win=$1 state=$2 key marker
-  key=$(_stale_key "$(window_to_task "$win" "$state")")
+  local win=$1 state=$2 task key marker backoff last
+  task=$(window_to_task "$win" "$state")
+  key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
+  backoff="$state/.subsuper-paused-backoff-$key"
+  last=$(last_status_line "$state/$task.status")
   [ -e "$marker" ] || _now > "$marker"
+  if [ ! -e "$backoff" ]; then
+    pause_backoff_write "$backoff" 0 "$last"
+  elif ! pause_backoff_matches "$backoff" "$last"; then
+    _now > "$marker"
+    pause_backoff_write "$backoff" 0 "$last"
+  fi
 }
 
 pause_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-paused-$key"
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-paused-backoff-$key"
 }
 
 clear_pause_tracking() {  # <window> <state>
@@ -471,8 +480,8 @@ clear_pause_tracking() {  # <window> <state>
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
-  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-stale-$key" \
-    "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-paused-backoff-$key" "$state/.subsuper-stale-$key" \
+    "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" "$state/.paused-resurface-backoff-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
 }
 
@@ -625,16 +634,22 @@ escalate_add() {  # <state> <distilled-item>
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf item n msg
+  local state=$1 buf n msg preview
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
-  n=$(wc -l < "$buf" 2>/dev/null || echo 0)
+  n=$(wc -l < "$buf" 2>/dev/null | tr -d '[:space:]' || echo 0)
   # Join buffered items with the literal " | " separator into one digest line.
   msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  if inject_msg "$msg" "$state"; then
+    preview=${msg:0:160}
+    log "inject delivered: $n event(s): $preview"
+    : > "$buf"
+    rm -f "${buf}.since" "$state/.subsuper-inject-wedged"
+    return 0
+  fi
   return 1
 }
 
@@ -694,7 +709,8 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest
+  local pause_secs pause_max backoff repeat delay item
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -751,7 +767,9 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+      *) item="stale persisted ${age}s (possible wedge): $win"
+         log "escalate (stale-persisted): $item"
+         escalate_add "$state" "$item"
          stale_marker_remove "$win" "$state" ;;
     esac
   done
@@ -759,16 +777,18 @@ housekeeping() {  # <state>
   # (2b) pause re-surface recheck. A DECLARED external-wait pause idles by design,
   # so it is rechecked on a much longer cadence than a wedge (PAUSE_RESURFACE_SECS)
   # and never escalated as one - but it MUST re-surface, so a forgotten pause cannot
-  # rot invisibly. Past the window: busy (resumed) or gone -> drop; still idle and
-  # still declaring the pause -> escalate a recheck digest and reset the marker so
-  # the window repeats.
+  # rot invisibly. An unchanged status doubles the repeat window up to the bounded
+  # maximum. A status change or busy pane resets tracking to the base cadence.
   pause_secs=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  pause_max=${FM_PAUSE_RESURFACE_MAX_SECS:-$FM_PAUSE_RESURFACE_MAX_SECS_DEFAULT}
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
+    case "$marker" in *.subsuper-paused-backoff-*) continue ;; esac
     key="${marker##*.subsuper-paused-}"
+    backoff="$state/.subsuper-paused-backoff-$key"
     win=$(window_for_task "$key" "$state" 2>/dev/null || true)
     if [ -z "$win" ]; then
-      rm -f "$marker"; continue
+      rm -f "$marker" "$backoff"; continue
     fi
     task=$(window_to_task "$win" "$state")
     last=$(last_status_line "$state/$task.status")
@@ -776,19 +796,31 @@ housekeeping() {  # <state>
       reconcile_pause_tracking "$win" "$state" "$last"
       continue
     fi
+    if [ ! -e "$backoff" ]; then
+      pause_backoff_write "$backoff" 0 "$last"
+    elif ! pause_backoff_matches "$backoff" "$last"; then
+      _now > "$marker"
+      pause_backoff_write "$backoff" 0 "$last"
+      continue
+    fi
+    repeat=$(pause_backoff_count "$backoff")
+    delay=$(pause_resurface_delay "$repeat" "$pause_secs" "$pause_max")
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
-    [ "$age" -ge "$pause_secs" ] || continue
+    [ "$age" -ge "$delay" ] || continue
     stale_window_is_busy "$win" "$state"
     case "$?" in
-      0) rm -f "$marker" ;;
-      2) rm -f "$marker" ;;
+      0) clear_pause_tracking "$win" "$state" ;;
+      2) clear_pause_tracking "$win" "$state" ;;
       *)
         last=$(last_status_line "$state/$task.status")
-        if [ -n "$last" ] && status_is_paused "$last"; then
-          escalate_add "$state" "paused ${age}s (awaiting external, recheck whether the wait still holds): $win"
+        if [ -n "$last" ] && status_is_paused "$last" && pause_backoff_matches "$backoff" "$last"; then
+          item="paused ${age}s (awaiting external, recheck whether the wait still holds): $win"
+          log "escalate (pause-resurface): $item"
+          escalate_add "$state" "$item"
           _now > "$marker"
+          pause_backoff_write "$backoff" $((repeat + 1)) "$last"
         else
-          rm -f "$marker"
+          reconcile_pause_tracking "$win" "$state" "$last"
         fi
         ;;
     esac
@@ -805,7 +837,9 @@ housekeeping() {  # <state>
       [ -n "$f" ] || continue
       seen="$state/.subsuper-seen-status-$(_stale_key "$task")"
       [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ] && continue
-      escalate_add "$state" "$(basename "$f"): $last (catch-all scan)"
+      item="$(basename "$f"): $last (catch-all scan)"
+      log "escalate (catch-all): $item"
+      escalate_add "$state" "$item"
       mark_status_seen "$state" "$task" "$last"
     done < <(scan_captain_relevant_statuses "$state")
   fi
@@ -940,6 +974,10 @@ handle_wake() {  # <reason> <state>
     signal:*) kind=signal; arg="${reason#signal: }"
               decision=$(classify_signal "$arg" "$state") ;;
     stale:*)  kind=stale; arg="${reason#stale: }"
+              # Watcher annotations describe why the wake fired, but the status
+              # read remains authoritative. Strip the suffix once so a paused
+              # annotation naturally reaches classify_stale's pause branch.
+              arg="${arg%% (*}"
               decision=$(classify_stale "$arg" "$state") ;;
     check:*)  decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;

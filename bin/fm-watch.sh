@@ -146,6 +146,7 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # it re-surfaces once for a recheck every PAUSE_RESURFACE_SECS - far longer than the
 # wedge threshold, but finite so a forgotten pause cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+PAUSE_RESURFACE_MAX_SECS=${FM_PAUSE_RESURFACE_MAX_SECS:-$FM_PAUSE_RESURFACE_MAX_SECS_DEFAULT}
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
 
@@ -305,17 +306,18 @@ pause_key() {  # <window> -> sanitized key on stdout
 }
 
 # Absorb a stale pane whose crew is in a DECLARED external-wait pause (paused:),
-# and re-surface it once every PAUSE_RESURFACE_SECS for a recheck so it cannot rot
-# invisibly. Called on any stale poll once the crew is known paused (first sight,
+# and re-surface it on a bounded exponential cadence so it cannot rot invisibly.
+# Called on any stale poll once the crew is known paused (first sight,
 # after crew_absorb_class; and repeat sights, gated by the .paused-<key> flag), so
 # it must be cheap: it NEVER re-reads the crew state. The re-surface age is anchored
 # on the pause's own STATUS-FILE mtime, not a per-hash marker, so a churny idle pane
 # (a ticking clock, a token counter) cannot keep resetting the cadence the way a
-# hash-tied timer would. A .paused-resurfaced-<key> throttle marker records the last
-# re-surface epoch so, once past the window, it fires once per window rather than
-# every poll. Advances the stale suppressor to <hash> and flags the key paused.
+# hash-tied timer would. A .paused-resurfaced-<key> marker records the last
+# re-surface epoch. Its adjacent backoff marker doubles unchanged repeats up to
+# PAUSE_RESURFACE_MAX_SECS. A changed status resets the base cadence.
 handle_paused_stale() {  # <window> <task> <hash>
   local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+  local backoff last repeat delay
   key=$(pause_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -325,11 +327,22 @@ handle_paused_stale() {  # <window> <task> <hash>
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   age=$(( $(date +%s) - mtime ))
   rf="$STATE/.paused-resurfaced-$key"
+  backoff="$STATE/.paused-resurface-backoff-$key"
+  last=$(last_status_line "$statusf")
+  if [ ! -e "$backoff" ]; then
+    pause_backoff_write "$backoff" 0 "$last"
+  elif ! pause_backoff_matches "$backoff" "$last"; then
+    rm -f "$rf"
+    pause_backoff_write "$backoff" 0 "$last"
+  fi
+  repeat=$(pause_backoff_count "$backoff")
+  delay=$(pause_resurface_delay "$repeat" "$PAUSE_RESURFACE_SECS" "$PAUSE_RESURFACE_MAX_SECS")
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
+  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$delay" ]; then
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
+    pause_backoff_write "$backoff" $((repeat + 1)) "$last"
     wake "$reason"
   fi
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
@@ -338,7 +351,8 @@ handle_paused_stale() {  # <window> <task> <hash>
 clear_pause_state() {  # <window>
   local win=$1 key
   key=$(pause_key "$win")
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" \
+    "$STATE/.paused-resurfaced-$key" "$STATE/.paused-resurface-backoff-$key"
 }
 
 clear_pause_tracking() {  # <window>
@@ -375,7 +389,8 @@ surface_nonterminal_stale() {  # <window> <hash>
   key=$(pause_key "$win")
   fm_wake_append stale "$win" "stale: $win" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
-  rm -f "$STATE/.stale-since-$key" "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.stale-since-$key" "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" \
+    "$STATE/.paused-resurfaced-$key" "$STATE/.paused-resurface-backoff-$key"
   wake "stale: $win"
 }
 

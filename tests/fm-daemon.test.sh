@@ -186,6 +186,33 @@ test_handle_wake_paused_records_pause_marker() {
   pass "handle_wake on a paused stale records a pause marker, drops the wedge marker, and does not escalate"
 }
 
+test_handle_wake_parses_annotated_stale_targets() {
+  local dir state plain wedge paused plain_key wedge_key paused_key
+  dir=$(make_supercase annotated-stale)
+  state="$dir/state"
+  plain="sess:fm-plain-a1"
+  wedge="sess:fm-wedge-a2"
+  paused="sess:fm-paused-a3"
+  plain_key='plain-a1'
+  wedge_key='wedge-a2'
+  paused_key='paused-a3'
+  printf 'working: plain stale\n' > "$state/$plain_key.status"
+  printf 'working: annotated wedge\n' > "$state/$wedge_key.status"
+  printf 'paused: awaiting an external release\n' > "$state/$paused_key.status"
+
+  FM_STATE_OVERRIDE="$state" handle_wake "stale: $plain" "$state"
+  FM_STATE_OVERRIDE="$state" handle_wake "stale: $wedge (idle 500s, possible wedge, escalation 2)" "$state"
+  FM_STATE_OVERRIDE="$state" handle_wake "stale: $paused (paused 5000s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)" "$state"
+
+  [ -e "$state/.subsuper-stale-$plain_key" ] || fail "plain stale did not resolve its bare task"
+  [ -e "$state/.subsuper-stale-$wedge_key" ] || fail "annotated wedge stale did not resolve its bare task"
+  [ -e "$state/.subsuper-paused-$paused_key" ] || fail "annotated paused stale did not reach the pause branch"
+  [ ! -e "$state/.subsuper-stale-$paused_key" ] || fail "annotated paused stale was tracked as a wedge"
+  find "$state" -name '*(*' -print -quit | grep . >/dev/null \
+    && fail "annotated stale suffix leaked into a marker key"
+  pass "plain, wedge-annotated, and pause-annotated stale reasons resolve the bare target and correct classifier branch"
+}
+
 test_handle_wake_paused_signal_records_pause_marker() {
   local dir state key win
   dir=$(make_supercase handle-paused-signal)
@@ -295,6 +322,46 @@ test_housekeeping_paused_resurfaces_and_resets() {
   age=$(( $(date +%s) - $(cat "$state/.subsuper-paused-$key" 2>/dev/null || echo 0) ))
   [ "$age" -lt 60 ] || fail "pause marker was not reset to now on re-surface (age ${age}s)"
   pass "housekeeping re-surfaces a stale declared pause on the long cadence and resets its window"
+}
+
+test_housekeeping_pause_resurface_backs_off_and_resets_on_status_change() {
+  local dir state fakebin win pane key marker backoff now
+  dir=$(make_supercase paused-backoff)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-held-backoff"; pane="$dir/pane.txt"; key=held-backoff
+  marker="$state/.subsuper-paused-$key"
+  backoff="$state/.subsuper-paused-backoff-$key"
+  printf 'window=%s\nkind=ship\n' "$win" > "$state/$key.meta"
+  printf 'paused: waiting for release one\n' > "$state/$key.status"
+  printf 'idle prompt $\n' > "$pane"
+  now=$(date +%s)
+  echo $((now - 101)) > "$marker"
+  pause_backoff_write "$backoff" 0 'paused: waiting for release one'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=100 FM_PAUSE_RESURFACE_MAX_SECS=400 housekeeping "$state"
+  [ "$(pause_backoff_count "$backoff")" = 1 ] || fail "first pause re-surface did not advance backoff to one repeat"
+  : > "$state/.subsuper-escalations"
+
+  echo $(( $(date +%s) - 150 )) > "$marker"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=100 FM_PAUSE_RESURFACE_MAX_SECS=400 housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "unchanged pause re-surfaced before its doubled cadence"
+
+  echo $(( $(date +%s) - 201 )) > "$marker"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=100 FM_PAUSE_RESURFACE_MAX_SECS=400 housekeeping "$state"
+  [ "$(pause_backoff_count "$backoff")" = 2 ] || fail "second pause re-surface did not advance the repeat count"
+  : > "$state/.subsuper-escalations"
+
+  printf 'paused: waiting for release two\n' > "$state/$key.status"
+  echo $(( $(date +%s) - 1000 )) > "$marker"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=100 FM_PAUSE_RESURFACE_MAX_SECS=400 housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "changed pause status re-surfaced without resetting to the base cadence"
+  [ "$(pause_backoff_count "$backoff")" = 0 ] || fail "changed pause status did not reset the repeat count"
+  pause_backoff_matches "$backoff" 'paused: waiting for release two' || fail "changed pause status was not recorded in backoff state"
+  pass "daemon pause re-surfaces use bounded exponential backoff and reset when the status changes"
 }
 
 # A pause whose pane became busy again (the crew resumed) drops its marker without
@@ -536,6 +603,30 @@ test_escalate_batches_into_one_digest() {
   n=$(grep -c '\[ENTER\]' "$sent")
   [ "$n" -eq 1 ] || fail "expected one injected digest, got $n send-keys submits"
   pass "multiple escalations flush as a single batched digest"
+}
+
+test_housekeeping_and_flush_log_delivered_escalations() {
+  local dir state fakebin sent capture log win key pane
+  dir=$(make_supercase escalation-log)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; capture="$dir/supervisor.txt"; log="$dir/daemon.log"; pane="$dir/task-pane.txt"
+  : > "$sent"; : > "$capture"; printf 'idle prompt $\n' > "$pane"
+  win="sess:fm-log-pause"; key='log-pause'
+  printf 'window=%s\nkind=ship\n' "$win" > "$state/$key.meta"
+  printf 'paused: waiting for logging proof\n' > "$state/$key.status"
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-paused-$key"
+  afk_enter "$state"
+
+  LOG="$log" PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=100 FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+  grep -F 'escalate (pause-resurface):' "$log" >/dev/null || fail "housekeeping pause re-surface was not logged"
+
+  LOG="$log" PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \
+    || fail "logged escalation flush failed"
+  grep -F 'inject delivered: 1 event(s): Supervisor escalate' "$log" >/dev/null \
+    || fail "successful escalation injection was not logged"
+  pass "housekeeping escalation sources and successful digest delivery are logged"
 }
 
 test_escalate_batch_age_uses_first_append() {
@@ -1271,6 +1362,7 @@ test_stale_transient_self_records_marker
 test_stale_terminal_escalates
 test_stale_paused_classifies_pause
 test_handle_wake_paused_records_pause_marker
+test_handle_wake_parses_annotated_stale_targets
 test_handle_wake_paused_signal_records_pause_marker
 test_handle_wake_terminal_signal_clears_pause_tracking
 test_housekeeping_migrates_watcher_pause_marker
@@ -1279,6 +1371,7 @@ test_housekeeping_seeds_pause_marker_from_status
 test_housekeeping_persistent_stale_escalates
 test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
+test_housekeeping_pause_resurface_backs_off_and_resets_on_status_change
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_stale_marker_transitions_to_pause
@@ -1288,6 +1381,7 @@ test_housekeeping_herdr_idle_busy_footer_clears_stale
 test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
+test_housekeeping_and_flush_log_delivered_escalations
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate

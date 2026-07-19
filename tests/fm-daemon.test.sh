@@ -370,7 +370,7 @@ test_housekeeping_pause_resurfaces_backoff_prefixed_task() {
   local dir state fakebin win pane key
   dir=$(make_supercase paused-backoff-prefix)
   state="$dir/state"; fakebin="$dir/fakebin"
-  win="sess:fm-backoff-x1"; pane="$dir/pane.txt"; key=backoff-x1
+  win="sess:fm-backoff-x1"; pane="$dir/pane.txt"; key='backoff-x1'
   printf 'window=%s\nkind=ship\n' "$win" > "$state/$key.meta"
   printf 'paused: waiting on the upstream release\n' > "$state/$key.status"
   printf 'idle prompt $\n' > "$pane"

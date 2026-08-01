@@ -1,17 +1,38 @@
 #!/usr/bin/env bash
 # Tests for the tracked Pi primary watcher extension and Pi secondmate wiring.
 set -u
+export NODE_NO_WARNINGS=1
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
+PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+
+# The watcher extension imports Pi values at module scope (pi-tui, and
+# pi-coding-agent through lib/fm-calm-visibility.ts), so every node-based check
+# below needs the installed package. Follow the sibling Pi tests and skip
+# cleanly where it is absent (CI) rather than failing on a missing optional
+# dependency; the static wiring checks still run everywhere.
+require_pi_package() {  # <what>
+  if [ -f "$PI_PACKAGE_DIR/package.json" ] \
+    && [ -d "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" ]; then
+    return 0
+  fi
+  printf 'skip: installed @earendil-works/pi-coding-agent package not found for %s\n' "$1"
+  return 1
+}
 
 install_pi_watch_extension_fixture() {
   local repo=$1
-  mkdir -p "$repo/.pi/extensions" "$repo/node_modules/typebox"
+  mkdir -p "$repo/.pi/extensions/lib" "$repo/node_modules/@earendil-works" "$repo/node_modules/typebox"
   cp "$EXT" "$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  mkdir -p "$repo/bin"
+  ln -s "$PI_PACKAGE_DIR" "$repo/node_modules/@earendil-works/pi-coding-agent"
+  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$repo/node_modules/@earendil-works/pi-tui"
   cat > "$repo/node_modules/typebox/package.json" <<'JSON'
 {"name":"typebox","type":"module","exports":"./index.js"}
 JSON
@@ -22,6 +43,104 @@ export const Type = {
   },
 };
 JS
+}
+
+test_pi_tool_calm_rendering_preserves_execution() {
+  local repo home plugin log out status
+  require_pi_package "the Pi watcher Calm rendering check" || return 0
+  repo="$TMP_ROOT/pi-calm-render-root"
+  home="$TMP_ROOT/pi-calm-render-home"
+  log="$TMP_ROOT/pi-calm-render.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat >"$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >>"$FM_ARM_LOG"
+exit 0
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool;
+const eventListeners = new Map();
+const handlers = new Map();
+const pi = {
+  events: {
+    on(name, handler) { eventListeners.set(name, handler); },
+  },
+  on(name, handler) { handlers.set(name, handler); },
+  registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("Pi watch tool was not registered");
+if (tool.renderShell !== "self" || !tool.renderCall || !tool.renderResult) {
+  throw new Error("Pi watch tool has no Calm-aware self renderer");
+}
+const theme = {
+  bg: (_name, text) => text,
+  bold: (text) => text,
+  fg: (_name, text) => text,
+};
+const renderContext = { state: {}, isPartial: false, isError: false };
+async function waitForStarts(expected) {
+  for (let index = 0; index < 100; index += 1) {
+    if (existsSync(process.env.FM_ARM_LOG)) {
+      const count = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length;
+      if (count >= expected) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`watcher arm did not execute ${expected} time(s)`);
+}
+const first = await tool.execute("off", {}, undefined, undefined, {});
+await waitForStarts(1);
+await new Promise((resolve) => setTimeout(resolve, 20));
+const stockShell = tool.renderCall({}, theme, renderContext);
+tool.renderResult(first, {}, theme, renderContext);
+const stockRendered = stockShell.render(100).join("\n");
+if (!stockRendered.includes(first.content[0].text)) {
+  throw new Error(`Calm off did not render the watcher result in its stock shell: ${JSON.stringify(stockRendered)}`);
+}
+const presentation = eventListeners.get("firstmate:calm-presentation");
+if (!presentation) throw new Error("watcher did not subscribe to Calm presentation state");
+presentation({ active: true, stockExportRendering: false });
+if (tool.renderCall({}, theme, { state: {}, isPartial: false, isError: false }).render(100).length !== 0) {
+  throw new Error("Calm on left the watcher call row visible");
+}
+if (tool.renderResult(first, {}, theme, { state: {}, isPartial: false, isError: false }).render(100).length !== 0) {
+  throw new Error("Calm on left the watcher result row visible");
+}
+presentation({ active: true, stockExportRendering: true });
+if (!tool.renderCall({}, theme, { state: {}, isPartial: false, isError: false }).render(100).join("\n").includes("fm_watch_arm_pi")) {
+  throw new Error("export did not restore the watcher call row");
+}
+if (!tool.renderResult(first, {}, theme, { state: {}, isPartial: false, isError: false }).render(100).join("\n").includes(first.content[0].text)) {
+  throw new Error("export did not restore the watcher result row");
+}
+presentation({ active: false, stockExportRendering: false });
+handlers.get("session_shutdown")?.();
+handlers.get("session_start")?.();
+const second = await tool.execute("on", {}, undefined, undefined, {});
+await waitForStarts(2);
+const normalize = (text) => text.replace(/child \d+/, "child N");
+if (normalize(first.content[0].text) !== normalize(second.content[0].text)) {
+  throw new Error(`Calm state changed watcher execution output: ${JSON.stringify([first.content[0].text, second.content[0].text])}`);
+}
+const starts = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+if (starts.length !== 2) throw new Error(`expected two identical arm executions, saw ${starts.length}`);
+JS
+)
+  status=$?
+  expect_code 0 "$status" "Pi watcher Calm rendering must preserve tool execution: $out"
+  [ -z "$out" ] || fail "Pi watcher Calm rendering test printed output: $out"
+  pass "Pi watcher tool executes identically while Calm controls only its presentation"
 }
 
 test_tracked_extension_present_and_self_hashing() {
@@ -72,6 +191,7 @@ test_spawn_template_mentions_pi_watch_placeholder() {
 
 test_pi_extension_reports_external_healthy_watcher() {
   local repo home plugin out status
+  require_pi_package "the Pi external-healthy watcher check" || return 0
   repo="$TMP_ROOT/pi-external-healthy-root"
   home="$TMP_ROOT/pi-external-healthy-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -128,6 +248,10 @@ if (!prompt.includes("FIRSTMATE WATCHER WAKE")) {
   console.error(`missing follow-up prompt: ${prompt}`);
   process.exit(1);
 }
+if (!prompt.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) {
+  console.error(`untyped operational follow-up: ${prompt}`);
+  process.exit(1);
+}
 if (!prompt.includes("external healthy watcher")) {
   console.error(prompt);
   process.exit(1);
@@ -146,6 +270,7 @@ EOF
 
 test_pi_tool_returns_agent_tool_result() {
   local repo home plugin out status
+  require_pi_package "the Pi tool-result shape check" || return 0
   repo="$TMP_ROOT/pi-tool-result-root"
   home="$TMP_ROOT/pi-tool-result-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -179,6 +304,7 @@ const result = await tool.execute("tool-call-1", {}, undefined, undefined, {});
 if (!Array.isArray(result.content) || result.content[0]?.type !== "text") {
   throw new Error(`invalid tool content: ${JSON.stringify(result)}`);
 }
+
 if (!result.content[0].text.includes("started Pi extension arm child")) {
   throw new Error(`unexpected tool text: ${result.content[0].text}`);
 }
@@ -188,13 +314,63 @@ if (result.details?.ok !== true || result.details?.message !== result.content[0]
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi custom tool must return Pi's AgentToolResult shape"
+  expect_code 0 "$status" "Pi custom tool must return Pi's AgentToolResult shape: $out"
   [ -z "$out" ] || fail "Pi tool-result test printed output: $out"
   pass "Pi custom tool returns text content and structured details"
 }
 
+test_pi_wake_delivers_once_and_preserves_queue_record() {
+  local repo home plugin out status
+  require_pi_package "the Pi one-wake delivery check" || return 0
+  repo="$TMP_ROOT/pi-one-wake-root"
+  home="$TMP_ROOT/pi-one-wake-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat >"$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf '1\t1\tsignal\ttask\tsignal: synthetic wake\n' >>"$FM_HOME/state/.wake-queue"
+printf 'signal: synthetic wake\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'JS'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let handler;
+const prompts = [];
+const pi = {
+  events: { on() {} },
+  on() {},
+  registerCommand(name, command) { if (name === "fm-watch-arm-pi") handler = command.handler; },
+  registerTool() {},
+  sendUserMessage: async (message, options) => { prompts.push({ message, options }); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handler("", { ui: { notify() {} } });
+for (let index = 0; index < 100 && prompts.length === 0; index += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (prompts.length !== 1) throw new Error(`expected one delivered wake, saw ${prompts.length}`);
+if (prompts[0].options?.deliverAs !== "followUp") throw new Error("wake lost followUp delivery");
+if (!prompts[0].message.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) throw new Error("wake lost exact watcher envelope");
+const queue = `${process.env.FM_HOME}/state/.wake-queue`;
+if (!existsSync(queue)) throw new Error("wake queue record was not written");
+const records = readFileSync(queue, "utf8").trim().split("\n");
+if (records.length !== 1) throw new Error(`expected one queue record, saw ${records.length}`);
+JS
+)
+  status=$?
+  expect_code 0 "$status" "one watcher wake must deliver once and preserve one queue record: $out"
+  [ -z "$out" ] || fail "Pi one-wake test printed output: $out"
+  pass "one Pi watcher wake delivers once and preserves one durable queue record"
+}
+
 test_pi_process_exit_cleanup_listener_lifecycle() {
   local repo home plugin out status
+  require_pi_package "the Pi exit-listener lifecycle check" || return 0
   repo="$TMP_ROOT/pi-exit-listener-root"
   home="$TMP_ROOT/pi-exit-listener-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -234,6 +410,7 @@ EOF
 
 test_pi_process_exit_cleanup_stops_arm_child() {
   local repo home plugin cleanup_log pid_file out status pid i
+  require_pi_package "the Pi process-exit cleanup check" || return 0
   repo="$TMP_ROOT/pi-process-exit-root"
   home="$TMP_ROOT/pi-process-exit-home"
   cleanup_log="$TMP_ROOT/pi-process-exit-cleaned"
@@ -713,6 +890,8 @@ test_tracked_extension_present_and_self_hashing
 test_spawn_template_mentions_pi_watch_placeholder
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
+test_pi_wake_delivers_once_and_preserves_queue_record
+test_pi_tool_calm_rendering_preserves_execution
 test_pi_process_exit_cleanup_listener_lifecycle
 test_pi_process_exit_cleanup_stops_arm_child
 test_opencode_primary_watch_plugin_static_wiring

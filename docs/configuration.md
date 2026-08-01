@@ -6,6 +6,16 @@ The files and environment variables you set to operate firstmate.
 
 The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it like any prompt when the fleet is empty, or dispatch shared-repo edits to a crewmate while tasks are in flight.
 
+## Pi Calm preference (config/calm)
+
+The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home.
+The home resolves from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or from `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
+The only values it writes are `on` and `off`, each followed by one newline.
+An absent, unreadable, or unrecognized value defaults to off.
+The `/calm` command replaces the file atomically before changing live presentation, so a failed write leaves the current choice unchanged rather than claiming persistence.
+The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
+This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

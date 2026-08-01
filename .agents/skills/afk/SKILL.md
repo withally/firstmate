@@ -187,8 +187,9 @@ the marker lets firstmate distinguish it from a real captain message.
   cleared.
   For herdr's normal idle-baseline path it means native agent-state observed a real turn start; herdr uses the ANSI-aware structural classifier for the pre-injection composer guard and fallback paths.
   This lets ghost-only or bordered-empty composers count as empty where a composer read is the active confirmation signal.
-- **Marker strip** - `strip_injection_marker` removes the sentinel prefix before
-  classification or relay, so the digest text firstmate sees is clean.
+- **Marker strip** - `strip_injection_marker` removes the sentinel prefix and the
+  typed operational envelope that `bin/fm-operational-input.sh` wraps the digest in,
+  before classification or relay, so the digest text firstmate sees is clean.
 - **Portable singleton lock** - the daemon uses the repo's portable lock helper
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
 - **Dedupe across signal/stale/scan** - `classify_signal` and `classify_stale`

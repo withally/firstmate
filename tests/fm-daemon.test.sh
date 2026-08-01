@@ -12,6 +12,8 @@ set -u
 
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 AFK_START="$ROOT/bin/fm-afk-start.sh"
+OPERATIONAL_INPUT="$ROOT/bin/fm-operational-input.sh"
+assert_present "$OPERATIONAL_INPUT" "canonical operational-input owner is missing"
 # Source the daemon's pure functions once. Its main loop is skipped under sourcing
 # via a BASH_SOURCE guard, so only classify_*/housekeeping/escalate_*/afk_* and the
 # pane/submit helpers become defined.
@@ -851,7 +853,12 @@ test_should_exit_afk_when_afk_inactive() {
 }
 
 test_strip_injection_marker() {
-  local stripped
+  local encoded stripped
+  fm_operational_input_encode away-supervisor "Supervisor escalate: done" encoded \
+    || fail "could not encode away-supervisor fixture"
+  stripped=$(strip_injection_marker "${FM_INJECT_MARK}${encoded}")
+  [ "$stripped" = "Supervisor escalate: done" ] \
+    || fail "typed away envelope was not stripped to its semantic body: '$stripped'"
   stripped=$(strip_injection_marker "${FM_INJECT_MARK}Supervisor escalate: done")
   [ "$stripped" = "Supervisor escalate: done" ] \
     || fail "marker not stripped: '$stripped'"
@@ -1360,8 +1367,14 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
     fm_backend_capture() { printf 'idle prompt\n'; }
     fm_backend_composer_state() { printf 'empty'; }
     fm_backend_send_text_submit() {
+      local first_hex kind body
       [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected send_text_submit args: $1 $2"
-      case "$3" in *"hello"*) : ;; *) fail "digest text missing from send_text_submit: $3" ;; esac
+      first_hex=$(printf '%s' "$3" | od -An -tx1 | tr -d ' \n' | cut -c1-2)
+      [ "$first_hex" = 1f ] || fail "away injection did not preserve leading 0x1f: $first_hex"
+      fm_operational_input_kind "$3" kind || fail "away injection has no exact operational kind"
+      [ "$kind" = away-supervisor ] || fail "away injection became $kind"
+      fm_operational_input_body "$3" body || fail "away injection semantic body was not recoverable"
+      [ "$body" = hello ] || fail "away injection semantic body changed: $body"
       printf 'empty'
     }
     FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="default:w1:p2" inject_msg "hello" "$state" \

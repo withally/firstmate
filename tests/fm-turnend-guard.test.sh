@@ -612,6 +612,7 @@ test_pi_extension_forces_followup() {
   assert_contains "$content" 'sendUserMessage' "pi extension must force a follow-up turn"
   assert_contains "$content" 'deliverAs: "followUp"' "pi extension must queue the follow-up safely"
   assert_contains "$content" 'guardFollowupActive' "pi extension must carry a logical-run loop guard"
+  assert_contains "$content" 'encodeFirstmateOperationalInput' "pi extension must structurally encode guard follow-ups"
   assert_not_contains "$content" 'skipNextTurnEnd' "pi extension kept the internal-turn loop guard"
   assert_contains "$content" 'session-start operating block' "pi extension must use harness-neutral repair wording"
   assert_contains "$content" '.pi-turnend-extension-loaded' "pi extension must write its loaded marker for session-start diagnostics"
@@ -629,8 +630,9 @@ test_pi_extension_injects_once_per_logical_agent_run() {
   home="$TMP_ROOT/pi-logical-run-home"
   ext="$repo/.pi/extensions/fm-primary-turnend-guard.ts"
   log="$TMP_ROOT/pi-logical-run-guard.log"
-  mkdir -p "$repo/.pi/extensions" "$repo/bin" "$home/state"
+  mkdir -p "$repo/.pi/extensions/lib" "$repo/bin" "$home/state"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$ext"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
   cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null
@@ -656,6 +658,7 @@ const pi = {
   async sendUserMessage(message, options) {
     prompts += 1;
     if (!message.includes("TURN WOULD END BLIND")) throw new Error(`unexpected prompt: ${message}`);
+    if (!message.startsWith("\u2063FIRSTMATE_OP: v1 turn-end-guard: ")) throw new Error(`untyped operational prompt: ${message}`);
     if (options?.deliverAs !== "followUp") throw new Error("guard prompt was not a follow-up");
     await handlers.get("agent_settled")?.({ type: "agent_settled" }, {});
   },
@@ -690,8 +693,9 @@ test_pi_extension_retries_after_followup_delivery_failure() {
   repo="$TMP_ROOT/pi-delivery-failure-root"
   home="$TMP_ROOT/pi-delivery-failure-home"
   ext="$repo/.pi/extensions/fm-primary-turnend-guard.ts"
-  mkdir -p "$repo/.pi/extensions" "$repo/bin" "$home/state"
+  mkdir -p "$repo/.pi/extensions/lib" "$repo/bin" "$home/state"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$ext"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
   cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null

@@ -74,8 +74,10 @@ for test_script in tests/*.test.sh; do bash "$test_script"; done   # behavior te
 tests/fm-wake-queue.test.sh               # durable wake queue losslessness, catch-up, double-drain, duplicate-collapse, and drain liveness guard tests
 tests/fm-watcher-lock.test.sh             # watcher singleton, lock-race, PID identity stability, watch-arm liveness, and guard-warning tests
 tests/fm-turnend-guard.test.sh            # shared supervision predicate plus Claude Stop-hook scoping, loop guard, fail-open, and live watcher health tests
-tests/fm-pi-primary-types.test.sh         # strict no-emit TypeScript check for both tracked Pi primary extensions against an installed Pi package
-FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh # opt-in real Pi TUI regression in an isolated home and private tmux socket
+tests/fm-pi-primary-types.test.sh         # strict no-emit TypeScript check for every tracked Pi extension (watcher, turn-end guard, and Calm) against an installed Pi package, using that package's own TypeScript when global tsc is absent
+FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh # opt-in real Pi TUI regression in an isolated home and private tmux socket, covering watcher/guard supervision plus Calm toggling, persistence, resize, export, and share
+tests/fm-calm-pi-extension.test.sh        # Pi Calm extension owner: preference persistence and fallback, atomic-write failure, built-in row hiding, boat cadence/geometry/resize, transcript redraw without a status row, export/share restore, and per-adapter seam degradation
+tests/fm-operational-input.test.sh        # exact operational-input envelope owner: encode/kind/classify/body acceptance and near-miss rejection, the away 0x1f sentinel form, and drift-pinning of the in-process TypeScript mirror against bin/fm-operational-input.sh
 tests/fm-arm-pretool-check.test.sh        # command-position watcher-arm policy: adversarial allow/deny matrix across all five adapter entry forms, reason codes, fail-closed malformed-protected syntax, fail-open transport, and --claude output shaping
 tests/fm-watch-triage.test.sh             # always-on watcher triage: benign absorb, actionable surface, stale status-log override, declared-external-wait rechecks, wedge threshold, repeated wedge demand marker, heartbeat backstop, and afk one-shot coherence
 tests/fm-daemon.test.sh                   # sub-supervisor classifier, declared-external-wait rechecks, /afk presence-gating, fm-afk-start daemon-lock lifecycle, max-defer, composer, and fm-send submit tests

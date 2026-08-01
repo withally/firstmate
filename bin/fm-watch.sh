@@ -85,6 +85,15 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   exit 0
 fi
 trap 'fm_lock_release "$WATCH_LOCK"' EXIT
+# Turn a terminating signal into a normal exit so the EXIT trap's lock release
+# actually runs. Bash kills itself on an untrapped fatal signal without running
+# the EXIT trap, so a torn-down watcher - the bounded foreground checkpoint's
+# `timeout` signalling the whole process group, or fm-watch-arm.sh's
+# cleanup_child - could otherwise leave this home's singleton lock behind and
+# make the next arm read "watcher: already running" off a dead pid.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.

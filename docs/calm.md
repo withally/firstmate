@@ -22,6 +22,13 @@ Export and share temporarily rebuild controlled rows with stock rendering, then 
 Pi exposes no supported global transcript filter.
 Expanded reasoning, built-in tool images, user-bash rows, skill and summary rows, generic notices, and arbitrary extension or custom-tool rows may remain visible.
 
+## Activation
+
+Calm is an optional third tracked Pi extension alongside the two required supervision extensions, and it is not part of supervision-health checks.
+Approving Pi's project trust prompt once per clone auto-loads every tracked `.pi/extensions/*.ts` file, including this one.
+After updating Firstmate, restart Pi or run `/reload`, then run `/calm` to toggle the persisted presentation choice.
+When trusted auto-load is unavailable, launch from the Firstmate repository root and add `-e .pi/extensions/fm-calm.ts` to the explicit watcher and guard launch in [`supervision-protocols/pi.md`](supervision-protocols/pi.md), only when Calm is wanted.
+
 ## Pi compatibility
 
 Calm has no numeric Pi minimum or maximum and never refuses Pi solely because its version is newer than previously verified evidence.

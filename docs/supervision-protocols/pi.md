@@ -15,10 +15,7 @@ When this session owns supervision and away mode is not active:
 The turn-end guard extension lives at `__FM_PI_TURNEND_EXT__`.
 The watcher extension lives at `__FM_PI_EXT__`.
 Both are tracked, project-local `.pi/extensions/*.ts` files that Pi auto-discovers once the project is trusted; `bin/fm-session-start.sh` reports when the running Pi session has not loaded both required extensions.
-Calm is an optional third tracked Pi extension and is not part of supervision-health checks.
-After updating Firstmate, restart Pi or run `/reload`, then run `/calm` to toggle its persisted presentation choice.
-When trusted auto-load is unavailable, launch from the Firstmate repository root and add `-e .pi/extensions/fm-calm.ts` to the explicit watcher and guard launch only when Calm is wanted.
-See [`../calm.md`](../calm.md) for the presentation contract and supported seams.
+Calm is an optional third tracked Pi extension, is not part of supervision-health checks, and never changes the wait shape above; [`../calm.md`](../calm.md) owns its activation and presentation contract.
 
 Verification on 2026-07-09 used Pi 0.80.5, an isolated `PI_CODING_AGENT_DIR`, an isolated `FM_HOME`, and the dedicated tmux socket `fm-pi-q6-lab`.
 The command `Use the fm_watch_arm_pi custom tool now. Do not use bash.` rendered `watcher: started Pi extension arm child 1`, then the model returned `DONE` without the prior `result.content.filter(...)` crash.

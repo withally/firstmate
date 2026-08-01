@@ -35,6 +35,7 @@ Pi exposes no supported global renderer for arbitrary transcript rows, custom to
 ## Pi 0.83.0 verification record
 
 Verification ran on 2026-08-01 with `/opt/homebrew/bin/pi --version` reporting exactly `0.83.0`.
+Both records below were reproduced against the current tracked sources, after the transcript-redraw adapter, the Calm-active export and share guard, and the in-process operational-input mirror replaced their earlier implementations.
 
 Strict installed-type command:
 
@@ -63,13 +64,15 @@ Observed output:
 ok - Pi 0.83.0 live E2E toggled and persisted Calm, animated and resized the boat, hid watcher/guard/away rows, preserved wake and away semantics, exported, survived share, restored stock rendering, restarted, and cleaned up
 ```
 
+The command ran twice in a row on the current sources and exited `0` both times, with no `skip:` line.
 The isolated TUI run exercised Calm on and off, persisted restart state, a live resize, supported built-in tools, one bounded turn-end follow-up, one watcher wake and re-arm, an away escalation whose injected first byte remained `0x1f`, HTML export payload preservation, Pi sharing, and clean watcher-child shutdown.
+It also asserted that neither the `/calm` toggle nor the `/export` and `/share` redraws leave a `Tool output:` status row in the live transcript, which is the exact string Pi 0.83.0 emits only from `showStatus` inside `setToolsExpanded`.
+Each of those pane assertions runs after a settled marker turn, not immediately after the preference file changes, so it observes a painted frame instead of racing the render timer.
 Pi 0.83.0 embeds export session data as base64 inside the HTML artifact, so the regression decodes that payload before asserting that hidden operational messages remain serialized.
 The live share command completed and returned a Pi share URL before the test submitted its continuity prompt.
 
 Focused deterministic owners also passed for malformed and unreadable preference fallback, atomic-write failure, stock-off presentation, boat cadence and geometry, export redraw, `Ctrl+O`, exact operational near misses, queue exactly-once delivery, and non-inheritance of `config/calm`.
 The deterministic owner additionally pins that a Calm redraw re-invokes mounted rows once, requests a repaint, and appends no status row, while a stock `setToolsExpanded` outside a redraw still appends its own.
-The live regression gained the matching pane assertion after the run recorded above, so that one assertion is covered by the deterministic owner and awaits the next `FM_PI_LIVE_E2E=1` run for a live record.
 
 The Pi-dependent owners (`tests/fm-calm-pi-extension.test.sh`, the node checks in `tests/fm-pi-watch-extension.test.sh`, `tests/fm-pi-primary-types.test.sh`, and the live regression) mount real Pi components, so they skip cleanly where the package is absent, such as CI.
 A skip is an unverified boundary, not a pass.

@@ -166,6 +166,8 @@ wait_for_text "fm-calm.ts" 60 || fail "Pi Calm extension did not load"
 
 send_prompt "/calm"
 wait_for_file_value "$HOME_DIR/config/calm" on || fail "/calm did not persist on in the effective home"
+send_prompt "Reply exactly CALM-ON with no tools."
+wait_for_exact_line "CALM-ON" || fail "Calm-on toggle did not settle"
 capture | grep -Fq "Tool output:" \
   && fail "/calm left a tool-expansion status row in the transcript"
 send_prompt "Use the bash tool to run sleep 2. Then reply exactly BOAT-RESIZED."
@@ -233,6 +235,8 @@ send_prompt "/share"
 wait_for_text "Share URL:" 120 || fail "/share did not complete in the live Calm session"
 send_prompt "Reply exactly SHARE-SURVIVED with no tools."
 wait_for_exact_line "SHARE-SURVIVED" || fail "/share disrupted the live Calm session"
+capture | grep -Fq "Tool output:" \
+  && fail "export or share redraw left a tool-expansion status row in the transcript"
 
 send_prompt "/calm"
 wait_for_file_value "$HOME_DIR/config/calm" off || fail "/calm did not restore the off preference"

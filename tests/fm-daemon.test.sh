@@ -47,7 +47,8 @@ test_afk_preflight_refuses_explicit_pi_herdr() {
   fakebin=$(make_afk_preflight_fakebin "$dir")
 
   out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
-    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
+    CLAUDECODE='' PI_CODING_AGENT=true \
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
     "$DAEMON" --preflight 2>&1)
   status=$?
 
@@ -70,7 +71,7 @@ test_afk_preflight_refuses_auto_detected_pi_herdr() {
   fakebin=$(make_afk_preflight_fakebin "$dir")
 
   out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
-    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND='' TMUX_PANE='' \
+    CLAUDECODE='' PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND='' TMUX_PANE='' \
     HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_SESSION=isolated \
     "$DAEMON" --preflight 2>&1)
   status=$?
@@ -86,11 +87,11 @@ test_afk_preflight_refuses_auto_detected_pi_herdr() {
 test_afk_preflight_preserves_non_pi_herdr_and_pi_tmux() {
   local out
 
-  out=$(PI_CODING_AGENT='' FM_SUPERVISOR_BACKEND=herdr "$DAEMON" --preflight 2>&1) \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT='' FM_SUPERVISOR_BACKEND=herdr "$DAEMON" --preflight 2>&1) \
     || fail "daemon preflight rejected a non-Pi Herdr primary: $out"
   [ -z "$out" ] || fail "non-Pi Herdr preflight should pass quietly, got: $out"
 
-  out=$(PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=tmux "$DAEMON" --preflight 2>&1) \
+  out=$(CLAUDECODE='' PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=tmux "$DAEMON" --preflight 2>&1) \
     || fail "daemon preflight rejected Pi on tmux: $out"
   [ -z "$out" ] || fail "Pi tmux preflight should pass quietly, got: $out"
   pass "away preflight preserves non-Pi Herdr and Pi on other backends"
@@ -105,7 +106,8 @@ test_afk_start_refuses_pi_herdr_before_away_side_effects() {
   fakebin=$(make_afk_preflight_fakebin "$dir")
 
   out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
-    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
+    CLAUDECODE='' PI_CODING_AGENT=true \
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
     "$AFK_START" 2>&1)
   status=$?
 
@@ -127,7 +129,8 @@ test_direct_daemon_refuses_pi_herdr_before_backend_or_injection() {
   fakebin=$(make_afk_preflight_fakebin "$dir")
 
   out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
-    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
+    CLAUDECODE='' PI_CODING_AGENT=true \
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
     "$DAEMON" 2>&1)
   status=$?
 

@@ -191,13 +191,16 @@ test_propagate_lib() {
 
   # 5. secondmate-harness is never inherited
   printf 'grok\n' > "$src/secondmate-harness"
+  printf 'on\n' > "$src/calm"
   printf '{"default":{"harness":"codex"}}\n' > "$src/crew-dispatch.json"
   printf 'codex\n' > "$src/crew-harness"
   printf 'manual\n' > "$src/backlog-backend"
   rm -rf "$d/dest2"
   mkdir -p "$d/dest2"
+  printf 'off\n' > "$d/dest2/calm"
   propagate_inheritable_config "$src" "$d/dest2"
   [ -e "$d/dest2/secondmate-harness" ] && fail "secondmate-harness was inherited (must not be)"
+  [ "$(cat "$d/dest2/calm")" = off ] || fail "home-local config/calm was inherited into a secondmate"
   [ "$(cat "$d/dest2/crew-dispatch.json")" = '{"default":{"harness":"codex"}}' ] || fail "crew-dispatch.json not propagated alongside"
   [ "$(cat "$d/dest2/crew-harness")" = codex ] || fail "crew-harness not propagated alongside"
   [ "$(cat "$d/dest2/backlog-backend")" = manual ] || fail "backlog-backend not propagated alongside"

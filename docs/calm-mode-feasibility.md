@@ -22,6 +22,9 @@ Those skips are recorded as unverified boundaries, not passes.
 
 The working boat uses Pi's public `setWorkingVisible()` and `setWidget()` APIs and owns no transcript or model data.
 The collapsed-thinking adapter probes `AssistantMessageComponent.updateContent` and changes only the shallow presentation copy used for layout.
+The operational-user-row adapter probes `InteractiveMode.addMessageToChat` and changes only the component's rendered height.
+`bin/fm-operational-input.sh` owns exact U+2063 watcher and turn-end envelopes and the `0x1f` plus typed-inner-envelope away form.
+Quoted markers, ASCII-only markers, embedded markers, malformed envelopes, broad prose substrings, and image-bearing messages remain ordinary visible user rows.
 Built-in tool hiding uses the seven built-in factories and their supported render slots.
 Pi exposes no supported global renderer for arbitrary transcript rows, custom tools, images, or notices.
 

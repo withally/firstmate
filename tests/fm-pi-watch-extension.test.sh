@@ -15,6 +15,10 @@ install_pi_watch_extension_fixture() {
   mkdir -p "$repo/.pi/extensions/lib" "$repo/node_modules/@earendil-works" "$repo/node_modules/typebox"
   cp "$EXT" "$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
+  chmod +x "$repo/bin/fm-operational-input.sh"
   ln -s "$PI_PACKAGE_DIR" "$repo/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$repo/node_modules/@earendil-works/pi-tui"
   cat > "$repo/node_modules/typebox/package.json" <<'JSON'
@@ -230,6 +234,10 @@ if (!prompt.includes("FIRSTMATE WATCHER WAKE")) {
   console.error(`missing follow-up prompt: ${prompt}`);
   process.exit(1);
 }
+if (!prompt.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) {
+  console.error(`untyped operational follow-up: ${prompt}`);
+  process.exit(1);
+}
 if (!prompt.includes("external healthy watcher")) {
   console.error(prompt);
   process.exit(1);
@@ -281,6 +289,7 @@ const result = await tool.execute("tool-call-1", {}, undefined, undefined, {});
 if (!Array.isArray(result.content) || result.content[0]?.type !== "text") {
   throw new Error(`invalid tool content: ${JSON.stringify(result)}`);
 }
+
 if (!result.content[0].text.includes("started Pi extension arm child")) {
   throw new Error(`unexpected tool text: ${result.content[0].text}`);
 }
@@ -290,9 +299,57 @@ if (result.details?.ok !== true || result.details?.message !== result.content[0]
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi custom tool must return Pi's AgentToolResult shape"
+  expect_code 0 "$status" "Pi custom tool must return Pi's AgentToolResult shape: $out"
   [ -z "$out" ] || fail "Pi tool-result test printed output: $out"
   pass "Pi custom tool returns text content and structured details"
+}
+
+test_pi_wake_delivers_once_and_preserves_queue_record() {
+  local repo home plugin out status
+  repo="$TMP_ROOT/pi-one-wake-root"
+  home="$TMP_ROOT/pi-one-wake-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat >"$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf '1\t1\tsignal\ttask\tsignal: synthetic wake\n' >>"$FM_HOME/state/.wake-queue"
+printf 'signal: synthetic wake\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'JS'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let handler;
+const prompts = [];
+const pi = {
+  events: { on() {} },
+  on() {},
+  registerCommand(name, command) { if (name === "fm-watch-arm-pi") handler = command.handler; },
+  registerTool() {},
+  sendUserMessage: async (message, options) => { prompts.push({ message, options }); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handler("", { ui: { notify() {} } });
+for (let index = 0; index < 100 && prompts.length === 0; index += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (prompts.length !== 1) throw new Error(`expected one delivered wake, saw ${prompts.length}`);
+if (prompts[0].options?.deliverAs !== "followUp") throw new Error("wake lost followUp delivery");
+if (!prompts[0].message.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) throw new Error("wake lost exact watcher envelope");
+const queue = `${process.env.FM_HOME}/state/.wake-queue`;
+if (!existsSync(queue)) throw new Error("wake queue record was not written");
+const records = readFileSync(queue, "utf8").trim().split("\n");
+if (records.length !== 1) throw new Error(`expected one queue record, saw ${records.length}`);
+JS
+)
+  status=$?
+  expect_code 0 "$status" "one watcher wake must deliver once and preserve one queue record: $out"
+  [ -z "$out" ] || fail "Pi one-wake test printed output: $out"
+  pass "one Pi watcher wake delivers once and preserves one durable queue record"
 }
 
 test_pi_process_exit_cleanup_listener_lifecycle() {
@@ -815,6 +872,7 @@ test_tracked_extension_present_and_self_hashing
 test_spawn_template_mentions_pi_watch_placeholder
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
+test_pi_wake_delivers_once_and_preserves_queue_record
 test_pi_tool_calm_rendering_preserves_execution
 test_pi_process_exit_cleanup_listener_lifecycle
 test_pi_process_exit_cleanup_stops_arm_child

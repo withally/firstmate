@@ -7,6 +7,9 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+OPERATIONAL_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
+OPERATIONAL_INPUT="$ROOT/bin/fm-operational-input.sh"
 
 cleanup() {
   fm_test_cleanup
@@ -21,6 +24,12 @@ trap cleanup EXIT
   || fail "tracked Calm assistant-layout owner is missing"
 [ -f "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" ] \
   || fail "tracked Calm working-ship owner is missing"
+[ -f "$OPERATIONAL_LAYOUT" ] \
+  || fail "tracked Calm operational-user layout owner is missing"
+[ -f "$PI_OPERATIONAL_INPUT" ] \
+  || fail "tracked Pi operational-input adapter is missing"
+[ -f "$OPERATIONAL_INPUT" ] \
+  || fail "tracked operational-input owner is missing"
 [ -f "$PI_PACKAGE_DIR/package.json" ] \
   || fail "installed Pi package is required for deterministic Calm verification"
 
@@ -30,6 +39,8 @@ cp "$ROOT/.pi/extensions/fm-calm.ts" "$fixture/fm-calm.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$fixture/lib/fm-calm-visibility.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$fixture/lib/fm-calm-assistant-layout.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$fixture/lib/fm-calm-working-ship.ts"
+cp "$OPERATIONAL_LAYOUT" "$fixture/lib/fm-calm-operational-user-layout.ts"
+cp "$PI_OPERATIONAL_INPUT" "$fixture/lib/fm-operational-input.ts"
 ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
 ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
 ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/node_modules/typebox"
@@ -40,6 +51,7 @@ out=$(cd "$fixture" && \
   VISIBILITY="$fixture/lib/fm-calm-visibility.ts" \
   SHIP="$fixture/lib/fm-calm-working-ship.ts" \
   FM_HOME="$fixture/home" \
+  FM_OPERATIONAL_INPUT_SCRIPT="$OPERATIONAL_INPUT" \
   PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
   NODE_NO_WARNINGS=1 \
   node --input-type=module 2>&1 <<'JS'
@@ -53,7 +65,7 @@ const extension = await import(extensionUrl);
 const visibility = await import(visibilityUrl);
 const ship = await import(shipUrl);
 const packageRoot = process.env.PI_PACKAGE_DIR;
-const [{ Container, visibleWidth }, { initTheme, theme }, { AssistantMessageComponent }] = await Promise.all([
+const [{ Container, visibleWidth }, { initTheme, theme }, { AssistantMessageComponent, InteractiveMode, UserMessageComponent }] = await Promise.all([
   import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href),
   import("@earendil-works/pi-coding-agent"),
@@ -184,6 +196,61 @@ check(calm.emitted.at(-1).state.stockExportRendering === true, "share did not te
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(ctx.state.expanded === true, "share redraw changed Ctrl+O expansion state");
 
+const operationalInput = await import(`${pathToFileURL(`${process.cwd()}/lib/fm-operational-input.ts`).href}?test=${Date.now()}`);
+const watcherBody = "FIRSTMATE WATCHER WAKE: signal: exact fixture\n\nRun bin/fm-wake-drain.sh first, handle the queued wake, then resume Pi supervision.";
+const watcherMessage = operationalInput.encodeFirstmateOperationalInput("watcher", watcherBody);
+const history = [];
+const chat = {
+  children: [],
+  addChild(component) { this.children.push(component); },
+};
+const mode = {
+  chatContainer: chat,
+  editor: { addToHistory: (text) => history.push(text) },
+  getMarkdownThemeWithSettings: () => undefined,
+  getUserMessageText: (message) => typeof message.content === "string"
+    ? message.content
+    : message.content.filter((item) => item.type === "text").map((item) => item.text).join(""),
+  outputPad: 1,
+};
+InteractiveMode.prototype.addMessageToChat.call(
+  mode,
+  { role: "user", content: watcherMessage },
+  { populateHistory: true },
+);
+check(chat.children.length === 1, "operational user row was not mounted once");
+check(chat.children[0].render(100).length === 0, "Calm on left operational user-row geometry");
+check(history.length === 1 && history[0] === watcherMessage, "operational row lost exact semantic history content");
+const nearMissChat = {
+  children: [],
+  addChild(component) { this.children.push(component); },
+};
+InteractiveMode.prototype.addMessageToChat.call(
+  { ...mode, chatContainer: nearMissChat },
+  { role: "user", content: `Captain quote: ${watcherMessage}` },
+);
+check(nearMissChat.children.length === 1, "genuine near-miss row was not mounted");
+check(nearMissChat.children[0].render(100).join("\n").includes("Captain quote"), "Calm hid a genuine operational near miss");
+const imageNearMissChat = {
+  children: [],
+  addChild(component) { this.children.push(component); },
+};
+InteractiveMode.prototype.addMessageToChat.call(
+  { ...mode, chatContainer: imageNearMissChat },
+  {
+    role: "user",
+    content: [
+      { type: "text", text: watcherMessage },
+      { type: "image", data: "fixture", mimeType: "image/png" },
+    ],
+  },
+);
+check(imageNearMissChat.children.length === 1, "image-bearing operational near miss was not mounted");
+check(imageNearMissChat.children[0].render(100).length > 0, "Calm hid an image-bearing operational near miss");
+await calm.command.handler("", ctx);
+const stockOperational = new UserMessageComponent(watcherMessage, undefined, 1);
+check(chat.children[0].render(100).join("\n") === stockOperational.render(100).join("\n"), "Calm off did not restore stock operational rendering");
+
 check(calm.tools.map((tool) => tool.name).join(",") === "read,bash,edit,write,grep,find,ls", "built-in wrapper set drifted");
 const tool = calm.tools[0];
 const renderContext = { cwd: process.cwd(), state: {}, isPartial: false, isError: false };
@@ -269,6 +336,8 @@ mkdir -p "$degraded/lib" "$degraded/node_modules/@earendil-works"
 cp "$ROOT/.pi/extensions/fm-calm.ts" "$degraded/fm-calm.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$degraded/lib/fm-calm-visibility.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$degraded/lib/fm-calm-working-ship.ts"
+cp "$OPERATIONAL_LAYOUT" "$degraded/lib/fm-calm-operational-user-layout.ts"
+cp "$PI_OPERATIONAL_INPUT" "$degraded/lib/fm-operational-input.ts"
 cat >"$degraded/lib/fm-calm-assistant-layout.ts" <<'TS'
 export function installCalmAssistantLayout(): void {
   throw new Error("probe seam missing");
@@ -279,7 +348,7 @@ ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$degraded/node_modu
 ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$degraded/node_modules/typebox"
 printf '%s\n' '{"type":"module"}' >"$degraded/package.json"
 
-out=$(cd "$degraded" && NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
+out=$(cd "$degraded" && FM_OPERATIONAL_INPUT_SCRIPT="$OPERATIONAL_INPUT" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 import extension from "./fm-calm.ts";
 let calmCommand;
 extension({
@@ -297,3 +366,38 @@ status=$?
 printf '%s\n' "$out" | grep -Fq "Firstmate Calm: collapsed-thinking presentation adapter unavailable, skipping. probe seam missing" \
   || fail "degraded Calm adapter did not emit its named diagnostic: $out"
 pass "Pi Calm names and independently skips an unavailable collapsed-thinking adapter"
+
+degraded_op="$TMP_ROOT/degraded-operational"
+mkdir -p "$degraded_op/lib" "$degraded_op/node_modules/@earendil-works"
+cp "$ROOT/.pi/extensions/fm-calm.ts" "$degraded_op/fm-calm.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$degraded_op/lib/fm-calm-assistant-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$degraded_op/lib/fm-calm-visibility.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$degraded_op/lib/fm-calm-working-ship.ts"
+cat >"$degraded_op/lib/fm-calm-operational-user-layout.ts" <<'TS'
+export function installCalmOperationalUserLayout(): void {
+  throw new Error("operational probe seam missing");
+}
+TS
+ln -s "$PI_PACKAGE_DIR" "$degraded_op/node_modules/@earendil-works/pi-coding-agent"
+ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$degraded_op/node_modules/@earendil-works/pi-tui"
+ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$degraded_op/node_modules/typebox"
+printf '%s\n' '{"type":"module"}' >"$degraded_op/package.json"
+
+out=$(cd "$degraded_op" && NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
+import extension from "./fm-calm.ts";
+let calmCommand;
+extension({
+  events: { emit() {}, on() {} },
+  on() {},
+  registerCommand(name, command) { if (name === "calm") calmCommand = command; },
+  registerEntryRenderer() {},
+  registerTool() {},
+});
+if (!calmCommand) throw new Error("operational adapter failure disabled the Calm command");
+JS
+)
+status=$?
+[ "$status" -eq 0 ] || fail "degraded operational adapter disabled the extension: $out"
+printf '%s\n' "$out" | grep -Fq "Firstmate Calm: operational-user-row presentation adapter unavailable, skipping. operational probe seam missing" \
+  || fail "degraded operational adapter did not emit its named diagnostic: $out"
+pass "Pi Calm names and independently skips an unavailable operational-user-row adapter"

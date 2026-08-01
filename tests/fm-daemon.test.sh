@@ -25,6 +25,120 @@ fi
 
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 
+make_afk_preflight_fakebin() {  # <case-dir>
+  local dir=$1
+  local fakebin="$dir/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf 'herdr:%s\n' "$*" >> "$FM_FAKE_HERDR_LOG"
+exit 1
+SH
+  chmod +x "$fakebin/herdr"
+  printf '%s\n' "$fakebin"
+}
+
+test_afk_preflight_refuses_explicit_pi_herdr() {
+  local dir state fakebin log out status
+  dir=$(make_supercase afk-preflight-explicit-pi-herdr)
+  state="$dir/state"
+  log="$dir/herdr.log"
+  : > "$log"
+  fakebin=$(make_afk_preflight_fakebin "$dir")
+
+  out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
+    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
+    "$DAEMON" --preflight 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "daemon preflight should refuse explicit Pi + Herdr"
+  assert_contains "$out" "Pi + Herdr away mode is unverified" "explicit Pi + Herdr refusal was not actionable"
+  assert_contains "$out" "normal Pi supervision remains active" "explicit Pi + Herdr refusal did not preserve the normal-supervision path"
+  assert_contains "$out" "disabling Calm is not a supported workaround" "explicit Pi + Herdr refusal suggested an unsafe Calm workaround"
+  [ ! -s "$log" ] || fail "explicit Pi + Herdr preflight touched herdr: $(cat "$log")"
+  assert_absent "$state/.supervise-daemon.pid" "explicit Pi + Herdr preflight started the daemon"
+  assert_absent "$state/.afk" "explicit Pi + Herdr preflight created the away flag"
+  pass "away preflight refuses explicit Pi + Herdr before state, daemon, backend, or injection"
+}
+
+test_afk_preflight_refuses_auto_detected_pi_herdr() {
+  local dir state fakebin log out status
+  dir=$(make_supercase afk-preflight-auto-pi-herdr)
+  state="$dir/state"
+  log="$dir/herdr.log"
+  : > "$log"
+  fakebin=$(make_afk_preflight_fakebin "$dir")
+
+  out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
+    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND='' TMUX_PANE='' \
+    HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_SESSION=isolated \
+    "$DAEMON" --preflight 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "daemon preflight should refuse auto-detected Pi + Herdr"
+  assert_contains "$out" "Pi + Herdr away mode is unverified" "auto-detected Pi + Herdr refusal was not actionable"
+  [ ! -s "$log" ] || fail "auto-detected Pi + Herdr preflight touched herdr: $(cat "$log")"
+  assert_absent "$state/.supervise-daemon.pid" "auto-detected Pi + Herdr preflight started the daemon"
+  assert_absent "$state/.afk" "auto-detected Pi + Herdr preflight created the away flag"
+  pass "away preflight refuses auto-detected Pi + Herdr before state, daemon, backend, or injection"
+}
+
+test_afk_preflight_preserves_non_pi_herdr_and_pi_tmux() {
+  local out
+
+  out=$(PI_CODING_AGENT='' FM_SUPERVISOR_BACKEND=herdr "$DAEMON" --preflight 2>&1) \
+    || fail "daemon preflight rejected a non-Pi Herdr primary: $out"
+  [ -z "$out" ] || fail "non-Pi Herdr preflight should pass quietly, got: $out"
+
+  out=$(PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=tmux "$DAEMON" --preflight 2>&1) \
+    || fail "daemon preflight rejected Pi on tmux: $out"
+  [ -z "$out" ] || fail "Pi tmux preflight should pass quietly, got: $out"
+  pass "away preflight preserves non-Pi Herdr and Pi on other backends"
+}
+
+test_afk_start_refuses_pi_herdr_before_away_side_effects() {
+  local dir state fakebin log out status
+  dir=$(make_supercase afk-start-pi-herdr)
+  state="$dir/state"
+  log="$dir/herdr.log"
+  : > "$log"
+  fakebin=$(make_afk_preflight_fakebin "$dir")
+
+  out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
+    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
+    "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "fm-afk-start.sh should refuse Pi + Herdr"
+  assert_contains "$out" "Pi + Herdr away mode is unverified" "fm-afk-start.sh refusal was not actionable"
+  assert_not_contains "$out" "starting supervise daemon" "fm-afk-start.sh started the daemon after Pi + Herdr refusal"
+  assert_absent "$state/.afk" "fm-afk-start.sh created state/.afk before Pi + Herdr refusal"
+  assert_absent "$state/.supervise-daemon.pid" "fm-afk-start.sh started a daemon before Pi + Herdr refusal"
+  [ ! -s "$log" ] || fail "fm-afk-start.sh touched herdr before Pi + Herdr refusal: $(cat "$log")"
+  pass "fm-afk-start.sh refuses Pi + Herdr before away flag, daemon startup, or injection"
+}
+
+test_direct_daemon_refuses_pi_herdr_before_backend_or_injection() {
+  local dir state fakebin log out status
+  dir=$(make_supercase daemon-direct-pi-herdr)
+  state="$dir/state"
+  log="$dir/herdr.log"
+  : > "$log"
+  fakebin=$(make_afk_preflight_fakebin "$dir")
+
+  out=$(PATH="$fakebin:$PATH" FM_FAKE_HERDR_LOG="$log" FM_STATE_OVERRIDE="$state" \
+    PI_CODING_AGENT=true FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=missing:w1:p1 \
+    "$DAEMON" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "direct daemon invocation should refuse Pi + Herdr"
+  assert_contains "$out" "Pi + Herdr away mode is unverified" "direct daemon refusal was not actionable"
+  [ ! -s "$log" ] || fail "direct daemon invocation touched herdr before refusal: $(cat "$log")"
+  assert_absent "$state/.supervise-daemon.pid" "direct daemon invocation started before Pi + Herdr refusal"
+  assert_absent "$state/.supervise-daemon.log" "direct daemon invocation logged startup before Pi + Herdr refusal"
+  pass "direct daemon invocation refuses Pi + Herdr before backend access or text injection"
+}
+
 
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
@@ -1383,6 +1497,11 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
   pass "inject_msg: dispatches busy-guard/composer-guard/submit through the herdr backend and succeeds on a confirmed empty composer"
 }
 
+test_afk_preflight_refuses_explicit_pi_herdr
+test_afk_preflight_refuses_auto_detected_pi_herdr
+test_afk_preflight_preserves_non_pi_herdr_and_pi_tmux
+test_afk_start_refuses_pi_herdr_before_away_side_effects
+test_direct_daemon_refuses_pi_herdr_before_backend_or_injection
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid

@@ -16,19 +16,15 @@ batched digest rather than per-wake injections.
 
 ## What it does
 
-1. **Set the durable away-mode flag:**
-   ```sh
-   date '+%s' > state/.afk
-   ```
-   This file survives a firstmate restart: recovery re-enters afk if the
-   flag is present.
-
-2. **Ensure the sub-supervisor daemon is running.** Start the helper as its own
+1. **Start through the compatibility-gated helper.** Run the helper as its own
    tracked background terminal/session:
    ```sh
    bin/fm-afk-start.sh
    ```
-   The helper sets or refreshes `state/.afk`, exits immediately if the identity-backed daemon lock already names a live process, and otherwise execs `bin/fm-supervise-daemon.sh` in the foreground.
+   Do not create `state/.afk` directly.
+   The helper checks the primary harness/backend combination before it creates the durable away flag, exits immediately if the identity-backed daemon lock already names a live process, and otherwise execs `bin/fm-supervise-daemon.sh` in the foreground.
+   Pi + Herdr away mode is unverified and the helper refuses it; keep normal Pi supervision active or choose a verified harness/backend combination.
+   Turning Calm off is not a supported workaround.
    Do not wrap this in `nohup ... &`.
    Codex/herdr can reap fire-and-forget shell children after a tool call
    returns; a tracked background terminal/session keeps the daemon attached to
@@ -36,10 +32,10 @@ batched digest rather than per-wake injections.
    The daemon is **presence-gated**: it injects escalations only while
    `state/.afk` exists, and stays quiet otherwise.
 
-3. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
+2. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
    its child; the singleton lock no-ops a stray arm harmlessly.
 
-4. **Acknowledge** to the captain that away-mode is active.
+3. **Acknowledge** to the captain that away-mode is active.
    The daemon will self-handle routine wakes, escalate captain-relevant events and bounded declared-external-wait rechecks, and let the captain exit by sending any real message.
 
 ## How to exit afk

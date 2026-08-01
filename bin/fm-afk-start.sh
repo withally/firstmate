@@ -3,7 +3,8 @@
 # foreground process when one is not already alive.
 #
 # Usage: fm-afk-start.sh
-#   Sets state/.afk, checks state/.supervise-daemon.lock, and:
+#   Checks away-mode harness/backend compatibility, then sets state/.afk,
+#   checks state/.supervise-daemon.lock, and:
 #     - prints "afk: daemon already running pid=<pid>" then exits 0 when that
 #       lock is held by a live daemon;
 #     - otherwise execs bin/fm-supervise-daemon.sh in the foreground.
@@ -30,6 +31,10 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   * ) echo "usage: $(basename "$0")" >&2; exit 2 ;;
 esac
+
+# The daemon owns the compatibility contract and exposes this side-effect-free
+# check so an unsupported combination is refused before the away flag exists.
+"$DAEMON" --preflight
 
 mkdir -p "$STATE"
 date '+%s' > "$STATE/.afk"

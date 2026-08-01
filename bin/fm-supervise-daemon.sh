@@ -59,8 +59,12 @@
 # escalations before exit.
 #
 # Usage: fm-supervise-daemon.sh
-#          Long-lived background loop. Normally started by the /afk skill, which
-#          sets state/.afk first. Env knobs:
+#          Long-lived background loop. Normally started by fm-afk-start.sh,
+#          which passes compatibility preflight before setting state/.afk.
+#          Env knobs:
+#        fm-supervise-daemon.sh --preflight
+#          Check away-mode harness/backend compatibility without creating state,
+#          probing a backend, starting the daemon, or injecting text.
 #          FM_SUPERVISOR_TARGET     supervisor pane target (override; otherwise
 #                                   auto-discovered per backend - $TMUX_PANE
 #                                   under tmux, "<session>:<pane-id>" from
@@ -348,6 +352,21 @@ discover_supervisor_backend() {
   fi
   printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
   return 1
+}
+
+# Pi + Herdr away mode is deliberately refused until its busy state, composer,
+# and submit acknowledgement have been verified together against real Pi.
+# This capability check is the single contract owner used by both
+# fm-afk-start.sh's pre-flag preflight and direct daemon startup.
+away_mode_capability_check() {
+  local backend harness
+  backend=$(discover_supervisor_backend) || true
+  harness=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+  if [ "$backend" = herdr ] && [ "$harness" = pi ]; then
+    echo "error: Pi + Herdr away mode is unverified and has been disabled for safety; normal Pi supervision remains active. Keep normal Pi supervision or choose a verified harness/backend combination; disabling Calm is not a supported workaround." >&2
+    return 1
+  fi
+  return 0
 }
 
 # --- classification helpers (PURE: no side effects, testable) ---------------
@@ -1062,6 +1081,7 @@ trim_log() {
 
 fm_super_main() {
   local STATE
+  away_mode_capability_check || exit 1
   STATE="$(_state_root)"
   mkdir -p "$STATE"
 
@@ -1287,5 +1307,9 @@ fm_super_main() {
 
 # Run only when executed, not when sourced (tests source the classifiers).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-  fm_super_main "$@"
+  case "${1:-}" in
+    '') fm_super_main ;;
+    --preflight) away_mode_capability_check ;;
+    *) echo "usage: $(basename "$0") [--preflight]" >&2; exit 2 ;;
+  esac
 fi

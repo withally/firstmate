@@ -10,6 +10,20 @@ TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 
+# The watcher extension imports Pi values at module scope (pi-tui, and
+# pi-coding-agent through lib/fm-calm-visibility.ts), so every node-based check
+# below needs the installed package. Follow the sibling Pi tests and skip
+# cleanly where it is absent (CI) rather than failing on a missing optional
+# dependency; the static wiring checks still run everywhere.
+require_pi_package() {  # <what>
+  if [ -f "$PI_PACKAGE_DIR/package.json" ] \
+    && [ -d "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" ]; then
+    return 0
+  fi
+  printf 'skip: installed @earendil-works/pi-coding-agent package not found for %s\n' "$1"
+  return 1
+}
+
 install_pi_watch_extension_fixture() {
   local repo=$1
   mkdir -p "$repo/.pi/extensions/lib" "$repo/node_modules/@earendil-works" "$repo/node_modules/typebox"
@@ -17,8 +31,6 @@ install_pi_watch_extension_fixture() {
   cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
   mkdir -p "$repo/bin"
-  cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
-  chmod +x "$repo/bin/fm-operational-input.sh"
   ln -s "$PI_PACKAGE_DIR" "$repo/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$repo/node_modules/@earendil-works/pi-tui"
   cat > "$repo/node_modules/typebox/package.json" <<'JSON'
@@ -35,6 +47,7 @@ JS
 
 test_pi_tool_calm_rendering_preserves_execution() {
   local repo home plugin log out status
+  require_pi_package "the Pi watcher Calm rendering check" || return 0
   repo="$TMP_ROOT/pi-calm-render-root"
   home="$TMP_ROOT/pi-calm-render-home"
   log="$TMP_ROOT/pi-calm-render.log"
@@ -178,6 +191,7 @@ test_spawn_template_mentions_pi_watch_placeholder() {
 
 test_pi_extension_reports_external_healthy_watcher() {
   local repo home plugin out status
+  require_pi_package "the Pi external-healthy watcher check" || return 0
   repo="$TMP_ROOT/pi-external-healthy-root"
   home="$TMP_ROOT/pi-external-healthy-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -256,6 +270,7 @@ EOF
 
 test_pi_tool_returns_agent_tool_result() {
   local repo home plugin out status
+  require_pi_package "the Pi tool-result shape check" || return 0
   repo="$TMP_ROOT/pi-tool-result-root"
   home="$TMP_ROOT/pi-tool-result-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -306,6 +321,7 @@ EOF
 
 test_pi_wake_delivers_once_and_preserves_queue_record() {
   local repo home plugin out status
+  require_pi_package "the Pi one-wake delivery check" || return 0
   repo="$TMP_ROOT/pi-one-wake-root"
   home="$TMP_ROOT/pi-one-wake-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -354,6 +370,7 @@ JS
 
 test_pi_process_exit_cleanup_listener_lifecycle() {
   local repo home plugin out status
+  require_pi_package "the Pi exit-listener lifecycle check" || return 0
   repo="$TMP_ROOT/pi-exit-listener-root"
   home="$TMP_ROOT/pi-exit-listener-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -393,6 +410,7 @@ EOF
 
 test_pi_process_exit_cleanup_stops_arm_child() {
   local repo home plugin cleanup_log pid_file out status pid i
+  require_pi_package "the Pi process-exit cleanup check" || return 0
   repo="$TMP_ROOT/pi-process-exit-root"
   home="$TMP_ROOT/pi-process-exit-home"
   cleanup_log="$TMP_ROOT/pi-process-exit-cleaned"

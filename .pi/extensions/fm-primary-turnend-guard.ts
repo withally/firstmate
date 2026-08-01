@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
+import { encodeFirstmateOperationalInputOrPlain } from "./lib/fm-operational-input.ts";
 
 let guardFollowupActive = false;
 
@@ -114,14 +114,14 @@ export default function (pi: ExtensionAPI) {
     const result = await runGuard();
     if (result.code !== 2) return;
 
+    const content = encodeFirstmateOperationalInputOrPlain(
+      "turn-end-guard",
+      "TURN WOULD END BLIND - supervision is off. " +
+        "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
+        result.stderr,
+    );
     guardFollowupActive = true;
     try {
-      const content = encodeFirstmateOperationalInput(
-        "turn-end-guard",
-        "TURN WOULD END BLIND - supervision is off. " +
-          "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
-          result.stderr,
-      );
       await pi.sendUserMessage(
         content,
         { deliverAs: "followUp" },

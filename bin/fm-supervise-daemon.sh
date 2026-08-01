@@ -904,7 +904,10 @@ inject_msg() {  # <message> [state]
   # prepend the sentinel marker - firstmate's afk-exit contract keys off its
   # presence at the start of the message.
   msg=$(_collapse_newlines "$msg")
-  fm_operational_input_encode away-supervisor "$msg" encoded || return 1
+  fm_operational_input_encode away-supervisor "$msg" encoded || {
+    log "inject deferred: away-supervisor envelope refused (empty digest after newline collapse)"
+    return 1
+  }
   msg="${FM_INJECT_MARK}${encoded}"
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
   # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):

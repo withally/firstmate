@@ -12,7 +12,7 @@ Every resize recomputes and clamps its track, and narrow terminals use a determi
 Calm hides collapsed thinking labels, the shell and text-result rows for Pi's seven built-in tools, the `fm_watch_arm_pi` shell, and exactly classified Firstmate watcher, turn-end guard, and away-supervisor user rows.
 Those operational inputs remain ordinary user-role messages available to the model and serialized session.
 Away-mode input retains `0x1f` as its first byte and carries an exact typed inner envelope only for presentation classification.
-Calm adds no separate status row.
+Calm adds no separate status row: toggling, exporting, and sharing redraw the transcript in place without appending Pi's tool-expansion status line.
 When Calm is off, Pi's stock working row and ordinary controlled transcript rendering return.
 
 Calm changes presentation only.

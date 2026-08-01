@@ -147,6 +147,7 @@ cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$PROJECT/.pi/extensions/f
 cp "$ROOT/.pi/extensions/fm-calm.ts" "$PROJECT/.pi/extensions/fm-calm.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$PROJECT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts" "$PROJECT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-transcript-redraw.ts" "$PROJECT/.pi/extensions/lib/fm-calm-transcript-redraw.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$PROJECT/.pi/extensions/lib/fm-calm-visibility.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$PROJECT/.pi/extensions/lib/fm-calm-working-ship.ts"
 cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$PROJECT/.pi/extensions/lib/fm-operational-input.ts"
@@ -165,6 +166,8 @@ wait_for_text "fm-calm.ts" 60 || fail "Pi Calm extension did not load"
 
 send_prompt "/calm"
 wait_for_file_value "$HOME_DIR/config/calm" on || fail "/calm did not persist on in the effective home"
+capture | grep -Fq "Tool output:" \
+  && fail "/calm left a tool-expansion status row in the transcript"
 send_prompt "Use the bash tool to run sleep 2. Then reply exactly BOAT-RESIZED."
 wait_for_text '\__/' 40 || fail "Calm working boat did not appear during a real Pi run"
 "$TMUX" -L "$SOCKET" clear-history -t "$SESSION"

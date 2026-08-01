@@ -122,8 +122,107 @@ test_invalid_current_encodings() {
   pass "operational input rejects unknown kinds and empty current bodies"
 }
 
+# Pi's chat mount path re-classifies every user message on load, resume, thinking
+# toggle, and compaction, so .pi/extensions/lib/fm-operational-input.ts mirrors
+# this owner in-process instead of spawning it. That mirror is only safe while it
+# agrees byte for byte on every accept and reject, so pin it here.
+test_pi_mirror_matches_the_shell_owner() {
+  local mirror out status
+  mirror="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
+  assert_present "$mirror" "in-process Pi operational-input mirror is missing"
+  command -v node >/dev/null 2>&1 || {
+    echo "skip: node not found for the in-process operational-input mirror check"
+    return 0
+  }
+
+  out=$(MIRROR="$mirror" OWNER="$OWNER" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const mirror = await import(pathToFileURL(process.env.MIRROR).href);
+const owner = process.env.OWNER;
+const shell = (command, message, kind) => {
+  const args = kind === undefined ? [command] : [command, kind];
+  const result = spawnSync(owner, args, { encoding: "utf8", input: message });
+  if (result.status !== 0) return undefined;
+  return command === "encode" ? result.stdout : result.stdout.replace(/\n$/, "");
+};
+
+const mark = mirror.FIRSTMATE_OPERATIONAL_MARK;
+const sentinel = mirror.FIRSTMATE_AFK_SENTINEL;
+const header = mirror.FIRSTMATE_OPERATIONAL_HEADER_PREFIX;
+if (Buffer.from(mark, "utf8").toString("hex") !== "e281a3") {
+  throw new Error(`mirror lost the exact U+2063 mark: ${Buffer.from(mark, "utf8").toString("hex")}`);
+}
+if (Buffer.from(sentinel, "utf8").toString("hex") !== "1f") {
+  throw new Error(`mirror lost the exact 0x1f away sentinel: ${Buffer.from(sentinel, "utf8").toString("hex")}`);
+}
+
+for (const kind of mirror.FIRSTMATE_CURRENT_OPERATIONAL_KINDS) {
+  const body = `MIRROR_BODY_FOR_${kind}`;
+  const encoded = mirror.encodeFirstmateOperationalInput(kind, body);
+  if (encoded !== shell("encode", body, kind)) {
+    throw new Error(`mirror and owner disagree on the ${kind} envelope: ${JSON.stringify(encoded)}`);
+  }
+}
+
+const watcherLegacy = "FIRSTMATE WATCHER WAKE: signal: legacy fixture\n\nRun bin/fm-wake-drain.sh first, handle the queued wake, then resume Pi supervision.";
+const guardLegacy = "TURN WOULD END BLIND - supervision is off. Resume supervision according to the session-start operating block before ending the turn.\n\nwatcher: FAILED - legacy fixture";
+const fixtures = [
+  mirror.encodeFirstmateOperationalInput("watcher", "signal: fixture"),
+  mirror.encodeFirstmateOperationalInput("turn-end-guard", "guard fixture"),
+  sentinel + mirror.encodeFirstmateOperationalInput("away-supervisor", "escalate fixture"),
+  mirror.encodeFirstmateOperationalInput("away-supervisor", "escalate fixture"),
+  watcherLegacy,
+  guardLegacy,
+  `${sentinel}Supervisor escalate (1 event(s)): done: legacy fixture`,
+  `Captain quote: ${header}watcher: quoted`,
+  "FIRSTMATE_OP: v1 watcher: ASCII only",
+  `${mark} arbitrary captain text`,
+  `Ordinary captain text before ${header}watcher: embedded`,
+  `${header}unknown: invalid kind`,
+  `${header}watcher:`,
+  `${header}watcher: `,
+  "FIRSTMATE WATCHER WAKE: can you explain this phrase?",
+  "TURN WOULD END BLIND - can you make this warning friendlier?",
+  "Supervisor escalate (1 event(s)): is this wording clear?",
+  watcherLegacy.replace("signal: legacy fixture", ""),
+  guardLegacy.slice(0, guardLegacy.indexOf("watcher: FAILED")),
+];
+for (const fixture of fixtures) {
+  const mirrorClassify = mirror.classifyFirstmateOperationalText(fixture) ?? "";
+  const ownerClassify = shell("classify", fixture) ?? "";
+  if (mirrorClassify !== ownerClassify) {
+    throw new Error(`classify drift on ${JSON.stringify(fixture)}: mirror=${mirrorClassify} owner=${ownerClassify}`);
+  }
+  const mirrorKind = mirror.classifyFirstmateCurrentOperationalText(fixture) ?? "";
+  const ownerKind = shell("kind", fixture) ?? "";
+  if (mirrorKind !== ownerKind) {
+    throw new Error(`kind drift on ${JSON.stringify(fixture)}: mirror=${mirrorKind} owner=${ownerKind}`);
+  }
+}
+
+let refused = false;
+try {
+  mirror.encodeFirstmateOperationalInput("watcher", "");
+} catch {
+  refused = true;
+}
+if (!refused) throw new Error("mirror accepted an empty current body");
+if (mirror.encodeFirstmateOperationalInputOrPlain("watcher", "") !== "") {
+  throw new Error("degraded encode did not fall back to the plain message");
+}
+JS
+)
+  status=$?
+  expect_code 0 "$status" "in-process Pi mirror must match the shell owner: $out"
+  [ -z "$out" ] || fail "operational-input mirror check printed output: $out"
+  pass "in-process Pi operational-input mirror matches the shell owner exactly"
+}
+
 test_current_envelopes
 test_away_outer_sentinel
 test_legacy_shapes_are_narrow
 test_genuine_near_misses_remain_visible
 test_invalid_current_encodings
+test_pi_mirror_matches_the_shell_owner

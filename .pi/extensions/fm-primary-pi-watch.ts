@@ -12,7 +12,7 @@ import {
   calmTranscriptClassIsVisible,
   FIRSTMATE_CALM_PRESENTATION_EVENT,
 } from "./lib/fm-calm-visibility.ts";
-import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
+import { encodeFirstmateOperationalInputOrPlain } from "./lib/fm-operational-input.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -150,7 +150,7 @@ export default function (pi: ExtensionAPI) {
   process.once("exit", cleanupOnProcessExit);
 
   async function sendWake(message: string) {
-    const content = encodeFirstmateOperationalInput(
+    const content = encodeFirstmateOperationalInputOrPlain(
       "watcher",
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first, handle the queued wake, then resume Pi supervision.`,
     );

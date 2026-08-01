@@ -23,7 +23,10 @@ Those skips are recorded as unverified boundaries, not passes.
 The working boat uses Pi's public `setWorkingVisible()` and `setWidget()` APIs and owns no transcript or model data.
 The collapsed-thinking adapter probes `AssistantMessageComponent.updateContent` and changes only the shallow presentation copy used for layout.
 The operational-user-row adapter probes `InteractiveMode.addMessageToChat` and changes only the component's rendered height.
+The transcript-redraw adapter probes `InteractiveMode.setToolsExpanded` and `InteractiveMode.showStatus`, the only supported seam that re-invokes already-mounted row renderers.
+It re-invokes them under the caller's unchanged expansion value and suppresses just the trailing status append, which Pi implements as a permanent `chatContainer` row rather than a transient footer, while keeping its render request.
 `bin/fm-operational-input.sh` owns exact U+2063 watcher and turn-end envelopes and the `0x1f` plus typed-inner-envelope away form.
+`.pi/extensions/lib/fm-operational-input.ts` mirrors that owner in-process, because classification runs for every user message on Pi's chat mount path and construction feeds the two supervision-critical follow-ups; `tests/fm-operational-input.test.sh` pins the mirror against the owner on every accept and reject so the two cannot drift.
 Pi's terminal input layer removes the non-printing `0x1f` before transcript layout, so the presentation parser also recognizes the exact typed inner away envelope while daemon and away-return tests continue to require `0x1f` as the injected first byte.
 Quoted markers, ASCII-only markers, embedded markers, malformed envelopes, broad prose substrings, and image-bearing messages remain ordinary visible user rows.
 Built-in tool hiding uses the seven built-in factories and their supported render slots.
@@ -45,7 +48,8 @@ Observed output:
 ok - Pi primary extensions pass strict no-emit typecheck against Pi 0.83.0
 ```
 
-The owner used the TypeScript 5.9.3 dependency declared by the installed Pi package and failed on any `error TS` output rather than treating a zero wrapper exit as success.
+The owner used the TypeScript 5.9.3 dependency declared by the installed Pi package.
+It fails closed on any `error TS` output and on any non-zero `npm exec` status, and a failed compile exits the script rather than falling through to the `ok` line, so an offline runner or unusable Node cannot report a pass the compiler never produced.
 
 Real TUI command:
 
@@ -64,3 +68,8 @@ Pi 0.83.0 embeds export session data as base64 inside the HTML artifact, so the 
 The live share command completed and returned a Pi share URL before the test submitted its continuity prompt.
 
 Focused deterministic owners also passed for malformed and unreadable preference fallback, atomic-write failure, stock-off presentation, boat cadence and geometry, export redraw, `Ctrl+O`, exact operational near misses, queue exactly-once delivery, and non-inheritance of `config/calm`.
+The deterministic owner additionally pins that a Calm redraw re-invokes mounted rows once, requests a repaint, and appends no status row, while a stock `setToolsExpanded` outside a redraw still appends its own.
+The live regression gained the matching pane assertion after the run recorded above, so that one assertion is covered by the deterministic owner and awaits the next `FM_PI_LIVE_E2E=1` run for a live record.
+
+The Pi-dependent owners (`tests/fm-calm-pi-extension.test.sh`, the node checks in `tests/fm-pi-watch-extension.test.sh`, `tests/fm-pi-primary-types.test.sh`, and the live regression) mount real Pi components, so they skip cleanly where the package is absent, such as CI.
+A skip is an unverified boundary, not a pass.

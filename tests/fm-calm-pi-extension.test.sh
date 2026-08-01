@@ -30,8 +30,16 @@ trap cleanup EXIT
   || fail "tracked Pi operational-input adapter is missing"
 [ -f "$OPERATIONAL_INPUT" ] \
   || fail "tracked operational-input owner is missing"
-[ -f "$PI_PACKAGE_DIR/package.json" ] \
-  || fail "installed Pi package is required for deterministic Calm verification"
+[ -f "$ROOT/.pi/extensions/lib/fm-calm-transcript-redraw.ts" ] \
+  || fail "tracked Calm transcript-redraw owner is missing"
+
+# Everything below mounts real Pi components, so it needs the installed package.
+# Follow the sibling Pi tests and skip cleanly where Pi is absent (CI) instead of
+# reporting a missing optional dependency as a behavior failure.
+if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
+  echo "skip: installed @earendil-works/pi-coding-agent package not found for deterministic Calm verification"
+  exit 0
+fi
 
 fixture="$TMP_ROOT/fixture"
 mkdir -p "$fixture/lib" "$fixture/home/config" "$fixture/node_modules/@earendil-works"
@@ -40,6 +48,7 @@ cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$fixture/lib/fm-calm-visibi
 cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$fixture/lib/fm-calm-assistant-layout.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$fixture/lib/fm-calm-working-ship.ts"
 cp "$OPERATIONAL_LAYOUT" "$fixture/lib/fm-calm-operational-user-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-transcript-redraw.ts" "$fixture/lib/fm-calm-transcript-redraw.ts"
 cp "$PI_OPERATIONAL_INPUT" "$fixture/lib/fm-operational-input.ts"
 ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
 ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
@@ -51,7 +60,7 @@ out=$(cd "$fixture" && \
   VISIBILITY="$fixture/lib/fm-calm-visibility.ts" \
   SHIP="$fixture/lib/fm-calm-working-ship.ts" \
   FM_HOME="$fixture/home" \
-  FM_OPERATIONAL_INPUT_SCRIPT="$OPERATIONAL_INPUT" \
+  REDRAW="$fixture/lib/fm-calm-transcript-redraw.ts" \
   PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
   NODE_NO_WARNINGS=1 \
   node --input-type=module 2>&1 <<'JS'
@@ -64,6 +73,7 @@ const shipUrl = `${pathToFileURL(process.env.SHIP).href}?test=${Date.now()}`;
 const extension = await import(extensionUrl);
 const visibility = await import(visibilityUrl);
 const ship = await import(shipUrl);
+const redraw = await import(pathToFileURL(process.env.REDRAW).href);
 const packageRoot = process.env.PI_PACKAGE_DIR;
 const [{ Container, visibleWidth }, { initTheme, theme }, { AssistantMessageComponent, InteractiveMode, UserMessageComponent }] = await Promise.all([
   import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
@@ -103,6 +113,7 @@ function context() {
   const state = {
     expanded: true,
     editorText: "",
+    expansionCalls: [],
     hiddenThinkingLabel: "unset",
     terminalHandler: undefined,
     workingVisible: [],
@@ -119,7 +130,7 @@ function context() {
       },
       setHiddenThinkingLabel: (value) => { state.hiddenThinkingLabel = value; },
       setStatus() {},
-      setToolsExpanded: (value) => { state.expanded = value; },
+      setToolsExpanded: (value) => { state.expansionCalls.push(value); state.expanded = value; },
       setWidget: (key, value) => { state.widgets.push({ key, value }); },
       setWorkingVisible: (value) => { state.workingVisible.push(value); },
     },
@@ -151,10 +162,15 @@ rmSync(preference, { recursive: true, force: true });
 calm = register();
 ctx = context();
 calm.handlers.get("session_start")({ reason: "startup" }, ctx);
+ctx.state.expansionCalls.length = 0;
 await calm.command.handler("", ctx);
 check(readFileSync(preference, "utf8") === "on\n", "toggle did not persist exact on value");
 check(calm.emitted.at(-1).state.active === true, "toggle did not activate live presentation");
 check(ctx.state.expanded === true, "toggle changed Ctrl+O expansion state");
+check(
+  ctx.state.expansionCalls.length === 1 && ctx.state.expansionCalls[0] === true,
+  `toggle redraw flipped expansion instead of redrawing in place: ${JSON.stringify(ctx.state.expansionCalls)}`,
+);
 await calm.command.handler("", ctx);
 check(readFileSync(preference, "utf8") === "off\n", "second toggle did not persist exact off value");
 check(calm.emitted.at(-1).state.active === false, "second toggle did not restore live presentation");
@@ -195,6 +211,50 @@ ctx.state.terminalHandler("\r");
 check(calm.emitted.at(-1).state.stockExportRendering === true, "share did not temporarily restore stock rendering");
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(ctx.state.expanded === true, "share redraw changed Ctrl+O expansion state");
+check(
+  ctx.state.expansionCalls.every((value) => value === true),
+  `export and share redraws flipped expansion: ${JSON.stringify(ctx.state.expansionCalls)}`,
+);
+
+writeFileSync(preference, "off\n");
+const calmOff = register();
+const calmOffCtx = context();
+calmOff.handlers.get("session_start")({ reason: "startup" }, calmOffCtx);
+check(calmOff.emitted.at(-1).state.active === false, "Calm-off export fixture did not start off");
+calmOffCtx.state.expansionCalls.length = 0;
+calmOffCtx.state.editorText = "/export calm-off.html";
+calmOffCtx.state.terminalHandler("\r");
+check(calmOff.emitted.at(-1).state.stockExportRendering === false, "Calm off intercepted an export it does not control");
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(calmOffCtx.state.expansionCalls.length === 0, "Calm off redrew the transcript for an export");
+writeFileSync(preference, "on\n");
+visibility.setCalmPresentation(true);
+
+// setToolsExpanded is the only Pi seam that re-invokes mounted renderers, and it
+// ends in showStatus, which appends a permanent chat row rather than a transient
+// footer. Calm must get the re-invocation and the repaint without that row.
+let redrawRenders = 0;
+let redrawExpansions = 0;
+const redrawMode = Object.assign(Object.create(InteractiveMode.prototype), {
+  toolOutputExpanded: false,
+  customHeader: undefined,
+  builtInHeader: undefined,
+  loadedResourcesContainer: { children: [] },
+  chatContainer: { children: [], addChild(child) { this.children.push(child); } },
+  ui: { requestRender() { redrawRenders += 1; } },
+});
+redrawMode.chatContainer.addChild({
+  setExpanded(value) { redrawExpansions += 1; redrawMode.toolOutputExpanded = value; },
+});
+redraw.redrawCalmTranscript({
+  getToolsExpanded: () => redrawMode.toolOutputExpanded,
+  setToolsExpanded: (value) => redrawMode.setToolsExpanded(value),
+});
+check(redrawExpansions === 1, `Calm redraw did not re-invoke mounted rows once: ${redrawExpansions}`);
+check(redrawMode.chatContainer.children.length === 1, "Calm redraw appended a status row to the transcript");
+check(redrawRenders === 1, `Calm redraw did not request a repaint: ${redrawRenders}`);
+redrawMode.setToolsExpanded(redrawMode.toolOutputExpanded);
+check(redrawMode.chatContainer.children.length === 3, "stock setToolsExpanded lost its status row outside a Calm redraw");
 
 const operationalInput = await import(`${pathToFileURL(`${process.cwd()}/lib/fm-operational-input.ts`).href}?test=${Date.now()}`);
 const watcherBody = "FIRSTMATE WATCHER WAKE: signal: exact fixture\n\nRun bin/fm-wake-drain.sh first, handle the queued wake, then resume Pi supervision.";
@@ -331,24 +391,28 @@ status=$?
 
 pass "Pi Calm core preserves persistence, stock-off rendering, built-in geometry, Ctrl+O state, and boat lifecycle"
 
-degraded="$TMP_ROOT/degraded"
-mkdir -p "$degraded/lib" "$degraded/node_modules/@earendil-works"
-cp "$ROOT/.pi/extensions/fm-calm.ts" "$degraded/fm-calm.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$degraded/lib/fm-calm-visibility.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$degraded/lib/fm-calm-working-ship.ts"
-cp "$OPERATIONAL_LAYOUT" "$degraded/lib/fm-calm-operational-user-layout.ts"
-cp "$PI_OPERATIONAL_INPUT" "$degraded/lib/fm-operational-input.ts"
-cat >"$degraded/lib/fm-calm-assistant-layout.ts" <<'TS'
-export function installCalmAssistantLayout(): void {
-  throw new Error("probe seam missing");
-}
-TS
-ln -s "$PI_PACKAGE_DIR" "$degraded/node_modules/@earendil-works/pi-coding-agent"
-ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$degraded/node_modules/@earendil-works/pi-tui"
-ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$degraded/node_modules/typebox"
-printf '%s\n' '{"type":"module"}' >"$degraded/package.json"
 
-out=$(cd "$degraded" && FM_OPERATIONAL_INPUT_SCRIPT="$OPERATIONAL_INPUT" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
+# Each Calm presentation seam must degrade on its own: an unavailable adapter
+# names itself, skips only itself, and leaves /calm and the rest of Calm working.
+setup_degraded_fixture() {  # <dir>
+  local dir=$1
+  mkdir -p "$dir/lib" "$dir/node_modules/@earendil-works"
+  cp "$ROOT/.pi/extensions/fm-calm.ts" "$dir/fm-calm.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$dir/lib/fm-calm-assistant-layout.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$dir/lib/fm-calm-visibility.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$dir/lib/fm-calm-working-ship.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-transcript-redraw.ts" "$dir/lib/fm-calm-transcript-redraw.ts"
+  cp "$OPERATIONAL_LAYOUT" "$dir/lib/fm-calm-operational-user-layout.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$dir/lib/fm-operational-input.ts"
+  ln -s "$PI_PACKAGE_DIR" "$dir/node_modules/@earendil-works/pi-coding-agent"
+  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$dir/node_modules/@earendil-works/pi-tui"
+  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$dir/node_modules/typebox"
+  printf '%s\n' '{"type":"module"}' >"$dir/package.json"
+}
+
+expect_degraded_adapter() {  # <dir> <expected-diagnostic> <pass-message>
+  local dir=$1 expected=$2 message=$3 out status
+  out=$(cd "$dir" && NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 import extension from "./fm-calm.ts";
 let calmCommand;
 extension({
@@ -361,43 +425,49 @@ extension({
 if (!calmCommand) throw new Error("adapter failure disabled the Calm command");
 JS
 )
-status=$?
-[ "$status" -eq 0 ] || fail "degraded Calm adapter disabled the extension: $out"
-printf '%s\n' "$out" | grep -Fq "Firstmate Calm: collapsed-thinking presentation adapter unavailable, skipping. probe seam missing" \
-  || fail "degraded Calm adapter did not emit its named diagnostic: $out"
-pass "Pi Calm names and independently skips an unavailable collapsed-thinking adapter"
+  status=$?
+  [ "$status" -eq 0 ] || fail "degraded Calm adapter disabled the extension: $out"
+  printf '%s\n' "$out" | grep -Fq "$expected" \
+    || fail "degraded Calm adapter did not emit its named diagnostic: $out"
+  pass "$message"
+}
+
+degraded="$TMP_ROOT/degraded"
+setup_degraded_fixture "$degraded"
+cat >"$degraded/lib/fm-calm-assistant-layout.ts" <<'TS'
+export function installCalmAssistantLayout(): void {
+  throw new Error("probe seam missing");
+}
+TS
+expect_degraded_adapter "$degraded" \
+  "Firstmate Calm: collapsed-thinking presentation adapter unavailable, skipping. probe seam missing" \
+  "Pi Calm names and independently skips an unavailable collapsed-thinking adapter"
 
 degraded_op="$TMP_ROOT/degraded-operational"
-mkdir -p "$degraded_op/lib" "$degraded_op/node_modules/@earendil-works"
-cp "$ROOT/.pi/extensions/fm-calm.ts" "$degraded_op/fm-calm.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$degraded_op/lib/fm-calm-assistant-layout.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$degraded_op/lib/fm-calm-visibility.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$degraded_op/lib/fm-calm-working-ship.ts"
+setup_degraded_fixture "$degraded_op"
 cat >"$degraded_op/lib/fm-calm-operational-user-layout.ts" <<'TS'
 export function installCalmOperationalUserLayout(): void {
   throw new Error("operational probe seam missing");
 }
 TS
-ln -s "$PI_PACKAGE_DIR" "$degraded_op/node_modules/@earendil-works/pi-coding-agent"
-ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$degraded_op/node_modules/@earendil-works/pi-tui"
-ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$degraded_op/node_modules/typebox"
-printf '%s\n' '{"type":"module"}' >"$degraded_op/package.json"
+expect_degraded_adapter "$degraded_op" \
+  "Firstmate Calm: operational-user-row presentation adapter unavailable, skipping. operational probe seam missing" \
+  "Pi Calm names and independently skips an unavailable operational-user-row adapter"
 
-out=$(cd "$degraded_op" && NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
-import extension from "./fm-calm.ts";
-let calmCommand;
-extension({
-  events: { emit() {}, on() {} },
-  on() {},
-  registerCommand(name, command) { if (name === "calm") calmCommand = command; },
-  registerEntryRenderer() {},
-  registerTool() {},
-});
-if (!calmCommand) throw new Error("operational adapter failure disabled the Calm command");
-JS
-)
-status=$?
-[ "$status" -eq 0 ] || fail "degraded operational adapter disabled the extension: $out"
-printf '%s\n' "$out" | grep -Fq "Firstmate Calm: operational-user-row presentation adapter unavailable, skipping. operational probe seam missing" \
-  || fail "degraded operational adapter did not emit its named diagnostic: $out"
-pass "Pi Calm names and independently skips an unavailable operational-user-row adapter"
+degraded_redraw="$TMP_ROOT/degraded-redraw"
+setup_degraded_fixture "$degraded_redraw"
+cat >"$degraded_redraw/lib/fm-calm-transcript-redraw.ts" <<'TS'
+export function installCalmTranscriptRedraw(): void {
+  throw new Error("redraw probe seam missing");
+}
+
+export function redrawCalmTranscript(ui: {
+  getToolsExpanded(): boolean;
+  setToolsExpanded(expanded: boolean): void;
+}): void {
+  ui.setToolsExpanded(ui.getToolsExpanded());
+}
+TS
+expect_degraded_adapter "$degraded_redraw" \
+  "Firstmate Calm: transcript-redraw presentation adapter unavailable, skipping. redraw probe seam missing" \
+  "Pi Calm names and independently skips an unavailable transcript-redraw adapter"

@@ -6,9 +6,10 @@
 // with a disposable component factory, and setHiddenThinkingLabel().
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
-// newer Pi solely for its version. The collapsed-thinking and operational-user
-// presentation adapters probe the exact APIs they patch and degrade independently with
-// a diagnostic (see installCalmPresentationAdapter below) if a future Pi removes them; Pi
+// newer Pi solely for its version. Every presentation seam - the collapsed-thinking,
+// operational-user, and transcript-redraw adapters plus each built-in row wrapper -
+// probes the exact APIs it patches and degrades independently with a diagnostic
+// (see installCalmPresentationAdapter below) if a future Pi removes them; Pi
 // still exposes no global renderer for arbitrary built-in or custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
 import { randomUUID } from "node:crypto";
@@ -40,6 +41,10 @@ import { Box, Container, getKeybindings, type Component } from "@earendil-works/
 import type { TSchema } from "typebox";
 import { installCalmAssistantLayout } from "./lib/fm-calm-assistant-layout.ts";
 import { installCalmOperationalUserLayout } from "./lib/fm-calm-operational-user-layout.ts";
+import {
+  installCalmTranscriptRedraw,
+  redrawCalmTranscript,
+} from "./lib/fm-calm-transcript-redraw.ts";
 import {
   CALM_WORKING_SHIP_WIDGET_KEY,
   createCalmWorkingShipAnimation,
@@ -98,6 +103,7 @@ function installCalmPresentationAdapter(name: string, install: () => void): void
 export default function (pi: ExtensionAPI) {
   installCalmPresentationAdapter("collapsed-thinking", installCalmAssistantLayout);
   installCalmPresentationAdapter("operational-user-row", installCalmOperationalUserLayout);
+  installCalmPresentationAdapter("transcript-redraw", installCalmTranscriptRedraw);
 
   let exportRendering = false;
   let removeTerminalInputHandler: (() => void) | undefined;
@@ -266,13 +272,16 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  registerBuiltIn(createReadToolDefinition);
-  registerBuiltIn(createBashToolDefinition);
-  registerBuiltIn(createEditToolDefinition);
-  registerBuiltIn(createWriteToolDefinition);
-  registerBuiltIn(createGrepToolDefinition);
-  registerBuiltIn(createFindToolDefinition);
-  registerBuiltIn(createLsToolDefinition);
+  // Each built-in is its own seam: a Pi built-in that loses a render slot skips
+  // only its own row wrapper and keeps its stock rendering, instead of throwing
+  // out of this factory and taking /calm, the boat, and the rest of Calm with it.
+  installCalmPresentationAdapter("built-in read", () => registerBuiltIn(createReadToolDefinition));
+  installCalmPresentationAdapter("built-in bash", () => registerBuiltIn(createBashToolDefinition));
+  installCalmPresentationAdapter("built-in edit", () => registerBuiltIn(createEditToolDefinition));
+  installCalmPresentationAdapter("built-in write", () => registerBuiltIn(createWriteToolDefinition));
+  installCalmPresentationAdapter("built-in grep", () => registerBuiltIn(createGrepToolDefinition));
+  installCalmPresentationAdapter("built-in find", () => registerBuiltIn(createFindToolDefinition));
+  installCalmPresentationAdapter("built-in ls", () => registerBuiltIn(createLsToolDefinition));
 
   pi.on("session_start", (_event, ctx) => {
     exportRendering = false;
@@ -289,6 +298,9 @@ export default function (pi: ExtensionAPI) {
     removeTerminalInputHandler?.();
     removeTerminalInputHandler = ctx.ui.onTerminalInput((data) => {
       if (!getKeybindings().matches(data, "tui.input.submit")) return undefined;
+      // Calm off already renders every controlled row stock, so there is nothing
+      // to restore for an export or share and no reason to redraw the transcript.
+      if (!calmPresentationIsActive()) return undefined;
 
       const input = ctx.ui.getEditorText().trim();
       if (
@@ -306,9 +318,7 @@ export default function (pi: ExtensionAPI) {
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
-        const expanded = ctx.ui.getToolsExpanded();
-        ctx.ui.setToolsExpanded(!expanded);
-        ctx.ui.setToolsExpanded(expanded);
+        redrawCalmTranscript(ctx.ui);
       }, 0);
       return undefined;
     });
@@ -340,10 +350,7 @@ export default function (pi: ExtensionAPI) {
       applyWorkingPresentation(ctx.ui, true);
       ctx.ui.setHiddenThinkingLabel(active ? "" : undefined);
       ctx.ui.setStatus("firstmate-calm", undefined);
-
-      const expanded = ctx.ui.getToolsExpanded();
-      ctx.ui.setToolsExpanded(!expanded);
-      ctx.ui.setToolsExpanded(expanded);
+      redrawCalmTranscript(ctx.ui);
     },
   });
 }

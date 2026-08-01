@@ -91,7 +91,6 @@ git commit -m "docs: plan selective Pi Calm port"
 - Modify: `docs/configuration.md`
 - Create: `docs/calm.md`
 - Create: `docs/calm-mode-feasibility.md`
-- Modify: `bin/fm-test-run.sh`
 
 - [ ] **Step 1: Write focused tests before production files exist.**
 
@@ -141,7 +140,7 @@ Expected: all isolated persistence, layout, rendering, lifecycle, export, and de
 - [ ] **Step 5: Commit the additive core rollback boundary.**
 
 ```sh
-git add .gitignore .pi/extensions/fm-calm.ts .pi/extensions/lib/fm-calm-visibility.ts .pi/extensions/lib/fm-calm-assistant-layout.ts .pi/extensions/lib/fm-calm-working-ship.ts tests/fm-calm-pi-extension.test.sh docs/calm.md docs/calm-mode-feasibility.md docs/configuration.md bin/fm-test-run.sh
+git add .gitignore .pi/extensions/fm-calm.ts .pi/extensions/lib/fm-calm-visibility.ts .pi/extensions/lib/fm-calm-assistant-layout.ts .pi/extensions/lib/fm-calm-working-ship.ts tests/fm-calm-pi-extension.test.sh docs/calm.md docs/calm-mode-feasibility.md docs/configuration.md
 git commit -m "feat(pi): add isolated Calm presentation core"
 ```
 
@@ -303,7 +302,7 @@ Expected: strict no-emit typecheck names Pi `0.83.0`, and the real TUI owner rep
 Run:
 
 ```sh
-bin/fm-test-run.sh
+for test_file in tests/*.test.sh; do "$test_file"; done
 shellcheck bin/*.sh bin/backends/*.sh tests/*.sh
 git diff --check
 ```

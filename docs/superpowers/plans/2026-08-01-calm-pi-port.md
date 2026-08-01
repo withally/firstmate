@@ -25,7 +25,7 @@ Each unsupported Pi layout seam probes and degrades independently with a named d
 - Modify `.pi/extensions/fm-primary-pi-watch.ts` only for exact operational encoding and Calm-aware render slots.
 - Modify `.pi/extensions/fm-primary-turnend-guard.ts` only for exact operational encoding.
 - Modify `bin/fm-supervise-daemon.sh` only to place the exact operational envelope after the existing leading `0x1f` away sentinel and to strip it before semantic delivery.
-- Modify `.gitignore`, `README.md`, `docs/configuration.md`, `docs/supervision-protocols/pi.md`, and `bin/fm-test-run.sh` for optional activation and test inventory.
+- Modify `.gitignore`, `README.md`, `docs/configuration.md`, and `docs/supervision-protocols/pi.md` for optional activation and test inventory.
 - Create or extend only the focused owners under `tests/` for Calm, operational input, watcher, guard, daemon, queue, config inheritance, Pi types, and live Pi behavior.
 - Do not change watcher child lifecycle, arm policy, wake queue code, pause or stale classification, dispatch selection, spawn behavior, secondmate launch behavior, or inherited-config lists.
 
@@ -260,7 +260,7 @@ git commit -m "feat(pi): classify exact Calm operational rows"
 - Modify: `docs/calm-mode-feasibility.md`
 - Modify: `tests/fm-pi-primary-types.test.sh`
 - Modify: `tests/fm-pi-primary-live-e2e.test.sh`
-- Modify: `tests/fm-secondmate-sync.test.sh` or the existing config-inheritance owner only if needed for a negative assertion.
+- Modify: `tests/fm-secondmate-harness.test.sh` as the existing config-inheritance owner.
 
 - [ ] **Step 1: Add failing activation, type-fixture, live-flow, and non-inheritance assertions.**
 
@@ -275,7 +275,7 @@ Run:
 ```sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-pi-primary-live-e2e.test.sh
-tests/fm-secondmate-sync.test.sh
+tests/fm-secondmate-harness.test.sh
 ```
 
 Expected: type or fixture assertions fail until Calm files and optional activation wiring are included, while the live owner remains explicitly opt-in without the environment flag.
@@ -314,7 +314,7 @@ Expected: all practical tests and shellcheck pass with no skipped required Pi ty
 Add the date, exact Pi version, exact commands, exact outputs, and supported seam results to `docs/calm-mode-feasibility.md`.
 
 ```sh
-git add README.md docs/supervision-protocols/pi.md docs/calm-mode-feasibility.md tests/fm-pi-primary-types.test.sh tests/fm-pi-primary-live-e2e.test.sh tests/fm-secondmate-sync.test.sh
+git add README.md docs/supervision-protocols/pi.md docs/calm-mode-feasibility.md tests/fm-pi-primary-types.test.sh tests/fm-pi-primary-live-e2e.test.sh tests/fm-secondmate-harness.test.sh
 git commit -m "docs(pi): verify Calm on Pi 0.83.0"
 ```
 

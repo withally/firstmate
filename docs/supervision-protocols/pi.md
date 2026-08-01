@@ -15,6 +15,10 @@ When this session owns supervision and away mode is not active:
 The turn-end guard extension lives at `__FM_PI_TURNEND_EXT__`.
 The watcher extension lives at `__FM_PI_EXT__`.
 Both are tracked, project-local `.pi/extensions/*.ts` files that Pi auto-discovers once the project is trusted; `bin/fm-session-start.sh` reports when the running Pi session has not loaded both required extensions.
+Calm is an optional third tracked Pi extension and is not part of supervision-health checks.
+After updating Firstmate, restart Pi or run `/reload`, then run `/calm` to toggle its persisted presentation choice.
+When trusted auto-load is unavailable, launch from the Firstmate repository root and add `-e .pi/extensions/fm-calm.ts` to the explicit watcher and guard launch only when Calm is wanted.
+See [`../calm.md`](../calm.md) for the presentation contract and supported seams.
 
 Verification on 2026-07-09 used Pi 0.80.5, an isolated `PI_CODING_AGENT_DIR`, an isolated `FM_HOME`, and the dedicated tmux socket `fm-pi-q6-lab`.
 The command `Use the fm_watch_arm_pi custom tool now. Do not use bash.` rendered `watcher: started Pi extension arm child 1`, then the model returned `DONE` without the prior `result.content.filter(...)` crash.
@@ -26,3 +30,6 @@ Command run for the complete interactive regression: `FM_PI_LIVE_E2E=1 tests/fm-
 Observed output: `ok - Pi 0.80.5 live E2E rendered the tool, guarded once, woke, re-armed, and cleaned up on exit`.
 Command run for the installed-type contract: `tests/fm-pi-primary-types.test.sh`.
 Observed output: `ok - Pi primary extensions pass strict no-emit typecheck against Pi 0.80.5`.
+
+Calm verification on 2026-08-01 used installed Pi 0.83.0 with isolated Pi and Firstmate homes and a private tmux socket.
+The full empirical command and output record lives in [`../calm-mode-feasibility.md`](../calm-mode-feasibility.md).

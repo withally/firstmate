@@ -220,7 +220,7 @@ export default function (pi: ExtensionAPI) {
       return shell;
     };
 
-    pi.registerTool({
+    pi.registerTool<TParams, TDetails, TState>({
       ...original,
       renderShell: "self",
 
@@ -288,7 +288,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("firstmate-calm", undefined);
     removeTerminalInputHandler?.();
     removeTerminalInputHandler = ctx.ui.onTerminalInput((data) => {
-      if (!getKeybindings().matches(data, "tui.input.submit")) return;
+      if (!getKeybindings().matches(data, "tui.input.submit")) return undefined;
 
       const input = ctx.ui.getEditorText().trim();
       if (
@@ -296,7 +296,7 @@ export default function (pi: ExtensionAPI) {
         input !== "/export" &&
         !input.startsWith("/export ")
       ) {
-        return;
+        return undefined;
       }
 
       exportRendering = true;
@@ -310,6 +310,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.setToolsExpanded(!expanded);
         ctx.ui.setToolsExpanded(expanded);
       }, 0);
+      return undefined;
     });
   });
 

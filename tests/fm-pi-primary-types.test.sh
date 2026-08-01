@@ -5,8 +5,6 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 command -v npm >/dev/null 2>&1 || { echo "skip: npm not found for Pi extension typecheck"; exit 0; }
-command -v tsc >/dev/null 2>&1 || { echo "skip: tsc not found for Pi extension typecheck"; exit 0; }
-
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g)/@earendil-works/pi-coding-agent"}
 if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
   echo "skip: installed @earendil-works/pi-coding-agent package not found"
@@ -26,7 +24,15 @@ trap cleanup EXIT
 mkdir -p "$TMP_ROOT/node_modules/@earendil-works" "$TMP_ROOT/node_modules/@types"
 cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$TMP_ROOT/fm-primary-pi-watch.ts"
 cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/fm-primary-turnend-guard.ts"
+cp "$ROOT/.pi/extensions/fm-calm.ts" "$TMP_ROOT/fm-calm.ts"
+mkdir -p "$TMP_ROOT/lib"
+cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$TMP_ROOT/lib/fm-calm-assistant-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts" "$TMP_ROOT/lib/fm-calm-operational-user-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$TMP_ROOT/lib/fm-calm-visibility.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$TMP_ROOT/lib/fm-calm-working-ship.ts"
+cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$TMP_ROOT/lib/fm-operational-input.ts"
 ln -s "$PI_PACKAGE_DIR" "$TMP_ROOT/node_modules/@earendil-works/pi-coding-agent"
+ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$TMP_ROOT/node_modules/@earendil-works/pi-tui"
 ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$TMP_ROOT/node_modules/typebox"
 ln -s "$PI_PACKAGE_DIR/node_modules/@types/node" "$TMP_ROOT/node_modules/@types/node"
 
@@ -45,10 +51,31 @@ cat > "$TMP_ROOT/tsconfig.json" <<'JSON'
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "lib/*.ts"]
 }
 JSON
 
-tsc -p "$TMP_ROOT/tsconfig.json"
+run_tsc() {
+  local typescript_version output
+  if command -v tsc >/dev/null 2>&1; then
+    tsc "$@"
+    return
+  fi
+  typescript_version=$(jq -r '.devDependencies.typescript // empty' "$PI_PACKAGE_DIR/package.json")
+  [ -n "$typescript_version" ] || {
+    echo "not ok - installed Pi package declares no TypeScript compiler version" >&2
+    return 1
+  }
+  output=$(npm_config_cache="$TMP_ROOT/npm-cache" npm_config_update_notifier=false NODE_NO_WARNINGS=1 \
+    npm exec --yes --package "typescript@$typescript_version" -- tsc "$@" 2>&1)
+  case "$output" in
+    *"error TS"*)
+      printf '%s\n' "$output" >&2
+      return 1
+      ;;
+  esac
+}
+
+run_tsc -p "$TMP_ROOT/tsconfig.json"
 version=$(jq -r '.version' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || printf 'unknown')
 printf 'ok - Pi primary extensions pass strict no-emit typecheck against Pi %s\n' "$version"

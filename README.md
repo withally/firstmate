@@ -100,7 +100,10 @@ pi
 ```
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
-For Pi, approve the project trust prompt once per clone on first launch so both tracked `.pi/extensions/*.ts` files auto-load.
+For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.
+The watcher and turn-end guard remain the two required supervision extensions; Calm is an optional presentation extension.
+After updating Firstmate, restart Pi or run `/reload`, then run `/calm` to enable the persisted Calm presentation.
+If trusted auto-load is unavailable, add `-e "$PWD/.pi/extensions/fm-calm.ts"` to the existing explicit watcher and guard launch only when Calm is wanted.
 
 ### Talk to it
 

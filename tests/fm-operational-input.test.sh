@@ -44,6 +44,8 @@ test_away_outer_sentinel() {
   body="Supervisor escalate (1 event(s)): done: fixture"
   fm_operational_input_encode away-supervisor "$body" inner \
     || fail "could not encode inner away-supervisor envelope"
+  [ "$(kind_cli "$inner")" = away-supervisor ] \
+    || fail "exact inner away envelope was not classifiable after Pi removed the control sentinel"
   message="${FM_AFK_SENTINEL}${inner}"
   first_hex=$(printf '%s' "$message" | od -An -tx1 | tr -d ' \n' | cut -c1-2)
   [ "$first_hex" = 1f ] \

@@ -24,10 +24,43 @@ The working boat uses Pi's public `setWorkingVisible()` and `setWidget()` APIs a
 The collapsed-thinking adapter probes `AssistantMessageComponent.updateContent` and changes only the shallow presentation copy used for layout.
 The operational-user-row adapter probes `InteractiveMode.addMessageToChat` and changes only the component's rendered height.
 `bin/fm-operational-input.sh` owns exact U+2063 watcher and turn-end envelopes and the `0x1f` plus typed-inner-envelope away form.
+Pi's terminal input layer removes the non-printing `0x1f` before transcript layout, so the presentation parser also recognizes the exact typed inner away envelope while daemon and away-return tests continue to require `0x1f` as the injected first byte.
 Quoted markers, ASCII-only markers, embedded markers, malformed envelopes, broad prose substrings, and image-bearing messages remain ordinary visible user rows.
 Built-in tool hiding uses the seven built-in factories and their supported render slots.
 Pi exposes no supported global renderer for arbitrary transcript rows, custom tools, images, or notices.
 
 ## Pi 0.83.0 verification record
 
-The final implementation records the exact strict typecheck and real TUI commands and outputs here before delivery.
+Verification ran on 2026-08-01 with `/opt/homebrew/bin/pi --version` reporting exactly `0.83.0`.
+
+Strict installed-type command:
+
+```sh
+tests/fm-pi-primary-types.test.sh
+```
+
+Observed output:
+
+```text
+ok - Pi primary extensions pass strict no-emit typecheck against Pi 0.83.0
+```
+
+The owner used the TypeScript 5.9.3 dependency declared by the installed Pi package and failed on any `error TS` output rather than treating a zero wrapper exit as success.
+
+Real TUI command:
+
+```sh
+FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - Pi 0.83.0 live E2E toggled and persisted Calm, animated and resized the boat, hid watcher/guard/away rows, preserved wake and away semantics, exported, survived share, restored stock rendering, restarted, and cleaned up
+```
+
+The isolated TUI run exercised Calm on and off, persisted restart state, a live resize, supported built-in tools, one bounded turn-end follow-up, one watcher wake and re-arm, an away escalation whose injected first byte remained `0x1f`, HTML export payload preservation, Pi sharing, and clean watcher-child shutdown.
+Pi 0.83.0 embeds export session data as base64 inside the HTML artifact, so the regression decodes that payload before asserting that hidden operational messages remain serialized.
+The live share command completed and returned a Pi share URL before the test submitted its continuity prompt.
+
+Focused deterministic owners also passed for malformed and unreadable preference fallback, atomic-write failure, stock-off presentation, boat cadence and geometry, export redraw, `Ctrl+O`, exact operational near misses, queue exactly-once delivery, and non-inheritance of `config/calm`.

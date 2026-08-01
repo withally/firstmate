@@ -59,7 +59,6 @@ fm_operational_input_kind() {  # <current-message> <result-var>
       ;;
     *)
       fm_operational_generic_kind "$message" found_kind || return 1
-      [ "$found_kind" != away-supervisor ] || return 1
       ;;
   esac
   printf -v "$result_var" '%s' "$found_kind"

@@ -2,18 +2,25 @@
 # Firstmate watcher.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
 # and keeps blocking; it queues and exits only for actionable wakes.
-# The no-verb signal and stale path is absorb-only-when-provably-working: a wake
-# is absorbed only when the crew shows POSITIVE evidence it is still working (an
-# actively-running no-mistakes step, or a backend busy signal), and surfaced
-# otherwise, so a crew that finishes (or stops and waits) without a current
-# working signal is never silently swallowed. A declared external-wait pause is
+# An ordinary direct report's status-only signal batch whose latest events are all
+# `working:` is routine progress and is absorbed in ordinary active-session mode
+# without consulting runtime busy state; a persistent secondmate's `working:`
+# report is excluded because the stale loop deliberately skips its idle endpoint
+# and the heartbeat backstop only rescans captain-relevant statuses, so nothing
+# else would deliver it. Bare turn-end, unknown-shape signal, and stale paths remain
+# absorb-only-when-provably-working: they are absorbed only when the crew shows
+# POSITIVE evidence it is still working (an actively-running no-mistakes step, or
+# a backend busy signal), and surfaced otherwise, so a crew that finishes (or
+# stops and waits) is never silently swallowed. A declared external-wait pause is
 # the separate idle absorb case and re-surfaces only on its long bounded cadence,
-# although its initial no-verb status signal still surfaces in normal mode.
+# although its initial ambiguous status signal still surfaces in normal mode.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
-#                          has a captain-relevant verb OR a no-verb signal's crew
-#                          is not provably working, unless afk is active
+#                          has a captain-relevant verb OR a non-routine signal's
+#                          crew is not provably working, unless afk is active;
+#                          an ordinary direct report's pure working-progress
+#                          status batch is absorbed
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
@@ -22,8 +29,11 @@
 #                          external-wait pause is absorbed instead with its own long
 #                          re-surface cadence, never as a wedge. Only when neither
 #                          absorb class applies does the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          terminal (captain-relevant) or non-terminal (no
+#                          captain-relevant verb), both surfaced at once. The
+#                          routine working-progress absorb is a signal-path rule
+#                          only and never suppresses a stale surface. A
+#                          provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
@@ -123,17 +133,23 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # working: note or turn-end while a pipeline runs, a no-change heartbeat). Rather
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
 # and ABSORBS the benign majority - it advances the suppression marker, logs to a
-# debug log, and keeps blocking WITHOUT enqueuing or exiting. The no-verb signal
-# / stale path is absorb-only-when-provably-working: such a wake is absorbed ONLY
-# while the crew shows positive evidence it is still working (an actively-running
-# no-mistakes step, or a busy pane, via crew_is_provably_working over
-# fm-crew-state.sh); a crew that stopped its turn with no running pipeline and no
-# busy pane is SURFACED, so a finish reported only through interactive pane menus
-# (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
-# signal, a no-verb signal whose crew is not provably working, any check, a stale
-# pane whose crew is not provably working, a provably-working stale past the
-# threshold, or anything unknown) is written to the durable queue and exits, which
-# is what wakes the LLM through the background-task completion. The same classifier
+# debug log, and keeps blocking WITHOUT enqueuing or exiting. An ordinary direct
+# report's pure working-progress status batch is absorbed from its event semantics
+# alone, so missing or unverified runtime busy state cannot turn routine progress
+# into an LLM wake; a persistent secondmate's working: report is excluded from
+# that absorb and stays on the provably-working path, because the stale loop skips
+# an idle secondmate endpoint by design and the heartbeat backstop only rescans
+# captain-relevant statuses. Bare turn-end, unknown-shape signal, and stale paths remain
+# absorb-only-when-provably-working: they are absorbed ONLY while the crew shows
+# positive evidence it is still working (an actively-running no-mistakes step, or
+# a busy pane, via crew_is_provably_working over fm-crew-state.sh); a crew that
+# stopped its turn with no running pipeline and no busy pane is SURFACED, so a
+# finish reported only through interactive pane menus (no done: status) is never
+# swallowed. An ACTIONABLE wake (a captain-relevant signal, an ambiguous signal
+# whose crew is not provably working, any check, a stale pane whose crew is not
+# provably working, a provably-working stale past the threshold, or anything
+# unknown) is written to the durable queue and exits, which is what wakes the LLM
+# through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
@@ -880,18 +896,31 @@ EOF
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
     #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
-    #   - or it is a no-verb wake (a bare turn-end, a working: note) whose crew is
-    #     NOT provably working - the crew stopped its turn with no actively-running
-    #     pipeline and no busy pane, so it may be done (even via an interactive menu
-    #     that wrote no done: status), waiting on a decision, or wedged. Absorbing
-    #     such a turn-end is exactly the swallowed-finish this change guards against.
-    # Actionable -> enqueue, advance .seen-* markers, exit. Benign (a no-verb wake
-    # whose crew IS provably working) in always-on mode -> advance the markers so it
-    # will not re-fire, log, and keep blocking without enqueuing. The provably-working
-    # check is the only costly one (it may run a bounded no-mistakes call), so the ||
-    # ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
+    #   - or it is an ambiguous wake (a bare turn-end, unknown file shape, or
+    #     non-working nonterminal event) whose crew is NOT provably working - the
+    #     crew stopped its turn with no actively-running pipeline and no busy pane,
+    #     so it may be done (even via an interactive menu that wrote no done:
+    #     status), waiting on a decision, or wedged. Absorbing such a turn-end is
+    #     exactly the swallowed-finish boundary this rule guards.
+    # An ordinary direct report's status-only batch whose every latest event is
+    # working: is routine progress and bypasses the runtime-state read; a batch
+    # naming a persistent secondmate never qualifies, because no later backstop
+    # would deliver its sparse phase report or correlated reply.
+    # Actionable -> enqueue, advance .seen-*
+    # markers, exit. Benign -> advance the markers so it will not re-fire, log,
+    # and keep blocking without enqueuing. The provably-working check is the only
+    # costly one (it may run a bounded no-mistakes call), so it runs ONLY for a
+    # non-afk, non-actionable, non-working-progress signal.
+    signal_actionable=0
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if afk_present || signal_reason_is_actionable $files || ! signal_crew_provably_working $files; then
+    if afk_present || signal_reason_is_actionable $files; then
+      signal_actionable=1
+    elif signal_is_routine_working_progress $files; then
+      :
+    elif ! signal_crew_provably_working $files; then
+      signal_actionable=1
+    fi
+    if [ "$signal_actionable" -eq 1 ]; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1

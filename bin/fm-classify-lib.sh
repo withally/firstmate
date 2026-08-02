@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Shared wake classifier: the common source of truth for captain-relevant status
 # tests, declared-external-wait vocabulary, and the working/paused absorb
-# classification that makes no-verb signal and stale-pane wakes safe to absorb.
+# classification that makes routine working-progress signals and proven-active
+# lifecycle/stale wakes safe to absorb.
 # Sourced by BOTH the always-on watcher
 # (bin/fm-watch.sh) and the away-mode daemon (bin/fm-supervise-daemon.sh) so the
 # overlapping triage policy lives in one place instead of two copies that can
@@ -16,10 +17,10 @@
 # The one exception is the absorb classification (crew_absorb_class and its
 # working/paused wrappers). It is NOT a pure status-file read: it reuses
 # bin/fm-crew-state.sh, which may make a bounded no-mistakes call, to decide
-# whether a crew that just stopped its turn or went stale is working, deliberately
-# paused, or neither. Callers run it ONLY on no-verb signal handling and first
-# sighting of a stale hash, never on every wake, so the per-wake triage stays
-# cheap.
+# whether a crew behind an ambiguous lifecycle signal or stale pane is working,
+# deliberately paused, or neither. Callers run it ONLY on ambiguous signal
+# handling and first sighting of a stale hash, never on every wake, so the
+# per-wake triage stays cheap.
 
 # Directory of this library, used to locate the sibling fm-crew-state.sh reader.
 # Resolved at source time from BASH_SOURCE so it works whether sourced by a
@@ -32,10 +33,14 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
 # Captain-relevant status verbs. A status line carrying any of these is work
-# firstmate must see. Lines without these verbs are no-verb signals: the watcher
-# absorbs them only with positive provably-working evidence, while the daemon uses
-# its away-mode classification. FM_CAPTAIN_RE overrides the whole set when a home
-# needs a custom verb vocabulary; absent, this default applies.
+# firstmate must see. In ordinary active-session mode, an ordinary direct report's
+# status-only batch whose every latest event is `working:` is routine progress and
+# is absorbed without a runtime busy proof; a persistent secondmate's `working:`
+# report keeps its existing delivery because the stale and heartbeat backstops do
+# not cover it. Other lines without these verbs are ambiguous signals: the
+# watcher absorbs them only with positive provably-working evidence, while the
+# daemon uses its away-mode classification. FM_CAPTAIN_RE overrides the whole set
+# when a home needs a custom verb vocabulary; absent, this default applies.
 #
 # Free-text tokens (PR ready, checks green, ready in branch, merged) exist only for
 # legacy lines that lack a standard terminal verb. status_is_captain_relevant is
@@ -301,8 +306,9 @@ window_to_task() {
 # captain-relevant last line; 1 otherwise. Pass the space-separated file list that
 # follows the "signal:" prefix. Non-.status arguments (e.g. .turn-ended markers,
 # which never carry a verb) are skipped. A 1 here is NOT "benign" on its own: a
-# no-verb signal (a bare turn-end, a working: note) is only benign when the crew is
-# also provably working (signal_crew_provably_working below); otherwise it surfaces.
+# non-actionable result is NOT "benign" on its own: pure working-progress batches
+# are benign by event semantics, while every other signal is benign only when the
+# crew is also provably working (signal_crew_provably_working below).
 signal_reason_is_actionable() {  # <file> ...
   local f last
   for f in "$@"; do
@@ -313,6 +319,49 @@ signal_reason_is_actionable() {  # <file> ...
     status_is_captain_relevant "$last" && return 0
   done
   return 1
+}
+
+# Task kind recorded in a status file's sibling `<id>.meta`, echoed as one token.
+# A metadata record with no kind= field is an ordinary ship task and a status file
+# with no metadata at all is unknown, matching bin/fm-watch.sh's window_kind.
+status_file_kind() {  # <status-file>
+  local f=$1 meta kind
+  meta="${f%.status}.meta"
+  if [ -f "$meta" ]; then
+    kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    printf '%s' "${kind:-ship}"
+    return 0
+  fi
+  printf 'unknown'
+}
+
+# 0 (routine/absorb) only when the signal batch contains one or more status files,
+# contains no lifecycle marker or unknown file shape, references no persistent
+# secondmate, and every status file's latest event has the leading `working` verb.
+# This is intentionally narrower than "not captain-relevant": paused, resolved,
+# captain-held, missing, and malformed signals retain their existing conservative
+# reconciliation path.
+# A secondmate is excluded because routine absorb relies on the unchanged-pane
+# stale path as its delayed backstop, and that path deliberately skips a
+# secondmate endpoint unless it declared a pause (an idle secondmate agent is
+# healthy by design), while the heartbeat backstop only rescans captain-relevant
+# statuses. A secondmate `working [key=...]` line is also its documented sparse
+# material phase report and a valid correlated answer to a marked request
+# (bin/fm-brief.sh's charter contract, bin/fm-pending-reply-lib.sh), so it keeps
+# the conservative provably-working path that used to deliver it.
+# The always-on watcher uses this before consulting semantic busy state. Away mode
+# does not use it because the daemon remains the sole triage owner there.
+signal_is_routine_working_progress() {  # <file> ...
+  local f last seen=""
+  for f in "$@"; do
+    case "$f" in *.status) ;; *) return 1 ;; esac
+    [ -e "$f" ] || return 1
+    case "$(status_file_kind "$f")" in secondmate) return 1 ;; esac
+    last=$(last_status_line "$f")
+    [ "$(status_line_verb "$last")" = working ] || return 1
+    seen=1
+  done
+  [ -n "$seen" ]
 }
 
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
@@ -329,7 +378,7 @@ signal_reason_is_actionable() {  # <file> ...
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
+# run it only on ambiguous signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
   local id=$1 line state src
@@ -347,11 +396,14 @@ crew_absorb_class() {  # <id>
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class
 # reports `working`). This is the "provably working" predicate at the heart of
-# absorb-only-when-provably-working: a no-verb turn-end or stale wake is absorbed
+# absorb-only-when-provably-working: an ambiguous signal (a bare turn-end, an
+# unknown file shape, a non-working nonterminal event) or a stale wake is absorbed
 # ONLY when this returns 0, and SURFACED otherwise (the crew may be done, waiting
-# on a decision, or wedged). For stale panes it is checked before trusting the
-# status log so a pre-validation captain-relevant line does not override an active
-# run. See crew_absorb_class for the exact working/paused/none decision.
+# on a decision, or wedged). Routine working-progress batches never reach this
+# predicate; signal_is_routine_working_progress absorbs them on event semantics
+# alone. For stale panes it is checked before trusting the status log so a
+# pre-validation captain-relevant line does not override an active run. See
+# crew_absorb_class for the exact working/paused/none decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
@@ -363,11 +415,13 @@ crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
 }
 
-# 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
-# working; 1 (actionable/surface) if any is not, or no task can be resolved. Pass the
-# same space-separated file list as signal_reason_is_actionable. Files are mapped to
-# task ids by stripping the .status / .turn-ended suffix; a no-verb wake with nothing
-# provably working must surface, so an empty/unresolvable list returns 1.
+# 0 (benign/absorb) if EVERY task referenced by an ambiguous "signal:" wake is
+# provably working; 1 (actionable/surface) if any is not, or no task can be
+# resolved. Pure working-progress batches are handled before this predicate.
+# Pass the same space-separated file list as signal_reason_is_actionable. Files
+# are mapped to task ids by stripping the .status / .turn-ended suffix; a signal
+# with nothing provably working must surface, so an empty/unresolvable list
+# returns 1.
 signal_crew_provably_working() {  # <file> ...
   local f base task seen=""
   for f in "$@"; do

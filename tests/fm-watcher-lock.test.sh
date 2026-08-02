@@ -438,14 +438,24 @@ test_watch_restart_rejects_reused_pid() {
 }
 
 test_watch_restart_attaches_to_healthy_peer() {
-  local dir state fakebin out peer identity armpid status i
+  local dir state fakebin out peer identity armpid status i ready
   dir=$(make_case restart-healthy-peer)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
+  ready="$dir/peer-ready"
   mark_pr_check_migration_complete "$state"
-  node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
+  # --restart TERMs the recorded watcher first, so the peer only stands in for a
+  # healthy holder once its SIGTERM handler is actually installed. Wait for the
+  # peer's own ready file instead of racing Node's startup with the arm's TERM.
+  FM_PEER_READY="$ready" node -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.env.FM_PEER_READY, "ready\n"); setTimeout(() => {}, 300000)' &
   peer=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$ready" ] || fail "peer never became TERM-resistant"
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"

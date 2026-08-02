@@ -430,9 +430,19 @@ if [ "$1" = "-f" ] && [ "$2" = "%Lp" ]; then
 fi
 exit 1
 SH
+  # The oldest worker holds its slot until the replacement fixture reports that
+  # it started, so "was the freed slot refilled before the oldest worker
+  # finished?" is a deterministic handshake instead of a race against the
+  # runner's own per-worker timestamp overhead. The wait is bounded so a
+  # regressed scheduler that waits for the oldest worker still fails the
+  # assertion below rather than hanging.
   cat >"$repo/$a" <<'SH'
 #!/usr/bin/env bash
-sleep 0.5
+i=0
+while [ "$i" -lt 100 ] && [ ! -e "$SCHED_EVIDENCE/replacement-started" ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
 touch "$SCHED_EVIDENCE/slow-done"
 echo "ok - slow fixture"
 SH
@@ -441,12 +451,16 @@ SH
 sleep 0.05
 echo "ok - fast fixture"
 SH
+  # Read the oldest worker's completion marker before releasing it, so the
+  # answer cannot change between the check and the handshake.
   cat >"$repo/$c" <<'SH'
 #!/usr/bin/env bash
 if [ -e "$SCHED_EVIDENCE/slow-done" ]; then
+  touch "$SCHED_EVIDENCE/replacement-started"
   echo "not ok - scheduler waited for oldest worker"
   exit 1
 fi
+touch "$SCHED_EVIDENCE/replacement-started"
 echo "ok - replacement fixture started before slow fixture finished"
 SH
   chmod +x "$runner" "$repo/$a" "$repo/$b" "$repo/$c" "$fake_bin/stat"

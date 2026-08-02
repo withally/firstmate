@@ -43,6 +43,9 @@
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
 # placeholder instead of a real daemon. FM_SUPERVISOR_TARGET/FM_SUPERVISOR_BACKEND
 # override the captured captain pane/backend (an isolated lab pane in tests).
+# FM_AFK_PRIMARY_HARNESS_OVERRIDE and FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE feed
+# the capability gate below its two inputs, so a test can exercise the refusal
+# without a real Pi primary or an older build.
 set -u
 
 FM_AFK_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

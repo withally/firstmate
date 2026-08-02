@@ -5,8 +5,9 @@
 # wake, so firstmate's LLM re-arms once per actionable event instead of once per
 # wake. These tests cover the classifier predicates as pure functions, then drive
 # a real fm-watch.sh subprocess to assert the behavioral contract:
-# provably-working no-verb wakes absorbed (no exit, no queue entry, suppressor
-# advanced, beacon fresh), stopped-crew no-verb wakes surfaced (queue + exit),
+# pure working-progress signals absorbed without a runtime busy proof,
+# provably-working ambiguous wakes absorbed (no exit, no queue entry, suppressor
+# advanced, beacon fresh), stopped-crew ambiguous wakes surfaced (queue + exit),
 # provably-working stale panes absorbed-then-escalated past the threshold,
 # terminal-looking stale status lines overridden by an active run, the heartbeat
 # backstop fail-safe, and afk coherence (no double-triage while the away-mode
@@ -125,6 +126,28 @@ test_signal_reason_is_actionable_classifier() {
   # Coalesced batch: one benign + one captain-relevant -> actionable.
   signal_reason_is_actionable "$state/a.status" "$state/b.status" || fail "coalesced benign+actionable not actionable"
   pass "signal_reason_is_actionable: benign absorbed, captain verbs and coalesced batches surfaced"
+}
+
+test_signal_is_routine_working_progress_classifier() {
+  local dir state
+  dir=$(make_case classify-working-progress); state="$dir/state"
+  printf 'working: researching the incident\n' > "$state/a.status"
+  printf 'working [key=phase2]: validating the correction\n' > "$state/b.status"
+  : > "$state/a.turn-ended"
+  printf 'resolved: an earlier decision closed\n' > "$state/resolved.status"
+  signal_is_routine_working_progress "$state/a.status" \
+    || fail "a single working status was not classified as routine progress"
+  signal_is_routine_working_progress "$state/a.status" "$state/b.status" \
+    || fail "an all-working status batch was not classified as routine progress"
+  ! signal_is_routine_working_progress "$state/a.status" "$state/a.turn-ended" \
+    || fail "a batch containing a turn-end was classified as pure working progress"
+  ! signal_is_routine_working_progress "$state/a.status" "$state/resolved.status" \
+    || fail "a non-working nonterminal event was classified as pure working progress"
+  ! signal_is_routine_working_progress "$state/missing.status" \
+    || fail "a missing status file was classified as pure working progress"
+  ! signal_is_routine_working_progress \
+    || fail "an empty signal batch was classified as pure working progress"
+  pass "signal_is_routine_working_progress: only nonempty all-working status batches are routine"
 }
 
 test_stale_is_terminal_classifier() {
@@ -373,7 +396,7 @@ test_turn_ended_provably_working_absorbed() {
   pass "a bare turn-end whose crew is provably working (busy pane) is absorbed"
 }
 
-# --- a no-verb signal whose crew is NOT provably working SURFACES -------------
+# --- an ambiguous signal whose crew is NOT provably working SURFACES ---------
 # This is the swallowed-finish fix: a crew that finished (or stopped and waits)
 # reports its final turn-end with no captain-relevant status and no running
 # pipeline, so the wake must surface instead of being absorbed.
@@ -395,42 +418,61 @@ test_turn_ended_not_working_surfaced() {
   pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
 }
 
-test_working_note_not_working_surfaced() {
-  local dir state fakebin out drain_out status_file pid
-  dir=$(make_case working-note-stopped); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"
+test_working_note_unknown_runtime_absorbed() {
+  local dir state fakebin out status_file pid i
+  dir=$(make_case working-note-unknown); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
   status_file="$state/task.status"
-  printf 'working: compiling step 2\n' > "$status_file"
-  # A non-no-mistakes crew (no run) whose pane went idle: fm-crew-state falls back
-  # to the stale working: status-log line. That is NOT positive evidence, so the
-  # wake must surface - these users must never be left hanging.
-  export FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling step 2'
+  printf 'working: researching the unknown-busy incident\n' > "$status_file"
+  # Exact incident boundary: Codex has no verified semantic busy source, so the
+  # authoritative runtime verdict is unknown even though the fresh event itself
+  # is explicitly nonterminal progress. The signal must be absorbed from its
+  # status semantics without consulting that unavailable busy proof.
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not surface a working: note whose crew has no running pipeline and an idle pane"
-  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the surfaced working: signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced working: note failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "surfaced working: note was not queued"
-  [ -s "$state/.seen-task_status" ] || fail "surfaced working: note did not advance its .seen-* suppressor"
-  pass "a no-verb working: note whose crew is idle with no running pipeline is surfaced"
+  i=0
+  while [ "$i" -lt 40 ] && [ ! -s "$state/.seen-task_status" ]; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null || { reap "$pid"; fail "watcher exited for routine working progress with unknown busy state: $(cat "$out")"; }
+  [ -s "$state/.seen-task_status" ] || { reap "$pid"; fail "absorbed working progress did not advance its .seen-* suppressor"; }
+  [ ! -s "$out" ] || { reap "$pid"; fail "unknown-busy working progress printed a watcher reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "unknown-busy working progress enqueued a durable wake"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "routine working progress is absorbed with unknown runtime busy state (no reason, queue, or model wake)"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
 
-test_actionable_signal_surfaced() {
-  local dir state fakebin out drain_out status_file pid
-  dir=$(make_case actionable-signal); state="$dir/state"; fakebin="$dir/fakebin"
+test_actionable_and_mixed_signals_surfaced() {
+  local dir state fakebin out drain_out pid file queued
+  dir=$(make_case actionable-mixed-signal); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
-  status_file="$state/task.status"
-  printf 'working: setup\nneeds-decision: pick A or B\n' > "$status_file"
+  printf 'working: routine progress in the same batch\n' > "$state/a-working.status"
+  printf 'done: implementation complete\n' > "$state/b-done.status"
+  printf 'needs-decision: pick A or B\n' > "$state/c-needs.status"
+  printf 'blocked: missing required access\n' > "$state/d-blocked.status"
+  printf 'failed: focused validation failed\n' > "$state/e-failed.status"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not exit for an actionable needs-decision signal"
-  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the actionable signal reason"
+  wait_for_exit "$pid" 40 || fail "watcher did not exit for an actionable mixed signal batch"
+  for file in a-working b-done c-needs d-blocked e-failed; do
+    grep -F "$state/$file.status" "$out" >/dev/null \
+      || fail "watcher reason omitted $file.status from the mixed batch"
+  done
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the actionable signal failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "actionable signal was not queued"
-  [ -s "$state/.hb-surfaced-task" ] || fail "actionable signal did not record the surfaced marker"
-  pass "captain-relevant signal is surfaced (queue + exit) and marked surfaced"
+  queued=$(grep -c "$(printf '\tsignal\t')" "$drain_out" || true)
+  [ "$queued" -eq 5 ] || fail "mixed batch did not preserve all five durable signal records (got $queued)"
+  for file in b-done c-needs d-blocked e-failed; do
+    [ -s "$state/.hb-surfaced-$file" ] || fail "$file actionable status did not record the surfaced marker"
+  done
+  unset FM_FAKE_CREW_STATE
+  pass "done, needs-decision, blocked, failed, and a mixed working+actionable batch surface immediately"
 }
 
 test_terminal_stale_surfaced() {
@@ -576,7 +618,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
 # non-no-mistakes crew, or any crew with no running pipeline) are never left hanging.
 
 test_nonterminal_stale_not_working_surfaced() {
-  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid started elapsed
   dir=$(make_case nonterminal-stale-stopped); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-stopped"
@@ -588,24 +630,28 @@ test_nonterminal_stale_not_working_surfaced() {
   sig=$(seen_sig "$state/stopped.status"); printf '%s' "$sig" > "$state/.seen-stopped_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "idle prompt, finished")
-  printf '%s' "$pane_hash" > "$state/.hash-$key"
-  printf '1\n' > "$state/.count-$key"
   # No running pipeline; the pane is idle. NOT provably working.
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
 
-  # Even with a high wedge threshold, a not-provably-working stale surfaces at once.
+  # This is the counterexample after a routine working signal was absorbed: begin
+  # with no pane-history seed and prove the existing stable-pane contract still
+  # surfaces the stopped worker after three observations (two poll intervals after
+  # the first observation), without waiting for the wedge threshold.
+  started=$(date +%s)
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "watcher did not surface a not-provably-working non-terminal stale at once"
+  elapsed=$(( $(date +%s) - started ))
+  [ "$elapsed" -le 4 ] || fail "stopped worker exceeded the three-observation stale bound (${elapsed}s at FM_POLL=1)"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the immediate stale wake"
   grep -F "possible wedge" "$out" >/dev/null && fail "an immediate stopped-crew stale was mislabeled a wedge"
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor was not advanced on surface"
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer should not be set when surfacing immediately"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the immediate stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
-  pass "a not-provably-working non-terminal stale is surfaced immediately (never left to wait out the timer)"
+  pass "a worker left on working: is surfaced within the three-observation stale bound (never left to wait out the wedge timer)"
 }
 
 # --- non-terminal stale, crew DECLARED a pause: absorbed, re-surfaced on a long
@@ -1800,6 +1846,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
 }
 
 test_signal_reason_is_actionable_classifier
+test_signal_is_routine_working_progress_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
@@ -1810,8 +1857,8 @@ test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
-test_working_note_not_working_surfaced
-test_actionable_signal_surfaced
+test_working_note_unknown_runtime_absorbed
+test_actionable_and_mixed_signals_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated

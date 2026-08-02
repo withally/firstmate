@@ -347,7 +347,54 @@ JS
   status=$?
   [ "$status" -eq 0 ] || fail "Pi calm missing-adapter-export path failed: $out"
   [ -z "$out" ] || fail "Pi calm missing-adapter-export test printed output: $out"
-  pass "missing Pi presentation class exports reach the independent adapter degradation path"
+
+  fixture="$TMP_ROOT/missing-replay-seam"
+  mkdir -p \
+    "$fixture/project/.pi/extensions/lib" \
+    "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
+  cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
+  printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
+  printf '%s\n' \
+    '{"name":"@earendil-works/pi-coding-agent","type":"module","exports":"./index.js"}' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/package.json"
+  printf '%s\n' \
+    'export function getMarkdownTheme() { return {}; }' \
+    'export class UserMessageComponent {}' \
+    'export class InteractiveMode {}' \
+    'InteractiveMode.prototype.addMessageToChat = function () {};' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/index.js"
+
+  out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
+const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
+const { InteractiveMode } = await import("@earendil-works/pi-coding-agent");
+
+const stockAddMessageToChat = InteractiveMode.prototype.addMessageToChat;
+let reason;
+try {
+  operational.installCalmOperationalUserLayout();
+} catch (error) {
+  reason = error instanceof Error ? error.message : String(error);
+}
+if (!reason?.includes("renderSessionItems")) {
+  throw new Error(
+    `the operational-user-row adapter did not name the missing transcript replay seam: ${String(reason)}`,
+  );
+}
+if (InteractiveMode.prototype.addMessageToChat !== stockAddMessageToChat) {
+  throw new Error(
+    "the operational-user-row adapter patched addMessageToChat despite the missing transcript replay seam",
+  );
+}
+JS
+)
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi calm missing-replay-seam path failed: $out"
+  [ -z "$out" ] || fail "Pi calm missing-replay-seam test printed output: $out"
+  pass "missing Pi presentation class exports and the missing transcript replay seam reach the independent adapter degradation path"
 }
 
 test_rendering_and_session_lifecycle() {
@@ -886,6 +933,53 @@ const nextRunOperationalAck = new AssistantMessageComponent(
 if (nextRunOperationalAck.render(100).length !== 0) {
   throw new Error("Calm carried a settled captain run origin into the next operational wake");
 }
+// Pi auto-compacts from inside the run and rebuilds the whole transcript through
+// renderSessionItems before continuing, so replayed rows must keep per-row origin while
+// the surrounding run scope survives untouched.
+await fireRunLifecycle("agent_start");
+addTranscriptUser(watcherMessage);
+const rebuiltChat = {
+  children: [],
+  addChild(component) {
+    this.children.push(component);
+  },
+};
+const rebuildMode = {
+  ...operationalMode,
+  addMessageToChat: InteractiveMode.prototype.addMessageToChat,
+  chatContainer: rebuiltChat,
+  hideThinkingBlock: true,
+  hiddenThinkingLabel: "",
+  pendingTools: new Map(),
+  settingsManager: { getShowCacheMissNotices: () => false },
+  ui: { requestRender() {} },
+};
+InteractiveMode.prototype.renderSessionItems.call(rebuildMode, [
+  { role: "user", content: "Captain-authored history entry" },
+  assistantMessage("Captain, shipshape."),
+  { role: "user", content: [{ type: "text", text: watcherMessage }] },
+  assistantMessage("Captain, shipshape."),
+]);
+const rebuiltAssistants = rebuiltChat.children.filter(
+  (child) => child instanceof AssistantMessageComponent,
+);
+if (rebuiltAssistants.length !== 2) {
+  throw new Error(`transcript rebuild fixture produced ${rebuiltAssistants.length} assistant rows`);
+}
+if (!rebuiltAssistants[0].render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("a transcript rebuild inside a run hid a reply that followed a captain row");
+}
+if (rebuiltAssistants[1].render(100).length !== 0) {
+  throw new Error("a transcript rebuild inside a run revealed a previously hidden acknowledgement");
+}
+const continuationAfterRebuild = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (continuationAfterRebuild.render(100).length !== 0) {
+  throw new Error("a transcript rebuild collapsed the operational origin of the surrounding run");
+}
+await fireRunLifecycle("agent_settled");
 if (workingVisible !== true || layoutWidgets.size !== 0) {
   throw new Error("run lifecycle regressions left the Calm working presentation unbalanced");
 }

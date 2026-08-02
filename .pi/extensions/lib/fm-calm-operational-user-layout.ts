@@ -1,12 +1,18 @@
 // Pi adds the ordinary-user spacer and row together through
-// InteractiveMode.addMessageToChat.
-// This adapter probes that exact method and throws if it is missing; fm-calm.ts catches
-// that and skips only this adapter with a diagnostic instead of blocking Calm or Pi.
-// It changes only presentation, records the canonical user-row origin for the assistant
-// layout adapter, and never changes message delivery.
+// InteractiveMode.addMessageToChat, and replays or rebuilds the whole transcript through
+// InteractiveMode.renderSessionItems.
+// This adapter probes both exact methods and throws if either is missing; fm-calm.ts
+// catches that and skips only this adapter with a diagnostic instead of blocking Calm or
+// Pi.
+// It changes only presentation, records the canonical user-row origin and the replay
+// window for the assistant layout adapter, and never changes message delivery.
 import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
-import { noteCalmTranscriptUserMessage } from "./fm-calm-assistant-layout.ts";
+import {
+  beginCalmTranscriptReplay,
+  endCalmTranscriptReplay,
+  noteCalmTranscriptUserMessage,
+} from "./fm-calm-assistant-layout.ts";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
 import { classifyFirstmateCurrentOperationalText } from "./fm-operational-input.ts";
 
@@ -36,6 +42,7 @@ type InteractiveModePrototype = {
     message: UserMessageLike,
     options?: AddMessageOptions,
   ): void;
+  renderSessionItems(this: unknown, items: unknown[], options?: unknown): void;
 };
 type CalmOperationalUserLayoutPatch = {
   hidesOperationalInput: () => boolean;
@@ -94,6 +101,10 @@ export function installCalmOperationalUserLayout(): void {
   if (typeof originalAddMessageToChat !== "function") {
     throw new Error("Firstmate Calm requires Pi InteractiveMode.addMessageToChat");
   }
+  const originalRenderSessionItems = prototype.renderSessionItems;
+  if (typeof originalRenderSessionItems !== "function") {
+    throw new Error("Firstmate Calm requires Pi InteractiveMode.renderSessionItems");
+  }
 
   const UserMessageComponent = PiCodingAgent.UserMessageComponent;
   if (typeof UserMessageComponent !== "function") {
@@ -149,6 +160,19 @@ export function installCalmOperationalUserLayout(): void {
     );
     this.chatContainer.addChild(component);
     if (options?.populateHistory) this.editor.addToHistory?.(text);
+  };
+
+  prototype.renderSessionItems = function (
+    this: unknown,
+    items: unknown[],
+    options?: unknown,
+  ): void {
+    beginCalmTranscriptReplay();
+    try {
+      originalRenderSessionItems.call(this, items, options);
+    } finally {
+      endCalmTranscriptReplay();
+    }
   };
 
   registry[CALM_OPERATIONAL_USER_LAYOUT_PATCH] = patch;

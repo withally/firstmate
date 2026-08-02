@@ -7,7 +7,15 @@
 // Acknowledgement origin is scoped to one agent run rather than to the most recent user
 // row: a run counts as operational only while every Firstmate input it carries is
 // canonically operational, so a wake steered into a still-running captain turn keeps that
-// run's replies visible. Outside a run each replayed row stands alone.
+// run's replies visible.
+// Pi opens a run with agent_start before the run's initiating user message_start, drains
+// steered and queued inputs into that same run, and settles it from a finally block. The
+// accumulator records the first input of a run whichever order those two arrive in, so a
+// future Pi that emits them the other way round still accumulates instead of overwriting.
+// Pi also rebuilds the whole transcript through InteractiveMode.renderSessionItems,
+// including the rebuild it performs when it auto-compacts inside a run. Rows replayed in
+// that window are scored per row against their own preceding input and never disturb the
+// run scope. Every unresolved case resolves to visible.
 import type { AssistantMessageComponent as PiAssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
@@ -22,6 +30,8 @@ type AssistantMessagePresentationState = {
 
 type CalmAssistantLayoutPatch = {
   assistantOperationalOrigins: WeakMap<object, boolean>;
+  replayDepth: number;
+  replayOriginIsOperational: boolean;
   runIsActive: boolean;
   runOriginIsOperational: boolean;
   runOriginRecorded: boolean;
@@ -48,12 +58,29 @@ function registry(): typeof globalThis & {
 export function noteCalmTranscriptUserMessage(isOperational: boolean): void {
   const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
   if (!patch) return;
+  if (patch.replayDepth > 0) {
+    patch.replayOriginIsOperational = isOperational;
+    return;
+  }
   if (patch.runIsActive && patch.runOriginRecorded) {
     patch.runOriginIsOperational = patch.runOriginIsOperational && isOperational;
     return;
   }
   patch.runOriginIsOperational = isOperational;
-  patch.runOriginRecorded = patch.runIsActive;
+  patch.runOriginRecorded = true;
+}
+
+export function beginCalmTranscriptReplay(): void {
+  const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
+  if (!patch) return;
+  if (patch.replayDepth === 0) patch.replayOriginIsOperational = false;
+  patch.replayDepth += 1;
+}
+
+export function endCalmTranscriptReplay(): void {
+  const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
+  if (!patch || patch.replayDepth === 0) return;
+  patch.replayDepth -= 1;
 }
 
 export function noteCalmTranscriptRunStart(): void {
@@ -71,6 +98,8 @@ export function noteCalmTranscriptRunSettled(): void {
 export function resetCalmTranscriptOrigin(): void {
   const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
   if (!patch) return;
+  patch.replayDepth = 0;
+  patch.replayOriginIsOperational = false;
   patch.runIsActive = false;
   patch.runOriginIsOperational = false;
   patch.runOriginRecorded = false;
@@ -114,6 +143,8 @@ export function installCalmAssistantLayout(): void {
 
   const patch: CalmAssistantLayoutPatch = {
     assistantOperationalOrigins: new WeakMap<object, boolean>(),
+    replayDepth: 0,
+    replayOriginIsOperational: false,
     runIsActive: false,
     runOriginIsOperational: false,
     runOriginRecorded: false,
@@ -135,7 +166,10 @@ export function installCalmAssistantLayout(): void {
     const state = this as unknown as AssistantMessagePresentationState;
     let isOperational = patch.assistantOperationalOrigins.get(this);
     if (isOperational === undefined) {
-      isOperational = patch.runOriginIsOperational;
+      isOperational =
+        patch.replayDepth > 0
+          ? patch.replayOriginIsOperational
+          : patch.runOriginIsOperational;
       patch.assistantOperationalOrigins.set(this, isOperational);
     }
     const hideThinking =

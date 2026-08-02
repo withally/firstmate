@@ -42,8 +42,9 @@ type CalmOperationalUserLayoutPatch = {
   isOperationalInput: (text: string) => boolean;
 };
 
-// Keep the introduction-version symbol stable so a compatible upgrade cannot
-// double-patch a live process.
+// The symbol changes only when the patch shape changes, so a compatible upgrade cannot
+// double-patch a live process and an incompatible one cannot keep a stale closure
+// installed under the same key.
 const CALM_OPERATIONAL_USER_LAYOUT_PATCH = Symbol.for(
   "firstmate:calm-operational-user-layout:operational-ack-v1",
 );

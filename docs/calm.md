@@ -15,7 +15,8 @@ Very narrow terminals fall back to a smaller deterministic sprite.
 While Calm is off, Pi's stock working row is left exactly as Pi renders it.
 Calm hides collapsed thinking labels, the shells for Pi's seven built-in tools, the `fm_watch_arm_pi` tool shell, and canonically classified Firstmate operational user rows.
 The operational inputs remain ordinary user-role messages, while Pi's transcript layout renders their complete rows at zero height.
-Calm also hides the exact whole assistant text `Captain, shipshape.` only when the assistant component belongs to the current canonically classified Firstmate operational input.
+Calm also hides the exact whole assistant text `Captain, shipshape.` only when the assistant component belongs to an agent run whose every Firstmate input is canonically classified operational.
+A genuine captain message anywhere in that run, including one steered in while the run is still under way, keeps every later reply in the run visible.
 The same text after a genuine captain message, any near match, any tool-calling response, any interrupted or failed response, and every substantive operational response remain visible.
 During streaming, Calm holds only text that is still a prefix of the exact acknowledgement and renders it immediately if the stream diverges, preventing an acknowledgement flash without withholding a disambiguated reply.
 The session-start nudge remains on its existing non-displayed custom-message path.

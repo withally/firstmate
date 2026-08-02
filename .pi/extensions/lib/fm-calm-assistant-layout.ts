@@ -4,6 +4,10 @@
 // blocking Calm or Pi.
 // The adapter owns both collapsed-thinking layout and the presentation-only exact
 // operational acknowledgement rule.
+// Acknowledgement origin is scoped to one agent run rather than to the most recent user
+// row: a run counts as operational only while every Firstmate input it carries is
+// canonically operational, so a wake steered into a still-running captain turn keeps that
+// run's replies visible. Outside a run each replayed row stands alone.
 import type { AssistantMessageComponent as PiAssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
@@ -18,13 +22,16 @@ type AssistantMessagePresentationState = {
 
 type CalmAssistantLayoutPatch = {
   assistantOperationalOrigins: WeakMap<object, boolean>;
-  currentInputIsOperational: boolean;
+  runIsActive: boolean;
+  runOriginIsOperational: boolean;
+  runOriginRecorded: boolean;
   hidesOperationalAcknowledgement: () => boolean;
   hidesThinking: () => boolean;
 };
 
-// Keep the introduction-version symbol stable so a compatible upgrade cannot
-// double-patch a live process.
+// The symbol changes only when the patch shape changes, so a compatible upgrade cannot
+// double-patch a live process and an incompatible one cannot keep a stale closure
+// installed under the same key.
 const CALM_ASSISTANT_LAYOUT_PATCH = Symbol.for(
   "firstmate:calm-assistant-layout:operational-ack-v1",
 );
@@ -40,12 +47,33 @@ function registry(): typeof globalThis & {
 
 export function noteCalmTranscriptUserMessage(isOperational: boolean): void {
   const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
-  if (patch) patch.currentInputIsOperational = isOperational;
+  if (!patch) return;
+  if (patch.runIsActive && patch.runOriginRecorded) {
+    patch.runOriginIsOperational = patch.runOriginIsOperational && isOperational;
+    return;
+  }
+  patch.runOriginIsOperational = isOperational;
+  patch.runOriginRecorded = patch.runIsActive;
+}
+
+export function noteCalmTranscriptRunStart(): void {
+  const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
+  if (patch) patch.runIsActive = true;
+}
+
+export function noteCalmTranscriptRunSettled(): void {
+  const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
+  if (!patch) return;
+  patch.runIsActive = false;
+  patch.runOriginRecorded = false;
 }
 
 export function resetCalmTranscriptOrigin(): void {
   const patch = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
-  if (patch) patch.currentInputIsOperational = false;
+  if (!patch) return;
+  patch.runIsActive = false;
+  patch.runOriginIsOperational = false;
+  patch.runOriginRecorded = false;
 }
 
 function withoutOperationalAcknowledgement(
@@ -86,7 +114,9 @@ export function installCalmAssistantLayout(): void {
 
   const patch: CalmAssistantLayoutPatch = {
     assistantOperationalOrigins: new WeakMap<object, boolean>(),
-    currentInputIsOperational: false,
+    runIsActive: false,
+    runOriginIsOperational: false,
+    runOriginRecorded: false,
     hidesOperationalAcknowledgement,
     hidesThinking,
   };
@@ -105,7 +135,7 @@ export function installCalmAssistantLayout(): void {
     const state = this as unknown as AssistantMessagePresentationState;
     let isOperational = patch.assistantOperationalOrigins.get(this);
     if (isOperational === undefined) {
-      isOperational = patch.currentInputIsOperational;
+      isOperational = patch.runOriginIsOperational;
       patch.assistantOperationalOrigins.set(this, isOperational);
     }
     const hideThinking =

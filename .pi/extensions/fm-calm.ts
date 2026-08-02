@@ -40,6 +40,8 @@ import { Box, Container, getKeybindings, type Component } from "@earendil-works/
 import type { TSchema } from "typebox";
 import {
   installCalmAssistantLayout,
+  noteCalmTranscriptRunSettled,
+  noteCalmTranscriptRunStart,
   resetCalmTranscriptOrigin,
 } from "./lib/fm-calm-assistant-layout.ts";
 import { installCalmOperationalUserLayout } from "./lib/fm-calm-operational-user-layout.ts";
@@ -318,17 +320,20 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", (_event, ctx) => {
+    noteCalmTranscriptRunStart();
     agentRunActive = true;
     applyWorkingPresentation(ctx.ui);
   });
 
   // agent_settled is emitted from a finally block, so it also covers abort and failure.
   pi.on("agent_settled", (_event, ctx) => {
+    noteCalmTranscriptRunSettled();
     agentRunActive = false;
     applyWorkingPresentation(ctx.ui);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    noteCalmTranscriptRunSettled();
     agentRunActive = false;
     applyWorkingPresentation(ctx.ui);
   });

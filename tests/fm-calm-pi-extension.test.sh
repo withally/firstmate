@@ -723,6 +723,7 @@ let expanded = true;
 let editorText = "";
 let terminalInputHandler;
 let workingVisible;
+const layoutWidgets = new Map();
 let hiddenThinkingLabel = "unset";
 const statuses = new Map();
 const sessionEntries = [{ type: "message", message: { role: "toolResult", content: "kept" } }];
@@ -753,6 +754,10 @@ const commandContext = {
       watchActual.setExpanded(value);
       customRow.setExpanded(value);
       imageRow.setExpanded(value);
+    },
+    setWidget(key, factory) {
+      if (factory === undefined) layoutWidgets.delete(key);
+      else layoutWidgets.set(key, factory);
     },
     setWorkingVisible(value) {
       workingVisible = value;
@@ -834,6 +839,55 @@ const humanCollision = new AssistantMessageComponent(
 );
 if (!humanCollision.render(100).join("\n").includes("Captain, shipshape.")) {
   throw new Error("Calm hid the exact phrase after a genuine human user message");
+}
+if (!handlers.has("agent_start") || !handlers.has("agent_settled")) {
+  throw new Error("Calm did not register the run lifecycle handlers that scope acknowledgement origin");
+}
+const fireRunLifecycle = async (event) => {
+  for (const handler of handlers.get(event)) await handler({}, commandContext);
+};
+// Pi emits agent_start before the initiating user row and drains steering messages into
+// the same run, so a wake steered into a captain turn must never hide replies in that run.
+await fireRunLifecycle("agent_start");
+addTranscriptUser("Captain-authored request that opened this run");
+addTranscriptUser(watcherMessage);
+const steeredIntoCaptainRun = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (!steeredIntoCaptainRun.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid a reply from a run that carried a genuine captain message");
+}
+await fireRunLifecycle("agent_settled");
+await fireRunLifecycle("agent_start");
+addTranscriptUser(watcherMessage);
+addTranscriptUser(watcherMessage);
+const operationalOnlyRunAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (operationalOnlyRunAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the acknowledgement for a run carrying only operational inputs");
+}
+addTranscriptUser("Captain steers a real question into the operational run");
+const captainJoinedRunAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (!captainJoinedRunAck.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid a reply after a captain message joined an operational run");
+}
+await fireRunLifecycle("agent_settled");
+addTranscriptUser(watcherMessage);
+const nextRunOperationalAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (nextRunOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm carried a settled captain run origin into the next operational wake");
+}
+if (workingVisible !== true || layoutWidgets.size !== 0) {
+  throw new Error("run lifecycle regressions left the Calm working presentation unbalanced");
 }
 const acknowledgementNearMatches = [
   "Captain, shipshape..",

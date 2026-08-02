@@ -704,6 +704,21 @@ if (!assistantThinkingText.render(100).join("\n").includes("Thinking...")) {
 }
 
 const assistantComponents = [assistantTextOnly, assistantThinkingText, assistantThinkingTool];
+const assistantMessage = (text, stopReason = "stop") => ({
+  ...assistantBase,
+  content: [{ type: "text", text }],
+  stopReason,
+});
+const addTranscriptUser = (content) => {
+  InteractiveMode.prototype.addMessageToChat.call(
+    { ...operationalMode, chatContainer: { children: [], addChild() {} } },
+    { role: "user", content },
+  );
+};
+const operationalAssistant = (content) => {
+  addTranscriptUser(watcherMessage);
+  return new AssistantMessageComponent(content, true);
+};
 let expanded = true;
 let editorText = "";
 let terminalInputHandler;
@@ -780,6 +795,125 @@ if (operationalComponent.render(100).length !== 0) {
 }
 if (legacyOperationalComponent.render(100).length !== 0) {
   throw new Error("Calm left the supported bare-marker legacy user row visible");
+}
+const exactOperationalAckMessage = assistantMessage("Captain, shipshape.");
+const exactOperationalAckBefore = JSON.stringify(exactOperationalAckMessage);
+const exactOperationalAck = operationalAssistant(exactOperationalAckMessage);
+if (exactOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the exact no-action acknowledgement for an operational input");
+}
+if (JSON.stringify(exactOperationalAckMessage) !== exactOperationalAckBefore) {
+  throw new Error("Calm changed the exact acknowledgement message used by context or persistence");
+}
+const streamingOperationalAck = operationalAssistant(undefined);
+for (const prefix of ["C", "Captain,", "Captain, shipshape", "Captain, shipshape."]) {
+  streamingOperationalAck.updateContent(assistantMessage(prefix, "pending"));
+  if (streamingOperationalAck.render(100).length !== 0) {
+    throw new Error(`Calm flashed an in-flight no-action acknowledgement prefix: ${prefix}`);
+  }
+}
+streamingOperationalAck.updateContent(assistantMessage("Captain, shipshape."));
+if (streamingOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the finalized streamed no-action acknowledgement");
+}
+const streamingNearMatch = operationalAssistant(undefined);
+streamingNearMatch.updateContent(assistantMessage("Captain, shipshape.", "pending"));
+if (streamingNearMatch.render(100).length !== 0) {
+  throw new Error("Calm flashed an exact acknowledgement before the stream was complete");
+}
+streamingNearMatch.updateContent(
+  assistantMessage("Captain, shipshape. The queue still needs review.", "pending"),
+);
+if (!streamingNearMatch.render(100).join("\n").includes("queue still needs review")) {
+  throw new Error("Calm delayed a substantive reply after its stream diverged from the acknowledgement");
+}
+addTranscriptUser("Captain-authored message");
+const humanCollision = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (!humanCollision.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid the exact phrase after a genuine human user message");
+}
+const acknowledgementNearMatches = [
+  "Captain, shipshape..",
+  "Note: Captain, shipshape.",
+  "Captain, shipshape. Thanks.",
+  "**Captain, shipshape.**",
+  "Captain, shipshape.\n\nAdditional explanation.",
+  "captain, shipshape.",
+  "Captain,  shipshape.",
+  " Captain, shipshape.",
+  "Captain, shipshape. ",
+];
+for (const nearMatch of acknowledgementNearMatches) {
+  const component = operationalAssistant(assistantMessage(nearMatch));
+  if (!component.render(100).join("\n").includes(nearMatch.split("\n")[0].replaceAll("**", ""))) {
+    throw new Error(`Calm hid an acknowledgement near match: ${nearMatch}`);
+  }
+}
+const substantiveOperationalReply = operationalAssistant(
+  assistantMessage("Captain, the watcher failed and needs credentials."),
+);
+if (!substantiveOperationalReply.render(100).join("\n").includes("watcher failed")) {
+  throw new Error("Calm hid a substantive operational reply");
+}
+addTranscriptUser(watcherMessage);
+addTranscriptUser(watcherMessage);
+const queuedOperationalAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (queuedOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the acknowledgement after queued operational inputs");
+}
+addTranscriptUser(watcherMessage);
+const operationalToolTurn = new AssistantMessageComponent({
+  ...assistantBase,
+  content: [{ type: "toolCall", id: "ack-tool", name: "read", arguments: { path: "sample.txt" } }],
+  stopReason: "toolUse",
+}, true);
+if (operationalToolTurn.render(100).length !== 0) {
+  throw new Error("tool-only operational assistant fixture unexpectedly rendered content");
+}
+const postToolOperationalAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (postToolOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the acknowledgement after intervening tool activity");
+}
+const textAndToolOperationalReply = operationalAssistant({
+  ...assistantBase,
+  content: [
+    { type: "text", text: "Captain, shipshape." },
+    { type: "toolCall", id: "ack-text-tool", name: "read", arguments: { path: "sample.txt" } },
+  ],
+  stopReason: "toolUse",
+});
+if (!textAndToolOperationalReply.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid assistant text from a tool-calling operational turn");
+}
+const expandedReasoningWithOperationalAck = operationalAssistant({
+  ...assistantBase,
+  content: [
+    { type: "thinking", thinking: "VISIBLE_EXPANDED_OPERATIONAL_REASONING" },
+    { type: "text", text: "Captain, shipshape." },
+  ],
+});
+expandedReasoningWithOperationalAck.setHideThinkingBlock(false);
+const expandedReasoningRows = expandedReasoningWithOperationalAck.render(100).join("\n");
+if (!expandedReasoningRows.includes("VISIBLE_EXPANDED_OPERATIONAL_REASONING")) {
+  throw new Error("Calm acknowledgement hiding changed expanded reasoning visibility");
+}
+if (expandedReasoningRows.includes("Captain, shipshape.")) {
+  throw new Error("Calm left the exact acknowledgement beside expanded reasoning");
+}
+const interruptedOperationalAck = operationalAssistant(undefined);
+interruptedOperationalAck.updateContent(assistantMessage("Captain,", "pending"));
+interruptedOperationalAck.updateContent(assistantMessage("Captain,", "aborted"));
+if (!interruptedOperationalAck.render(100).join("\n").includes("Operation aborted")) {
+  throw new Error("Calm hid an interrupted operational turn");
 }
 const operationalNearMisses = [
   {
@@ -944,6 +1078,10 @@ if (JSON.stringify(operationalComponent.render(100)) !== JSON.stringify(expected
 if (!legacyOperationalComponent.render(100).join("\n").includes("legacy presentation compatibility")) {
   throw new Error("turning Calm off did not restore the supported legacy operational row");
 }
+const calmOffOperationalAck = operationalAssistant(assistantMessage("Captain, shipshape."));
+if (!calmOffOperationalAck.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm off hid the operational no-action acknowledgement");
+}
 for (const { name, baseline, actual } of rows) {
   if (JSON.stringify(actual.render(100)) !== JSON.stringify(baseline.render(100))) {
     throw new Error(`${name} did not restore the expanded standard renderer`);
@@ -983,6 +1121,10 @@ for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
   }
   if (workingVisible !== true || hiddenThinkingLabel !== "" || statuses.get("firstmate-calm") !== undefined) {
     throw new Error(`${reason} session did not retain gapless Calm presentation with native working visibility`);
+  }
+  const replayedOperationalAck = operationalAssistant(assistantMessage("Captain, shipshape."));
+  if (replayedOperationalAck.render(100).length !== 0) {
+    throw new Error(`${reason} session replay rendered the operational no-action acknowledgement`);
   }
 }
 await calmCommand.handler("", commandContext);

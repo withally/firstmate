@@ -1,10 +1,12 @@
-// Verified against Pi 0.81.1 and 0.82.0, which add the ordinary-user spacer and row
-// together via InteractiveMode.addMessageToChat. This adapter probes that exact method
-// and throws if it is missing; fm-calm.ts catches that and skips only this adapter with a
-// diagnostic instead of blocking Calm or Pi. It changes only that presentation and never
-// message delivery.
+// Pi adds the ordinary-user spacer and row together through
+// InteractiveMode.addMessageToChat.
+// This adapter probes that exact method and throws if it is missing; fm-calm.ts catches
+// that and skips only this adapter with a diagnostic instead of blocking Calm or Pi.
+// It changes only presentation, records the canonical user-row origin for the assistant
+// layout adapter, and never changes message delivery.
 import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
+import { noteCalmTranscriptUserMessage } from "./fm-calm-assistant-layout.ts";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
 import { classifyFirstmateCurrentOperationalText } from "./fm-operational-input.ts";
 
@@ -43,7 +45,7 @@ type CalmOperationalUserLayoutPatch = {
 // Keep the introduction-version symbol stable so a compatible upgrade cannot
 // double-patch a live process.
 const CALM_OPERATIONAL_USER_LAYOUT_PATCH = Symbol.for(
-  "firstmate:calm-operational-user-layout:pi-0.81.1",
+  "firstmate:calm-operational-user-layout:operational-ack-v1",
 );
 const LEGACY_CALM_OPERATIONAL_PREFIX = "\u2063Supervisor escalate (";
 
@@ -120,13 +122,20 @@ export function installCalmOperationalUserLayout(): void {
     message: UserMessageLike,
     options?: AddMessageOptions,
   ): void {
-    if (message.role !== "user" || !contentIsTextOnly(message.content)) {
+    if (message.role !== "user") {
       originalAddMessageToChat.call(this, message, options);
       return;
     }
 
+    if (!contentIsTextOnly(message.content)) {
+      noteCalmTranscriptUserMessage(false);
+      originalAddMessageToChat.call(this, message, options);
+      return;
+    }
     const text = this.getUserMessageText(message);
-    if (!text || !patch.isOperationalInput(text)) {
+    const isOperational = Boolean(text && patch.isOperationalInput(text));
+    noteCalmTranscriptUserMessage(isOperational);
+    if (!isOperational) {
       originalAddMessageToChat.call(this, message, options);
       return;
     }

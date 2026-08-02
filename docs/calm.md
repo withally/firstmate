@@ -15,6 +15,9 @@ Very narrow terminals fall back to a smaller deterministic sprite.
 While Calm is off, Pi's stock working row is left exactly as Pi renders it.
 Calm hides collapsed thinking labels, the shells for Pi's seven built-in tools, the `fm_watch_arm_pi` tool shell, and canonically classified Firstmate operational user rows.
 The operational inputs remain ordinary user-role messages, while Pi's transcript layout renders their complete rows at zero height.
+Calm also hides the exact whole assistant text `Captain, shipshape.` only when the assistant component belongs to the current canonically classified Firstmate operational input.
+The same text after a genuine captain message, any near match, any tool-calling response, any interrupted or failed response, and every substantive operational response remain visible.
+During streaming, Calm holds only text that is still a prefix of the exact acknowledgement and renders it immediately if the stream diverges, preventing an acknowledgement flash without withholding a disambiguated reply.
 The session-start nudge remains on its existing non-displayed custom-message path.
 
 Calm changes presentation only.
@@ -35,7 +38,7 @@ If Pi removes one of those seams, Calm logs a diagnostic naming the unavailable 
 
 [`calm-mode-feasibility.md`](calm-mode-feasibility.md) owns the version-scoped renderer taxonomy and empirical evidence.
 [`configuration.md`](configuration.md#pi-calm-preference-configcalm) owns the persisted preference file and resolution rules.
-`.pi/extensions/lib/fm-calm-visibility.ts` owns the visibility policy, `.pi/extensions/lib/fm-calm-operational-user-layout.ts` owns the zero-height operational-user row adapter, and `.pi/extensions/lib/fm-calm-working-ship.ts` owns the animated working presentation.
+`.pi/extensions/lib/fm-calm-visibility.ts` owns the visibility policy, `.pi/extensions/lib/fm-calm-operational-user-layout.ts` owns the zero-height operational-user row and assistant-origin association, `.pi/extensions/lib/fm-calm-assistant-layout.ts` owns collapsed-thinking and exact-acknowledgement layout, and `.pi/extensions/lib/fm-calm-working-ship.ts` owns the animated working presentation.
 
 Regression entry points:
 

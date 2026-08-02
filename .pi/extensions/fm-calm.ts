@@ -38,7 +38,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, getKeybindings, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { installCalmAssistantLayout } from "./lib/fm-calm-assistant-layout.ts";
+import {
+  installCalmAssistantLayout,
+  resetCalmTranscriptOrigin,
+} from "./lib/fm-calm-assistant-layout.ts";
 import { installCalmOperationalUserLayout } from "./lib/fm-calm-operational-user-layout.ts";
 import {
   CALM_WORKING_SHIP_WIDGET_KEY,
@@ -275,6 +278,7 @@ export default function (pi: ExtensionAPI) {
   registerBuiltIn(createLsToolDefinition);
 
   pi.on("session_start", (_event, ctx) => {
+    resetCalmTranscriptOrigin();
     exportRendering = false;
     setCalmPresentation(loadCalmPreference());
     setCalmStockExportRendering(false);

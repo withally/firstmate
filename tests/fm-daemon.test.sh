@@ -1215,6 +1215,81 @@ test_new_escalation_after_ambiguity_still_delivers() {
   pass "one ambiguous digest never blocks a later escalation from its own single delivery attempt"
 }
 
+# Retirement must be idempotent for EVERY phase, not just prepared|uncertain.
+# The crash window this reproduces is the one the e2e itself performs: a SIGKILL
+# between the confirmed record write and escalate_flush's buffer truncation
+# leaves a confirmed record whose identity no longer covers the buffer. If that
+# record could retire itself on every flush it would re-add its stale item count
+# until the unresolved prefix clamped to the whole buffer, silently swallowing
+# every later escalation while catch-up called it "may have landed".
+test_retired_confirmed_record_does_not_swallow_later_escalations() {
+  local dir state fakebin sent alerts
+  dir=$(make_bordered_case retired-confirmed-crash)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
+  afk_enter "$state"
+  escalate_add "$state" "done: e1"
+  escalate_add "$state" "done: e2"
+  # The exact post-crash state: the submit was confirmed, the truncation never ran.
+  digest_inflight_write "$state" D1 confirmed tmux fakepane empty '' 2
+
+  escalate_add "$state" "blocked: e3"
+  local flush_env=(PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent"
+    FM_INJECT_CONFIRM_SLEEP=0.05 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript
+    FM_WEDGE_ALARM_LOG="$alerts" FM_STATE_OVERRIDE="$state")
+  env "${flush_env[@]}" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state"
+  [ "$(escalate_unresolved_count "$state")" -eq 2 ] \
+    || fail "the crashed confirmed digest did not retire exactly its own 2 items, got $(escalate_unresolved_count "$state")"
+
+  env "${flush_env[@]}" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state" \
+    || fail "the escalation buffered after the crash was refused delivery (away channel went dark)"
+  [ "$(escalate_unresolved_count "$state")" -eq 2 ] \
+    || fail "a retired record re-added its item count, got $(escalate_unresolved_count "$state")"
+  grep -F 'blocked: e3' "$sent" >/dev/null \
+    || fail "the escalation buffered after the crash was never typed"
+  [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
+    || fail "expected exactly one delivery attempt, got $(grep -c 'Supervisor escalate' "$sent")"
+  grep -F 'done: e1' "$sent" >/dev/null \
+    && fail "an already-confirmed item was replayed"
+  [ "$(escalate_pending_count "$state")" -eq 0 ] \
+    || fail "the delivered escalation was not cleared from the deliverable buffer"
+  [ "$(wc -l < "$alerts" | tr -d ' ')" -eq 1 ] \
+    || fail "retirement alarmed more than once, got $(wc -l < "$alerts")"
+  grep -F 'UNCERTAIN' "$state/.subsuper-inject-wedged" >/dev/null \
+    || fail "a retired confirmed digest was described as undelivered rather than possibly-landed"
+  pass "a retired confirmed record retires once and never swallows later escalations"
+}
+
+# The shutdown trap reaps the bounded notifier and then flushes, and that flush
+# can now raise its own alarm. Starting a fresh synchronous notifier there would
+# block the trap for up to FM_WEDGE_ALARM_TIMEOUT_SECS per channel, past the
+# launcher's 10s stop budget, turning a clean stop into a lifecycle blocker.
+test_shutdown_flush_alarm_keeps_marker_without_active_notifier() {
+  local dir state fakebin sent alerts
+  dir=$(make_bordered_case shutdown-alarm)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
+  touch "$dir/.swallow"
+  escalate_add "$state" "needs-decision: shutting down"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript FM_WEDGE_ALARM_LOG="$alerts" \
+    FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; WEDGE_ALARM_SUPPRESS_ACTIVE=1; escalate_flush "$2"' _ "$DAEMON" "$state"
+  [ -s "$state/.subsuper-inject-wedged" ] \
+    || fail "the shutdown flush dropped the durable alarm marker return catch-up depends on"
+  [ "$(escalate_unresolved_count "$state")" -eq 1 ] \
+    || fail "the shutdown flush did not retire its ambiguous digest"
+  [ ! -s "$alerts" ] \
+    || fail "the shutdown flush started a synchronous notifier after notifier teardown: $(cat "$alerts")"
+  pass "a shutdown-flush alarm keeps its durable marker without starting a bounded notifier"
+}
+
 test_max_defer_flushes_empty_idle_pane() {
   local dir state fakebin sent
   dir=$(make_bordered_case maxdefer-recover)
@@ -1958,6 +2033,8 @@ test_submit_ack_confirms_on_bordered_empty_composer
 test_submit_ack_reports_pending_on_persistent_swallow
 test_max_defer_empty_swallow_types_once_and_alarms
 test_new_escalation_after_ambiguity_still_delivers
+test_retired_confirmed_record_does_not_swallow_later_escalations
+test_shutdown_flush_alarm_keeps_marker_without_active_notifier
 test_max_defer_flushes_empty_idle_pane
 test_max_defer_pending_composer_alarms_without_typing
 test_normal_flush_clears_stale_wedge_marker

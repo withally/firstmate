@@ -201,6 +201,12 @@ MAX_DEFER_SECS_DEFAULT=300
 WEDGE_ALARM_TIMEOUT_SECS_DEFAULT=10
 WEDGE_ALARM_LAST_EPOCH=0
 WEDGE_ALARM_NOTIFIER_PID=
+# Set while the shutdown trap runs. The trap reaps the bounded notifier and then
+# flushes, and that flush can itself hit an ambiguous submit; starting a fresh
+# synchronous notifier there would block the trap for up to
+# FM_WEDGE_ALARM_TIMEOUT_SECS per channel, past the launcher's stop budget. The
+# durable marker still carries the incident to return catch-up.
+WEDGE_ALARM_SUPPRESS_ACTIVE=0
 DIGEST_INFLIGHT_NAME=".subsuper-digest-inflight"
 DIGEST_INFLIGHT_SCHEMA="fm-away-digest.v1"
 ESCALATE_UNRESOLVED_NAME=".subsuper-escalations.unresolved"
@@ -775,11 +781,17 @@ escalate_flush() {  # <state>
 # Retiring releases the in-flight record so newly buffered escalations get their
 # own logical digest identity and their own single delivery attempt.
 digest_retire_unresolved() {  # <state> <age-seconds>
-  local state=$1 age=$2 inflight schema id phase verdict backend target created items unresolved total
+  local state=$1 age=$2 inflight schema id phase retired verdict backend target created items unresolved total
   inflight="$state/$DIGEST_INFLIGHT_NAME"
   schema=$(digest_inflight_field "$inflight" schema)
   id=$(digest_inflight_field "$inflight" id)
   phase=$(digest_inflight_field "$inflight" phase)
+  retired=$(digest_inflight_field "$inflight" retired)
+  # Retirement is once per logical digest. An already-retired record has had its
+  # items counted into the unresolved prefix and its one alarm raised; re-running
+  # would re-add the same count until the prefix swallowed the whole buffer and
+  # every later escalation with it.
+  [ "$retired" != 1 ] || return 0
   verdict=$(digest_inflight_field "$inflight" verdict)
   backend=$(digest_inflight_field "$inflight" backend)
   target=$(digest_inflight_field "$inflight" target)
@@ -1052,10 +1064,13 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   digest_id=$(digest_inflight_field "$inflight" id)
   phase=$(digest_inflight_field "$inflight" phase)
   retired=$(digest_inflight_field "$inflight" retired)
-  # Only a digest that is unresolved AND not yet retired takes the uncertainty
-  # path: digest_retire_unresolved calls this exactly once per logical digest,
-  # then marks the record retired so the same identity can never alarm again.
-  case "$phase" in prepared|uncertain) [ "$retired" = 1 ] || uncertain=1 ;; esac
+  # Only a digest whose text may already have been accepted, and that is not yet
+  # retired, takes the uncertainty path: digest_retire_unresolved calls this
+  # exactly once per logical digest, then marks the record retired so the same
+  # identity can never alarm again. `confirmed` belongs here too - it is being
+  # retired precisely because its identity no longer covers the buffer, and
+  # calling its content "undelivered" would be the opposite of what happened.
+  case "$phase" in prepared|uncertain|confirmed) [ "$retired" = 1 ] || uncertain=1 ;; esac
   max_defer="${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}"
   # Re-alarm at most once per max-defer window so a long wedge does not spam.
   # A newly unresolved digest is exempt from the marker-age throttle: it gets
@@ -1099,6 +1114,10 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   # its backend status-line is unreadable - the gap the 2026-07-10 overnight
   # incident fell through. Configurable and best-effort; the marker above stays
   # the durable record whether or not any channel fires.
+  if [ "$notify" -eq 1 ] && [ "${WEDGE_ALARM_SUPPRESS_ACTIVE:-0}" -eq 1 ]; then
+    notify=0
+    log "wedge alarm: active alert skipped during shutdown; durable marker $marker carries the incident to return catch-up"
+  fi
   if [ "$notify" -eq 1 ]; then
     if [ "$uncertain" -eq 1 ]; then
       wedge_alarm_notify "away-mode digest delivery UNCERTAIN - automatic replay suppressed; see $marker" "$marker"
@@ -1326,41 +1345,45 @@ inject_msg() {  # <message> [state] [durable] [item-count]
         log "inject blocked: malformed in-flight digest record; retiring it without replay"
         return 2
       fi
-      case "$phase" in
-        queued)
-          if [ "$existing_id" != "$digest_id" ]; then
-            digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted '' "$items" \
-              || { log "inject deferred: could not update the queued digest identity"; return 1; }
-          fi
-          ;;
-        confirmed)
-          [ "$existing_id" = "$digest_id" ] || {
-            log "inject blocked: confirmed in-flight digest identity does not cover the current buffer; retiring it without replay"
+      # `retired` is a property of the RECORD, not of one phase. A retired
+      # digest is closed history: its items already sit under the buffer's
+      # unresolved prefix, so whatever is deliverable now is a genuinely NEW
+      # logical digest (even when its text repeats verbatim) and gets its own
+      # single delivery attempt. Testing it BEFORE the phase dispatch keeps
+      # retirement idempotent for every phase, so a crash-window record can
+      # never re-retire itself and swallow every later escalation.
+      if [ "$retired" = 1 ]; then
+        digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted '' "$items" \
+          || { log "inject deferred: could not persist the new digest identity"; return 1; }
+      else
+        case "$phase" in
+          queued)
+            if [ "$existing_id" != "$digest_id" ]; then
+              digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted '' "$items" \
+                || { log "inject deferred: could not update the queued digest identity"; return 1; }
+            fi
+            ;;
+          confirmed)
+            [ "$existing_id" = "$digest_id" ] || {
+              log "inject blocked: confirmed in-flight digest identity does not cover the current buffer; retiring it without replay"
+              return 2
+            }
+            return 0
+            ;;
+          prepared|uncertain)
+            if [ "$existing_id" = "$digest_id" ]; then
+              log "inject blocked: digest $digest_id has an unresolved $phase submit; automatic replay suppressed"
+            else
+              log "inject blocked: unresolved in-flight digest identity does not cover the current buffer; automatic replay suppressed"
+            fi
             return 2
-          }
-          return 0
-          ;;
-        prepared|uncertain)
-          # A retired record is history: its items already sit under the buffer's
-          # unresolved prefix, so whatever is deliverable now is a genuinely NEW
-          # logical digest (even when its text repeats verbatim) and gets its own
-          # single delivery attempt.
-          if [ "$retired" = 1 ]; then
-            digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted '' "$items" \
-              || { log "inject deferred: could not persist the new digest identity"; return 1; }
-          elif [ "$existing_id" = "$digest_id" ]; then
-            log "inject blocked: digest $digest_id has an unresolved $phase submit; automatic replay suppressed"
+            ;;
+          *)
+            log "inject blocked: unrecognized in-flight digest phase '$phase'; retiring it without replay"
             return 2
-          else
-            log "inject blocked: unresolved in-flight digest identity does not cover the current buffer; automatic replay suppressed"
-            return 2
-          fi
-          ;;
-        *)
-          log "inject blocked: unrecognized in-flight digest phase '$phase'; retiring it without replay"
-          return 2
-          ;;
-      esac
+            ;;
+        esac
+      fi
     else
       digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted '' "$items" \
         || { log "inject deferred: could not persist the queued digest identity"; return 1; }
@@ -1663,6 +1686,7 @@ fm_super_main() {
   local WATCHER_PID="" CUR_TMP=""
   cleanup() {
     trap - TERM INT
+    WEDGE_ALARM_SUPPRESS_ACTIVE=1
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then

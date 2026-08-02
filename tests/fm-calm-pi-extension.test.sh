@@ -329,6 +329,7 @@ const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-
 for (const [name, install, expected] of [
   ["collapsed-thinking", assistant.installCalmAssistantLayout, "AssistantMessageComponent"],
   ["operational-user-row", operational.installCalmOperationalUserLayout, "InteractiveMode"],
+  ["transcript-replay-window", operational.installCalmTranscriptReplayWindow, "InteractiveMode"],
 ]) {
   let reason;
   try {

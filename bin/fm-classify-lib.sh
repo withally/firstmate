@@ -396,11 +396,14 @@ crew_absorb_class() {  # <id>
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class
 # reports `working`). This is the "provably working" predicate at the heart of
-# absorb-only-when-provably-working: a no-verb turn-end or stale wake is absorbed
+# absorb-only-when-provably-working: an ambiguous signal (a bare turn-end, an
+# unknown file shape, a non-working nonterminal event) or a stale wake is absorbed
 # ONLY when this returns 0, and SURFACED otherwise (the crew may be done, waiting
-# on a decision, or wedged). For stale panes it is checked before trusting the
-# status log so a pre-validation captain-relevant line does not override an active
-# run. See crew_absorb_class for the exact working/paused/none decision.
+# on a decision, or wedged). Routine working-progress batches never reach this
+# predicate; signal_is_routine_working_progress absorbs them on event semantics
+# alone. For stale panes it is checked before trusting the status log so a
+# pre-validation captain-relevant line does not override an active run. See
+# crew_absorb_class for the exact working/paused/none decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }

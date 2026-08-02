@@ -29,8 +29,11 @@
 #                          external-wait pause is absorbed instead with its own long
 #                          re-surface cadence, never as a wedge. Only when neither
 #                          absorb class applies does the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          terminal (captain-relevant) or non-terminal (no
+#                          captain-relevant verb), both surfaced at once. The
+#                          routine working-progress absorb is a signal-path rule
+#                          only and never suppresses a stale surface. A
+#                          provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason

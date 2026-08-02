@@ -41,7 +41,7 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
-# UNIT 1: fresh-session cleanup removes all four delivery artifacts.
+# UNIT 1: fresh-session cleanup removes every delivery artifact.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
@@ -49,6 +49,7 @@ unit_clear_stale() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
+  : > "$st/state/.subsuper-escalations.unresolved"
   : > "$st/state/.subsuper-inject-wedged"
   : > "$st/state/.subsuper-digest-inflight"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
@@ -58,9 +59,10 @@ unit_clear_stale() {
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
   if [ ! -e "$st/state/.subsuper-escalations" ] \
      && [ ! -e "$st/state/.subsuper-escalations.since" ] \
+     && [ ! -e "$st/state/.subsuper-escalations.unresolved" ] \
      && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
      && [ ! -e "$st/state/.subsuper-digest-inflight" ]; then
-    pass "clear-stale: removes buffer, sidecar, wedge marker, and in-flight identity"
+    pass "clear-stale: removes buffer, both sidecars, wedge marker, and in-flight identity"
   else
     fail "clear-stale: stale artifacts survived"
   fi
@@ -174,7 +176,7 @@ unit_dead_daemon_restart_preserves_inflight() {
 }
 
 unit_pi_herdr_capability_gate() {
-  local unsafe safe other out rc
+  local unsafe safe other plain out rc
   unsafe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-unsafe.XXXXXX")
   out=$(FM_HOME="$unsafe" FM_STATE_OVERRIDE="$unsafe/state" FM_SUPERVISOR_BACKEND=herdr \
     FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
@@ -204,7 +206,21 @@ unit_pi_herdr_capability_gate() {
   else
     fail "capability gate: unrelated Herdr harness was refused"
   fi
-  rm -rf "$unsafe" "$safe" "$other"
+
+  # The gate only needs the RESOLVED backend. A plain terminal (no tmux, no
+  # herdr, no override) has always been able to enter native away mode on its
+  # printed tmux fallback; the ambiguity gate must not start refusing it.
+  plain=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-plain.XXXXXX")
+  out=$(env -u FM_SUPERVISOR_BACKEND -u FM_SUPERVISOR_TARGET -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
+    FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=claude \
+    "$LAUNCH" start-native 2>&1)
+  rc=$?
+  if [ "$rc" -eq 0 ] && [ -e "$plain/state/.afk" ]; then
+    pass "capability gate: a plain-terminal primary still enters native away mode"
+  else
+    fail "capability gate: native entry now refuses an unresolved backend it used to accept ($out)"
+  fi
+  rm -rf "$unsafe" "$safe" "$other" "$plain"
 }
 
 # ---------------------------------------------------------------------------

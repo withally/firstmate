@@ -201,6 +201,7 @@ Away-mode digests add a durable cross-invocation boundary around this primitive.
 The daemon persists the logical digest identity immediately before submit.
 If native state or composer evidence cannot confirm delivery, the daemon treats the result as possibly accepted and never automatically types that digest again across housekeeping, max-defer, shutdown, or restart.
 The buffer and identity remain unresolved for return catch-up, and exactly one delivery-uncertain alarm is raised through the wedge-alarm channel.
+The suppression is per logical digest: the unresolved items stay at the front of the buffer under a durable count, and any escalation buffered afterwards becomes a new logical digest with its own single delivery attempt, so the away channel keeps working after an ambiguous submit.
 Herdr 0.7.3 exposes native agent state but no supported durable Pi session-record acknowledgement through its pane or agent API.
 Pi exposes its session file to its own process, but Firstmate does not scrape another process's environment or infer private session paths.
 Until a compatibility-probed durable acknowledgement is available, ambiguity therefore resolves toward no retype.

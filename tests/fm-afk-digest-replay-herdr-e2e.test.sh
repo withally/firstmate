@@ -22,6 +22,23 @@ for tool in herdr jq pi python3; do
   command -v "$tool" >/dev/null 2>&1 || { echo "skip: $tool not found"; exit 0; }
 done
 
+# The accepted-but-unconfirmed reproduction depends on Pi's operational
+# follow-up acceptance path, so the regression records WHICH Pi proved it and
+# refuses to pass against an older build that never exercised that path.
+PI_ACCEPTANCE_FLOOR=0.83.0
+PI_VERSION_RAW=$(pi --version 2>/dev/null | head -1)
+PI_VERSION=$(printf '%s\n' "$PI_VERSION_RAW" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+[ -n "$PI_VERSION" ] || { echo "skip: could not read a version from 'pi --version'"; exit 0; }
+if [ "$(printf '%s\n%s\n' "$PI_ACCEPTANCE_FLOOR" "$PI_VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" != "$PI_ACCEPTANCE_FLOOR" ]; then
+  echo "skip: Pi $PI_VERSION is older than the $PI_ACCEPTANCE_FLOOR acceptance path this regression must prove"
+  exit 0
+fi
+fm_backend_source herdr >/dev/null 2>&1 \
+  || fail "could not source the herdr backend adapter"
+fm_backend_herdr_version_check \
+  || fail "herdr version_check failed against the real installed herdr"
+HERDR_VERSION_RAW=$(herdr --version 2>/dev/null | head -1)
+
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 SESSION=${HERDR_LAB_SESSION:-$("$LAB_HELPER" name fm-afk-digest-replay-e2e)}
 TMP_ROOT=$(fm_test_tmproot fm-afk-digest-replay-e2e)
@@ -149,6 +166,10 @@ export FM_POLL=1
 export FM_SIGNAL_GRACE=1
 export FM_HEARTBEAT=999999
 export FM_CHECK_INTERVAL=999999
+# The catch-all status scan is what turns the fixture's status line into the one
+# captain-relevant escalation; on its 300s default it would never run inside this
+# regression's window.
+export FM_HEARTBEAT_SCAN_SECS=1
 export FM_MAX_DEFER_SECS=3
 export FM_INJECT_CONFIRM_SLEEP=0.2
 export FM_INJECT_CONFIRM_RETRIES=2
@@ -238,9 +259,35 @@ persisted_count=$(persisted_operational_count)
 [ "$persisted_count" -eq 1 ] || fail "Pi persisted $persisted_count copies of one logical operational digest"
 [ -s "$STATE/.subsuper-escalations" ] || fail "ambiguous digest lost its unresolved escalation buffer"
 [ -s "$STATE/.subsuper-digest-inflight" ] || fail "ambiguous digest lost its durable in-flight identity"
+[ "$(cat "$STATE/.subsuper-escalations.unresolved" 2>/dev/null || echo 0)" \
+  -eq "$(wc -l < "$STATE/.subsuper-escalations" | tr -d ' ')" ] \
+  || fail "the ambiguous digest's items were not durably marked unresolved"
 [ -s "$STATE/.subsuper-inject-wedged" ] || fail "ambiguous digest did not raise a durable uncertainty alarm"
 [ "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" -eq 1 ] || fail "ambiguous digest uncertainty alarm was not bounded to one notification"
 prefix_occurrences=$(awk -F 'FIRSTMATE_OP: v1 away-supervisor' '{ total += NF - 1 } END { print total + 0 }' "$SEND_LOG")
 [ "$prefix_occurrences" -eq 1 ] || fail "operational text was concatenated or repeated ($prefix_occurrences prefix occurrences)"
 
-pass "real Pi/Herdr ambiguous acknowledgement types and persists one digest across housekeeping and restart"
+# The away channel must not go dark after the ambiguity: a brand-new
+# captain-relevant escalation still earns its own single delivery attempt.
+printf 'blocked: synthetic follow-up needs the captain\n' > "$STATE/replay-followup.status"
+for _ in $(seq 1 600); do
+  persisted=$(persisted_operational_count)
+  [ "$persisted" -ge 2 ] && break
+  sleep 0.1
+done
+[ "${persisted:-0}" -eq 2 ] \
+  || fail "a new escalation after the ambiguous digest was never delivered (persisted=$persisted)"
+literal_count=$(grep -c '^⁣FIRSTMATE_OP: v1 away-supervisor' "$SEND_LOG" 2>/dev/null || true)
+[ "$literal_count" -eq 2 ] \
+  || fail "the new logical digest did not get exactly one delivery attempt (typed $literal_count times total)"
+grep -F 'replay-task.status' "$SEND_LOG" | grep -F 'replay-followup.status' >/dev/null \
+  && fail "the unresolved digest was replayed inside the new digest"
+# One alarm per unresolved logical digest - never one per housekeeping tick.
+notify_count=$(wc -l < "$NOTIFY_LOG" | tr -d ' ')
+[ "$notify_count" -le 2 ] \
+  || fail "uncertainty alarms were not bounded to one per logical digest ($notify_count notifications)"
+
+printf 'evidence: herdr=%s pi=%s (floor %s) target=%s literal-sends=%s unresolved-items=%s notifier-count=%s\n' \
+  "$HERDR_VERSION_RAW" "$PI_VERSION_RAW" "$PI_ACCEPTANCE_FLOOR" "$PRIMARY_TARGET" "$literal_count" \
+  "$(cat "$STATE/.subsuper-escalations.unresolved" 2>/dev/null || echo 0)" "$notify_count"
+pass "real Pi/Herdr ambiguous acknowledgement types and persists one digest across housekeeping and restart, and never darkens the away channel"

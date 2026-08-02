@@ -103,6 +103,7 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 A busy primary pane, or any composer verdict other than `empty`, defers the pre-submit injection; the buffered escalation survives in `state/.subsuper-escalations` and can be attempted on a later housekeeping tick.
 Immediately before a submit, the daemon persists a logical digest identity in `state/.subsuper-digest-inflight`.
 Any submit result other than confirmed `empty`, including `pending`, is delivery-ambiguous and permanently suppresses automatic retyping of that logical digest across housekeeping ticks and daemon restarts.
+The invariant is scoped to that one logical digest: its items move under the buffer's unresolved prefix (counted in `state/.subsuper-escalations.unresolved`), and escalations buffered afterwards form their own logical digest with their own single delivery attempt, so one ambiguous submit never darkens the away channel for the rest of the session.
 In afk mode the composer guard is belt-and-suspenders (no human is typing), but it protects against the race window between the captain returning and their message landing, a dead shell, and the daemon's own previous injection sitting unsent.
 
 **Max-defer escape (the daemon must never silently wedge).**
@@ -235,7 +236,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat `state/.subsuper-escalations`, its `.since` sidecar, `state/.subsuper-digest-inflight`, and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
+Treat `state/.subsuper-escalations`, its `.since` and `.unresolved` sidecars, `state/.subsuper-digest-inflight`, and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.

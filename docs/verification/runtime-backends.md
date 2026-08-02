@@ -388,6 +388,17 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
 
+The accepted-but-unconfirmed away-digest path is covered separately, against a real Pi primary with Calm on in an isolated non-default Herdr lab:
+
+```sh
+FM_AFK_DIGEST_REPLAY_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-afk-digest-replay-herdr-e2e.test.sh
+```
+
+The regression probes both backends before it runs: it refuses to pass on a Pi older than the 0.83.0 operational follow-up acceptance path (it skips with that reason instead), calls `fm_backend_herdr_version_check` against the installed Herdr client, and prints an `evidence:` line carrying the observed `herdr --version` and `pi --version`.
+
+Observed guarantees: Herdr's native working edge was suppressed after Pi accepted one operational message, so the daemon could never confirm the submit; the logical digest was typed exactly once and persisted exactly once in Pi's session JSONL, semantically inspected, across multiple housekeeping ticks and a daemon crash/restart; the unresolved items stayed buffered and durably marked unresolved with no concatenation and no replay; exactly one bounded delivery-uncertain alarm reached the wedge-alarm channel; and a captain-relevant escalation raised *after* the ambiguity still received its own single delivery attempt under a new logical digest identity, so the away channel never went dark.
+
 ## Zellij
 
 The current compatibility floor and latest verification are Zellij 0.44.0 with `jq` on macOS aarch64.

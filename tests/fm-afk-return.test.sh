@@ -213,7 +213,47 @@ test_check_retries_recorded_terminal_teardown() {
   pass "check retries recorded terminal teardown and keeps catch-up gated until success"
 }
 
+# A `queued` record means the digest was never typed at all - the opposite of
+# delivery-uncertain. Telling the captain it MAY have landed changes whether
+# they must re-read those escalations as new, so the catch-up must label the
+# two cases distinctly and split the buffer at the daemon's unresolved prefix.
+test_catchup_labels_queued_and_uncertain_delivery_distinctly() {
+  local dir gate out
+  dir="$TMP_ROOT/delivery-labels"
+  install_runner "$dir"
+  seed_live_blocker "$dir" herdr synthetic-dependency
+  gate="$dir/home/state/.afk-return-catchup"
+  date +%s > "$dir/home/state/.afk"
+  printf 'schema=fm-away-digest.v1\nid=queued-fixture\nphase=queued\nretired=0\nverdict=not-attempted\n' \
+    > "$dir/home/state/.subsuper-digest-inflight"
+  {
+    printf 'repair-task.status: possibly delivered item\n'
+    printf 'repair-task.status: provably undelivered item\n'
+  } > "$dir/home/state/.subsuper-escalations"
+  printf '1\n' > "$dir/home/state/.subsuper-escalations.unresolved"
+
+  set +e
+  out=$(run_return "$dir" begin)
+  set -e
+  grep -F $'evidence\tdelivery-not-attempted\tid=queued-fixture' "$gate" >/dev/null \
+    || fail "a queued (never typed) record was not labeled distinctly from delivery-uncertain: $out"
+  grep -F $'evidence\tdelivery-uncertain\trepair-task.status: possibly delivered item' "$gate" >/dev/null \
+    || fail "the unresolved buffer prefix was not surfaced as delivery-uncertain evidence"
+  grep -F $'evidence\tescalation\trepair-task.status: provably undelivered item' "$gate" >/dev/null \
+    || fail "the still-deliverable buffer tail was not surfaced as ordinary escalation evidence"
+  grep -F $'evidence\tdelivery-uncertain\trepair-task.status: provably undelivered item' "$gate" >/dev/null \
+    && fail "an item that never left the daemon was reported as possibly delivered"
+
+  printf 'resolved [key=synthetic-dependency]: refreshed the synthetic token\n' \
+    >> "$dir/home/state/repair-task.status"
+  out=$(run_return "$dir" check) || fail "resolved blocker did not clear return catch-up: $out"
+  [ ! -e "$dir/home/state/.subsuper-escalations.unresolved" ] \
+    || fail "successful check left the unresolved prefix count behind"
+  pass "catch-up labels queued, uncertain, and still-deliverable delivery evidence distinctly"
+}
+
 test_return_gate_orders_catchup_before_bearings
+test_catchup_labels_queued_and_uncertain_delivery_distinctly
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_away_reentry_refuses_pending_return_gate

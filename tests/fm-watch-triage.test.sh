@@ -5,7 +5,8 @@
 # wake, so firstmate's LLM re-arms once per actionable event instead of once per
 # wake. These tests cover the classifier predicates as pure functions, then drive
 # a real fm-watch.sh subprocess to assert the behavioral contract:
-# pure working-progress signals absorbed without a runtime busy proof,
+# an ordinary direct report's pure working-progress signals absorbed without a
+# runtime busy proof while a secondmate's working: report is still delivered,
 # provably-working ambiguous wakes absorbed (no exit, no queue entry, suppressor
 # advanced, beacon fresh), stopped-crew ambiguous wakes surfaced (queue + exit),
 # provably-working stale panes absorbed-then-escalated past the threshold,
@@ -147,7 +148,19 @@ test_signal_is_routine_working_progress_classifier() {
     || fail "a missing status file was classified as pure working progress"
   ! signal_is_routine_working_progress \
     || fail "an empty signal batch was classified as pure working progress"
-  pass "signal_is_routine_working_progress: only nonempty all-working status batches are routine"
+  # Routine absorb is scoped to ordinary direct reports: a persistent secondmate's
+  # working: report has no stale-loop or heartbeat backstop, so it must stay on the
+  # conservative provably-working path whether it stands alone or rides a batch.
+  printf 'window=test:fm-b\nkind=ship\n' > "$state/b.meta"
+  printf 'window=test:fm-mate\nkind=secondmate\n' > "$state/mate.meta"
+  printf 'working [key=audit]: findings in data/audit.md corr=req-7\n' > "$state/mate.status"
+  signal_is_routine_working_progress "$state/b.status" \
+    || fail "an ordinary kind=ship working status was not classified as routine progress"
+  ! signal_is_routine_working_progress "$state/mate.status" \
+    || fail "a secondmate working report was classified as routine progress"
+  ! signal_is_routine_working_progress "$state/b.status" "$state/mate.status" \
+    || fail "a batch naming a secondmate was classified as pure working progress"
+  pass "signal_is_routine_working_progress: only nonempty all-working ordinary-task status batches are routine"
 }
 
 test_stale_is_terminal_classifier() {
@@ -423,6 +436,7 @@ test_working_note_unknown_runtime_absorbed() {
   dir=$(make_case working-note-unknown); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
   status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'working: researching the unknown-busy incident\n' > "$status_file"
   # Exact incident boundary: Codex has no verified semantic busy source, so the
   # authoritative runtime verdict is unknown even though the fresh event itself
@@ -446,6 +460,32 @@ test_working_note_unknown_runtime_absorbed() {
   reap "$pid"
   unset FM_FAKE_CREW_STATE
   pass "routine working progress is absorbed with unknown runtime busy state (no reason, queue, or model wake)"
+}
+
+# The counterpart boundary: a persistent secondmate's working: line is its
+# documented sparse material phase report and a valid correlated answer to a
+# marked request, and nothing else would ever deliver it - the stale loop skips an
+# idle secondmate endpoint by design, and the heartbeat rescan only looks at
+# captain-relevant statuses. So routine absorb must not apply to it, even with the
+# same unknown runtime busy state that absorbs an ordinary task's progress above.
+test_secondmate_working_note_surfaced() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case secondmate-working-report); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  status_file="$state/mate.status"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  printf 'working [key=audit]: findings in data/audit.md corr=req-7\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a secondmate working: report"
+  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the surfaced secondmate signal"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the secondmate report failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
+    || fail "secondmate working: report was not queued"
+  [ -s "$state/.seen-mate_status" ] || fail "surfaced secondmate report did not advance its .seen-* suppressor"
+  unset FM_FAKE_CREW_STATE
+  pass "a secondmate working: report is still delivered (no stale or heartbeat backstop covers it)"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
@@ -1860,6 +1900,7 @@ test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_unknown_runtime_absorbed
+test_secondmate_working_note_surfaced
 test_actionable_and_mixed_signals_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

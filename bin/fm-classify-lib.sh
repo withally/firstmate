@@ -33,9 +33,11 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
 # Captain-relevant status verbs. A status line carrying any of these is work
-# firstmate must see. In ordinary active-session mode, a status-only batch whose
-# every latest event is `working:` is routine progress and is absorbed without a
-# runtime busy proof. Other lines without these verbs are ambiguous signals: the
+# firstmate must see. In ordinary active-session mode, an ordinary direct report's
+# status-only batch whose every latest event is `working:` is routine progress and
+# is absorbed without a runtime busy proof; a persistent secondmate's `working:`
+# report keeps its existing delivery because the stale and heartbeat backstops do
+# not cover it. Other lines without these verbs are ambiguous signals: the
 # watcher absorbs them only with positive provably-working evidence, while the
 # daemon uses its away-mode classification. FM_CAPTAIN_RE overrides the whole set
 # when a home needs a custom verb vocabulary; absent, this default applies.
@@ -319,11 +321,34 @@ signal_reason_is_actionable() {  # <file> ...
   return 1
 }
 
+# Task kind recorded in a status file's sibling `<id>.meta`, echoed as one token.
+# A metadata record with no kind= field is an ordinary ship task and a status file
+# with no metadata at all is unknown, matching bin/fm-watch.sh's window_kind.
+status_file_kind() {  # <status-file>
+  local f=$1 meta kind
+  meta="${f%.status}.meta"
+  if [ -f "$meta" ]; then
+    kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    printf '%s' "${kind:-ship}"
+    return 0
+  fi
+  printf 'unknown'
+}
+
 # 0 (routine/absorb) only when the signal batch contains one or more status files,
-# contains no lifecycle marker or unknown file shape, and every status file's
-# latest event has the leading `working` verb. This is intentionally narrower
-# than "not captain-relevant": paused, resolved, captain-held, missing, and
-# malformed signals retain their existing conservative reconciliation path.
+# contains no lifecycle marker or unknown file shape, references no persistent
+# secondmate, and every status file's latest event has the leading `working` verb.
+# This is intentionally narrower than "not captain-relevant": paused, resolved,
+# captain-held, missing, and malformed signals retain their existing conservative
+# reconciliation path.
+# A secondmate is excluded because routine absorb relies on the unchanged-pane
+# stale path as its delayed backstop, and that path deliberately skips a
+# secondmate endpoint unless it declared a pause (an idle secondmate agent is
+# healthy by design), while the heartbeat backstop only rescans captain-relevant
+# statuses. A secondmate `working [key=...]` line is also its documented sparse
+# material phase report and a valid correlated answer to a marked request
+# (bin/fm-brief.sh's charter contract, bin/fm-pending-reply-lib.sh), so it keeps
+# the conservative provably-working path that used to deliver it.
 # The always-on watcher uses this before consulting semantic busy state. Away mode
 # does not use it because the daemon remains the sole triage owner there.
 signal_is_routine_working_progress() {  # <file> ...
@@ -331,6 +356,7 @@ signal_is_routine_working_progress() {  # <file> ...
   for f in "$@"; do
     case "$f" in *.status) ;; *) return 1 ;; esac
     [ -e "$f" ] || return 1
+    case "$(status_file_kind "$f")" in secondmate) return 1 ;; esac
     last=$(last_status_line "$f")
     [ "$(status_line_verb "$last")" = working ] || return 1
     seen=1

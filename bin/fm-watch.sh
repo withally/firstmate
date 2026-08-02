@@ -2,9 +2,12 @@
 # Firstmate watcher.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
 # and keeps blocking; it queues and exits only for actionable wakes.
-# A status-only signal batch whose latest events are all `working:` is routine
-# progress and is absorbed in ordinary active-session mode without consulting
-# runtime busy state. Bare turn-end, unknown-shape signal, and stale paths remain
+# An ordinary direct report's status-only signal batch whose latest events are all
+# `working:` is routine progress and is absorbed in ordinary active-session mode
+# without consulting runtime busy state; a persistent secondmate's `working:`
+# report is excluded because the stale loop deliberately skips its idle endpoint
+# and the heartbeat backstop only rescans captain-relevant statuses, so nothing
+# else would deliver it. Bare turn-end, unknown-shape signal, and stale paths remain
 # absorb-only-when-provably-working: they are absorbed only when the crew shows
 # POSITIVE evidence it is still working (an actively-running no-mistakes step, or
 # a backend busy signal), and surfaced otherwise, so a crew that finishes (or
@@ -16,7 +19,8 @@
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
 #                          has a captain-relevant verb OR a non-routine signal's
 #                          crew is not provably working, unless afk is active;
-#                          pure working-progress status batches are absorbed
+#                          an ordinary direct report's pure working-progress
+#                          status batch is absorbed
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
@@ -126,10 +130,13 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # working: note or turn-end while a pipeline runs, a no-change heartbeat). Rather
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
 # and ABSORBS the benign majority - it advances the suppression marker, logs to a
-# debug log, and keeps blocking WITHOUT enqueuing or exiting. A pure
-# working-progress status batch is absorbed from its event semantics alone, so
-# missing or unverified runtime busy state cannot turn routine progress into an
-# LLM wake. Bare turn-end, unknown-shape signal, and stale paths remain
+# debug log, and keeps blocking WITHOUT enqueuing or exiting. An ordinary direct
+# report's pure working-progress status batch is absorbed from its event semantics
+# alone, so missing or unverified runtime busy state cannot turn routine progress
+# into an LLM wake; a persistent secondmate's working: report is excluded from
+# that absorb and stays on the provably-working path, because the stale loop skips
+# an idle secondmate endpoint by design and the heartbeat backstop only rescans
+# captain-relevant statuses. Bare turn-end, unknown-shape signal, and stale paths remain
 # absorb-only-when-provably-working: they are absorbed ONLY while the crew shows
 # positive evidence it is still working (an actively-running no-mistakes step, or
 # a busy pane, via crew_is_provably_working over fm-crew-state.sh); a crew that
@@ -892,8 +899,11 @@ EOF
     #     so it may be done (even via an interactive menu that wrote no done:
     #     status), waiting on a decision, or wedged. Absorbing such a turn-end is
     #     exactly the swallowed-finish boundary this rule guards.
-    # A status-only batch whose every latest event is working: is routine progress
-    # and bypasses the runtime-state read. Actionable -> enqueue, advance .seen-*
+    # An ordinary direct report's status-only batch whose every latest event is
+    # working: is routine progress and bypasses the runtime-state read; a batch
+    # naming a persistent secondmate never qualifies, because no later backstop
+    # would deliver its sparse phase report or correlated reply.
+    # Actionable -> enqueue, advance .seen-*
     # markers, exit. Benign -> advance the markers so it will not re-fire, log,
     # and keep blocking without enqueuing. The provably-working check is the only
     # costly one (it may run a bounded no-mistakes call), so it runs ONLY for a

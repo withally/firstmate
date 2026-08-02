@@ -201,6 +201,8 @@ MAX_DEFER_SECS_DEFAULT=300
 WEDGE_ALARM_TIMEOUT_SECS_DEFAULT=10
 WEDGE_ALARM_LAST_EPOCH=0
 WEDGE_ALARM_NOTIFIER_PID=
+DIGEST_INFLIGHT_NAME=".subsuper-digest-inflight"
+DIGEST_INFLIGHT_SCHEMA="fm-away-digest.v1"
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
@@ -244,6 +246,28 @@ _file_age() {  # seconds since mtime; very large if missing
 _hash_text() {
   if command -v md5 >/dev/null 2>&1; then printf '%s' "$1" | md5 -q
   else printf '%s' "$1" | md5sum | cut -d ' ' -f1; fi
+}
+
+digest_inflight_field() {  # <record> <field>
+  sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
+}
+
+digest_inflight_write() {  # <state> <id> <phase> <backend> <target> <verdict> [created]
+  local state=$1 id=$2 phase=$3 backend=$4 target=$5 verdict=$6 created=${7:-} record pending
+  record="$state/$DIGEST_INFLIGHT_NAME"
+  [ -n "$created" ] || created=$(_now)
+  pending=$(mktemp "$state/${DIGEST_INFLIGHT_NAME}.pending.XXXXXX") || return 1
+  {
+    printf 'schema=%s\n' "$DIGEST_INFLIGHT_SCHEMA"
+    printf 'id=%s\n' "$id"
+    printf 'phase=%s\n' "$phase"
+    printf 'created=%s\n' "$created"
+    printf 'updated=%s\n' "$(_now)"
+    printf 'backend=%s\n' "$backend"
+    printf 'target=%s\n' "$target"
+    printf 'verdict=%s\n' "$verdict"
+  } > "$pending" || { rm -f "$pending"; return 1; }
+  mv "$pending" "$record" || { rm -f "$pending"; return 1; }
 }
 
 # --- presence-gating helpers (PURE-ish: side-effect-free reads of state) -----
@@ -639,18 +663,29 @@ escalate_add() {  # <state> <distilled-item>
 
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
-# inject failure (buffer preserved for retry / catch-up).
+# inject failure (buffer preserved for a later pre-submit attempt or catch-up).
+# Once a submit is ambiguous, its durable identity suppresses every automatic
+# retype across later flushes and daemon restarts.
 escalate_flush() {  # <state>
-  local state=$1 buf item n msg
+  local state=$1 buf item n msg inflight phase
   buf="$state/.subsuper-escalations"
-  [ -s "$buf" ] || return 0
+  inflight="$state/$DIGEST_INFLIGHT_NAME"
+  if [ ! -s "$buf" ]; then
+    phase=$(digest_inflight_field "$inflight" phase)
+    [ "$phase" != confirmed ] || rm -f "$inflight"
+    return 0
+  fi
   n=$(wc -l < "$buf" 2>/dev/null || echo 0)
   # Join buffered items with the literal " | " separator into one digest line.
   msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  if inject_msg "$msg" "$state" durable; then
+    : > "$buf"
+    rm -f "${buf}.since" "$state/.subsuper-inject-wedged" "$inflight"
+    return 0
+  fi
   return 1
 }
 
@@ -893,8 +928,17 @@ wedge_alarm_notify() {  # <summary> <marker>
 # is lost - the buffer and the
 # wake-queue both survive - but the stall stops being invisible.
 inject_wedge_alarm() {  # <state> <age-seconds>
-  local state=$1 age=$2 marker target backend max_defer now notify=1
+  local state=$1 age=$2 marker target backend max_defer now notify=1 inflight digest_id phase uncertain=0
   marker="$state/.subsuper-inject-wedged"
+  inflight="$state/$DIGEST_INFLIGHT_NAME"
+  digest_id=$(digest_inflight_field "$inflight" id)
+  phase=$(digest_inflight_field "$inflight" phase)
+  case "$phase" in prepared|uncertain) uncertain=1 ;; esac
+  if [ "$uncertain" -eq 1 ] && [ -n "$digest_id" ]; then
+    if grep -Fqx "Digest identity: $digest_id" "$marker" 2>/dev/null; then
+      return 0
+    fi
+  fi
   max_defer="${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}"
   # Re-alarm at most once per max-defer window so a long wedge does not spam.
   if [ "$(_file_age "$marker")" -lt "$max_defer" ]; then
@@ -905,10 +949,19 @@ inject_wedge_alarm() {  # <state> <age-seconds>
     notify=0
   else
     WEDGE_ALARM_LAST_EPOCH=$now
-    log "ERROR: away-mode escalation undelivered ${age}s; inject could not confirm a submit (supervisor pane busy or wedged). Buffer + wake-queue preserved; alarm marker written."
+    if [ "$uncertain" -eq 1 ]; then
+      log "ERROR: away-mode digest delivery uncertain after ${age}s; automatic replay suppressed. Buffer + wake-queue + in-flight identity preserved; alarm marker written."
+    else
+      log "ERROR: away-mode escalation undelivered ${age}s; inject could not confirm a submit (supervisor pane busy or wedged). Buffer + wake-queue preserved; alarm marker written."
+    fi
   fi
   {
-    printf 'fm away-mode inject WEDGED: %ss undelivered as of %s\n' "$age" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+    if [ "$uncertain" -eq 1 ]; then
+      printf 'fm away-mode delivery UNCERTAIN: submit may have landed; automatic replay suppressed as of %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+      printf 'Digest identity: %s\n' "$digest_id"
+    else
+      printf 'fm away-mode inject WEDGED: %ss undelivered as of %s\n' "$age" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+    fi
     printf 'The supervisor pane could not accept an escalation. Buffered items:\n'
     cat "$state/.subsuper-escalations" 2>/dev/null
   } 2>/dev/null > "$marker" || true
@@ -927,7 +980,11 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   # incident fell through. Configurable and best-effort; the marker above stays
   # the durable record whether or not any channel fires.
   if [ "$notify" -eq 1 ]; then
-    wedge_alarm_notify "away-mode escalations WEDGED ${age}s undelivered - see $marker" "$marker"
+    if [ "$uncertain" -eq 1 ]; then
+      wedge_alarm_notify "away-mode digest delivery UNCERTAIN - automatic replay suppressed; see $marker" "$marker"
+    else
+      wedge_alarm_notify "away-mode escalations WEDGED ${age}s undelivered - see $marker" "$marker"
+    fi
   fi
 }
 
@@ -972,8 +1029,9 @@ housekeeping() {  # <state>
   fi
 
   # (1b) max-defer escape. If anything is still buffered past MAX_DEFER_SECS,
-  # retry the normal delivery path. If that still cannot confirm, raise a loud
-  # wedge alarm while preserving the buffer.
+  # run the normal delivery path. A pre-submit guard may be retried, but a
+  # durable ambiguous submit is never retyped. Raise a loud alarm while
+  # preserving the buffer and its in-flight identity.
   max_defer=${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}
   if afk_active "$state" && [ "$max_defer" -gt 0 ] && [ -s "$state/.subsuper-escalations" ]; then
     oldest=$(_oldest_line_age "$state/.subsuper-escalations")
@@ -1111,8 +1169,9 @@ window_for_task() {  # <task-key> [state]
 #     after dim/faint ghost text and borders are ignored (a human's half-typed
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
-inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded
+inject_msg() {  # <message> [state] [durable]
+  local msg=$1 state target backend retries sleep_s verdict composer encoded durable=${3:-transient}
+  local digest_id inflight existing_id phase created
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -1132,6 +1191,45 @@ inject_msg() {  # <message> [state]
   # when unset (sourced/test contexts that never ran fm_super_main's startup
   # discovery), matching this function's pre-existing default assumption.
   backend="${FM_SUPERVISOR_BACKEND:-tmux}"
+  if [ "$durable" = durable ]; then
+    digest_id=$(_hash_text "$msg")
+    inflight="$state/$DIGEST_INFLIGHT_NAME"
+    if [ -s "$inflight" ]; then
+      existing_id=$(digest_inflight_field "$inflight" id)
+      phase=$(digest_inflight_field "$inflight" phase)
+      if [ "$(digest_inflight_field "$inflight" schema)" != "$DIGEST_INFLIGHT_SCHEMA" ] || [ -z "$existing_id" ]; then
+        log "inject blocked: malformed in-flight digest record; automatic delivery suppressed"
+        return 1
+      fi
+      case "$phase" in
+        queued)
+          if [ "$existing_id" != "$digest_id" ]; then
+            digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted \
+              || { log "inject deferred: could not update the queued digest identity"; return 1; }
+          fi
+          ;;
+        confirmed)
+          [ "$existing_id" = "$digest_id" ] || {
+            log "inject blocked: confirmed in-flight digest identity conflicts with the current buffer"; return 1; }
+          return 0
+          ;;
+        prepared|uncertain)
+          [ "$existing_id" = "$digest_id" ] || {
+            log "inject blocked: unresolved in-flight digest identity conflicts with the current buffer; automatic replay suppressed"; return 1; }
+          log "inject deferred: digest $digest_id already has an unresolved $phase submit; automatic replay suppressed"
+          return 1
+          ;;
+        *)
+          log "inject blocked: unrecognized in-flight digest phase '$phase'; automatic delivery suppressed"
+          return 1
+          ;;
+      esac
+    else
+      digest_inflight_write "$state" "$digest_id" queued "$backend" "$target" not-attempted \
+        || { log "inject deferred: could not persist the queued digest identity"; return 1; }
+    fi
+    created=$(digest_inflight_field "$inflight" created)
+  fi
   fm_backend_target_exists "$backend" "$target" || return 1
   # (3) Busy-guard: never inject into an in-use supervisor pane.
   if pane_is_busy "$target" "$backend"; then
@@ -1161,9 +1259,21 @@ inject_msg() {  # <message> [state]
   # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
+  if [ "$durable" = durable ]; then
+    digest_inflight_write "$state" "$digest_id" prepared "$backend" "$target" not-attempted \
+      "$created" || { log "inject deferred: could not persist digest identity before submit"; return 1; }
+  fi
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
   if [ "$verdict" = empty ]; then
+    if [ "$durable" = durable ]; then
+      digest_inflight_write "$state" "$digest_id" confirmed "$backend" "$target" empty "$created" \
+        || { log "inject failed closed: confirmed submit could not persist its terminal state"; return 1; }
+    fi
     return 0  # Backend confirmed the submit.
+  fi
+  if [ "$durable" = durable ]; then
+    digest_inflight_write "$state" "$digest_id" uncertain "$backend" "$target" "${verdict:-unknown}" "$created" \
+      || log "ERROR: could not update the durable digest record after an ambiguous submit; prepared record retained"
   fi
   log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
   return 1

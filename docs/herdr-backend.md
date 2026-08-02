@@ -197,6 +197,13 @@ On an idle or done native baseline, submit confirmation waits for `working` or `
 On an already active or unreadable baseline, it falls back to conservative composer clearance.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
+Away-mode digests add a durable cross-invocation boundary around this primitive.
+The daemon persists the logical digest identity immediately before submit.
+If native state or composer evidence cannot confirm delivery, the daemon treats the result as possibly accepted and never automatically types that digest again across housekeeping, max-defer, shutdown, or restart.
+The buffer and identity remain unresolved for return catch-up, and exactly one delivery-uncertain alarm is raised through the wedge-alarm channel.
+Herdr 0.7.3 exposes native agent state but no supported durable Pi session-record acknowledgement through its pane or agent API.
+Pi exposes its session file to its own process, but Firstmate does not scrape another process's environment or infer private session paths.
+Until a compatibility-probed durable acknowledgement is available, ambiguity therefore resolves toward no retype.
 
 `pane read --lines N` can return empty output when N is below the viewport height.
 The capture owner requests at least 200 lines from Herdr and trims locally to the caller's bound.
@@ -267,7 +274,8 @@ It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
+A genuinely new away session clears prior delivery artifacts, while a daemon restart under an existing `state/.afk` preserves the escalation buffer, in-flight identity, and alarm.
+Return catch-up surfaces those artifacts before clearing them.
 
 ## Destructive lab safety
 
@@ -308,6 +316,7 @@ tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
+tests/fm-afk-digest-replay-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 

@@ -604,6 +604,7 @@ test_escalate_batches_into_one_digest() {
     || fail "batch digest did not join events with literal ' | '"
   [ -s "$state/.subsuper-escalations" ] && fail "escalation buffer not cleared after flush"
   [ -e "$state/.subsuper-escalations.since" ] && fail "first-append sidecar not cleared after flush"
+  [ ! -e "$state/.subsuper-digest-inflight" ] || fail "confirmed digest left an in-flight record"
   n=$(grep -c '\[ENTER\]' "$sent")
   [ "$n" -eq 1 ] || fail "expected one injected digest, got $n send-keys submits"
   pass "multiple escalations flush as a single batched digest"
@@ -760,6 +761,8 @@ test_busy_guard_defers_when_supervisor_busy() {
   fi
   [ -s "$sent" ] && fail "daemon injected into a busy pane"
   [ -s "$state/.subsuper-escalations" ] || fail "buffer not preserved when deferred"
+  grep -F 'phase=queued' "$state/.subsuper-digest-inflight" >/dev/null \
+    || fail "deferred digest did not receive a durable queued identity"
   pass "busy-guard defers injection when supervisor pane is busy"
 }
 
@@ -1123,10 +1126,11 @@ test_submit_ack_reports_pending_on_persistent_swallow() {
 }
 
 test_max_defer_empty_swallow_types_once_and_alarms() {
-  local dir state fakebin sent
+  local dir state fakebin sent alerts
   dir=$(make_bordered_case maxdefer-stuck)
   state="$dir/state"; fakebin="$dir/fakebin"
   sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
   printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
   touch "$dir/.swallow"
   escalate_add "$state" "needs-decision: pick A"
@@ -1134,14 +1138,27 @@ test_max_defer_empty_swallow_types_once_and_alarms() {
   afk_enter "$state"
   PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
-    FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 housekeeping "$state"
+    FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" housekeeping "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_ESCALATE_BATCH_SECS=0 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" housekeeping "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_ESCALATE_BATCH_SECS=0 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; housekeeping "$2"' _ "$DAEMON" "$state"
   [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
     || fail "max-defer typed the digest more than once"
   [ -s "$state/.subsuper-inject-wedged" ] \
     || fail "stuck max-defer inject did not raise a wedge alarm marker"
   [ -s "$state/.subsuper-escalations" ] \
     || fail "buffer lost after a failed max-defer inject (must be preserved)"
-  pass "max-defer on an empty stuck pane types once, alarms, and preserves the buffer"
+  grep -F 'phase=uncertain' "$state/.subsuper-digest-inflight" >/dev/null \
+    || fail "ambiguous submit did not persist its uncertain in-flight phase"
+  [ "$(wc -l < "$alerts" | tr -d ' ')" -eq 1 ] \
+    || fail "ambiguous digest alarm was not bounded across housekeeping and restart"
+  pass "ambiguous digest types once across housekeeping/restart, alarms once, and preserves durable state"
 }
 
 test_max_defer_flushes_empty_idle_pane() {

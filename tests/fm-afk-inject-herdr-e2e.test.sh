@@ -142,11 +142,9 @@ EOF
 # "Native agent-state submit confirmation"), so a synthetic pane that only
 # draws composer TEXT but is never registered as an agent would report
 # agent_not_found forever - every confirmation attempt would read 'unknown',
-# never 'empty', and the daemon would treat every injection as unconfirmed and
-# keep retyping it on every housekeeping tick (the exact duplicate-send
-# failure mode this whole change exists to prevent) - discovered by this very
-# test regressing when the composer-only version of this fixture was run
-# against the new confirmation code. `herdr pane report-agent` is herdr's own
+# never 'empty'. The daemon now persists that ambiguous logical digest and
+# suppresses cross-flush retyping; the real Pi/Calm restart regression lives in
+# tests/fm-afk-digest-replay-herdr-e2e.test.sh. `herdr pane report-agent` is herdr's own
 # documented integration-protocol primitive for a non-built-in-harness process
 # to report its own agent state, verified empirically against real herdr 0.7.1
 # in an isolated session.

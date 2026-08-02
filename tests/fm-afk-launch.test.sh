@@ -41,7 +41,7 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
-# UNIT 1: fm_afk_clear_stale_artifacts removes exactly the three stale artifacts.
+# UNIT 1: fresh-session cleanup removes all four delivery artifacts.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
@@ -50,6 +50,7 @@ unit_clear_stale() {
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
   : > "$st/state/.subsuper-inject-wedged"
+  : > "$st/state/.subsuper-digest-inflight"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
   # Source fm-afk-start.sh inside a child bash (it sets `set -eu` and would
   # otherwise leak that into this test shell) and call the clear helper.
@@ -57,8 +58,9 @@ unit_clear_stale() {
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
   if [ ! -e "$st/state/.subsuper-escalations" ] \
      && [ ! -e "$st/state/.subsuper-escalations.since" ] \
-     && [ ! -e "$st/state/.subsuper-inject-wedged" ]; then
-    pass "clear-stale: removes escalations buffer, sidecar, and wedge marker"
+     && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
+     && [ ! -e "$st/state/.subsuper-digest-inflight" ]; then
+    pass "clear-stale: removes buffer, sidecar, wedge marker, and in-flight identity"
   else
     fail "clear-stale: stale artifacts survived"
   fi
@@ -128,6 +130,7 @@ unit_fresh_vs_refresh() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-inject-wedged"
+  printf 'schema=fm-away-digest.v1\nphase=uncertain\n' > "$st/state/.subsuper-digest-inflight"
   # A live "daemon": a real process whose identity the lock records, so
   # daemon_lock_held_by_live_daemon returns true (a refresh).
   sleep 600 &
@@ -137,14 +140,71 @@ unit_fresh_vs_refresh() {
   printf '%s' "$sleep_pid" > "$lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleep_pid" > "$lock/pid-identity" 2>/dev/null ) || true
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
-  if [ -e "$st/state/.subsuper-escalations" ] && [ -e "$st/state/.subsuper-inject-wedged" ]; then
-    pass "refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)"
+  if [ -e "$st/state/.subsuper-escalations" ] \
+     && [ -e "$st/state/.subsuper-inject-wedged" ] \
+     && [ -e "$st/state/.subsuper-digest-inflight" ]; then
+    pass "refresh: daemon already alive - current buffer and in-flight identity preserved"
   else
     fail "refresh: incorrectly cleared the current session's buffered escalations"
   fi
   kill "$sleep_pid" 2>/dev/null || true
   wait "$sleep_pid" 2>/dev/null || true
   rm -rf "$st"
+}
+
+unit_dead_daemon_restart_preserves_inflight() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-restart.XXXXXX")
+  mkdir -p "$st/state"
+  date +%s > "$st/state/.afk"
+  printf 'pending\n' > "$st/state/.subsuper-escalations"
+  printf 'schema=fm-away-digest.v1\nphase=uncertain\n' > "$st/state/.subsuper-digest-inflight"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=0 bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/bin/true
+    fm_afk_start_main
+  ' _ "$START" >/dev/null 2>&1
+  if [ "$(cat "$st/state/.subsuper-escalations" 2>/dev/null)" = pending ] \
+     && grep -F 'phase=uncertain' "$st/state/.subsuper-digest-inflight" >/dev/null 2>&1; then
+    pass "restart: existing away session preserves unresolved buffer and in-flight identity"
+  else
+    fail "restart: existing away session discarded unresolved delivery state"
+  fi
+  rm -rf "$st"
+}
+
+unit_pi_herdr_capability_gate() {
+  local unsafe safe other out rc
+  unsafe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-unsafe.XXXXXX")
+  out=$(FM_HOME="$unsafe" FM_STATE_OVERRIDE="$unsafe/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
+    "$LAUNCH" start-native 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -F 'refusing away mode: Pi primary + Herdr requires durable digest identity' >/dev/null \
+     && [ ! -e "$unsafe/state/.afk" ]; then
+    pass "capability gate: unsafe Pi + Herdr entry refuses loudly before away state"
+  else
+    fail "capability gate: unsafe Pi + Herdr entry was not refused cleanly ($out)"
+  fi
+
+  safe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-safe.XXXXXX")
+  if FM_HOME="$safe" FM_STATE_OVERRIDE="$safe/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi "$LAUNCH" start-native >/dev/null 2>&1 \
+    && [ -e "$safe/state/.afk" ]; then
+    pass "capability gate: shipped no-retype safety automatically permits Pi + Herdr"
+  else
+    fail "capability gate: safe Pi + Herdr entry remained blocked"
+  fi
+
+  other=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-other.XXXXXX")
+  if FM_HOME="$other" FM_STATE_OVERRIDE="$other/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=claude FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
+    "$LAUNCH" start-native >/dev/null 2>&1; then
+    pass "capability gate: unrelated harness/backend behavior is unchanged"
+  else
+    fail "capability gate: unrelated Herdr harness was refused"
+  fi
+  rm -rf "$unsafe" "$safe" "$other"
 }
 
 # ---------------------------------------------------------------------------
@@ -922,6 +982,8 @@ e2e_tmux() {
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
+unit_dead_daemon_restart_preserves_inflight
+unit_pi_herdr_capability_gate
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state

@@ -14,8 +14,10 @@
 // future Pi that emits them the other way round still accumulates instead of overwriting.
 // Pi also rebuilds the whole transcript through InteractiveMode.renderSessionItems,
 // including the rebuild it performs when it auto-compacts inside a run. Rows replayed in
-// that window are scored per row against their own preceding input and never disturb the
-// run scope. Every unresolved case resolves to visible.
+// the window the separately probed transcript-replay adapter marks are scored per row
+// against their own preceding input and never disturb the run scope. Without that
+// adapter no window is ever opened and replayed rows fall back to run scoping. Every
+// unresolved case resolves to visible.
 import type { AssistantMessageComponent as PiAssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
@@ -43,7 +45,7 @@ type CalmAssistantLayoutPatch = {
 // double-patch a live process and an incompatible one cannot keep a stale closure
 // installed under the same key.
 const CALM_ASSISTANT_LAYOUT_PATCH = Symbol.for(
-  "firstmate:calm-assistant-layout:operational-ack-v1",
+  "firstmate:calm-assistant-layout:operational-ack-v2",
 );
 const FIRSTMATE_NO_ACTION_ACKNOWLEDGEMENT = "Captain, shipshape.";
 

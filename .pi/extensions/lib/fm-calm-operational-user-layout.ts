@@ -1,11 +1,14 @@
 // Pi adds the ordinary-user spacer and row together through
 // InteractiveMode.addMessageToChat, and replays or rebuilds the whole transcript through
 // InteractiveMode.renderSessionItems.
-// This adapter probes both exact methods and throws if either is missing; fm-calm.ts
-// catches that and skips only this adapter with a diagnostic instead of blocking Calm or
-// Pi.
-// It changes only presentation, records the canonical user-row origin and the replay
-// window for the assistant layout adapter, and never changes message delivery.
+// This file installs those as two independently probed adapters, each of which throws
+// when its own exact method is missing; fm-calm.ts catches that and skips only the
+// affected adapter with a diagnostic instead of blocking Calm or Pi.
+// The operational-user-row adapter owns the zero-height row and the canonical user-row
+// origin the assistant layout adapter consumes. The transcript-replay adapter only marks
+// the replay window; without it, replayed rows fall back to run scoping, which resolves
+// to visible.
+// Neither adapter changes message delivery.
 import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import {
@@ -48,12 +51,18 @@ type CalmOperationalUserLayoutPatch = {
   hidesOperationalInput: () => boolean;
   isOperationalInput: (text: string) => boolean;
 };
+type CalmTranscriptReplayPatch = {
+  wrapped: true;
+};
 
-// The symbol changes only when the patch shape changes, so a compatible upgrade cannot
-// double-patch a live process and an incompatible one cannot keep a stale closure
+// Each symbol changes only when the closure it guards changes, so a compatible upgrade
+// cannot double-patch a live process and an incompatible one cannot keep a stale closure
 // installed under the same key.
 const CALM_OPERATIONAL_USER_LAYOUT_PATCH = Symbol.for(
-  "firstmate:calm-operational-user-layout:operational-ack-v1",
+  "firstmate:calm-operational-user-layout:operational-ack-v2",
+);
+const CALM_TRANSCRIPT_REPLAY_PATCH = Symbol.for(
+  "firstmate:calm-transcript-replay:v1",
 );
 const LEGACY_CALM_OPERATIONAL_PREFIX = "\u2063Supervisor escalate (";
 
@@ -100,10 +109,6 @@ export function installCalmOperationalUserLayout(): void {
   const originalAddMessageToChat = prototype.addMessageToChat;
   if (typeof originalAddMessageToChat !== "function") {
     throw new Error("Firstmate Calm requires Pi InteractiveMode.addMessageToChat");
-  }
-  const originalRenderSessionItems = prototype.renderSessionItems;
-  if (typeof originalRenderSessionItems !== "function") {
-    throw new Error("Firstmate Calm requires Pi InteractiveMode.renderSessionItems");
   }
 
   const UserMessageComponent = PiCodingAgent.UserMessageComponent;
@@ -162,6 +167,25 @@ export function installCalmOperationalUserLayout(): void {
     if (options?.populateHistory) this.editor.addToHistory?.(text);
   };
 
+  registry[CALM_OPERATIONAL_USER_LAYOUT_PATCH] = patch;
+}
+
+export function installCalmTranscriptReplayWindow(): void {
+  const registry = globalThis as typeof globalThis & {
+    [key: symbol]: CalmTranscriptReplayPatch | undefined;
+  };
+  if (registry[CALM_TRANSCRIPT_REPLAY_PATCH]) return;
+
+  const InteractiveMode = PiCodingAgent.InteractiveMode;
+  if (typeof InteractiveMode !== "function") {
+    throw new Error("Firstmate Calm requires Pi InteractiveMode");
+  }
+  const prototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
+  const originalRenderSessionItems = prototype.renderSessionItems;
+  if (typeof originalRenderSessionItems !== "function") {
+    throw new Error("Firstmate Calm requires Pi InteractiveMode.renderSessionItems");
+  }
+
   prototype.renderSessionItems = function (
     this: unknown,
     items: unknown[],
@@ -175,5 +199,5 @@ export function installCalmOperationalUserLayout(): void {
     }
   };
 
-  registry[CALM_OPERATIONAL_USER_LAYOUT_PATCH] = patch;
+  registry[CALM_TRANSCRIPT_REPLAY_PATCH] = { wrapped: true };
 }

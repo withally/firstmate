@@ -44,7 +44,10 @@ import {
   noteCalmTranscriptRunStart,
   resetCalmTranscriptOrigin,
 } from "./lib/fm-calm-assistant-layout.ts";
-import { installCalmOperationalUserLayout } from "./lib/fm-calm-operational-user-layout.ts";
+import {
+  installCalmOperationalUserLayout,
+  installCalmTranscriptReplayWindow,
+} from "./lib/fm-calm-operational-user-layout.ts";
 import {
   CALM_WORKING_SHIP_WIDGET_KEY,
   createCalmWorkingShipAnimation,
@@ -103,6 +106,7 @@ function installCalmPresentationAdapter(name: string, install: () => void): void
 export default function (pi: ExtensionAPI) {
   installCalmPresentationAdapter("collapsed-thinking", installCalmAssistantLayout);
   installCalmPresentationAdapter("operational-user-row", installCalmOperationalUserLayout);
+  installCalmPresentationAdapter("transcript-replay-window", installCalmTranscriptReplayWindow);
 
   let exportRendering = false;
   let removeTerminalInputHandler: (() => void) | undefined;

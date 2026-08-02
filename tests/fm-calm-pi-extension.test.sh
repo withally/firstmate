@@ -373,20 +373,27 @@ const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-
 const { InteractiveMode } = await import("@earendil-works/pi-coding-agent");
 
 const stockAddMessageToChat = InteractiveMode.prototype.addMessageToChat;
+operational.installCalmOperationalUserLayout();
+if (InteractiveMode.prototype.addMessageToChat === stockAddMessageToChat) {
+  throw new Error(
+    "the missing transcript replay seam also disabled the shipped operational-user-row adapter",
+  );
+}
+
 let reason;
 try {
-  operational.installCalmOperationalUserLayout();
+  operational.installCalmTranscriptReplayWindow();
 } catch (error) {
   reason = error instanceof Error ? error.message : String(error);
 }
 if (!reason?.includes("renderSessionItems")) {
   throw new Error(
-    `the operational-user-row adapter did not name the missing transcript replay seam: ${String(reason)}`,
+    `the transcript-replay adapter did not name its missing seam: ${String(reason)}`,
   );
 }
-if (InteractiveMode.prototype.addMessageToChat !== stockAddMessageToChat) {
+if (typeof InteractiveMode.prototype.renderSessionItems !== "undefined") {
   throw new Error(
-    "the operational-user-row adapter patched addMessageToChat despite the missing transcript replay seam",
+    "the transcript-replay adapter installed a wrapper despite the missing seam",
   );
 }
 JS
@@ -394,7 +401,61 @@ JS
   status=$?
   [ "$status" -eq 0 ] || fail "Pi calm missing-replay-seam path failed: $out"
   [ -z "$out" ] || fail "Pi calm missing-replay-seam test printed output: $out"
-  pass "missing Pi presentation class exports and the missing transcript replay seam reach the independent adapter degradation path"
+
+  fixture="$TMP_ROOT/present-replay-seam"
+  mkdir -p \
+    "$fixture/project/.pi/extensions/lib" \
+    "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
+  cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
+  printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
+  printf '%s\n' \
+    '{"name":"@earendil-works/pi-coding-agent","type":"module","exports":"./index.js"}' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/package.json"
+  printf '%s\n' \
+    'export function getMarkdownTheme() { return {}; }' \
+    'export class UserMessageComponent {}' \
+    'export class InteractiveMode {}' \
+    'InteractiveMode.prototype.addMessageToChat = function () {};' \
+    'InteractiveMode.prototype.renderSessionItems = function () { globalThis.stockReplayCalls += 1; };' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/index.js"
+
+  out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
+globalThis.stockReplayCalls = 0;
+const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
+const { InteractiveMode } = await import("@earendil-works/pi-coding-agent");
+
+const stockAddMessageToChat = InteractiveMode.prototype.addMessageToChat;
+const stockRenderSessionItems = InteractiveMode.prototype.renderSessionItems;
+operational.installCalmOperationalUserLayout();
+operational.installCalmTranscriptReplayWindow();
+if (InteractiveMode.prototype.addMessageToChat === stockAddMessageToChat) {
+  throw new Error("the operational-user-row adapter did not install with both seams present");
+}
+if (InteractiveMode.prototype.renderSessionItems === stockRenderSessionItems) {
+  throw new Error("the transcript-replay adapter did not wrap the available seam");
+}
+
+operational.installCalmTranscriptReplayWindow();
+const wrappedOnce = InteractiveMode.prototype.renderSessionItems;
+operational.installCalmTranscriptReplayWindow();
+if (InteractiveMode.prototype.renderSessionItems !== wrappedOnce) {
+  throw new Error("the transcript-replay adapter re-wrapped an already patched seam");
+}
+
+InteractiveMode.prototype.renderSessionItems.call({}, []);
+if (globalThis.stockReplayCalls !== 1) {
+  throw new Error("the transcript-replay wrapper did not delegate to the stock replay path");
+}
+JS
+)
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi calm present-replay-seam path failed: $out"
+  [ -z "$out" ] || fail "Pi calm present-replay-seam test printed output: $out"
+  pass "missing Pi presentation class exports and both transcript replay seam paths reach the independent adapter degradation path"
 }
 
 test_rendering_and_session_lifecycle() {

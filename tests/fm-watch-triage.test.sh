@@ -426,8 +426,10 @@ test_working_note_unknown_runtime_absorbed() {
   printf 'working: researching the unknown-busy incident\n' > "$status_file"
   # Exact incident boundary: Codex has no verified semantic busy source, so the
   # authoritative runtime verdict is unknown even though the fresh event itself
-  # is explicitly nonterminal progress. The signal must be absorbed from its
-  # status semantics without consulting that unavailable busy proof.
+  # is explicitly nonterminal progress. A loaded Pi watcher extension would turn
+  # any emitted reason into an ordinary user-role follow-up, and Calm would only
+  # hide its row, so the signal must be absorbed here without consulting that
+  # unavailable busy proof.
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!

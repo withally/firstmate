@@ -199,6 +199,63 @@ EOF
   pass "Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance"
 }
 
+# A correctly loaded primary extension is delivery machinery, not evidence that
+# every observed status deserves a model turn. When the watcher producer remains
+# live and emits no actionable reason, the registered tool must create no
+# user-role follow-up. Missing-cycle and arm-failure prompts are covered by the
+# separate close/retry tests below and must not be conflated with this quiet path.
+test_pi_quiet_arm_sends_no_followup() {
+  local repo home plugin stop out status
+  repo="$TMP_ROOT/pi-quiet-arm-root"
+  home="$TMP_ROOT/pi-quiet-arm-home"
+  stop="$TMP_ROOT/pi-quiet-arm.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+const prompts = [];
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompts.push(message);
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("fm_watch_arm_pi was not registered by the loaded extension");
+const result = await tool.execute("tool-call-quiet", {}, undefined, undefined, {});
+if (!result.content[0]?.text.includes("started Pi extension arm child")) {
+  throw new Error(`quiet arm did not start: ${result.content[0]?.text}`);
+}
+await new Promise((resolve) => setTimeout(resolve, 250));
+if (prompts.length !== 0) {
+  throw new Error(`quiet watcher produced ${prompts.length} user-role follow-ups: ${JSON.stringify(prompts)}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "a loaded Pi extension must not create a model turn before an actionable watcher reason"
+  [ -z "$out" ] || fail "Pi quiet-arm test printed output: $out"
+  pass "loaded Pi extension keeps a quiet watcher cycle turn-free; continuity alarms remain a separate path"
+}
+
 test_pi_redundant_tool_call_is_owned_noop() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-redundant-tool-root"
@@ -2126,6 +2183,7 @@ EOF
 
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
+test_pi_quiet_arm_sends_no_followup
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery

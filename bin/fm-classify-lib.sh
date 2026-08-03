@@ -62,14 +62,16 @@ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|
 # drift between the two consumers. FM_CLASSIFY_PAUSED_VERB overrides it.
 FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 
-# Bounded re-surface cadence for a declared pause or a dead-agent captain hold.
-# Far longer than the wedge threshold (FM_STALE_ESCALATE_SECS, default 240s), it
-# avoids nagging a deliberate wait while ensuring a forgotten hold cannot rot
-# invisibly - it re-surfaces once for a recheck every window. One hour by default;
-# both consumers read FM_PAUSE_RESURFACE_SECS with this default so the cadence has
-# one owner.
+# Optional re-surface cadence for an absorbed captain-wait window (a declared
+# pause or a verified captain hold). EMPTY means off: absorbed captain-wait
+# windows stay silent by default because the captain monitors idle windows
+# through Herdr and pull-based digests. Setting FM_PAUSE_RESURFACE_SECS
+# explicitly opts back into one recheck wake per window per cadence - far longer
+# than the wedge threshold (FM_STALE_ESCALATE_SECS, default 240s), so an
+# opted-in hold still cannot rot invisibly. Both consumers read
+# FM_PAUSE_RESURFACE_SECS with this default so the cadence has one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
-FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
+FM_PAUSE_RESURFACE_SECS_DEFAULT=
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
@@ -134,9 +136,9 @@ status_is_paused() {  # <status-line>
 
 # 0 if a status line declares either an external-wait pause or a verified
 # captain-held transfer.
-# Both declarations can intentionally leave an exited crew's endpoint idle, so
-# the watcher applies its bounded pause cadence when agent death confirms that
-# no live decision gate is being silenced.
+# Both declarations can intentionally leave a crew's endpoint idle, so the
+# watcher applies its bounded pause cadence to them regardless of agent
+# liveness; only an authoritatively working crew outranks the declaration.
 status_is_paused_or_captain_held() {  # <status-line>
   local line=$1 verb
   status_is_paused "$line" && return 0

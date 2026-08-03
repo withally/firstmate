@@ -604,6 +604,7 @@ test_escalate_batches_into_one_digest() {
     || fail "batch digest did not join events with literal ' | '"
   [ -s "$state/.subsuper-escalations" ] && fail "escalation buffer not cleared after flush"
   [ -e "$state/.subsuper-escalations.since" ] && fail "first-append sidecar not cleared after flush"
+  [ ! -e "$state/.subsuper-digest-inflight" ] || fail "confirmed digest left an in-flight record"
   n=$(grep -c '\[ENTER\]' "$sent")
   [ "$n" -eq 1 ] || fail "expected one injected digest, got $n send-keys submits"
   pass "multiple escalations flush as a single batched digest"
@@ -760,6 +761,8 @@ test_busy_guard_defers_when_supervisor_busy() {
   fi
   [ -s "$sent" ] && fail "daemon injected into a busy pane"
   [ -s "$state/.subsuper-escalations" ] || fail "buffer not preserved when deferred"
+  grep -F 'phase=queued' "$state/.subsuper-digest-inflight" >/dev/null \
+    || fail "deferred digest did not receive a durable queued identity"
   pass "busy-guard defers injection when supervisor pane is busy"
 }
 
@@ -1123,10 +1126,11 @@ test_submit_ack_reports_pending_on_persistent_swallow() {
 }
 
 test_max_defer_empty_swallow_types_once_and_alarms() {
-  local dir state fakebin sent
+  local dir state fakebin sent alerts
   dir=$(make_bordered_case maxdefer-stuck)
   state="$dir/state"; fakebin="$dir/fakebin"
   sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
   printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
   touch "$dir/.swallow"
   escalate_add "$state" "needs-decision: pick A"
@@ -1134,14 +1138,158 @@ test_max_defer_empty_swallow_types_once_and_alarms() {
   afk_enter "$state"
   PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
-    FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 housekeeping "$state"
+    FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" housekeeping "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_ESCALATE_BATCH_SECS=0 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" housekeeping "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_ESCALATE_BATCH_SECS=0 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; housekeeping "$2"' _ "$DAEMON" "$state"
   [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
     || fail "max-defer typed the digest more than once"
   [ -s "$state/.subsuper-inject-wedged" ] \
     || fail "stuck max-defer inject did not raise a wedge alarm marker"
   [ -s "$state/.subsuper-escalations" ] \
     || fail "buffer lost after a failed max-defer inject (must be preserved)"
-  pass "max-defer on an empty stuck pane types once, alarms, and preserves the buffer"
+  grep -F 'phase=uncertain' "$state/.subsuper-digest-inflight" >/dev/null \
+    || fail "ambiguous submit did not persist its uncertain in-flight phase"
+  [ "$(wc -l < "$alerts" | tr -d ' ')" -eq 1 ] \
+    || fail "ambiguous digest alarm was not bounded across housekeeping and restart"
+  [ "$(escalate_unresolved_count "$state")" -eq 1 ] \
+    || fail "the ambiguous digest's item was not durably marked unresolved"
+  pass "ambiguous digest types once across housekeeping/restart, alarms once, and preserves durable state"
+}
+
+# The no-retype invariant is PER LOGICAL DIGEST. Suppressing the ambiguous
+# digest must never suppress content that was never submitted: one ambiguous
+# submit at hour 1 of an overnight away session must not silence every
+# escalation (and every alarm) for the remaining 8 hours - the exact
+# silent-accumulation shape the wedge-alarm channel exists to prevent.
+# Each flush runs in its own daemon process so the in-process notify throttle
+# cannot mask a missing alarm, and so restart durability is exercised too.
+test_new_escalation_after_ambiguity_still_delivers() {
+  local dir state fakebin sent alerts
+  dir=$(make_bordered_case ambiguity-then-new)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
+  touch "$dir/.swallow"
+  escalate_add "$state" "needs-decision: pick A"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript FM_WEDGE_ALARM_LOG="$alerts" \
+    FM_STATE_OVERRIDE="$state" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state"
+  [ "$(escalate_unresolved_count "$state")" -eq 1 ] \
+    || fail "the ambiguous digest's item was not marked unresolved"
+
+  # The accepted-but-unconfirmed shape: the primary DID take the text, so the
+  # composer is clear and injectable again, but the daemon never confirmed it.
+  # A brand-new captain-relevant escalation then arrives.
+  rm -f "$dir/.swallow"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
+  escalate_add "$state" "blocked: pick B"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_INJECT_CONFIRM_SLEEP=0.05 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript \
+    FM_WEDGE_ALARM_LOG="$alerts" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state" \
+    || fail "a new escalation after an ambiguous digest was refused delivery (away channel went dark)"
+
+  [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 2 ] \
+    || fail "expected exactly one delivery attempt per logical digest, got $(grep -c 'Supervisor escalate' "$sent")"
+  [ "$(grep -c 'pick A' "$sent" 2>/dev/null || true)" -eq 1 ] \
+    || fail "the unresolved digest was replayed after its ambiguous submit"
+  grep -F 'pick B' "$sent" >/dev/null || fail "the new escalation was never typed"
+  grep -F 'pick A' "$sent" | grep -F 'pick B' >/dev/null \
+    && fail "the unresolved item was concatenated into the new logical digest"
+  [ "$(cat "$state/.subsuper-escalations")" = "needs-decision: pick A" ] \
+    || fail "expected only the unresolved item to remain buffered, got: $(cat "$state/.subsuper-escalations")"
+  [ "$(escalate_unresolved_count "$state")" -eq 1 ] \
+    || fail "the delivered digest disturbed the unresolved prefix count"
+  [ "$(wc -l < "$alerts" | tr -d ' ')" -eq 1 ] \
+    || fail "expected exactly one alarm for the one unresolved digest, got $(wc -l < "$alerts")"
+  pass "one ambiguous digest never blocks a later escalation from its own single delivery attempt"
+}
+
+# Retirement must be idempotent for EVERY phase, not just prepared|uncertain.
+# The crash window this reproduces is the one the e2e itself performs: a SIGKILL
+# between the confirmed record write and escalate_flush's buffer truncation
+# leaves a confirmed record whose identity no longer covers the buffer. If that
+# record could retire itself on every flush it would re-add its stale item count
+# until the unresolved prefix clamped to the whole buffer, silently swallowing
+# every later escalation while catch-up called it "may have landed".
+test_retired_confirmed_record_does_not_swallow_later_escalations() {
+  local dir state fakebin sent alerts
+  dir=$(make_bordered_case retired-confirmed-crash)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
+  afk_enter "$state"
+  escalate_add "$state" "done: e1"
+  escalate_add "$state" "done: e2"
+  # The exact post-crash state: the submit was confirmed, the truncation never ran.
+  digest_inflight_write "$state" D1 confirmed tmux fakepane empty '' 2
+
+  escalate_add "$state" "blocked: e3"
+  local flush_env=(PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent"
+    FM_INJECT_CONFIRM_SLEEP=0.05 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript
+    FM_WEDGE_ALARM_LOG="$alerts" FM_STATE_OVERRIDE="$state")
+  # shellcheck disable=SC2016 # $1/$2 expand in the child bash, not this test shell.
+  env "${flush_env[@]}" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state"
+  [ "$(escalate_unresolved_count "$state")" -eq 2 ] \
+    || fail "the crashed confirmed digest did not retire exactly its own 2 items, got $(escalate_unresolved_count "$state")"
+
+  # shellcheck disable=SC2016 # $1/$2 expand in the child bash, not this test shell.
+  env "${flush_env[@]}" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state" \
+    || fail "the escalation buffered after the crash was refused delivery (away channel went dark)"
+  [ "$(escalate_unresolved_count "$state")" -eq 2 ] \
+    || fail "a retired record re-added its item count, got $(escalate_unresolved_count "$state")"
+  grep -F 'blocked: e3' "$sent" >/dev/null \
+    || fail "the escalation buffered after the crash was never typed"
+  [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
+    || fail "expected exactly one delivery attempt, got $(grep -c 'Supervisor escalate' "$sent")"
+  grep -F 'done: e1' "$sent" >/dev/null \
+    && fail "an already-confirmed item was replayed"
+  [ "$(escalate_pending_count "$state")" -eq 0 ] \
+    || fail "the delivered escalation was not cleared from the deliverable buffer"
+  [ "$(wc -l < "$alerts" | tr -d ' ')" -eq 1 ] \
+    || fail "retirement alarmed more than once, got $(wc -l < "$alerts")"
+  grep -F 'UNCERTAIN' "$state/.subsuper-inject-wedged" >/dev/null \
+    || fail "a retired confirmed digest was described as undelivered rather than possibly-landed"
+  pass "a retired confirmed record retires once and never swallows later escalations"
+}
+
+# The shutdown trap reaps the bounded notifier and then flushes, and that flush
+# can now raise its own alarm. Starting a fresh synchronous notifier there would
+# block the trap for up to FM_WEDGE_ALARM_TIMEOUT_SECS per channel, past the
+# launcher's 10s stop budget, turning a clean stop into a lifecycle blocker.
+test_shutdown_flush_alarm_keeps_marker_without_active_notifier() {
+  local dir state fakebin sent alerts
+  dir=$(make_bordered_case shutdown-alarm)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  alerts="$dir/alerts.log"; : > "$alerts"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
+  touch "$dir/.swallow"
+  escalate_add "$state" "needs-decision: shutting down"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript FM_WEDGE_ALARM_LOG="$alerts" \
+    FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; WEDGE_ALARM_SUPPRESS_ACTIVE=1; escalate_flush "$2"' _ "$DAEMON" "$state"
+  [ -s "$state/.subsuper-inject-wedged" ] \
+    || fail "the shutdown flush dropped the durable alarm marker return catch-up depends on"
+  [ "$(escalate_unresolved_count "$state")" -eq 1 ] \
+    || fail "the shutdown flush did not retire its ambiguous digest"
+  [ ! -s "$alerts" ] \
+    || fail "the shutdown flush started a synchronous notifier after notifier teardown: $(cat "$alerts")"
+  pass "a shutdown-flush alarm keeps its durable marker without starting a bounded notifier"
 }
 
 test_max_defer_flushes_empty_idle_pane() {
@@ -1886,6 +2034,9 @@ test_pane_input_pending_bordered_with_text_is_pending
 test_submit_ack_confirms_on_bordered_empty_composer
 test_submit_ack_reports_pending_on_persistent_swallow
 test_max_defer_empty_swallow_types_once_and_alarms
+test_new_escalation_after_ambiguity_still_delivers
+test_retired_confirmed_record_does_not_swallow_later_escalations
+test_shutdown_flush_alarm_keeps_marker_without_active_notifier
 test_max_defer_flushes_empty_idle_pane
 test_max_defer_pending_composer_alarms_without_typing
 test_normal_flush_clears_stale_wedge_marker

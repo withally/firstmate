@@ -100,14 +100,17 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
   It preserves idle bordered composers such as claude's `│ > … │` and bare agent glyphs as empty, but a bare shell glyph is unknown unless inside a genuine bordered composer box; see `docs/herdr-backend.md` "Composer and injection safety" for the complete contract.
   `pane_input_pending` remains the tested predicate for callers that only need to know whether real unsubmitted text is present, but it is insufficient for an injection-safety decision because it cannot distinguish `empty` from `unknown`.
 
-A busy primary pane, or any composer verdict other than `empty`, defers the injection; the buffered escalation survives in `state/.subsuper-escalations` and is retried on the next housekeeping tick.
+A busy primary pane, or any composer verdict other than `empty`, defers the pre-submit injection; the buffered escalation survives in `state/.subsuper-escalations` and can be attempted on a later housekeeping tick.
+Immediately before a submit, the daemon persists a logical digest identity in `state/.subsuper-digest-inflight`.
+Any submit result other than confirmed `empty`, including `pending`, is delivery-ambiguous and permanently suppresses automatic retyping of that logical digest across housekeeping ticks and daemon restarts.
+The invariant is scoped to that one logical digest: its items move under the buffer's unresolved prefix (counted in `state/.subsuper-escalations.unresolved`), and escalations buffered afterwards form their own logical digest with their own single delivery attempt, so one ambiguous submit never darkens the away channel for the rest of the session.
 In afk mode the composer guard is belt-and-suspenders (no human is typing), but it protects against the race window between the captain returning and their message landing, a dead shell, and the daemon's own previous injection sitting unsent.
 
 **Max-defer escape (the daemon must never silently wedge).**
 If anything stays buffered past `FM_MAX_DEFER_SECS` (default 300), the daemon
 attempts one normal flush, which still requires an idle pane and an affirmatively empty composer.
 The alarm is defense in depth rather than a substitute for keeping every genuinely idle supported composer injectable.
-If that submit cannot be confirmed, it raises a loud, rate-limited wedge alarm:
+If that submit cannot be confirmed, it raises exactly one durable, bounded delivery-uncertain alarm for that digest:
 an ERROR in the daemon log, a durable
 `state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
 catch-up if present), a tmux status-line flash when applicable, and a configurable backend-independent active alert.
@@ -121,6 +124,7 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 **verified** through the selected backend's submit primitive.
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
+If confirmation remains ambiguous after that one submit invocation, later flushes never type the digest again.
 For tmux that confirmation is a cleared composer, using the same corrected,
 border-aware detector as the composer guard.
 For herdr, normal idle-baseline submits are confirmed by native agent-state showing a real turn started; the ANSI-aware composer classifier remains the affirmative-empty pre-injection guard and conservative fallback for non-idle or unreadable baselines.
@@ -184,7 +188,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
   harness.
 - **Busy and composer guards on the supervisor pane** - before injecting, the daemon runs the detected-primary-harness rendered busy guard and reads `fm_backend_composer_state` directly.
   Only `empty` permits injection; `pending` protects half-typed or swallowed input, and `unknown` protects unreadable panes and bare dead-shell prompts.
-  Every other result preserves the buffer for retry, so the daemon never merges its digest into the captain's half-typed line or types it into a shell.
+  Every other pre-submit result preserves the buffer for a later guarded attempt, so the daemon never merges its digest into the captain's half-typed line or types it into a shell.
 - The shared composer classifier receives a candidate row only after the active backend performs its own capture and structural row recognition.
   tmux and herdr route their raw styled candidate rows through the shared `fm_composer_strip_ghost` extractor, which removes dim/faint and dark-TRUECOLOR ghost/placeholder text before classification.
   They read the composer shape from a separately ANSI-stripped plain row because a dark TRUECOLOR border can be stripped with ghost content.
@@ -193,7 +197,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 - **Max-defer escape** - the daemon must never silently wedge. If anything stays
   buffered past `FM_MAX_DEFER_SECS` (default 300s), the daemon attempts one
   normal flush, which still requires an idle pane and an affirmatively empty composer. If that
-  cannot confirm a submit, it raises a loud, rate-limited wedge alarm: ERROR log,
+  cannot confirm a submit, it raises one durable delivery-uncertain alarm for that digest: ERROR log,
   durable `state/.subsuper-inject-wedged` marker, a tmux status-line flash when
   applicable, and a backend-independent active alert. A
   composer false-positive surfaces as a visible stall, never an unbounded silent
@@ -206,6 +210,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
   cleared.
   For herdr's normal idle-baseline path it means native agent-state observed a real turn start; herdr uses the ANSI-aware structural classifier for the pre-injection composer guard and fallback paths.
   This lets ghost-only or bordered-empty composers count as empty where a composer read is the active confirmation signal.
+  Any ambiguous post-submit verdict persists the logical digest identity and suppresses automatic retyping across flushes, max-defer handling, shutdown, and restart.
+  The unresolved buffer, identity, and alarm are surfaced by the return catch-up before they are cleared.
 - **Marker strip** - `strip_injection_marker` removes the current operational
   prefix or legacy bare marker before classification or relay, so the digest
   text firstmate sees is clean.
@@ -230,8 +236,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat `state/.subsuper-escalations`, its `.since` sidecar, and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
-Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
+Treat `state/.subsuper-escalations`, its `.since` and `.unresolved` sidecars, `state/.subsuper-digest-inflight`, and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
+Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only when `state/.afk` did not already exist, so a refresh or a daemon restart inside the same away session keeps its buffer, unresolved digest identity, and alarm.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.
 
@@ -240,7 +246,8 @@ Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` presen
 These properties must hold:
 
 - Nothing is lost. The durable queue plus `fm-wake-drain.sh` recover any missed
-  or crashed injection.
+  or crashed injection, and a digest whose submit stayed ambiguous is preserved
+  for return catch-up rather than replayed.
 - Wedge detection is bounded-latency, not lossy.
 - Declared external waits are rechecked on a separate, bounded cadence rather than being mislabeled as wedges.
 - The catch-all scan backs up the keyword classifier.

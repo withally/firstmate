@@ -169,7 +169,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 
 | Skill              | What it does                                                                                                                                  |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/afk`             | Enter away-mode supervision: the sub-supervisor self-handles routine notifications in bash, escalates captain-relevant events and bounded declared-external-wait rechecks as batched digests, and actively alerts if delivery gets stuck while you step away |
+| `/afk`             | Enter away-mode supervision: the sub-supervisor self-handles routine notifications in bash, escalates captain-relevant events and bounded declared-external-wait rechecks as batched digests, and actively alerts if a digest gets stuck or its delivery cannot be confirmed while you step away |
 | `/ahoy`            | Recap visible session events since the prior real captain message plus visibly unanswered captain decisions, falling back to Bearings when invoked as the session's first real captain message |
 | `/bearings`        | Generate a concise four-section chat digest from bounded local fleet and registered-secondmate state; use `/bearings file` to also replace today's dated report in `data/`, and add `include PRs` when live PR enrichment is wanted |
 | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from origin with fast-forward-only pulls, then re-read instructions and nudge secondmates |
@@ -199,7 +199,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
-- [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck.
+- [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck or cannot be confirmed.
 - [docs/tmux-backend.md](docs/tmux-backend.md) - current setup and limits for the tmux reference backend.
 - [docs/herdr-backend.md](docs/herdr-backend.md) - current setup, safety boundaries, and limits for the experimental Herdr backend.
 - [docs/zellij-backend.md](docs/zellij-backend.md) - current setup and limits for the experimental Zellij backend.

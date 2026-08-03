@@ -16,8 +16,11 @@
 #
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, draining, and blocker handling fails closed. It
-# retains the drained wake, buffered-escalation, and wedge-marker evidence until
-# every live open blocker is closed and `check` succeeds. Repeated begin/check
+# retains the drained wake, buffered-escalation, in-flight-digest, and
+# wedge-marker evidence until every live open blocker is closed and `check`
+# succeeds. Buffered items covered by an unresolved digest are labeled
+# delivery-uncertain rather than escalation, because they may already have
+# reached the primary and are never retyped. Repeated begin/check
 # calls are idempotent. `guard` never mutates state and is suitable for ordinary
 # read entrypoints such as fm-bearings-snapshot.sh.
 set -u
@@ -124,7 +127,35 @@ clear_delivery_artifacts() {
   rm -f \
     "$STATE/.subsuper-escalations" \
     "$STATE/.subsuper-escalations.since" \
-    "$STATE/.subsuper-inject-wedged"
+    "$STATE/.subsuper-escalations.unresolved" \
+    "$STATE/.subsuper-inject-wedged" \
+    "$STATE/.subsuper-digest-inflight"
+}
+
+# The away daemon marks the leading N buffered items as belonging to a logical
+# digest whose submit may already have landed. Those items are evidence the
+# captain must re-read as POSSIBLY delivered; everything after them provably
+# never left the daemon.
+unresolved_prefix_count() {
+  local n
+  n=$(cat "$STATE/.subsuper-escalations.unresolved" 2>/dev/null || true)
+  n=${n%%[!0-9]*}
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# A queued record means the digest was never typed at all, which is the opposite
+# of delivery-uncertain; the catch-up must not tell the captain it may have
+# landed. Derive the evidence kind from the record's own phase.
+inflight_evidence_kind() {  # <record>
+  local phase
+  phase=$(sed -n 's/^phase=//p' "$1" 2>/dev/null | head -1)
+  case "$phase" in
+    prepared|uncertain) printf 'delivery-uncertain' ;;
+    confirmed) printf 'delivery-confirmed' ;;
+    queued) printf 'delivery-not-attempted' ;;
+    *) printf 'delivery-unknown' ;;
+  esac
 }
 
 return_guard() {
@@ -141,7 +172,7 @@ return_guard() {
 }
 
 return_reconcile() {
-  local evidence blockers drained wedge escalations lifecycle_ok=1
+  local evidence blockers drained wedge escalations inflight unresolved lifecycle_ok=1
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
   preserve_evidence "$evidence"
@@ -165,8 +196,19 @@ return_reconcile() {
     append_evidence wedge "$wedge" "$evidence"
   fi
   if [ -s "$STATE/.subsuper-escalations" ]; then
-    escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
+    unresolved=$(unresolved_prefix_count)
+    if [ "$unresolved" -gt 0 ]; then
+      append_evidence delivery-uncertain \
+        "$(head -n "$unresolved" "$STATE/.subsuper-escalations" 2>/dev/null || true)" "$evidence"
+      escalations=$(tail -n "+$((unresolved + 1))" "$STATE/.subsuper-escalations" 2>/dev/null || true)
+    else
+      escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
+    fi
     append_evidence escalation "$escalations" "$evidence"
+  fi
+  if [ -s "$STATE/.subsuper-digest-inflight" ]; then
+    inflight=$(cat "$STATE/.subsuper-digest-inflight" 2>/dev/null || true)
+    append_evidence "$(inflight_evidence_kind "$STATE/.subsuper-digest-inflight")" "$inflight" "$evidence"
   fi
 
   scan_open_blockers > "$blockers"

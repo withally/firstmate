@@ -565,13 +565,16 @@ test_arm_all_absorbed_clean_close_rearms_without_failure() {
     || fail "all-absorbed close was not classified clean in the lifecycle ledger"
 
   # Actionable close control: the successor still surfaces and exits through
-  # the unchanged actionable path after the internal clean re-arm.
+  # the unchanged actionable path after the internal clean re-arm. The leftover
+  # working: status can age past FM_SIGNAL_GRACE before this done: write lands,
+  # so the successor may legitimately surface it as an actionable stale wake
+  # first; either actionable shape proves the actionable path is unchanged.
   printf 'done: ready for review\n' > "$state/absorbed.status"
   status=0
   wait_for_exit "$armpid" 80 || status=$?
   [ "$status" -eq 0 ] || fail "actionable successor close changed status after clean re-arm (status $status)"
-  grep -q '^signal:' "$armout" || fail "actionable successor close did not surface its signal reason"
-  grep -q 'reason=actionable-signal' "$state/.watch-cycle-exits.log" \
+  grep -Eq '^(signal|stale):' "$armout" || fail "actionable successor close did not surface an actionable reason"
+  grep -Eq 'reason=actionable-(signal|stale)' "$state/.watch-cycle-exits.log" \
     || fail "actionable successor close lost its lifecycle classification"
   pass "all-absorbed clean close silently re-arms and the successor's actionable close stays unchanged"
 }

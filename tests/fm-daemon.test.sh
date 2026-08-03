@@ -1239,10 +1239,12 @@ test_retired_confirmed_record_does_not_swallow_later_escalations() {
   local flush_env=(PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent"
     FM_INJECT_CONFIRM_SLEEP=0.05 FM_MAX_DEFER_SECS=60 FM_WEDGE_ALARM_CHANNEL=osascript
     FM_WEDGE_ALARM_LOG="$alerts" FM_STATE_OVERRIDE="$state")
+  # shellcheck disable=SC2016 # $1/$2 expand in the child bash, not this test shell.
   env "${flush_env[@]}" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state"
   [ "$(escalate_unresolved_count "$state")" -eq 2 ] \
     || fail "the crashed confirmed digest did not retire exactly its own 2 items, got $(escalate_unresolved_count "$state")"
 
+  # shellcheck disable=SC2016 # $1/$2 expand in the child bash, not this test shell.
   env "${flush_env[@]}" bash -c '. "$1"; escalate_flush "$2"' _ "$DAEMON" "$state" \
     || fail "the escalation buffered after the crash was refused delivery (away channel went dark)"
   [ "$(escalate_unresolved_count "$state")" -eq 2 ] \

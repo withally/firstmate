@@ -74,6 +74,9 @@
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
+# Before every intentional close, this watcher atomically publishes the close
+# kind and its process identity to state/.watch-close so attached arm layers can
+# distinguish a clean handoff from a crash or reasonless death.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,6 +107,26 @@ mkdir -p "$STATE"
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
 WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
+WATCH_CLOSE_KIND=
+WATCHER_IDENTITY=
+
+fm_watch_close_intent() {
+  WATCH_CLOSE_KIND=$1
+}
+
+watcher_close_publish() {
+  local receipt tmp
+  [ -n "$WATCHER_IDENTITY" ] || return 1
+  receipt="$STATE/.watch-close"
+  tmp=$(umask 077; mktemp "$STATE/.watch-close.XXXXXX") || return 1
+  if printf 'pid=%s\nkind=%s\nidentity=%s\n' \
+    "$WATCHER_PID" "$WATCH_CLOSE_KIND" "$WATCHER_IDENTITY" > "$tmp"; then
+    mv -f "$tmp" "$receipt"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
 # The singleton-lock acquisition, EXIT trap, and the blocking supervision loop
 # all live below the source guard at the very bottom of this file (see "Main
 # entry"). Sourcing this file for unit tests therefore loads the functions -
@@ -754,6 +777,9 @@ watcher_cleanup() {
   fm_active_check_stop || return 1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
+  if [ -n "$WATCH_CLOSE_KIND" ]; then
+    watcher_close_publish || true
+  fi
   fm_lock_release "$WATCH_LOCK"
 }
 trap watcher_cleanup EXIT
@@ -764,7 +790,8 @@ trap 'exit 1' HUP INT TERM
 WATCHER_PID=${BASHPID:-$$}
 printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home" || true
 printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
-fm_pid_identity "$WATCHER_PID" > "$WATCH_LOCK/pid-identity" 2>/dev/null || true
+WATCHER_IDENTITY=$(fm_pid_identity "$WATCHER_PID" 2>/dev/null || true)
+printf '%s\n' "$WATCHER_IDENTITY" > "$WATCH_LOCK/pid-identity" 2>/dev/null || true
 
 [ -e "$STATE/.last-heartbeat" ] || touch "$STATE/.last-heartbeat"
 
@@ -786,6 +813,7 @@ while :; do
   # This makes any duplicate self-resolve within one poll instead of persisting
   # and doubling every wake.
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" != "$WATCHER_PID" ]; then
+    fm_watch_close_intent clean
     exit 0
   fi
 

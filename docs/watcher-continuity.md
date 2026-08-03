@@ -39,10 +39,12 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 
 ## Arm-layer cycle contract
 
-`bin/fm-watch-arm.sh` never returns a clean empty success.
+`bin/fm-watch-arm.sh` never returns a clean empty success while supervision is still needed.
 An actionable child output returns that reason normally.
-A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, or emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
-An attached arm follows verified identity-matched successors and reports the same typed failure if that chain ends without one.
+Before every intentional close, the watcher publishes a PID-identity-bound close receipt; actionable output remains the owning arm's primary reason.
+The arm rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, and silently relaunches after a matching clean receipt or an actionable receipt observed by an attached arm.
+Only a reasonless zero-output close without that handshake, or an attached cycle that dies without a healthy successor or matching receipt, emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
+Signals and nonzero exits remain typed failures.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.

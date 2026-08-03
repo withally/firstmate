@@ -30,17 +30,19 @@
 #                                                          this arm attaches and follows it
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
-#                                                        - a clean cycle ended with no wake and no
-#                                                          verified healthy successor
+#                                                        - a cycle died with no wake, verified healthy
+#                                                          successor, or identity-bound close receipt
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
 # returns the FAILED line. On started it waits the child and propagates the wake
-# reason; on attached it stays live across identity-matched successors. An
-# attached cycle that ends without a healthy successor is a typed nonzero failure,
-# never a clean empty completion. On FAILED it exits non-zero so the failure is
-# loud. A live cycle already present means re-arm attaches - do not start a second
-# watcher.
+# reason; on attached it stays live across identity-matched successors. A
+# matching state/.watch-close receipt proves an intentional clean or actionable
+# close that this arm did not itself observe, so the arm silently relaunches.
+# A cycle that ends without a healthy successor or matching receipt is a typed
+# nonzero failure, never a clean empty completion. On FAILED it exits non-zero so
+# the failure is loud. A live cycle already present means re-arm attaches - do not
+# start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -101,6 +103,7 @@ lock_snapshot() {
 
 cycle_active=0
 cycle_watcher_pid=none
+cycle_watcher_identity=
 cycle_origin=unknown
 cycle_started_at=0
 cycle_lock_before='pid:none|identity:none'
@@ -110,12 +113,47 @@ cycle_begin() {
   cycle_origin=$2
   cycle_started_at=$(date +%s)
   cycle_lock_before=$(lock_snapshot)
+  cycle_watcher_identity=
+  if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$cycle_watcher_pid" ]; then
+    cycle_watcher_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+  fi
   cycle_active=1
 }
 
 cycle_refresh_lock_before() {
   [ "$cycle_active" -eq 1 ] || return 0
   cycle_lock_before=$(lock_snapshot)
+  if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$cycle_watcher_pid" ]; then
+    cycle_watcher_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+  fi
+}
+
+watch_close_kind() {
+  local pid=$1 receipt key value receipt_pid='' receipt_kind='' receipt_identity=''
+  receipt="$STATE/.watch-close"
+  [ -f "$receipt" ] || return 1
+  while IFS='=' read -r key value; do
+    case "$key" in
+      pid) receipt_pid=$value ;;
+      kind) receipt_kind=$value ;;
+      identity) receipt_identity=$value ;;
+    esac
+  done < "$receipt"
+  [ "$receipt_pid" = "$pid" ] || return 1
+  [ -n "$cycle_watcher_identity" ] || return 1
+  [ "$receipt_identity" = "$cycle_watcher_identity" ] || return 1
+  case "$receipt_kind" in
+    actionable|clean) printf '%s' "$receipt_kind" ;;
+    *) return 1 ;;
+  esac
+}
+
+continue_after_intentional_close() {
+  trap - HUP TERM INT
+  export FM_WATCH_PREDECESSOR_ARM_PID="$ARM_PID"
+  exec "$SCRIPT_DIR/fm-watch-arm.sh"
+  echo "watcher: FAILED - could not continue after an intentional watcher close"
+  return 1
 }
 
 cycle_signal_name() {
@@ -262,10 +300,11 @@ fail_unexplained_cycle() {
 }
 
 # Stay alive across identity-matched healthy holders. If one cycle ends, attach
-# to a verified successor. With no successor, fail loudly instead of returning a
-# clean empty completion that an adapter could mistake for a no-op.
+# to a verified successor or continue after its identity-bound intentional-close
+# receipt. With neither, fail loudly instead of returning a clean empty
+# completion that an adapter could mistake for a no-op.
 attach_and_wait() {
-  local attached_pid=$1
+  local attached_pid=$1 close_kind
   while :; do
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ]; then
@@ -283,6 +322,16 @@ attach_and_wait() {
       cycle_begin "$attached_pid" attached
       report_attached
       continue
+    fi
+    close_kind=$(watch_close_kind "$attached_pid" 2>/dev/null || true)
+    if [ -n "$close_kind" ]; then
+      if [ "$close_kind" = actionable ]; then
+        cycle_log_append 0 none observed-actionable-close none
+      else
+        cycle_log_append 0 none clean-close none
+      fi
+      continue_after_intentional_close
+      return $?
     fi
     cycle_log_append unknown unknown attached-cycle-ended none
     fail_unexplained_cycle
@@ -405,7 +454,7 @@ cycle_begin "$child" started
 child_done=0
 
 owned_child_finished() {
-  local rc=$1 signal reason_type status
+  local rc=$1 signal reason_type status close_kind
   signal=$(cycle_signal_name "$rc")
   if [ "$rc" -eq 0 ] && watch_output_has_wake "$child_out"; then
     reason_type=$(watch_output_reason_type "$child_out")
@@ -428,6 +477,20 @@ owned_child_finished() {
       report_attached
       cycle_begin "$HEALTHY_PID" attached
       attach_and_wait "$HEALTHY_PID"
+      return $?
+    fi
+    close_kind=$(watch_close_kind "$child" 2>/dev/null || true)
+    if [ -n "$close_kind" ]; then
+      if [ "$close_kind" = actionable ]; then
+        cycle_log_append "$rc" "$signal" observed-actionable-close none
+      else
+        cycle_log_append "$rc" "$signal" clean-close none
+      fi
+      print_watch_output "$child_out"
+      rm -f "$child_out" 2>/dev/null || true
+      child=
+      child_out=
+      continue_after_intentional_close
       return $?
     fi
     cycle_log_append "$rc" "$signal" unexpected-clean-exit none

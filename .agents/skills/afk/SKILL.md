@@ -153,7 +153,7 @@ behavior but needs a separate fix; the gap is recorded in
 The daemon wraps `fm-watch.sh`, runs the watcher as a child, classifies each
 wake reason in bash, and self-handles the routine majority without consuming a
 firstmate turn.
-Captain-relevant events, plus a bounded recheck of a declared external wait that remains idle, escalate to firstmate's context as one pre-read, single-line, batched digest.
+Captain-relevant events, plus an opt-in bounded recheck of a declared external wait that remains idle, escalate to firstmate's context as one pre-read, single-line, batched digest.
 The classification predicates (the captain-relevant verb set, declared-pause vocabulary, signal/stale tests, and fleet-scan) live in the shared `bin/fm-classify-lib.sh`, the same library the always-on watcher uses for its own triage when afk is off, so the two modes apply one identical policy.
 While `state/.afk` exists the daemon owns the watcher, so the watcher reverts to one-shot and lets the daemon do the triage - the two never run their triage at the same time.
 
@@ -163,7 +163,7 @@ Classify each wake this way:
   A nonterminal progress verb remains nonterminal even when its prose contains a legacy free-text token such as `PR ready`, `checks green`, `ready in branch`, or `merged`; only a bare legacy line with such a token escalates.
   Other signals with no captain-relevant status -> self-handle.
 - `signal` or `stale` for a declared `paused:` external wait -> self-handle and track the pause rather than a wedge.
-  If it remains declared and idle past `FM_PAUSE_RESURFACE_SECS` (default 3600s), housekeeping sends one awaiting-external recheck and resets the pause window.
+  An absorbed pause stays silent by default; only when `FM_PAUSE_RESURFACE_SECS` is explicitly set (unset by default) does housekeeping send one awaiting-external recheck past that cadence and reset the pause window.
 - `check` -> always escalate. Check scripts print only when firstmate should wake.
 - `stale` with a terminal status or bare legacy captain-relevant line -> escalate.
   Nonterminal progress remains transient even when its prose contains a legacy free-text token or its seen-status marker already matches, so record a marker and self-handle.
@@ -249,7 +249,7 @@ These properties must hold:
   or crashed injection, and a digest whose submit stayed ambiguous is preserved
   for return catch-up rather than replayed.
 - Wedge detection is bounded-latency, not lossy.
-- Declared external waits are rechecked on a separate, bounded cadence rather than being mislabeled as wedges.
+- Declared external waits are absorbed silently, or rechecked on the opt-in `FM_PAUSE_RESURFACE_SECS` cadence, rather than being mislabeled as wedges.
 - The catch-all scan backs up the keyword classifier.
 - The daemon preserves a single-instance portable lock, crash-loop backoff,
   a pane-gone guard, and a signal-trapped shutdown that flushes buffered

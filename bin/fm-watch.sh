@@ -1031,6 +1031,7 @@ EOF
                 # genuinely new terminal line (marker mismatch) still surfaces
                 # immediately below.
                 printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
                 triage_log "absorbed stale (terminal status already delivered): $w"
               else
                 fm_wake_append stale "$w" "stale: $w" || exit 1

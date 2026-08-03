@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # Shared wake classifier: the common source of truth for captain-relevant status
-# tests, declared-external-wait vocabulary, and the working/paused absorb
-# classification that makes routine working-progress signals and proven-active
-# lifecycle/stale wakes safe to absorb.
+# tests, keyed delivered-decision receipts, terminal-signal dedupe, and the
+# working/paused absorb classification that makes routine progress and
+# proven-active lifecycle/stale wakes safe to absorb.
 # Sourced by BOTH the always-on watcher
 # (bin/fm-watch.sh) and the away-mode daemon (bin/fm-supervise-daemon.sh) so the
 # overlapping triage policy lives in one place instead of two copies that can
 # drift apart.
 #
-# Most functions are pure, side-effect-free reads of status files: each takes
-# what it needs as arguments and touches no globals beyond the optional
-# FM_CAPTAIN_RE override. Consumers layer their own dedup/marker state on top (the
-# daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
-# signatures).
+# Most functions are pure, side-effect-free reads of status files and durable
+# markers. The delivered-decision record/consume helpers are explicit stateful
+# exceptions shared by fm-send, the watcher, and the daemon.
 #
 # The one exception is the absorb classification (crew_absorb_class and its
 # working/paused wrappers). It is NOT a pure status-file read: it reuses
@@ -162,6 +160,14 @@ status_is_paused_or_captain_held() {  # <status-line>
 # format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
 #   needs-decision [key=api-shape]: <summary>
 #   resolved       [key=api-shape]: <how it was decided>
+# A resolved line may instead carry that token as its exact final note token:
+#   resolved: <how it was decided> [key=api-shape]
+# For OPENING verbs (needs-decision/blocked) and progress verbs the prefix token
+# is authoritative and key-like text elsewhere in note prose is not semantic, so
+# a question mentioning another key still opens its own decision. CLOSING verbs
+# (resolved, captain-held) parse fail-closed instead: a line carrying more than
+# one key-like token is ambiguous about which decision it closes and is rejected,
+# keeping the decision open.
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
 # The three parsers are pure reads of a single line; the verb parser strips any
@@ -180,17 +186,41 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
   esac
 }
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
+  local line=$1 prefix k verb
+  line=${line%"${line##*[![:space:]]}"}
+  prefix=${line%%:*}
   case "$prefix" in
     *\[key=*\]*)
       k=${prefix#*\[key=}
       k=${k%%\]*}
       case "$k" in
         ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *) printf '%s' "$k" ;;
+      esac
+      verb=$(status_line_verb "$line")
+      case "$verb" in
+        "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
+          [ "$(decision_key_from_text "$line" 2>/dev/null || true)" = "$k" ] || return 1
+          ;;
+      esac
+      printf '%s' "$k"
+      ;;
+    *)
+      verb=$(status_line_verb "$line")
+      case "$verb:$line" in
+        "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}:"*\ \[key=*\])
+          k=${line##*\[key=}
+          k=${k%\]}
+          case "$k" in
+            ''|*[!A-Za-z0-9._-]*) return 1 ;;
+            *)
+              [ "$(decision_key_from_text "$line" 2>/dev/null || true)" = "$k" ] || return 1
+              printf '%s' "$k"
+              ;;
+          esac
+          ;;
+        *) printf 'default' ;;
       esac
       ;;
-    *) printf 'default' ;;
   esac
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
@@ -238,6 +268,241 @@ status_open_decisions() {  # <status-file>
     esac
   done < "$f"
   printf '%s' "$open"
+}
+
+# Return the one explicit decision key token carried by arbitrary delivered
+# text. The token grammar is the same slug grammar as status lines above. Text
+# with no token, more than one token, or any malformed extra token is rejected,
+# so callers never guess which decision a message answered.
+decision_key_from_text() {  # <text>
+  local text=$1 marker rest key
+  marker=$(printf '%s' "$text" | grep -oE '\[key=[A-Za-z0-9._-]+\]' 2>/dev/null | head -1 || true)
+  [ -n "$marker" ] || return 1
+  rest=${text/"$marker"/}
+  case "$rest" in *\[key=*) return 1 ;; esac
+  key=${marker#\[key=}; key=${key%\]}
+  printf '%s' "$key"
+}
+
+status_decision_is_open() {  # <status-file> <key>
+  local f=$1 wanted=$2 key rest
+  while IFS=$(printf '\t') read -r key rest; do
+    [ "$key" = "$wanted" ] && return 0
+  done <<EOF
+$(status_open_decisions "$f")
+EOF
+  return 1
+}
+
+_fm_decision_identity_valid() {  # <task> <key>
+  case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$2" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+}
+
+# Durable task+key receipt written only after fm-send confirms submission of an
+# answer carrying exactly one explicit key for a decision still open in that
+# task's append-only status stream.
+decision_delivery_marker_path() {  # <state> <task> <key>
+  local state=$1 task=$2 key=$3
+  _fm_decision_identity_valid "$task" "$key" || return 1
+  printf '%s/.delivered-decisions/%s/%s' "$state" "$task" "$key"
+}
+
+decision_delivery_is_recorded() {  # <state> <task> <key>
+  local path
+  path=$(decision_delivery_marker_path "$1" "$2" "$3") || return 1
+  [ -f "$path" ]
+}
+
+decision_delivery_record() {  # <state> <task> <delivered-text>
+  local state=$1 task=$2 text=$3 key path dir tmp status lines fingerprint
+  key=$(decision_key_from_text "$text") || return 1
+  _fm_decision_identity_valid "$task" "$key" || return 1
+  status="$state/$task.status"
+  status_decision_is_open "$status" "$key" || return 1
+  lines=$(awk 'END { print NR + 0 }' "$status" 2>/dev/null) || return 2
+  fingerprint=$(cksum < "$status" 2>/dev/null) || return 2
+  path=$(decision_delivery_marker_path "$state" "$task" "$key") || return 1
+  dir=${path%/*}
+  mkdir -p "$dir" || return 2
+  chmod 0700 "$state/.delivered-decisions" "$dir" 2>/dev/null || return 2
+  tmp=$(mktemp "$dir/.delivery.XXXXXX") || return 2
+  if ! { chmod 0600 "$tmp" \
+    && printf 'v1\ntask=%s\nkey=%s\nstatus_lines=%s\nstatus_cksum=%s\n' \
+      "$task" "$key" "$lines" "$fingerprint" > "$tmp" \
+    && mv -f "$tmp" "$path"; }; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 2
+  fi
+}
+
+decision_delivery_matches_resolution() {  # <state> <task> <key> <status-file>
+  local state=$1 task=$2 key=$3 status=$4 path lines expected actual line verb event_key last seen=""
+  path=$(decision_delivery_marker_path "$state" "$task" "$key") || return 1
+  [ -f "$path" ] || return 1
+  lines=$(grep '^status_lines=' "$path" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  expected=$(grep '^status_cksum=' "$path" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  case "$lines" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$expected" ] || return 1
+  actual=$(head -n "$lines" "$status" 2>/dev/null | cksum 2>/dev/null) || return 1
+  [ "$actual" = "$expected" ] || return 1
+  last=$(last_status_line "$status")
+  while IFS= read -r line || [ -n "$line" ]; do
+    verb=$(status_line_verb "$line")
+    if [ "$verb" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ]; then
+      event_key=$(_fm_decision_key "$line") || return 1
+      [ "$event_key" = "$key" ] && [ "$line" = "$last" ] && [ -z "$seen" ] || return 1
+      seen=1
+    elif status_is_captain_relevant "$line"; then
+      return 1
+    elif [ "$verb" = "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}" ]; then
+      event_key=$(_fm_decision_key "$line") || return 1
+      [ "$event_key" != "$key" ] || return 1
+    fi
+  done < <(tail -n "+$((lines + 1))" "$status" 2>/dev/null)
+  [ -n "$seen" ]
+}
+
+decision_delivery_consume() {  # <state> <task> <key>
+  local state=$1 task=$2 key=$3 path dir
+  path=$(decision_delivery_marker_path "$state" "$task" "$key") || return 1
+  [ -f "$path" ] || return 1
+  rm -f "$path" || return 1
+  dir=${path%/*}
+  rmdir "$dir" 2>/dev/null || true
+  rmdir "$state/.delivered-decisions" 2>/dev/null || true
+}
+
+_fm_status_explicit_decision_key() {  # <status-line>
+  local key explicit
+  key=$(_fm_decision_key "$1") || return 1
+  [ "$key" != default ] || return 1
+  explicit=$(decision_key_from_text "$1") || return 1
+  [ "$explicit" = "$key" ] || return 1
+  printf '%s' "$key"
+}
+
+signal_has_resolved_event() {  # <file> ...
+  local f last
+  for f in "$@"; do
+    case "$f" in *.status) ;; *) continue ;; esac
+    [ -e "$f" ] || continue
+    last=$(last_status_line "$f")
+    [ "$(status_line_verb "$last")" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ] \
+      && return 0
+  done
+  return 1
+}
+
+# 0 only for a complete, unambiguous signal batch consisting of one or more
+# explicitly keyed resolved status lines with matching delivered task+key
+# receipts, plus optional same-task turn-end markers. Any other file, status
+# verb, unmatched key, or unrelated lifecycle marker fails closed.
+signal_is_delivered_decision_echo() {  # <state> <file> ...
+  local state=$1 f base task last key resolved_tasks="" seen=""
+  shift
+  for f in "$@"; do
+    [ -e "$f" ] || return 1
+    base=${f##*/}
+    case "$base" in
+      *.status)
+        task=${base%.status}
+        last=$(last_status_line "$f")
+        [ "$(status_line_verb "$last")" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ] \
+          || return 1
+        key=$(_fm_status_explicit_decision_key "$last") || return 1
+        decision_delivery_matches_resolution "$state" "$task" "$key" "$f" || return 1
+        case " $resolved_tasks " in *" $task "*) ;; *) resolved_tasks="$resolved_tasks $task" ;; esac
+        seen=1
+        ;;
+      *.turn-ended) : ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -n "$seen" ] || return 1
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in
+      *.turn-ended)
+        task=${base%.turn-ended}
+        case " $resolved_tasks " in *" $task "*) ;; *) return 1 ;; esac
+        ;;
+    esac
+  done
+}
+
+signal_consume_delivered_decision_echo() {  # <state> <file> ...
+  local state=$1 f base task last key consumed=""
+  shift
+  signal_is_delivered_decision_echo "$state" "$@" || return 1
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in *.status) ;; *) continue ;; esac
+    task=${base%.status}
+    last=$(last_status_line "$f")
+    key=$(_fm_status_explicit_decision_key "$last") || return 1
+    case " $consumed " in *" $task:$key "*) continue ;; esac
+    decision_delivery_consume "$state" "$task" "$key" || return 1
+    consumed="$consumed $task:$key"
+  done
+}
+
+_fm_hb_surfaced_path() {  # <state> <task>
+  printf '%s/.hb-surfaced-%s' "$1" "$(printf '%s' "$2" | tr ':/.' '___')"
+}
+
+# 0 only when the file's events at and after the first occurrence of the
+# surfaced line contain no other captain-relevant event. Guards the duplicate
+# classifier below against a coalesced batch that appends a never-surfaced
+# captain-relevant line (e.g. a new needs-decision) followed by a byte-identical
+# re-delivery of the already-surfaced terminal: last-line-only comparison would
+# absorb the whole batch and mask the new event.
+_fm_status_tail_only_redelivers() {  # <status-file> <surfaced-line>
+  local f=$1 surfaced=$2 line matched=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$surfaced" ]; then matched=1; continue; fi
+    [ -n "$matched" ] || continue
+    status_is_captain_relevant "$line" && return 1
+  done < "$f"
+  return 0
+}
+
+# 0 only when every status in a signal batch is captain-relevant and
+# byte-identical to its already-surfaced marker, with optional turn-end markers
+# restricted to those same tasks. This is the signal-path twin of terminal stale
+# dedupe; a first or changed terminal, unrelated lifecycle marker, mixed
+# nonterminal status, or a re-delivery masking a newer captain-relevant event
+# remains actionable.
+signal_captain_relevant_already_surfaced() {  # <state> <file> ...
+  local state=$1 f base task last surfaced_tasks="" seen=""
+  shift
+  for f in "$@"; do
+    [ -e "$f" ] || return 1
+    base=${f##*/}
+    case "$base" in
+      *.status)
+        task=${base%.status}
+        last=$(last_status_line "$f")
+        status_is_captain_relevant "$last" || return 1
+        [ "$last" = "$(cat "$(_fm_hb_surfaced_path "$state" "$task")" 2>/dev/null || true)" ] || return 1
+        _fm_status_tail_only_redelivers "$f" "$last" || return 1
+        case " $surfaced_tasks " in *" $task "*) ;; *) surfaced_tasks="$surfaced_tasks $task" ;; esac
+        seen=1
+        ;;
+      *.turn-ended) : ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -n "$seen" ] || return 1
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in
+      *.turn-ended)
+        task=${base%.turn-ended}
+        case " $surfaced_tasks " in *" $task "*) ;; *) return 1 ;; esac
+        ;;
+    esac
+  done
 }
 
 # Fold material routed-work phases in the same keyed event stream.

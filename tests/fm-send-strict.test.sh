@@ -9,6 +9,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$ROOT/bin/fm-classify-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
 TMP_ROOT=$(fm_test_tmproot fm-send-strict)
@@ -163,9 +165,31 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+test_successful_keyed_decision_send_records_only_an_open_task_key() {
+  local dir fb home err log rc
+  dir="$TMP_ROOT/decision"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home decision); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$home/state/lane-ok.status"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok 'Proceed with A [key=route]' >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a keyed decision send should succeed"
+  decision_delivery_is_recorded "$home/state" lane-ok route \
+    || fail "a confirmed keyed answer to an open decision was not recorded"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok 'Mention an unopened key [key=unknown]' >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "an ordinary keyed send should still succeed"
+  ! decision_delivery_is_recorded "$home/state" lane-ok unknown \
+    || fail "a key with no open decision created a delivered-decision record"
+  pass "fm-send records only confirmed answers whose task+key decision is open"
+}
+
 test_exact_lane_id_send_still_works
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_healthy_fm_id_send_still_works
+test_successful_keyed_decision_send_records_only_an_open_task_key

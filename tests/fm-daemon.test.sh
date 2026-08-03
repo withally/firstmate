@@ -116,6 +116,35 @@ test_classify_terminal_signal_escalates() {
   pass "captain-relevant status verbs escalate"
 }
 
+test_classify_delivered_decision_echo_parity() {
+  local dir state out marker
+  dir=$(make_supercase classify-delivered-decision)
+  state="$dir/state"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$state/task.status"
+  decision_delivery_record "$state" task 'Proceed with A [key=route]' \
+    || fail "daemon fixture could not record a delivered answer"
+  printf 'resolved [key=route]: proceeding with A\n' >> "$state/task.status"
+  : > "$state/task.turn-ended"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/task.status $state/task.turn-ended" "$state")
+  case "$out" in self\|*) ;; *) fail "matched resolved echo did not self-handle in away mode: $out" ;; esac
+  marker=$(decision_delivery_marker_path "$state" task route)
+  handle_wake "signal: $state/task.status $state/task.turn-ended" "$state"
+  [ ! -e "$marker" ] || fail "away-mode handling did not consume the delivered-decision record"
+
+  printf 'resolved [key=unknown]: no matching answer exists\n' > "$state/unmatched.status"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/unmatched.status" "$state")
+  case "$out" in escalate\|*) ;; *) fail "unmatched resolved echo did not escalate in away mode: $out" ;; esac
+
+  printf 'needs-decision [key=bundle]: choose the release\n' > "$state/bundle.status"
+  decision_delivery_record "$state" bundle 'Use the canary [key=bundle]' \
+    || fail "daemon bundled fixture could not record a delivered answer"
+  printf 'resolved [key=bundle]: using the canary\n' >> "$state/bundle.status"
+  printf 'failed: deployment verification failed\n' > "$state/failed.status"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/bundle.status $state/failed.status" "$state")
+  case "$out" in escalate\|*) ;; *) fail "matching echo hid a bundled away-mode failure: $out" ;; esac
+  pass "away-mode signal classification matches delivered-decision echo safety"
+}
+
 test_classify_check_and_unknown_escalate() {
   local out
   out=$(classify_check "check: /s/c.check.sh: merged: https://x")
@@ -2002,6 +2031,7 @@ test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_daemon_state_root_uses_fm_home
 test_classify_routine_signal_self
 test_classify_terminal_signal_escalates
+test_classify_delivered_decision_echo_parity
 test_classify_check_and_unknown_escalate
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping

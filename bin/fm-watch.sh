@@ -12,7 +12,8 @@
 # POSITIVE evidence it is still working (an actively-running no-mistakes step, or
 # a backend busy signal), and surfaced otherwise, so a crew that finishes (or
 # stops and waits) is never silently swallowed. A declared external-wait pause is
-# the separate idle absorb case and re-surfaces only on its long bounded cadence,
+# the separate idle absorb case, silent by default with an opt-in
+# FM_PAUSE_RESURFACE_SECS recheck cadence,
 # although its initial ambiguous status signal still surfaces in normal mode.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
@@ -26,9 +27,16 @@
 #                          run-step or busy pane outranks even a captain-relevant log
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A declared
-#                          external-wait pause is absorbed instead with its own long
-#                          re-surface cadence, never as a wedge. Only when neither
-#                          absorb class applies does the log's last line decide:
+#                          external-wait pause is absorbed instead, never as a
+#                          wedge; a verified captain-held wait absorbs the same
+#                          way, and a terminal status whose exact line was
+#                          already delivered (the .hb-surfaced marker) is
+#                          absorbed rather than re-surfaced once per pane-hash
+#                          change. Absorbed captain-wait windows then stay
+#                          SILENT unless FM_PAUSE_RESURFACE_SECS is explicitly
+#                          set (opt-in recheck, one wake per window per
+#                          cadence). Only when neither absorb class applies does
+#                          the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no
 #                          captain-relevant verb), both surfaced at once. The
 #                          routine working-progress absorb is a signal-path rule
@@ -169,10 +177,15 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
-# These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
-# longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
+# A declared paused: or verified captain-held status earns the bounded pause
+# absorb regardless of agent liveness: the declaration is the crew's own
+# positive idle-by-design statement, an active run-step or busy pane still
+# outranks it, and a silently resumed crew still surfaces through its turn-end
+# signal. Absorbed captain-wait windows are then SILENT by default - the captain
+# monitors idle windows through Herdr and pull-based digests - and re-surface
+# for a recheck only when FM_PAUSE_RESURFACE_SECS is explicitly set (opt-in),
+# once per window per cadence, far longer than the wedge threshold but finite so
+# an opted-in hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
@@ -331,8 +344,9 @@ busy_turn_over_age() {  # <task>
 }
 
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
-# dead-agent captain-held transfer, and re-surface it once every
-# PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
+# captain-held transfer. The absorb is silent by default; only an explicitly
+# configured FM_PAUSE_RESURFACE_SECS re-surfaces it once per cadence window for
+# a recheck, so an opted-in hold cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
 # cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
 # status file mtime, not a per-hash marker, so a churny idle pane (a ticking
@@ -352,7 +366,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   age=$(( $(date +%s) - mtime ))
   rf="$STATE/.paused-resurfaced-$key"
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
+  if [ -n "$PAUSE_RESURFACE_SECS" ] && [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
@@ -366,7 +380,11 @@ clear_pause_state() {  # <window>
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  # .paused-resurfaced-$key deliberately survives every clear: it is the
+  # per-window throttle for the PAUSE_RESURFACE_SECS recheck, and deleting it
+  # on a pane-hash-churn clear licensed the very next absorb to fire a recheck
+  # wake immediately.
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key"
 }
 
 clear_pause_tracking() {  # <window>
@@ -379,10 +397,14 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# A declared paused:/captain-held last line yields the paused absorb class
+# regardless of agent liveness (the away-mode daemon's classify_stale applies the
+# same rule): a live agent idling at its prompt behind a declared captain wait is
+# the expected shape, and surfacing it once per pane-hash churn produced the
+# 2026-08 forced no-op stale wakes. Only an authoritatively working crew (an
+# active run-step or a busy pane, via crew_absorb_class) outranks the declaration.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive
+  local win=$1 task=$2 key last recheck_file class
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
@@ -394,14 +416,6 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
@@ -411,20 +425,8 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
-    agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
-      rm -f "$recheck_file"
-      printf 'none'
-      return
-    fi
-  fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
-  case "$class" in
-    paused) date +%s > "$recheck_file" ;;
-    *) rm -f "$recheck_file" ;;
-  esac
-  printf '%s' "$class"
+  date +%s > "$recheck_file"
+  printf 'paused'
 }
 
 surface_nonterminal_stale() {  # <window> <hash>
@@ -1018,11 +1020,26 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
-              fm_wake_append stale "$w" "stale: $w" || exit 1
-              printf '%s' "$h" > "$sf"
-              rm -f "$ssf"
-              mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
-              wake "stale: $w"
+              task=$(window_to_task "$w" "$STATE")
+              last=$(last_status_line "$STATE/$task.status")
+              if [ -n "$last" ] && [ "$last" = "$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)" ]; then
+                # This exact captain-relevant line was already delivered to
+                # firstmate (mark_surfaced writes the marker only after its
+                # wake was durably enqueued), so re-surfacing it for every new
+                # pane hash is a forced no-op turn. Absorb it, mirroring the
+                # away-mode daemon's seen-status dedupe in classify_stale; a
+                # genuinely new terminal line (marker mismatch) still surfaces
+                # immediately below.
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                triage_log "absorbed stale (terminal status already delivered): $w"
+              else
+                fm_wake_append stale "$w" "stale: $w" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_surfaced "$STATE/$task.status"
+                wake "stale: $w"
+              fi
             fi
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
@@ -1041,9 +1058,9 @@ EOF
           #   - working: an actively-running pipeline legitimately sits on a static
           #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
           #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
-          #   - paused: the crew declared an external wait, or a declared pause or
-          #     captain hold is paired with a confidently dead agent, so absorb on
-          #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
+          #   - paused: the crew declared an external wait or a verified captain
+          #     hold (regardless of agent liveness), so absorb silently (or on the
+          #     opt-in FM_PAUSE_RESURFACE_SECS cadence) instead of wedge-escalating;
           #   - none: no running pipeline, no exact busy verdict, no declared pause.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,

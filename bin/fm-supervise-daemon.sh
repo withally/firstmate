@@ -44,7 +44,8 @@
 #     escalated only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared pause instead
-#     gets its own longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation.
+#     absorbs silently by default, or re-surfaces on the opt-in
+#     FM_PAUSE_RESURFACE_SECS cadence - never a wedge escalation.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -88,8 +89,9 @@
 #                                   kinds.
 #          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane escalates
 #                                   as a possible wedge (default 240)
-#          FM_PAUSE_RESURFACE_SECS  idle seconds before a declared external wait
-#                                   re-surfaces as a recheck (default 3600)
+#          FM_PAUSE_RESURFACE_SECS  opt-in: idle seconds before a declared
+#                                   external wait re-surfaces as a recheck
+#                                   (unset/empty = never re-surfaces)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
 #                                   digests; 0 = flush immediately (default 90)
 #          FM_HEARTBEAT_SCAN_SECS   cadence for the catch-all status scan
@@ -529,8 +531,9 @@ stale_marker_remove() {  # <window> <state>
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared pause was
-# first observed idle. Housekeeping ages it against PAUSE_RESURFACE_SECS (much
-# longer than a wedge) and re-surfaces the pause once per window. Recording is
+# first observed idle. When FM_PAUSE_RESURFACE_SECS is explicitly set (opt-in;
+# much longer than a wedge), housekeeping ages the marker against it and
+# re-surfaces the pause once per window. Recording is
 # create-if-absent so the timestamp is stable across a churny idle pane (many
 # distinct stale hashes map to one marker), keeping the cadence hash-immune.
 pause_marker_record() {  # <window> <state> - create if absent
@@ -1147,7 +1150,8 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
 #     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
-#  2b) pause re-surface: for each declared-pause marker past PAUSE_RESURFACE_SECS,
+#  2b) pause re-surface: only when FM_PAUSE_RESURFACE_SECS is explicitly set
+#     (opt-in; unset = silent), for each declared-pause marker past that cadence,
 #     re-peek; busy/gone -> clear; still idle + still paused -> escalate a recheck
 #     digest and reset the window (repeating bounded re-surface, never a wedge).
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
@@ -1217,13 +1221,15 @@ housekeeping() {  # <state>
     esac
   done
 
-  # (2b) pause re-surface recheck. A DECLARED external-wait pause idles by design,
-  # so it is rechecked on a much longer cadence than a wedge (PAUSE_RESURFACE_SECS)
-  # and never escalated as one - but it MUST re-surface, so a forgotten pause cannot
+  # (2b) pause re-surface recheck, OPT-IN only. A DECLARED external-wait pause
+  # idles by design and absorbs silently by default; only an explicitly
+  # configured FM_PAUSE_RESURFACE_SECS rechecks it on a much longer cadence than
+  # a wedge - and never escalated as one - so an opted-in forgotten pause cannot
   # rot invisibly. Past the window: busy (resumed) or gone -> drop; still idle and
   # still declaring the pause -> escalate a recheck digest and reset the marker so
   # the window repeats.
   pause_secs=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  if [ -n "$pause_secs" ]; then
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
     key="${marker##*.subsuper-paused-}"
@@ -1254,6 +1260,7 @@ housekeeping() {  # <state>
         ;;
     esac
   done
+  fi
 
   # (3) heartbeat scan (catch-all for a captain-relevant status the per-wake
   #     classifier may have missed). Cheap: status files only, no tmux. The

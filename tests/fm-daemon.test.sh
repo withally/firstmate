@@ -349,6 +349,27 @@ test_housekeeping_paused_resurfaces_and_resets() {
   pass "housekeeping re-surfaces a stale declared pause on the long cadence and resets its window"
 }
 
+# With FM_PAUSE_RESURFACE_SECS unset (the default), housekeeping must NEVER
+# re-surface a declared pause no matter how old the marker is: absorbed
+# captain-wait windows are silent by default because the captain monitors idle
+# windows through Herdr and pull-based digests. The marker is kept so an opted-in
+# cadence still has a stable anchor.
+test_housekeeping_paused_never_resurfaces_by_default() {
+  local dir state fakebin win pane key
+  dir=$(make_supercase paused-default-silent)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-held-w16"; pane="$dir/pane.txt"
+  printf 'paused: holding for the upstream tool release\n' > "$state/held-w16.status"
+  printf 'idle prompt $\n' > "$pane"
+  key=$(printf '%s' "held-w16" | tr ':/.' '___')
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS='' housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "a declared pause re-surfaced with the recheck cadence unset"
+  [ -e "$state/.subsuper-paused-$key" ] || fail "a default-off pause marker was dropped instead of kept silent"
+  pass "housekeeping never re-surfaces a declared pause when the recheck cadence is unset (default off)"
+}
+
 # A pause whose pane became busy again (the crew resumed) drops its marker without
 # escalating, exactly like a resumed wedge.
 test_housekeeping_paused_resumed_cleared() {
@@ -1995,6 +2016,7 @@ test_housekeeping_seeds_pause_marker_from_status
 test_housekeeping_persistent_stale_escalates
 test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
+test_housekeeping_paused_never_resurfaces_by_default
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_stale_marker_transitions_to_pause

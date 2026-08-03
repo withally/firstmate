@@ -39,10 +39,12 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 
 ## Arm-layer cycle contract
 
-`bin/fm-watch-arm.sh` never returns a clean empty success.
+`bin/fm-watch-arm.sh` never returns a clean empty success while supervision is still needed.
 An actionable child output returns that reason normally.
-A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, or emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
-An attached arm follows verified identity-matched successors and reports the same typed failure if that chain ends without one.
+Before every intentional close, the watcher publishes a PID-identity-bound close receipt; actionable output remains the owning arm's primary reason.
+The arm rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, and silently relaunches after a matching clean receipt or an actionable receipt observed by an attached arm.
+Only a reasonless zero-output close without that handshake, or an attached cycle that dies without a healthy successor or matching receipt, emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
+Signals and nonzero exits remain typed failures.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
@@ -57,7 +59,7 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, blocks prompt delivery to prove the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 It also covers the Pi away-mode hand-off in the Ownership section, while `FM_AFK_PI_DUAL_SUPERVISION_E2E=1 tests/fm-afk-pi-dual-supervision-e2e.test.sh` exercises that contract with a real Pi primary and away supervisor.
-`tests/fm-watcher-lock.test.sh` covers verified-successor attach, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+`tests/fm-watcher-lock.test.sh` covers verified-successor attach, the silent all-absorbed clean-close re-arm with an unchanged actionable successor close, an attached arm continuing across an observed actionable close, the crashed receiptless cycle that still fails loudly, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.

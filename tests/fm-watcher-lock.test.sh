@@ -513,13 +513,15 @@ test_watcher_self_evicts_on_lock_takeover() {
   pass "watcher self-evicts when the lock pid no longer names it"
 }
 
-test_arm_self_eviction_is_loud_without_successor() {
-  local dir state fakebin armout armpid watcher_pid status i
-  dir=$(make_case arm-self-evict)
+test_arm_all_absorbed_clean_close_rearms_without_failure() {
+  local dir state fakebin armout armpid watcher_pid successor_pid status i
+  dir=$(make_case arm-all-absorbed-clean-close)
   state="$dir/state"
   fakebin="$dir/fakebin"
   armout="$dir/arm.out"
   mark_pr_check_migration_complete "$state"
+  printf 'project=test\nwindow=test:fm-absorbed\nkind=ship\nharness=claude\nbackend=tmux\n' > "$state/absorbed.meta"
+  printf 'working: routine progress\n' > "$state/absorbed.status"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
@@ -529,18 +531,113 @@ test_arm_self_eviction_is_loud_without_successor() {
     i=$((i + 1))
   done
   watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$watcher_pid" "$armout" || fail "arm did not start before self-eviction check"
+  grep -qF "watcher: started pid=$watcher_pid" "$armout" || fail "arm did not start before all-absorbed close check"
 
-  # A live but identity-mismatched replacement lock makes the owned watcher
-  # self-evict normally. With no verified successor, the arm must turn that
-  # otherwise clean empty close into the typed nonzero failure.
-  printf '%s\n' "$$" > "$state/.watch.lock/pid"
-  wait_for_exit "$armpid" 80
-  status=$?
-  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "self-evicted arm did not fail nonzero (status $status)"
-  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "self-evicted arm omitted the typed cycle-end failure"
-  grep -q "reason=unexpected-clean-exit" "$state/.watch-cycle-exits.log" || fail "self-evicted cycle was not classified in the lifecycle ledger"
-  pass "arm turns clean self-eviction without a successor into a typed failure"
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'absorbed benign signal:' "$state/.watch-triage.log" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'absorbed benign signal:' "$state/.watch-triage.log" \
+    || fail "watcher did not absorb the routine signal before its clean close"
+
+  # Removing the singleton claim makes this watcher intentionally self-evict
+  # after a cycle that surfaced nothing. The arm must classify the watcher's
+  # explicit clean-close handshake and silently establish a successor instead
+  # of waking the primary with the reasonless-dead alarm.
+  rm -rf "$state/.watch.lock"
+  i=0
+  successor_pid=
+  while [ "$i" -lt 100 ]; do
+    if [ "$(grep -cF 'watcher: started pid=' "$armout" 2>/dev/null || true)" -ge 2 ]; then
+      successor_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$armout" | tail -1)
+      [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_pid" ] && break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$successor_pid" ] && [ "$successor_pid" != "$watcher_pid" ] \
+    || fail "arm did not establish a successor after the all-absorbed clean close"
+  is_live_non_zombie "$armpid" || fail "arm ended instead of continuing across the all-absorbed clean close"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "all-absorbed clean close emitted a FAILED classification"
+  grep -q 'reason=clean-close' "$state/.watch-cycle-exits.log" \
+    || fail "all-absorbed close was not classified clean in the lifecycle ledger"
+
+  # Actionable close control: the successor still surfaces and exits through
+  # the unchanged actionable path after the internal clean re-arm. The leftover
+  # working: status can age past FM_SIGNAL_GRACE before this done: write lands,
+  # so the successor may legitimately surface it as an actionable stale wake
+  # first; either actionable shape proves the actionable path is unchanged.
+  printf 'done: ready for review\n' > "$state/absorbed.status"
+  status=0
+  wait_for_exit "$armpid" 80 || status=$?
+  [ "$status" -eq 0 ] || fail "actionable successor close changed status after clean re-arm (status $status)"
+  grep -Eq '^(signal|stale):' "$armout" || fail "actionable successor close did not surface an actionable reason"
+  grep -Eq 'reason=actionable-(signal|stale)' "$state/.watch-cycle-exits.log" \
+    || fail "actionable successor close lost its lifecycle classification"
+  pass "all-absorbed clean close silently re-arms and the successor's actionable close stays unchanged"
+}
+
+test_attached_arm_observes_actionable_close_without_false_failure() {
+  local dir state fakebin owner_out attached_out owner_arm attached_arm watcher_pid successor_pid owner_status attached_status i
+  dir=$(make_case attached-observes-actionable-close)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  owner_out="$dir/owner.out"
+  attached_out="$dir/attached.out"
+  mark_pr_check_migration_complete "$state"
+  printf 'project=test\nwindow=test:fm-attached-actionable\nkind=ship\nharness=claude\nbackend=tmux\n' > "$state/task.meta"
+  printf 'working: routine progress\n' > "$state/task.status"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
+  owner_arm=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$owner_out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$watcher_pid" "$owner_out" || fail "owner arm did not start before attached-actionable check"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$attached_out" &
+  attached_arm=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$watcher_pid" "$attached_out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$watcher_pid" "$attached_out" || fail "second arm did not attach to the owner cycle"
+
+  printf 'done: first actionable close\n' > "$state/task.status"
+  owner_status=0
+  wait_for_exit "$owner_arm" 80 || owner_status=$?
+  [ "$owner_status" -eq 0 ] || fail "owner actionable arm exited $owner_status"
+  grep -q '^signal:' "$owner_out" || fail "owner arm lost the actionable close reason"
+
+  i=0
+  successor_pid=
+  while [ "$i" -lt 100 ]; do
+    if grep -qF 'watcher: started pid=' "$attached_out" 2>/dev/null; then
+      successor_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$attached_out" | tail -1)
+      [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_pid" ] && break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$successor_pid" ] || fail "attached arm did not continue after observing the actionable close receipt"
+  ! grep -qF 'watcher: FAILED' "$attached_out" || fail "attached arm emitted the false reasonless-dead failure"
+  grep -q 'reason=observed-actionable-close' "$state/.watch-cycle-exits.log" \
+    || fail "attached arm did not record the observed actionable close"
+
+  printf 'needs-decision: second actionable close\n' > "$state/task.status"
+  attached_status=0
+  wait_for_exit "$attached_arm" 80 || attached_status=$?
+  [ "$attached_status" -eq 0 ] || fail "continued attached arm exited $attached_status on its own actionable close"
+  grep -q '^signal:' "$attached_out" || fail "continued attached arm lost its actionable close reason"
+  pass "an attached arm observes an actionable owner close and continues without a false failure"
 }
 
 test_arm_attaches_and_waits_for_live_fresh_watcher() {
@@ -575,7 +672,8 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED for a healthy watcher"
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "arm disturbed the healthy watcher's lock"
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
-  # After the seed dies without a successor, the attached arm must fail loudly.
+  # Crash counterfactual: the seed dies without a close receipt or successor,
+  # so the attached arm must still fail loudly.
   kill "$wpid" 2>/dev/null || true
   wait "$wpid" 2>/dev/null || true
   wait_for_exit "$armpid" 80
@@ -1039,7 +1137,8 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
-test_arm_self_eviction_is_loud_without_successor
+test_arm_all_absorbed_clean_close_rearms_without_failure
+test_attached_arm_observes_actionable_close_without_false_failure
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals

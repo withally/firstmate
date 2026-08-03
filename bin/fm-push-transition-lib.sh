@@ -49,6 +49,9 @@ wake() {
     "$FM_WAKE_POST_OUTPUT_ACTION" "$output_status" || true
   fi
   [ "$output_status" -eq 0 ] || exit "$output_status"
+  if declare -F fm_watch_close_intent >/dev/null 2>&1; then
+    fm_watch_close_intent actionable
+  fi
   exit 0
 }
 

@@ -38,8 +38,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, getKeybindings, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { installCalmAssistantLayout } from "./lib/fm-calm-assistant-layout.ts";
-import { installCalmOperationalUserLayout } from "./lib/fm-calm-operational-user-layout.ts";
+import {
+  installCalmAssistantLayout,
+  noteCalmTranscriptRunSettled,
+  noteCalmTranscriptRunStart,
+  resetCalmTranscriptOrigin,
+} from "./lib/fm-calm-assistant-layout.ts";
+import {
+  installCalmOperationalUserLayout,
+  installCalmTranscriptReplayWindow,
+} from "./lib/fm-calm-operational-user-layout.ts";
 import {
   CALM_WORKING_SHIP_WIDGET_KEY,
   createCalmWorkingShipAnimation,
@@ -98,6 +106,7 @@ function installCalmPresentationAdapter(name: string, install: () => void): void
 export default function (pi: ExtensionAPI) {
   installCalmPresentationAdapter("collapsed-thinking", installCalmAssistantLayout);
   installCalmPresentationAdapter("operational-user-row", installCalmOperationalUserLayout);
+  installCalmPresentationAdapter("transcript-replay-window", installCalmTranscriptReplayWindow);
 
   let exportRendering = false;
   let removeTerminalInputHandler: (() => void) | undefined;
@@ -275,6 +284,7 @@ export default function (pi: ExtensionAPI) {
   registerBuiltIn(createLsToolDefinition);
 
   pi.on("session_start", (_event, ctx) => {
+    resetCalmTranscriptOrigin();
     exportRendering = false;
     setCalmPresentation(loadCalmPreference());
     setCalmStockExportRendering(false);
@@ -314,17 +324,20 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", (_event, ctx) => {
+    noteCalmTranscriptRunStart();
     agentRunActive = true;
     applyWorkingPresentation(ctx.ui);
   });
 
   // agent_settled is emitted from a finally block, so it also covers abort and failure.
   pi.on("agent_settled", (_event, ctx) => {
+    noteCalmTranscriptRunSettled();
     agentRunActive = false;
     applyWorkingPresentation(ctx.ui);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    noteCalmTranscriptRunSettled();
     agentRunActive = false;
     applyWorkingPresentation(ctx.ui);
   });

@@ -329,6 +329,7 @@ const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-
 for (const [name, install, expected] of [
   ["collapsed-thinking", assistant.installCalmAssistantLayout, "AssistantMessageComponent"],
   ["operational-user-row", operational.installCalmOperationalUserLayout, "InteractiveMode"],
+  ["transcript-replay-window", operational.installCalmTranscriptReplayWindow, "InteractiveMode"],
 ]) {
   let reason;
   try {
@@ -347,7 +348,115 @@ JS
   status=$?
   [ "$status" -eq 0 ] || fail "Pi calm missing-adapter-export path failed: $out"
   [ -z "$out" ] || fail "Pi calm missing-adapter-export test printed output: $out"
-  pass "missing Pi presentation class exports reach the independent adapter degradation path"
+
+  fixture="$TMP_ROOT/missing-replay-seam"
+  mkdir -p \
+    "$fixture/project/.pi/extensions/lib" \
+    "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
+  cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
+  printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
+  printf '%s\n' \
+    '{"name":"@earendil-works/pi-coding-agent","type":"module","exports":"./index.js"}' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/package.json"
+  printf '%s\n' \
+    'export function getMarkdownTheme() { return {}; }' \
+    'export class UserMessageComponent {}' \
+    'export class InteractiveMode {}' \
+    'InteractiveMode.prototype.addMessageToChat = function () {};' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/index.js"
+
+  out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
+const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
+const { InteractiveMode } = await import("@earendil-works/pi-coding-agent");
+
+const stockAddMessageToChat = InteractiveMode.prototype.addMessageToChat;
+operational.installCalmOperationalUserLayout();
+if (InteractiveMode.prototype.addMessageToChat === stockAddMessageToChat) {
+  throw new Error(
+    "the missing transcript replay seam also disabled the shipped operational-user-row adapter",
+  );
+}
+
+let reason;
+try {
+  operational.installCalmTranscriptReplayWindow();
+} catch (error) {
+  reason = error instanceof Error ? error.message : String(error);
+}
+if (!reason?.includes("renderSessionItems")) {
+  throw new Error(
+    `the transcript-replay adapter did not name its missing seam: ${String(reason)}`,
+  );
+}
+if (typeof InteractiveMode.prototype.renderSessionItems !== "undefined") {
+  throw new Error(
+    "the transcript-replay adapter installed a wrapper despite the missing seam",
+  );
+}
+JS
+)
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi calm missing-replay-seam path failed: $out"
+  [ -z "$out" ] || fail "Pi calm missing-replay-seam test printed output: $out"
+
+  fixture="$TMP_ROOT/present-replay-seam"
+  mkdir -p \
+    "$fixture/project/.pi/extensions/lib" \
+    "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
+  cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
+  printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
+  printf '%s\n' \
+    '{"name":"@earendil-works/pi-coding-agent","type":"module","exports":"./index.js"}' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/package.json"
+  printf '%s\n' \
+    'export function getMarkdownTheme() { return {}; }' \
+    'export class UserMessageComponent {}' \
+    'export class InteractiveMode {}' \
+    'InteractiveMode.prototype.addMessageToChat = function () {};' \
+    'InteractiveMode.prototype.renderSessionItems = function () { globalThis.stockReplayCalls += 1; };' \
+    >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/index.js"
+
+  out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
+globalThis.stockReplayCalls = 0;
+const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
+const { InteractiveMode } = await import("@earendil-works/pi-coding-agent");
+
+const stockAddMessageToChat = InteractiveMode.prototype.addMessageToChat;
+const stockRenderSessionItems = InteractiveMode.prototype.renderSessionItems;
+operational.installCalmOperationalUserLayout();
+operational.installCalmTranscriptReplayWindow();
+if (InteractiveMode.prototype.addMessageToChat === stockAddMessageToChat) {
+  throw new Error("the operational-user-row adapter did not install with both seams present");
+}
+if (InteractiveMode.prototype.renderSessionItems === stockRenderSessionItems) {
+  throw new Error("the transcript-replay adapter did not wrap the available seam");
+}
+
+operational.installCalmTranscriptReplayWindow();
+const wrappedOnce = InteractiveMode.prototype.renderSessionItems;
+operational.installCalmTranscriptReplayWindow();
+if (InteractiveMode.prototype.renderSessionItems !== wrappedOnce) {
+  throw new Error("the transcript-replay adapter re-wrapped an already patched seam");
+}
+
+InteractiveMode.prototype.renderSessionItems.call({}, []);
+if (globalThis.stockReplayCalls !== 1) {
+  throw new Error("the transcript-replay wrapper did not delegate to the stock replay path");
+}
+JS
+)
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi calm present-replay-seam path failed: $out"
+  [ -z "$out" ] || fail "Pi calm present-replay-seam test printed output: $out"
+  pass "missing Pi presentation class exports and both transcript replay seam paths reach the independent adapter degradation path"
 }
 
 test_rendering_and_session_lifecycle() {
@@ -704,10 +813,26 @@ if (!assistantThinkingText.render(100).join("\n").includes("Thinking...")) {
 }
 
 const assistantComponents = [assistantTextOnly, assistantThinkingText, assistantThinkingTool];
+const assistantMessage = (text, stopReason = "stop") => ({
+  ...assistantBase,
+  content: [{ type: "text", text }],
+  stopReason,
+});
+const addTranscriptUser = (content) => {
+  InteractiveMode.prototype.addMessageToChat.call(
+    { ...operationalMode, chatContainer: { children: [], addChild() {} } },
+    { role: "user", content },
+  );
+};
+const operationalAssistant = (content) => {
+  addTranscriptUser(watcherMessage);
+  return new AssistantMessageComponent(content, true);
+};
 let expanded = true;
 let editorText = "";
 let terminalInputHandler;
 let workingVisible;
+const layoutWidgets = new Map();
 let hiddenThinkingLabel = "unset";
 const statuses = new Map();
 const sessionEntries = [{ type: "message", message: { role: "toolResult", content: "kept" } }];
@@ -738,6 +863,10 @@ const commandContext = {
       watchActual.setExpanded(value);
       customRow.setExpanded(value);
       imageRow.setExpanded(value);
+    },
+    setWidget(key, factory) {
+      if (factory === undefined) layoutWidgets.delete(key);
+      else layoutWidgets.set(key, factory);
     },
     setWorkingVisible(value) {
       workingVisible = value;
@@ -780,6 +909,221 @@ if (operationalComponent.render(100).length !== 0) {
 }
 if (legacyOperationalComponent.render(100).length !== 0) {
   throw new Error("Calm left the supported bare-marker legacy user row visible");
+}
+const exactOperationalAckMessage = assistantMessage("Captain, shipshape.");
+const exactOperationalAckBefore = JSON.stringify(exactOperationalAckMessage);
+const exactOperationalAck = operationalAssistant(exactOperationalAckMessage);
+if (exactOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the exact no-action acknowledgement for an operational input");
+}
+if (JSON.stringify(exactOperationalAckMessage) !== exactOperationalAckBefore) {
+  throw new Error("Calm changed the exact acknowledgement message used by context or persistence");
+}
+const streamingOperationalAck = operationalAssistant(undefined);
+for (const prefix of ["C", "Captain,", "Captain, shipshape", "Captain, shipshape."]) {
+  streamingOperationalAck.updateContent(assistantMessage(prefix, "pending"));
+  if (streamingOperationalAck.render(100).length !== 0) {
+    throw new Error(`Calm flashed an in-flight no-action acknowledgement prefix: ${prefix}`);
+  }
+}
+streamingOperationalAck.updateContent(assistantMessage("Captain, shipshape."));
+if (streamingOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the finalized streamed no-action acknowledgement");
+}
+const streamingNearMatch = operationalAssistant(undefined);
+streamingNearMatch.updateContent(assistantMessage("Captain, shipshape.", "pending"));
+if (streamingNearMatch.render(100).length !== 0) {
+  throw new Error("Calm flashed an exact acknowledgement before the stream was complete");
+}
+streamingNearMatch.updateContent(
+  assistantMessage("Captain, shipshape. The queue still needs review.", "pending"),
+);
+if (!streamingNearMatch.render(100).join("\n").includes("queue still needs review")) {
+  throw new Error("Calm delayed a substantive reply after its stream diverged from the acknowledgement");
+}
+addTranscriptUser("Captain-authored message");
+const humanCollision = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (!humanCollision.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid the exact phrase after a genuine human user message");
+}
+if (!handlers.has("agent_start") || !handlers.has("agent_settled")) {
+  throw new Error("Calm did not register the run lifecycle handlers that scope acknowledgement origin");
+}
+const fireRunLifecycle = async (event) => {
+  for (const handler of handlers.get(event)) await handler({}, commandContext);
+};
+// Pi emits agent_start before the initiating user row and drains steering messages into
+// the same run, so a wake steered into a captain turn must never hide replies in that run.
+await fireRunLifecycle("agent_start");
+addTranscriptUser("Captain-authored request that opened this run");
+addTranscriptUser(watcherMessage);
+const steeredIntoCaptainRun = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (!steeredIntoCaptainRun.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid a reply from a run that carried a genuine captain message");
+}
+await fireRunLifecycle("agent_settled");
+await fireRunLifecycle("agent_start");
+addTranscriptUser(watcherMessage);
+addTranscriptUser(watcherMessage);
+const operationalOnlyRunAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (operationalOnlyRunAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the acknowledgement for a run carrying only operational inputs");
+}
+addTranscriptUser("Captain steers a real question into the operational run");
+const captainJoinedRunAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (!captainJoinedRunAck.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid a reply after a captain message joined an operational run");
+}
+await fireRunLifecycle("agent_settled");
+addTranscriptUser(watcherMessage);
+const nextRunOperationalAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (nextRunOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm carried a settled captain run origin into the next operational wake");
+}
+// Pi auto-compacts from inside the run and rebuilds the whole transcript through
+// renderSessionItems before continuing, so replayed rows must keep per-row origin while
+// the surrounding run scope survives untouched.
+await fireRunLifecycle("agent_start");
+addTranscriptUser(watcherMessage);
+const rebuiltChat = {
+  children: [],
+  addChild(component) {
+    this.children.push(component);
+  },
+};
+const rebuildMode = {
+  ...operationalMode,
+  addMessageToChat: InteractiveMode.prototype.addMessageToChat,
+  chatContainer: rebuiltChat,
+  hideThinkingBlock: true,
+  hiddenThinkingLabel: "",
+  pendingTools: new Map(),
+  settingsManager: { getShowCacheMissNotices: () => false },
+  ui: { requestRender() {} },
+};
+InteractiveMode.prototype.renderSessionItems.call(rebuildMode, [
+  { role: "user", content: "Captain-authored history entry" },
+  assistantMessage("Captain, shipshape."),
+  { role: "user", content: [{ type: "text", text: watcherMessage }] },
+  assistantMessage("Captain, shipshape."),
+]);
+const rebuiltAssistants = rebuiltChat.children.filter(
+  (child) => child instanceof AssistantMessageComponent,
+);
+if (rebuiltAssistants.length !== 2) {
+  throw new Error(`transcript rebuild fixture produced ${rebuiltAssistants.length} assistant rows`);
+}
+if (!rebuiltAssistants[0].render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("a transcript rebuild inside a run hid a reply that followed a captain row");
+}
+if (rebuiltAssistants[1].render(100).length !== 0) {
+  throw new Error("a transcript rebuild inside a run revealed a previously hidden acknowledgement");
+}
+const continuationAfterRebuild = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (continuationAfterRebuild.render(100).length !== 0) {
+  throw new Error("a transcript rebuild collapsed the operational origin of the surrounding run");
+}
+await fireRunLifecycle("agent_settled");
+if (workingVisible !== true || layoutWidgets.size !== 0) {
+  throw new Error("run lifecycle regressions left the Calm working presentation unbalanced");
+}
+const acknowledgementNearMatches = [
+  "Captain, shipshape..",
+  "Note: Captain, shipshape.",
+  "Captain, shipshape. Thanks.",
+  "**Captain, shipshape.**",
+  "Captain, shipshape.\n\nAdditional explanation.",
+  "captain, shipshape.",
+  "Captain,  shipshape.",
+  " Captain, shipshape.",
+  "Captain, shipshape. ",
+];
+for (const nearMatch of acknowledgementNearMatches) {
+  const component = operationalAssistant(assistantMessage(nearMatch));
+  if (!component.render(100).join("\n").includes(nearMatch.split("\n")[0].replaceAll("**", ""))) {
+    throw new Error(`Calm hid an acknowledgement near match: ${nearMatch}`);
+  }
+}
+const substantiveOperationalReply = operationalAssistant(
+  assistantMessage("Captain, the watcher failed and needs credentials."),
+);
+if (!substantiveOperationalReply.render(100).join("\n").includes("watcher failed")) {
+  throw new Error("Calm hid a substantive operational reply");
+}
+addTranscriptUser(watcherMessage);
+addTranscriptUser(watcherMessage);
+const queuedOperationalAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (queuedOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the acknowledgement after queued operational inputs");
+}
+addTranscriptUser(watcherMessage);
+const operationalToolTurn = new AssistantMessageComponent({
+  ...assistantBase,
+  content: [{ type: "toolCall", id: "ack-tool", name: "read", arguments: { path: "sample.txt" } }],
+  stopReason: "toolUse",
+}, true);
+if (operationalToolTurn.render(100).length !== 0) {
+  throw new Error("tool-only operational assistant fixture unexpectedly rendered content");
+}
+const postToolOperationalAck = new AssistantMessageComponent(
+  assistantMessage("Captain, shipshape."),
+  true,
+);
+if (postToolOperationalAck.render(100).length !== 0) {
+  throw new Error("Calm rendered the acknowledgement after intervening tool activity");
+}
+const textAndToolOperationalReply = operationalAssistant({
+  ...assistantBase,
+  content: [
+    { type: "text", text: "Captain, shipshape." },
+    { type: "toolCall", id: "ack-text-tool", name: "read", arguments: { path: "sample.txt" } },
+  ],
+  stopReason: "toolUse",
+});
+if (!textAndToolOperationalReply.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm hid assistant text from a tool-calling operational turn");
+}
+const expandedReasoningWithOperationalAck = operationalAssistant({
+  ...assistantBase,
+  content: [
+    { type: "thinking", thinking: "VISIBLE_EXPANDED_OPERATIONAL_REASONING" },
+    { type: "text", text: "Captain, shipshape." },
+  ],
+});
+expandedReasoningWithOperationalAck.setHideThinkingBlock(false);
+const expandedReasoningRows = expandedReasoningWithOperationalAck.render(100).join("\n");
+if (!expandedReasoningRows.includes("VISIBLE_EXPANDED_OPERATIONAL_REASONING")) {
+  throw new Error("Calm acknowledgement hiding changed expanded reasoning visibility");
+}
+if (expandedReasoningRows.includes("Captain, shipshape.")) {
+  throw new Error("Calm left the exact acknowledgement beside expanded reasoning");
+}
+const interruptedOperationalAck = operationalAssistant(undefined);
+interruptedOperationalAck.updateContent(assistantMessage("Captain,", "pending"));
+interruptedOperationalAck.updateContent(assistantMessage("Captain,", "aborted"));
+if (!interruptedOperationalAck.render(100).join("\n").includes("Operation aborted")) {
+  throw new Error("Calm hid an interrupted operational turn");
 }
 const operationalNearMisses = [
   {
@@ -944,6 +1288,10 @@ if (JSON.stringify(operationalComponent.render(100)) !== JSON.stringify(expected
 if (!legacyOperationalComponent.render(100).join("\n").includes("legacy presentation compatibility")) {
   throw new Error("turning Calm off did not restore the supported legacy operational row");
 }
+const calmOffOperationalAck = operationalAssistant(assistantMessage("Captain, shipshape."));
+if (!calmOffOperationalAck.render(100).join("\n").includes("Captain, shipshape.")) {
+  throw new Error("Calm off hid the operational no-action acknowledgement");
+}
 for (const { name, baseline, actual } of rows) {
   if (JSON.stringify(actual.render(100)) !== JSON.stringify(baseline.render(100))) {
     throw new Error(`${name} did not restore the expanded standard renderer`);
@@ -983,6 +1331,10 @@ for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
   }
   if (workingVisible !== true || hiddenThinkingLabel !== "" || statuses.get("firstmate-calm") !== undefined) {
     throw new Error(`${reason} session did not retain gapless Calm presentation with native working visibility`);
+  }
+  const replayedOperationalAck = operationalAssistant(assistantMessage("Captain, shipshape."));
+  if (replayedOperationalAck.render(100).length !== 0) {
+    throw new Error(`${reason} session replay rendered the operational no-action acknowledgement`);
   }
 }
 await calmCommand.handler("", commandContext);

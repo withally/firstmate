@@ -438,7 +438,15 @@ classify_signal() {  # <reason-after-colon> <state>
   done
   # strip a trailing " | " separator so the distilled line is clean
   distilled="${distilled% | }"
-  if [ -z "$rel" ]; then
+  # A resolved event is routine only when its exact task+key has a durable
+  # confirmed-delivery receipt. This shared predicate is also used by the
+  # always-on watcher; unmatched or bundled resolved signals fail safe.
+  # shellcheck disable=SC2086  # reason is the watcher's space-separated path list
+  if signal_is_delivered_decision_echo "$state" $reason; then
+    printf 'self|delivered decision echo: %s' "$distilled"
+  elif signal_has_resolved_event $reason; then
+    printf 'escalate|unmatched or bundled resolved event: %s' "$distilled"
+  elif [ -z "$rel" ]; then
     printf 'self|routine signal: %s' "$distilled"
   elif [ "$all_seen" = "1" ]; then
     # Every relevant status was already escalated by the catch-all scan;
@@ -1500,6 +1508,16 @@ handle_wake() {  # <reason> <state>
   esac
   action=${decision%%|*}
   distilled=${decision#*|}
+  if [ "$kind" = signal ] && [ "$action" != escalate ]; then
+    # shellcheck disable=SC2086
+    if signal_is_delivered_decision_echo "$state" $arg; then
+      # shellcheck disable=SC2086
+      if ! signal_consume_delivered_decision_echo "$state" $arg; then
+        action=escalate
+        distilled="delivered decision echo receipt could not be cleared: $distilled"
+      fi
+    fi
+  fi
   [ "$kind" = signal ] && sync_pause_markers_from_signal "$state" "$arg"
   case "$action" in
     escalate)

@@ -13,7 +13,8 @@
 # terminal-looking stale status lines overridden by an active run, declared
 # paused:/captain-held stale panes absorbed on the bounded pause cadence
 # regardless of agent liveness, already-delivered terminal status lines deduped
-# against their .hb-surfaced marker, the pause resurface throttle surviving
+# against their .hb-surfaced marker on both signal and stale paths, delivered
+# keyed decision echoes absorbed exactly once, the pause resurface throttle surviving
 # tracking clears, the heartbeat
 # backstop fail-safe, and afk coherence (no double-triage while the away-mode
 # daemon owns supervision).
@@ -167,6 +168,60 @@ test_signal_is_routine_working_progress_classifier() {
   pass "signal_is_routine_working_progress: only nonempty all-working ordinary-task status batches are routine"
 }
 
+test_delivered_decision_echo_classifier() {
+  local dir state marker
+  dir=$(make_case classify-delivered-decision); state="$dir/state"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$state/task.status"
+  decision_delivery_record "$state" task 'Proceed with A [key=route]' \
+    || fail "a delivered answer did not record its matching open decision"
+  decision_delivery_is_recorded "$state" task route \
+    || fail "the delivered-decision record was not readable"
+  printf 'resolved: proceeding with A [key=route]\n' >> "$state/task.status"
+  : > "$state/task.turn-ended"
+  signal_is_delivered_decision_echo "$state" "$state/task.status" "$state/task.turn-ended" \
+    || fail "a matching resolved echo plus its turn-end was not classified as routine"
+
+  marker=$(decision_delivery_marker_path "$state" task route)
+  signal_consume_delivered_decision_echo "$state" "$state/task.status" "$state/task.turn-ended" \
+    || fail "a matching delivered-decision record was not consumed"
+  [ ! -e "$marker" ] || fail "the matching delivered-decision record survived consumption"
+
+  printf 'resolved [key=unknown]: no matching answer exists\n' > "$state/unmatched.status"
+  ! signal_is_delivered_decision_echo "$state" "$state/unmatched.status" \
+    || fail "an unmatched resolved line was classified as routine"
+
+  printf 'needs-decision [key=route]: original question\n' > "$state/reuse.status"
+  decision_delivery_record "$state" reuse 'Answer the original [key=route]' \
+    || fail "the reused-key fixture could not record its original answer"
+  printf 'needs-decision [key=route]: a later question reused the key\nresolved [key=route]: answered without a new delivery\n' \
+    >> "$state/reuse.status"
+  ! signal_is_delivered_decision_echo "$state" "$state/reuse.status" \
+    || fail "an old delivery receipt matched a later decision that reused the key"
+
+  printf 'needs-decision [key=bundle]: choose the release\n' > "$state/bundle.status"
+  decision_delivery_record "$state" bundle 'Use the canary [key=bundle]' \
+    || fail "the bundled fixture could not record its delivered answer"
+  printf 'resolved [key=bundle]: using the canary\n' >> "$state/bundle.status"
+  printf 'done: PR https://example.test/pr/12\n' > "$state/done.status"
+  ! signal_is_delivered_decision_echo "$state" "$state/bundle.status" "$state/done.status" \
+    || fail "a resolved echo bundled with a captain-relevant event was classified as routine"
+  pass "delivered-decision classifier absorbs only exact task+key echoes and consumes once"
+}
+
+test_signal_terminal_duplicate_classifier() {
+  local dir state
+  dir=$(make_case classify-terminal-duplicate); state="$dir/state"
+  printf 'done: PR https://example.test/pr/10 checks green\n' > "$state/task.status"
+  printf '%s' 'done: PR https://example.test/pr/10 checks green' > "$state/.hb-surfaced-task"
+  : > "$state/task.turn-ended"
+  signal_captain_relevant_already_surfaced "$state" "$state/task.status" "$state/task.turn-ended" \
+    || fail "a byte-identical surfaced terminal plus its turn-end was not classified as a duplicate"
+  printf 'done: PR https://example.test/pr/10 checks changed\n' > "$state/task.status"
+  ! signal_captain_relevant_already_surfaced "$state" "$state/task.status" "$state/task.turn-ended" \
+    || fail "a changed terminal line was classified as already surfaced"
+  pass "terminal signal dedupe requires byte-identical surfaced markers"
+}
+
 test_stale_is_terminal_classifier() {
   local dir state
   dir=$(make_case classify-stale); state="$dir/state"
@@ -231,7 +286,7 @@ test_classifier_primitives() {
     && fail "FM_CAPTAIN_RE override bypassed paused: suppression"
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "custom-verb: x" \
     || fail "nonterminal suppression weakened custom bare-line behavior"
-  printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
+  printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1] in prose\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \
     || fail "a key token in resolved note prose closed the keyed decision"
@@ -239,6 +294,12 @@ test_classifier_primitives() {
     && fail "a key token in note prose changed the decision key"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
+  printf 'needs-decision [key=suffix]: choose the suffix route\nresolved: chose it [key=suffix]\n' > "$state/suffix-key.status"
+  [ -z "$(status_open_decisions "$state/suffix-key.status")" ] \
+    || fail "a resolved line with an exact trailing key did not close the decision"
+  printf 'needs-decision [key=multi]: choose one\nresolved [key=multi]: ambiguous [key=other]\n' > "$state/multi-key.status"
+  printf '%s' "$(status_open_decisions "$state/multi-key.status")" | grep -F $'multi\t' >/dev/null \
+    || fail "an ambiguous multi-key resolved line closed the decision"
   cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started
@@ -519,6 +580,89 @@ test_actionable_and_mixed_signals_surfaced() {
   done
   unset FM_FAKE_CREW_STATE
   pass "done, needs-decision, blocked, failed, and a mixed working+actionable batch surface immediately"
+}
+
+test_decision_delivery_echo_absorbed_unmatched_and_bundled_surface() {
+  local dir state fakebin out drain_out pid marker
+  dir=$(make_case delivered-decision-signal); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
+
+  # Reproduce the full user-visible sequence: the first decision request wakes.
+  printf 'needs-decision [key=route]: choose A or B\n' > "$state/task.status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "the first needs-decision did not surface"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain after the first needs-decision failed"
+  grep -F 'needs-decision' "$drain_out" >/dev/null \
+    || fail "the first needs-decision was not durably queued"
+
+  # Firstmate delivers the keyed answer; the matching worker echo and same-turn
+  # lifecycle marker must close in bash without a second model wake.
+  decision_delivery_record "$state" task 'Proceed with A [key=route]' \
+    || fail "the delivered answer was not recorded"
+  printf 'resolved: proceeding with A [key=route]\n' >> "$state/task.status"
+  : > "$state/task.turn-ended"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a matching resolved echo surfaced: $(cat "$out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a matching resolved echo enqueued a wake"; }
+  marker=$(decision_delivery_marker_path "$state" task route)
+  [ ! -e "$marker" ] || { reap "$pid"; fail "a matching resolved echo did not clear its delivered record"; }
+  grep -F 'delivered decision echo' "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; fail "the resolved echo absorb was not logged"; }
+  reap "$pid"
+
+  # A resolved line without a task+key delivery record remains fail-safe.
+  dir=$(make_case unmatched-decision-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'resolved [key=unknown]: no matching answer exists\n' > "$state/task.status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "an unmatched resolved line was absorbed"
+
+  # A matching echo cannot hide another captain-relevant status in its batch.
+  dir=$(make_case bundled-decision-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$state/task.status"
+  decision_delivery_record "$state" task 'Proceed with A [key=route]' \
+    || fail "the bundled fixture could not record its answer"
+  printf 'resolved [key=route]: proceeding with A\n' >> "$state/task.status"
+  printf 'failed: deployment verification failed\n' > "$state/failed.status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a matching echo hid a bundled failed status"
+  unset FM_FAKE_CREW_STATE
+  pass "decision request surfaces once; its delivered keyed echo absorbs; unmatched and bundled events surface"
+}
+
+test_terminal_signal_already_delivered_absorbed_new_terminal_surfaces() {
+  local dir state fakebin out pid sig
+  dir=$(make_case terminal-signal-delivered); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'done: PR https://example.test/pr/10 checks green\n' > "$state/task.status"
+  printf '%s' 'done: PR https://example.test/pr/10 checks green' > "$state/.hb-surfaced-task"
+  : > "$state/task.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a byte-identical already-surfaced terminal signal woke again: $(cat "$out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "an already-surfaced terminal signal enqueued again"; }
+  grep -F 'terminal status already delivered' "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; fail "the terminal signal dedupe was not logged"; }
+  reap "$pid"
+
+  printf 'done: PR https://example.test/pr/10 checks changed\n' > "$state/task.status"
+  sig=$(seen_sig "$state/task.turn-ended"); printf '%s' "$sig" > "$state/.seen-task_turn-ended"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a genuinely changed terminal signal was absorbed"
+  unset FM_FAKE_CREW_STATE
+  pass "signal-path terminal dedupe absorbs byte-identical repeats and surfaces changed terminals"
 }
 
 test_terminal_stale_surfaced() {
@@ -2173,6 +2317,8 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
 
 test_signal_reason_is_actionable_classifier
 test_signal_is_routine_working_progress_classifier
+test_delivered_decision_echo_classifier
+test_signal_terminal_duplicate_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
@@ -2186,6 +2332,8 @@ test_turn_ended_not_working_surfaced
 test_working_note_unknown_runtime_absorbed
 test_secondmate_working_note_surfaced
 test_actionable_and_mixed_signals_surfaced
+test_decision_delivery_echo_absorbed_unmatched_and_bundled_surface
+test_terminal_signal_already_delivered_absorbed_new_terminal_surfaces
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated

@@ -43,6 +43,9 @@
 # footer appears, so an immediate peek would otherwise see the stale idle pane.
 # The pause is fm-send-only; the shared submit core (used by the away-mode daemon,
 # which only needs "submitted") does not pay it, and the --key path is unaffected.
+# A confirmed task-selector send carrying exactly one valid [key=<slug>] for a
+# currently open keyed decision records a private delivery receipt. The shared
+# classifier consumes it on the first matching resolved echo.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,6 +78,8 @@ fi
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -222,9 +227,11 @@ MARK_FROM_FIRSTMATE=0
 PENDING_REPLY_CORR=
 PENDING_REPLY_CREATED=0
 TARGET_TASK_ID=
-if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ] && [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
-  MARK_FROM_FIRSTMATE=1
+if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ]; then
   TARGET_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
+  if [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
+    MARK_FROM_FIRSTMATE=1
+  fi
 fi
 
 # Resolve the target's harness from its meta (recorded by fm-spawn), used only to
@@ -316,6 +323,16 @@ else
       exit 1
       ;;
   esac
+  # A confirmed answer to a currently open keyed decision gets one durable
+  # task+key receipt. The shared classifier consumes it only for the first exact
+  # resolved echo; ordinary sends and unopened/malformed keys create nothing.
+  if [ -n "$TARGET_TASK_ID" ]; then
+    decision_record_status=0
+    decision_delivery_record "$STATE" "$TARGET_TASK_ID" "$MESSAGE" || decision_record_status=$?
+    if [ "$decision_record_status" -eq 2 ]; then
+      echo "warning: text was delivered to $T, but its keyed decision receipt could not be recorded; any resolved echo will surface fail-safe" >&2
+    fi
+  fi
   # Delivery confirmed. Mark the pending expectation delivered without resolving
   # it: only a correlated parent report acknowledges the request.
   if [ -n "$PENDING_REPLY_CORR" ]; then

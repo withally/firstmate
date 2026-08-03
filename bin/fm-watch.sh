@@ -21,7 +21,9 @@
 #                          has a captain-relevant verb OR a non-routine signal's
 #                          crew is not provably working, unless afk is active;
 #                          an ordinary direct report's pure working-progress
-#                          status batch is absorbed
+#                          status batch, a task+key resolved echo with a confirmed
+#                          delivery receipt, and a byte-identical already-surfaced
+#                          terminal batch are absorbed
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
@@ -942,8 +944,15 @@ EOF
     # costly one (it may run a bounded no-mistakes call), so it runs ONLY for a
     # non-afk, non-actionable, non-working-progress signal.
     signal_actionable=0
+    signal_absorb_reason=
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if afk_present || signal_reason_is_actionable $files; then
+    if afk_present; then
+      signal_actionable=1
+    elif signal_is_delivered_decision_echo "$STATE" $files; then
+      signal_absorb_reason="delivered decision echo"
+    elif signal_captain_relevant_already_surfaced "$STATE" $files; then
+      signal_absorb_reason="terminal status already delivered"
+    elif signal_reason_is_actionable $files; then
       signal_actionable=1
     elif signal_is_routine_working_progress $files; then
       :
@@ -972,7 +981,23 @@ EOF
       done <<EOF
 $pending
 EOF
-      triage_log "absorbed benign $reason"
+      if [ "$signal_absorb_reason" = "delivered decision echo" ]; then
+        # shellcheck disable=SC2086
+        if ! signal_consume_delivered_decision_echo "$STATE" $files; then
+          while IFS=$(printf '\t') read -r sf sig f; do
+            [ -n "$sf" ] || continue
+            fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+          done <<EOF
+$pending
+EOF
+          wake "$reason"
+        fi
+      fi
+      if [ -n "$signal_absorb_reason" ]; then
+        triage_log "absorbed benign $reason ($signal_absorb_reason)"
+      else
+        triage_log "absorbed benign $reason"
+      fi
     fi
   fi
 

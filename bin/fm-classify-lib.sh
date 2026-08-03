@@ -162,7 +162,12 @@ status_is_paused_or_captain_held() {  # <status-line>
 #   resolved       [key=api-shape]: <how it was decided>
 # A resolved line may instead carry that token as its exact final note token:
 #   resolved: <how it was decided> [key=api-shape]
-# Key-like text elsewhere in note prose is not semantic.
+# For OPENING verbs (needs-decision/blocked) and progress verbs the prefix token
+# is authoritative and key-like text elsewhere in note prose is not semantic, so
+# a question mentioning another key still opens its own decision. CLOSING verbs
+# (resolved, captain-held) parse fail-closed instead: a line carrying more than
+# one key-like token is ambiguous about which decision it closes and is rejected,
+# keeping the decision open.
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
 # The three parsers are pure reads of a single line; the verb parser strips any
@@ -190,11 +195,14 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
       k=${k%%\]*}
       case "$k" in
         ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *)
+      esac
+      verb=$(status_line_verb "$line")
+      case "$verb" in
+        "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
           [ "$(decision_key_from_text "$line" 2>/dev/null || true)" = "$k" ] || return 1
-          printf '%s' "$k"
           ;;
       esac
+      printf '%s' "$k"
       ;;
     *)
       verb=$(status_line_verb "$line")
@@ -341,18 +349,16 @@ decision_delivery_matches_resolution() {  # <state> <task> <key> <status-file>
   last=$(last_status_line "$status")
   while IFS= read -r line || [ -n "$line" ]; do
     verb=$(status_line_verb "$line")
-    case "$verb" in
-      needs-decision|blocked|"${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
-        event_key=$(_fm_decision_key "$line") || return 1
-        [ "$event_key" = "$key" ] || continue
-        if [ "$verb" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ] \
-          && [ "$line" = "$last" ] && [ -z "$seen" ]; then
-          seen=1
-        else
-          return 1
-        fi
-        ;;
-    esac
+    if [ "$verb" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ]; then
+      event_key=$(_fm_decision_key "$line") || return 1
+      [ "$event_key" = "$key" ] && [ "$line" = "$last" ] && [ -z "$seen" ] || return 1
+      seen=1
+    elif status_is_captain_relevant "$line"; then
+      return 1
+    elif [ "$verb" = "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}" ]; then
+      event_key=$(_fm_decision_key "$line") || return 1
+      [ "$event_key" != "$key" ] || return 1
+    fi
   done < <(tail -n "+$((lines + 1))" "$status" 2>/dev/null)
   [ -n "$seen" ]
 }
@@ -445,11 +451,28 @@ _fm_hb_surfaced_path() {  # <state> <task>
   printf '%s/.hb-surfaced-%s' "$1" "$(printf '%s' "$2" | tr ':/.' '___')"
 }
 
+# 0 only when the file's events at and after the first occurrence of the
+# surfaced line contain no other captain-relevant event. Guards the duplicate
+# classifier below against a coalesced batch that appends a never-surfaced
+# captain-relevant line (e.g. a new needs-decision) followed by a byte-identical
+# re-delivery of the already-surfaced terminal: last-line-only comparison would
+# absorb the whole batch and mask the new event.
+_fm_status_tail_only_redelivers() {  # <status-file> <surfaced-line>
+  local f=$1 surfaced=$2 line matched=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$surfaced" ]; then matched=1; continue; fi
+    [ -n "$matched" ] || continue
+    status_is_captain_relevant "$line" && return 1
+  done < "$f"
+  return 0
+}
+
 # 0 only when every status in a signal batch is captain-relevant and
 # byte-identical to its already-surfaced marker, with optional turn-end markers
 # restricted to those same tasks. This is the signal-path twin of terminal stale
-# dedupe; a first or changed terminal, unrelated lifecycle marker, or mixed
-# nonterminal status remains actionable.
+# dedupe; a first or changed terminal, unrelated lifecycle marker, mixed
+# nonterminal status, or a re-delivery masking a newer captain-relevant event
+# remains actionable.
 signal_captain_relevant_already_surfaced() {  # <state> <file> ...
   local state=$1 f base task last surfaced_tasks="" seen=""
   shift
@@ -462,6 +485,7 @@ signal_captain_relevant_already_surfaced() {  # <state> <file> ...
         last=$(last_status_line "$f")
         status_is_captain_relevant "$last" || return 1
         [ "$last" = "$(cat "$(_fm_hb_surfaced_path "$state" "$task")" 2>/dev/null || true)" ] || return 1
+        _fm_status_tail_only_redelivers "$f" "$last" || return 1
         case " $surfaced_tasks " in *" $task "*) ;; *) surfaced_tasks="$surfaced_tasks $task" ;; esac
         seen=1
         ;;

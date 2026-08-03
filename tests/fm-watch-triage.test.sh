@@ -205,6 +205,30 @@ test_delivered_decision_echo_classifier() {
   printf 'done: PR https://example.test/pr/12\n' > "$state/done.status"
   ! signal_is_delivered_decision_echo "$state" "$state/bundle.status" "$state/done.status" \
     || fail "a resolved echo bundled with a captain-relevant event was classified as routine"
+
+  printf 'needs-decision [key=route2]: choose C or D\n' > "$state/masked.status"
+  decision_delivery_record "$state" masked 'Go with C [key=route2]' \
+    || fail "the masked fixture could not record its delivered answer"
+  printf 'needs-decision [key=followup]: a brand new question\nresolved [key=route2]: going with C\n' \
+    >> "$state/masked.status"
+  ! signal_is_delivered_decision_echo "$state" "$state/masked.status" \
+    || fail "a matching echo absorbed a coalesced different-key needs-decision"
+
+  printf 'needs-decision [key=route3]: choose the target\n' > "$state/maskdone.status"
+  decision_delivery_record "$state" maskdone 'Use main [key=route3]' \
+    || fail "the masked-done fixture could not record its delivered answer"
+  printf 'done: PR https://example.test/pr/13\nresolved [key=route3]: using main\n' \
+    >> "$state/maskdone.status"
+  ! signal_is_delivered_decision_echo "$state" "$state/maskdone.status" \
+    || fail "a matching echo absorbed a coalesced done event"
+
+  printf 'needs-decision [key=route4]: choose the port\n' > "$state/stray.status"
+  decision_delivery_record "$state" stray 'Use 8080 [key=route4]' \
+    || fail "the stray-resolved fixture could not record its delivered answer"
+  printf 'resolved [key=other]: an unmatched resolution\nresolved [key=route4]: using 8080\n' \
+    >> "$state/stray.status"
+  ! signal_is_delivered_decision_echo "$state" "$state/stray.status" \
+    || fail "a matching echo absorbed a coalesced unmatched resolved line"
   pass "delivered-decision classifier absorbs only exact task+key echoes and consumes once"
 }
 
@@ -219,6 +243,10 @@ test_signal_terminal_duplicate_classifier() {
   printf 'done: PR https://example.test/pr/10 checks changed\n' > "$state/task.status"
   ! signal_captain_relevant_already_surfaced "$state" "$state/task.status" "$state/task.turn-ended" \
     || fail "a changed terminal line was classified as already surfaced"
+  printf 'done: PR https://example.test/pr/10 checks green\nneeds-decision [key=q]: a new question\ndone: PR https://example.test/pr/10 checks green\n' \
+    > "$state/task.status"
+  ! signal_captain_relevant_already_surfaced "$state" "$state/task.status" "$state/task.turn-ended" \
+    || fail "a byte-identical re-delivery masked a newer captain-relevant event"
   pass "terminal signal dedupe requires byte-identical surfaced markers"
 }
 
@@ -300,6 +328,15 @@ test_classifier_primitives() {
   printf 'needs-decision [key=multi]: choose one\nresolved [key=multi]: ambiguous [key=other]\n' > "$state/multi-key.status"
   printf '%s' "$(status_open_decisions "$state/multi-key.status")" | grep -F $'multi\t' >/dev/null \
     || fail "an ambiguous multi-key resolved line closed the decision"
+  printf 'needs-decision [key=q2]: reuse [key=api-shape] or a new key?\n' > "$state/prose-open.status"
+  open=$(status_open_decisions "$state/prose-open.status")
+  printf '%s' "$open" | grep -F $'q2\t' >/dev/null \
+    || fail "a prefix-keyed needs-decision with a key token in note prose did not open"
+  printf '%s' "$open" | grep -F $'api-shape\t' >/dev/null \
+    && fail "a note-prose key token opened its own decision"
+  printf 'resolved [key=q2]: same shape as [key=api-shape]\n' >> "$state/prose-open.status"
+  printf '%s' "$(status_open_decisions "$state/prose-open.status")" | grep -F $'q2\t' >/dev/null \
+    || fail "an ambiguous multi-key prefix resolved line closed the decision"
   cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started

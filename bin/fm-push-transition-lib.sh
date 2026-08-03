@@ -56,7 +56,7 @@ wake() {
 }
 
 _hb_surfaced_path() {
-  printf '%s/.hb-surfaced-%s' "$STATE" "$(printf '%s' "$1" | tr ':/.' '___')"
+  _fm_hb_surfaced_path "$STATE" "$1"
 }
 
 # Record a captain-relevant status after its durable wake has been enqueued.

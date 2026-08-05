@@ -13,7 +13,7 @@ Do not infer this guard's scope, loop safety, or compatibility tradeoffs for tho
 
 `bin/fm-guard.sh` is a pull-based warning that runs only when another supervision command invokes it.
 The turn-end guard closes the remaining gap at the primary's own turn boundary.
-When work, a process-event source, or X-mode relay polling needs supervision at that boundary and no identity-matched watcher has a fresh beacon, the harness integration must either block the turn end or force one bounded follow-up that uses the recovery instruction from the emitted session-start protocol.
+When work, a process-event source, away mode, or X-mode relay polling needs supervision at that boundary and no identity-matched supervisor is proven live, the harness integration must either block the turn end or force one bounded follow-up that uses the recovery instruction from the emitted session-start protocol.
 The mid-turn pull warning uses the model-aware supervision verdict described below, while the turn-end guard keeps the PID-strict watcher predicate.
 The guard remains a backstop; [`watcher-continuity.md`](watcher-continuity.md) owns normal continuity.
 
@@ -39,8 +39,9 @@ Under every persistent-watcher harness a live identity-matched watcher with a fr
 Its banner names the true failing condition, either a missing live watcher process or a genuinely stale beacon with its real age, and keys the once-per-episode dedup on that condition rather than the beacon mtime.
 
 While `state/.afk` is present a missing watcher lock is not proof that supervision stopped, because the away daemon deliberately runs the watcher one-shot and the lock is legitimately absent between wakes.
-A healthy watcher still satisfies the guard first; when it does not, the guard falls back to `fm_daemon_lock_alive <state-dir> [daemon-path]` from `bin/fm-wake-lib.sh`, the single owner of away-daemon liveness that `bin/fm-afk-start.sh` and `bin/fm-session-start.sh` also use.
-An identity-matched live daemon allows the turn to end in every mode; a missing one blocks with away-mode recovery guidance.
+So an away home is decided on `fm_daemon_lock_alive <state-dir> [daemon-path]` from `bin/fm-wake-lib.sh`, the single owner of away-daemon liveness that `bin/fm-afk-start.sh` and `bin/fm-session-start.sh` also use.
+That check runs ahead of the watcher-health and `--claude` auto-arm bookkeeping, so neither can block on a home the daemon already supervises: an identity-matched live daemon allows the turn to end in every mode.
+Without a live daemon the away home falls through to the ordinary watcher-health path, and an unhealthy watcher there blocks with away-mode recovery guidance.
 A live daemon whose watcher beacon has gone stale still allows the turn to end here, because the daemon, not the watcher, owns away supervision; that degraded half is reported by `bin/fm-guard.sh` and the session-start digest instead of blocking the turn.
 
 `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repository-root `state/`.
@@ -115,8 +116,8 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 
 ## Regression coverage
 
-`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
-`tests/fm-guard-stale-banner.test.sh` covers the pull-guard predicate, including the persistent-model fresh-leftover-beacon negative control, the auto-arm model's healthy fresh-beacon-without-a-watcher case and its stale-beacon alarm, the true-reason banner wording, and the reason-keyed episode dedup surviving a beacon mtime change.
+`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the away-mode supervision need with its live-daemon allow, its dead and identity-mismatched daemon blocks, and the `--claude` mode's away exception to the auto-arm cooperation, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
+`tests/fm-guard-stale-banner.test.sh` covers the pull-guard predicate, including the persistent-model fresh-leftover-beacon negative control, the auto-arm model's healthy fresh-beacon-without-a-watcher case and its stale-beacon alarm, the true-reason banner wording, the away-degraded banner and its daemon-keyed episode escalation, and the reason-keyed episode dedup surviving a beacon mtime change.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.
 `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` is the opt-in isolated Pi path.

@@ -161,6 +161,7 @@ sources=$FM_SUP_SOURCES
 afk_needed=$FM_SUP_AFK
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
+watcher_fresh=$FM_SUP_WATCHER_FRESH
 fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME"
 watcher_healthy=$FM_WATCHER_VERDICT_OK
 watcher_down_reason=$FM_WATCHER_VERDICT_REASON
@@ -174,21 +175,27 @@ fi
 
 [ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
+# Away mode with a live identity-matched daemon is judged on the beacon, not on a
+# live watcher process: the away daemon deliberately runs the watcher one-shot, so
+# the watcher lock is legitimately absent between wakes and a fresh beacon is real
+# proof of supervision. When that beacon goes stale the home is DEGRADED, not
+# blind: the daemon still runs its marker rechecks and its status-file catch-all
+# scan, but it reads a pane only from markers the watcher created, so pane-level
+# staleness detection is NOT running meanwhile.
+# bin/fm-wake-lib.sh is the single owner of this liveness check, shared with
+# bin/fm-turnend-guard.sh and bin/fm-session-start.sh.
+away_supervisor_alive=false
+if [ "$afk_needed" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
+  away_supervisor_alive=true
+fi
+if [ "$away_supervisor_alive" = true ] && [ "$watcher_fresh" = true ]; then
+  watcher_healthy=true
+fi
+
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
 # calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
-  # Away mode with a live identity-matched daemon is a DEGRADED home, not a blind
-  # one: the daemon still runs its marker rechecks and its status-file catch-all
-  # scan, so a stale beacon here means its watcher is not staying up rather than
-  # that supervision stopped. The daemon reads a pane only from markers the
-  # watcher created, so pane-level staleness detection is NOT running meanwhile.
-  # bin/fm-wake-lib.sh is the single owner of this liveness check, shared with
-  # bin/fm-turnend-guard.sh and bin/fm-session-start.sh.
-  away_supervisor_alive=false
-  if [ "$afk_needed" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
-    away_supervisor_alive=true
-  fi
   episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
   episode_key=${episode_key%$'\n'}
   print_full_banner=0

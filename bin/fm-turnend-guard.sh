@@ -146,6 +146,18 @@ if [ "$FM_SUP_NEEDED" = false ]; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
+# Away mode: the supervise daemon owns the watcher and deliberately runs it
+# one-shot, so state/.watch.lock is legitimately absent between wakes and cannot
+# prove supervision here. The identity-matched daemon lock can, and it is the
+# same boundary bin/fm-session-start.sh reports from. A live daemon allows the
+# turn to end in every mode, decided ahead of the watcher-health and auto-arm
+# bookkeeping below so neither can block on it; a missing one blocks with
+# away-mode recovery guidance and never engages the ordinary Claude auto-arm or
+# its degraded-allow budget.
+if [ "$FM_SUP_AFK" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
+  budget_reset
+  exit 0
+fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
@@ -182,17 +194,7 @@ block_stop() {
   exit 2
 }
 
-# Away mode: the supervise daemon owns the watcher and deliberately runs it
-# one-shot, so state/.watch.lock is legitimately absent between wakes and cannot
-# prove supervision here. The identity-matched daemon lock can, and it is the
-# same boundary bin/fm-session-start.sh reports from. A live daemon allows the
-# turn to end; a missing one blocks with away-mode recovery guidance and never
-# engages the ordinary Claude auto-arm or its degraded-allow budget.
 if [ "$FM_SUP_AFK" = true ]; then
-  if fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
-    budget_reset
-    exit 0
-  fi
   block_stop
 fi
 

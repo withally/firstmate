@@ -71,10 +71,6 @@ fm_afk_clear_stale_artifacts() {  # <state-dir>
 # Daemon-lock liveness lives in bin/fm-wake-lib.sh so bin/fm-turnend-guard.sh
 # can prove away-mode supervision from the same predicate without sourcing this
 # script's set -eu. These wrappers bind it to this home's state dir and daemon.
-daemon_lock_owner() {
-  fm_daemon_lock_owner "$FM_AFK_STATE"
-}
-
 daemon_lock_pid() {
   fm_daemon_lock_pid "$FM_AFK_STATE"
 }

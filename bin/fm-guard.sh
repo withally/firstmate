@@ -20,10 +20,12 @@
 # the beacon mtime, which a healthy between-turns watcher advances every poll);
 # later guarded commands in the same episode print a one-line reminder instead.
 # An away home whose identity-matched supervise daemon is still alive gets the
-# DEGRADED variant of that banner instead: the daemon owns the watcher and keeps
-# running its own escalations and sweeps, so a stale beacon there means its
-# watcher is not staying up, not that supervision stopped. An away home with no
-# live daemon keeps the full supervision-is-off alarm.
+# DEGRADED variant of that banner instead: the daemon keeps running its marker
+# rechecks and its status-file catch-all scan, so a stale beacon there means its
+# watcher is not staying up, not that supervision stopped. That variant also
+# states what stops with the watcher - pane-level staleness detection - because
+# the daemon samples a pane only from markers the watcher itself created. An away
+# home with no live daemon keeps the full supervision-is-off alarm.
 # Episode state lives only under state/.guard-watcher-stale-banner (volatile,
 # bounded). Independent alarms (queued wakes, worktree tangle) are never
 # suppressed by that dedup. Normal wake handling (watcher briefly down between a
@@ -172,21 +174,21 @@ fi
 
 [ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
-# Away mode with a live identity-matched daemon is a DEGRADED home, not a blind
-# one: the daemon owns the watcher and keeps running its own escalations and
-# sweeps even while that child watcher is down, so a stale beacon here means the
-# watcher is not staying up rather than that supervision stopped.
-# bin/fm-wake-lib.sh is the single owner of this liveness check, shared with
-# bin/fm-turnend-guard.sh and bin/fm-session-start.sh.
-away_supervisor_alive=false
-if [ "$afk_needed" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
-  away_supervisor_alive=true
-fi
-
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
 # calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
+  # Away mode with a live identity-matched daemon is a DEGRADED home, not a blind
+  # one: the daemon still runs its marker rechecks and its status-file catch-all
+  # scan, so a stale beacon here means its watcher is not staying up rather than
+  # that supervision stopped. The daemon reads a pane only from markers the
+  # watcher created, so pane-level staleness detection is NOT running meanwhile.
+  # bin/fm-wake-lib.sh is the single owner of this liveness check, shared with
+  # bin/fm-turnend-guard.sh and bin/fm-session-start.sh.
+  away_supervisor_alive=false
+  if [ "$afk_needed" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
+    away_supervisor_alive=true
+  fi
   episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
   episode_key=${episode_key%$'\n'}
   print_full_banner=0
@@ -213,8 +215,9 @@ if [ "$watcher_healthy" = false ]; then
       {
         printf '●%s\n' "$rule"
         printf '●  AWAY SUPERVISION DEGRADED - THE DAEMON IS UP, ITS WATCHER IS NOT\n'
-        printf '●  The away supervisor holds state/.supervise-daemon.lock and keeps running its own escalations and sweeps.\n'
-        printf '●  Its watcher is not staying up: no fresh beacon (last beat: %s, grace %ss), so pane-level wakes are delayed to the daemon cadence.\n' "$beacon_desc" "$GRACE"
+        printf '●  The away supervisor holds state/.supervise-daemon.lock and keeps running its existing stale and pause marker rechecks and its status-file catch-all scan.\n'
+        printf '●  Its watcher is not staying up: no fresh beacon (last beat: %s, grace %ss), so pane-level staleness detection is NOT running until the watcher is back.\n' "$beacon_desc" "$GRACE"
+        printf '●  A crew that goes quiet without writing a captain-relevant status is therefore not escalated at all right now.\n'
         if [ "$READ_ONLY" -eq 1 ]; then
           printf '●  This read-only session should report the lapse, not repair it.\n'
         else

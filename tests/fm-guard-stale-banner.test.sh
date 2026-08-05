@@ -154,8 +154,14 @@ test_afk_live_daemon_stale_beacon_reports_degraded() {
   wait "$pid" 2>/dev/null || true
   assert_contains "$out" "AWAY SUPERVISION DEGRADED" \
     "a live away daemon with a stale beacon must be reported as degraded"
-  assert_contains "$out" "keeps running its own escalations and sweeps" \
-    "the degraded banner must say the away supervisor is still working"
+  assert_contains "$out" "stale and pause marker rechecks and its status-file catch-all scan" \
+    "the degraded banner must name exactly what the daemon still runs"
+  assert_contains "$out" "pane-level staleness detection is NOT running" \
+    "the degraded banner must say pane-level staleness detection stops with the watcher"
+  assert_not_contains "$out" "delayed to the daemon cadence" \
+    "the degraded banner must not overstate coverage as merely delayed pane-level wakes"
+  assert_contains "$out" "not escalated at all right now" \
+    "the degraded banner must name the crew shape that gets no escalation"
   assert_contains "$out" "state/.supervise-daemon.log" \
     "the degraded banner must name the concrete repair entry point"
   assert_not_contains "$out" "SUPERVISION IS OFF" \

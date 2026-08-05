@@ -94,6 +94,134 @@ test_first_stale_call_prints_full_banner() {
   pass "fm-guard stale banner: first stale call prints the full actionable banner"
 }
 
+test_afk_only_banner_names_away_mode() {
+  local dir home out
+  dir=$(make_guard_case afk-only)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  out=$(run_guard_case "$dir")
+  assert_contains "$out" "Away mode needs supervision" \
+    "AFK-only watcher warning must name away mode"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" \
+    "AFK-only watcher warning mislabeled the need as X mode"
+  pass "fm-guard stale banner: an AFK-only home is labeled as away mode"
+}
+
+# An away home's watcher is legitimately down between wakes, so the daemon lock -
+# not the watcher beacon - decides whether supervision is off or merely degraded.
+# bin/fm-turnend-guard.sh allows a turn end on the same proof; these tests pin the
+# two surfaces to one story.
+record_live_daemon_lock() {
+  local home=$1 pid=$2
+  mkdir -p "$home/state/.supervise-daemon.lock"
+  printf '%s\n' "$pid" > "$home/state/.supervise-daemon.lock/pid"
+  FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pid_identity "$2"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$pid" > "$home/state/.supervise-daemon.lock/pid-identity"
+}
+
+test_afk_live_daemon_fresh_beacon_is_silent() {
+  local dir home out pid
+  dir=$(make_guard_case afk-live-daemon-fresh)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  touch "$home/state/.last-watcher-beat"
+  sleep 60 &
+  pid=$!
+  record_live_daemon_lock "$home" "$pid"
+  out=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_not_contains "$out" "SUPERVISION IS OFF" \
+    "a healthy away home must not raise the supervision-off alarm"
+  assert_not_contains "$out" "AWAY SUPERVISION DEGRADED" \
+    "a healthy away home must not raise the degraded alarm"
+  pass "fm-guard stale banner: an away home with a live daemon and a fresh beacon stays silent"
+}
+
+test_afk_live_daemon_stale_beacon_reports_degraded() {
+  local dir home out pid
+  dir=$(make_guard_case afk-live-daemon-stale)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  sleep 60 &
+  pid=$!
+  record_live_daemon_lock "$home" "$pid"
+  out=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_contains "$out" "AWAY SUPERVISION DEGRADED" \
+    "a live away daemon with a stale beacon must be reported as degraded"
+  assert_contains "$out" "stale and pause marker rechecks and its status-file catch-all scan" \
+    "the degraded banner must name exactly what the daemon still runs"
+  assert_contains "$out" "pane-level staleness detection is NOT running" \
+    "the degraded banner must say pane-level staleness detection stops with the watcher"
+  assert_not_contains "$out" "delayed to the daemon cadence" \
+    "the degraded banner must not overstate coverage as merely delayed pane-level wakes"
+  assert_contains "$out" "not escalated at all right now" \
+    "the degraded banner must name the crew shape that gets no escalation"
+  assert_contains "$out" "state/.supervise-daemon.log" \
+    "the degraded banner must name the concrete repair entry point"
+  assert_not_contains "$out" "SUPERVISION IS OFF" \
+    "a live away daemon must never be reported as no supervision at all"
+  assert_not_contains "$out" "Away mode needs supervision" \
+    "a live away daemon must not be told to start a supervisor it already has"
+  pass "fm-guard stale banner: a live away daemon with a stale beacon reports DEGRADED, not supervision-off"
+}
+
+# The 2026-08-04/05 outage shape: a degraded away episode whose daemon then dies
+# while the beacon stays stale. The failing condition alone is unchanged, so only
+# folding the away-supervisor state into the episode key re-prints the full alarm.
+test_afk_degraded_escalating_to_off_reprints_full_banner() {
+  local dir home degraded off pid dead
+  dir=$(make_guard_case afk-degraded-then-dead)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  sleep 60 &
+  pid=$!
+  record_live_daemon_lock "$home" "$pid"
+  degraded=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_contains "$degraded" "AWAY SUPERVISION DEGRADED" \
+    "the first away call did not claim the episode with the degraded banner"
+
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  printf '%s\n' "$dead" > "$home/state/.supervise-daemon.lock/pid"
+  printf 'dead daemon identity\n' > "$home/state/.supervise-daemon.lock/pid-identity"
+  off=$(run_guard_case "$dir")
+  assert_contains "$off" "WATCHER DOWN - SUPERVISION IS OFF" \
+    "a degraded away episode escalating to a dead daemon was downgraded to a reminder"
+  assert_not_contains "$off" "full banner already printed this episode" \
+    "the escalation was deduped against the degraded episode"
+  pass "fm-guard stale banner: a degraded away episode losing its daemon re-prints the full alarm"
+}
+
+test_afk_dead_daemon_keeps_full_alarm() {
+  local dir home out dead
+  dir=$(make_guard_case afk-dead-daemon)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  mkdir -p "$home/state/.supervise-daemon.lock"
+  printf '%s\n' "$dead" > "$home/state/.supervise-daemon.lock/pid"
+  printf 'dead daemon identity\n' > "$home/state/.supervise-daemon.lock/pid-identity"
+  out=$(run_guard_case "$dir")
+  assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" \
+    "an away home whose daemon lock owner is dead must keep the full alarm"
+  assert_contains "$out" "Away mode needs supervision" \
+    "the dead-daemon away alarm must keep naming away mode"
+  assert_not_contains "$out" "AWAY SUPERVISION DEGRADED" \
+    "a dead away daemon must not be softened to degraded"
+  pass "fm-guard stale banner: a dead away daemon keeps the full supervision-off alarm"
+}
+
 test_repeated_same_episode_prints_reminder_only() {
   local dir out1 out2 marker lines
   dir=$(make_guard_case repeated-stale)
@@ -374,6 +502,11 @@ test_persistent_no_watcher_episode_survives_beacon_touch() {
 }
 
 test_first_stale_call_prints_full_banner
+test_afk_only_banner_names_away_mode
+test_afk_live_daemon_fresh_beacon_is_silent
+test_afk_live_daemon_stale_beacon_reports_degraded
+test_afk_dead_daemon_keeps_full_alarm
+test_afk_degraded_escalating_to_off_reprints_full_banner
 test_repeated_same_episode_prints_reminder_only
 test_autoarm_fresh_beacon_without_watcher_is_healthy
 test_autoarm_stale_beacon_alarms_with_correct_reason

@@ -146,6 +146,18 @@ if [ "$FM_SUP_NEEDED" = false ]; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
+# Away mode: the supervise daemon owns the watcher and deliberately runs it
+# one-shot, so state/.watch.lock is legitimately absent between wakes and cannot
+# prove supervision here. The identity-matched daemon lock can, and it is the
+# same boundary bin/fm-session-start.sh reports from. A live daemon allows the
+# turn to end in every mode, decided ahead of the watcher-health and auto-arm
+# bookkeeping below so neither can block on it; a missing one blocks with
+# away-mode recovery guidance and never engages the ordinary Claude auto-arm or
+# its degraded-allow budget.
+if [ "$FM_SUP_AFK" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
+  budget_reset
+  exit 0
+fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
@@ -155,7 +167,7 @@ fi
 block_stop() {
   local afk x_mode reason rule
   afk=0
-  [ -e "$STATE/.afk" ] && afk=1
+  [ "$FM_SUP_AFK" = true ] && afk=1
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
   reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
@@ -168,10 +180,12 @@ block_stop() {
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"
+    elif [ "$FM_SUP_AFK" = true ]; then
+      printf '●  Away mode needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     else
       printf '●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     fi
-    if [ "$CLAUDE_MODE" -eq 1 ]; then
+    if [ "$CLAUDE_MODE" -eq 1 ] && [ "$FM_SUP_AFK" != true ]; then
       printf '●  The Stop-owned auto-arm did not claim this home either, so recovery is NOT already under way.\n'
     fi
     printf '●  %s\n' "$reason"
@@ -179,6 +193,10 @@ block_stop() {
   } >&2
   exit 2
 }
+
+if [ "$FM_SUP_AFK" = true ]; then
+  block_stop
+fi
 
 if [ "$CLAUDE_MODE" -eq 0 ]; then
   block_stop

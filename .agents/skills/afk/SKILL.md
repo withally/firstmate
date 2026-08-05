@@ -155,7 +155,9 @@ wake reason in bash, and self-handles the routine majority without consuming a
 firstmate turn.
 Captain-relevant events, plus an opt-in bounded recheck of a declared external wait that remains idle, escalate to firstmate's context as one pre-read, single-line, batched digest.
 The classification predicates (the captain-relevant verb set, declared-pause vocabulary, signal/stale tests, and fleet-scan) live in the shared `bin/fm-classify-lib.sh`, the same library the always-on watcher uses for its own triage when afk is off, so the two modes apply one identical policy.
-While `state/.afk` exists the daemon owns the watcher, so the watcher reverts to one-shot and lets the daemon do the triage - the two never run their triage at the same time.
+While `state/.afk` exists the daemon owns the watcher and classifies everything the watcher hands it.
+The watcher's stale-pane and heartbeat paths stay one-shot, enqueueing and exiting without deciding anything, while its signal path runs the same conservative triage it runs when afk is off, so a bare turn-end from a provably-working crew is absorbed rather than escalated and a persistent secondmate report is always delivered immediately.
+That absorption removes those wakes' process, IPC, disk, and queue overhead; it does not fix upstream issue #1692 context amplification and must not be claimed to close it.
 
 Classify each wake this way:
 

@@ -2,6 +2,10 @@
 # Focused rendering, lifecycle, persistence, and interactive TUI checks for /calm.
 set -u
 
+# The suite asserts exact process output. Keep ambient color-policy variables
+# from making Node print its own NO_COLOR/FORCE_COLOR precedence warning.
+unset NO_COLOR FORCE_COLOR
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

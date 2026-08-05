@@ -98,6 +98,17 @@ test_predicate_source_needs_supervision() {
   pass "fm_supervision_unhealthy: source-only home needs supervision"
 }
 
+test_predicate_afk_only_needs_supervision() {
+  local state="$TMP_ROOT/pred-afk-only/state"
+  mkdir -p "$state"
+  : > "$state/.afk"
+  fm_supervision_unhealthy "$state" 300 || fail "away mode with no watcher did not register as unhealthy"
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "away mode must not count as an in-flight task"
+  [ "$FM_SUP_AFK" = true ] || fail "away mode must set FM_SUP_AFK"
+  [ "$FM_SUP_NEEDED" = true ] || fail "away mode must set FM_SUP_NEEDED"
+  pass "fm_supervision_unhealthy: an AFK-only home needs supervision"
+}
+
 # --- HOOK: bin/fm-turnend-guard.sh ------------------------------------------
 #
 # Each scenario gets its own directory carrying a copy of the two guard scripts
@@ -216,6 +227,16 @@ record_watcher_lock() {
   printf '%s\n' "$root" > "$dir/state/.watch.lock/fm-home"
   printf '%s\n' "$bin_dir/fm-watch.sh" > "$dir/state/.watch.lock/watcher-path"
   printf '%s\n' "$identity" > "$dir/state/.watch.lock/pid-identity"
+}
+
+# The away supervisor's own lock. Away mode proves supervision from this lock,
+# not from state/.watch.lock, because the daemon runs the watcher one-shot and
+# that watcher lock is legitimately absent between wakes.
+record_daemon_lock() {
+  local dir=$1 pid=$2 identity=$3
+  mkdir -p "$dir/state/.supervise-daemon.lock"
+  printf '%s\n' "$pid" > "$dir/state/.supervise-daemon.lock/pid"
+  printf '%s\n' "$identity" > "$dir/state/.supervise-daemon.lock/pid-identity"
 }
 
 test_hook_silent_when_no_work_in_flight() {
@@ -360,6 +381,64 @@ test_hook_blocks_when_unhealthy_in_primary() {
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   assert_contains "$out" "TURN WOULD END BLIND" "block banner must read as an alarm"
   pass "fm-turnend-guard: blocks with the exact required reason in the primary when unhealthy"
+}
+
+test_hook_blocks_afk_only_home_with_away_recovery() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-only")
+  : > "$dir/state/.afk"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "hook must block an AFK-only home whose supervisor is missing"
+  assert_contains "$out" "Away mode needs supervision" "AFK-only block must name away mode instead of X mode"
+  assert_contains "$out" "load /afk and ensure the daemon is running" "AFK-only block must point at away-mode recovery"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" "AFK-only block mislabeled the need as X mode"
+  pass "fm-turnend-guard: an AFK-only home blocks with away-mode recovery guidance"
+}
+
+# The away daemon exits its watcher after every actionable wake and restarts it
+# only once injection finishes, so a captain turn can end inside that gap with a
+# healthy daemon and no watcher lock at all. That must not read as blind.
+test_hook_afk_live_daemon_allows_without_watcher_lock() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-live-daemon")
+  : > "$dir/state/.afk"
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  record_daemon_lock "$dir" "$pid" "$(watcher_identity "$dir" "$pid")"
+  out=$(run_hook "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "an away home whose daemon is alive must end its turn even with no watcher lock"
+  [ -z "$out" ] || fail "live-daemon away allow produced output: $out"
+  pass "fm-turnend-guard: a live away daemon proves supervision while the watcher lock is released"
+}
+
+test_hook_afk_dead_daemon_still_blocks() {
+  local dir dead out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-dead-daemon")
+  : > "$dir/state/.afk"
+  dead=$(nonexistent_pid)
+  record_daemon_lock "$dir" "$dead" "dead daemon identity"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "an away home whose daemon lock owner is dead must still block"
+  assert_contains "$out" "Away mode needs supervision" "dead-daemon away block must name away mode"
+  pass "fm-turnend-guard: a dead away daemon lock does not prove supervision"
+}
+
+test_hook_afk_foreign_daemon_identity_still_blocks() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-foreign-daemon")
+  : > "$dir/state/.afk"
+  sleep 60 &
+  pid=$!
+  record_daemon_lock "$dir" "$pid" "some other process identity"
+  out=$(run_hook "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a recycled pid whose identity does not match must not prove away supervision"
+  assert_contains "$out" "Away mode needs supervision" "identity-mismatched away block must name away mode"
+  pass "fm-turnend-guard: an identity-mismatched away daemon lock does not prove supervision"
 }
 
 test_hook_blocks_from_fm_home_state() {
@@ -1105,8 +1184,24 @@ test_hook_claude_mode_reblocks_x_mode_without_tasks() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   expect_code 2 "$status" "--claude mode must re-block an X-mode-only stop when no auto-arm claims recovery"
   assert_contains "$out" "X-mode relay polling needs supervision" "--claude X-mode re-block must name the active supervision need"
+  assert_contains "$out" "Stop-owned auto-arm did not claim" "--claude re-block outside away mode must still report the missing auto-arm claim"
   [ -f "$dir/state/.turnend-claude-blocks" ] || fail "--claude X-mode re-block must consume the shared block budget"
   pass "fm-turnend-guard --claude: X-mode-only homes re-block when auto-arm recovery is absent"
+}
+
+test_hook_claude_mode_afk_never_degrades_to_normal_autoarm() {
+  local dir out status i
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-afk-only")
+  : > "$dir/state/.afk"
+  for i in 1 2 3 4; do
+    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+    expect_code 2 "$status" "--claude AFK-only stop $i must remain blocked"
+    assert_contains "$out" "Away mode needs supervision" "--claude AFK-only block must name away mode"
+    assert_not_contains "$out" "Stop-owned auto-arm did not claim" \
+      "--claude AFK-only block must not blame an auto-arm that is inert by design in away mode"
+  done
+  [ ! -e "$dir/state/.turnend-claude-blocks" ] || fail "AFK-only guard consumed the ordinary auto-arm block budget"
+  pass "fm-turnend-guard --claude: AFK recovery stays blocked without ordinary auto-arm or degraded allow"
 }
 
 test_hook_claude_mode_allows_when_autoarm_owner_alive() {
@@ -1542,6 +1637,7 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
+test_predicate_afk_only_needs_supervision
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
@@ -1550,6 +1646,10 @@ test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_non_claude_health_ignores_claude_budget_contention
 test_hook_blocks_with_live_lock_and_stale_beacon
 test_hook_blocks_when_unhealthy_in_primary
+test_hook_blocks_afk_only_home_with_away_recovery
+test_hook_afk_live_daemon_allows_without_watcher_lock
+test_hook_afk_dead_daemon_still_blocks
+test_hook_afk_foreign_daemon_identity_still_blocks
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence
 test_hook_x_mode_only_blocks_in_default_mode
@@ -1582,6 +1682,7 @@ test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
+test_hook_claude_mode_afk_never_degrades_to_normal_autoarm
 test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner

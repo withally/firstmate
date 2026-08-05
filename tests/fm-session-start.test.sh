@@ -161,7 +161,14 @@ make_fake_ps_harness() {
 #!/usr/bin/env bash
 set -u
 harness=${FM_FAKE_HARNESS:-claude}
+pid=
+previous=
+for argument in "$@"; do
+  [ "$previous" = -p ] && pid=$argument
+  previous=$argument
+done
 case "$*" in
+  *"lstart="*) printf 'Mon Jan  1 00:00:00 2024 fake-process-%s\n' "$pid"; exit 0 ;;
   *"comm="*) printf '/usr/local/bin/%s\n' "$harness"; exit 0 ;;
   *"args="*) printf '%s\n' "$harness"; exit 0 ;;
 esac
@@ -771,7 +778,11 @@ SH
   i=1
   while [ "$i" -le 40 ]; do
     (
-      harness_pid=$(sh -c 'printf "%s\n" "$PPID"')
+      # Bash 3.2 does not expose BASHPID. A direct child reports this
+      # subshell's real process id as its parent; use a file so command
+      # substitution does not insert another short-lived process between them.
+      sh -c 'printf "%s\n" "$PPID"' > "$home/state/harness-pid-$i"
+      harness_pid=$(cat "$home/state/harness-pid-$i")
       : > "$home/state/harness-$harness_pid"
       : > "$ready/$i"
       while [ "$(find "$ready" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
@@ -1259,8 +1270,70 @@ EOF
 }
 
 test_next_step_afk_delegates_to_daemon() {
-  local rec root home fakebin out
+  local rec root home fakebin out daemon_pid
   rec=$(new_world next-step-afk)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  : > "$home/state/.afk"
+  touch "$home/state/.last-watcher-beat"
+  sleep 300 &
+  daemon_pid=$!
+  mkdir -p "$home/state/.supervise-daemon.lock"
+  printf '%s\n' "$daemon_pid" > "$home/state/.supervise-daemon.lock/pid"
+  PATH="$fakebin:$BASE_PATH" FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pid_identity "$2"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$daemon_pid" > "$home/state/.supervise-daemon.lock/pid-identity"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$daemon_pid" 2>/dev/null || true
+  wait "$daemon_pid" 2>/dev/null || true
+
+  assert_contains "$out" "away-mode supervision is active" "AFK digest did not report away mode"
+  assert_not_contains "$out" "DEGRADED" "a live daemon with a fresh beacon was reported as degraded"
+  assert_contains "$out" "Away mode is active" "next step did not switch to AFK guidance"
+  assert_contains "$out" "daemon owns the watcher" "next step did not delegate watcher ownership to the daemon"
+  assert_contains "$out" "- Away mode: active" "supervision block did not include active AFK state"
+  assert_not_contains "$out" "  bin/fm-watch-arm.sh" "AFK next step still told the agent to arm the watcher directly"
+
+  pass "next step delegates watcher ownership to the AFK daemon"
+}
+
+# A live away daemon still owns supervision when its watcher beacon goes stale,
+# so the digest keeps reporting it as active while naming the degraded half. That
+# matches bin/fm-guard.sh's degraded banner and the daemon-only turn-end allow.
+test_next_step_afk_reports_degraded_supervision() {
+  local rec root home fakebin out daemon_pid
+  rec=$(new_world next-step-afk-degraded)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  : > "$home/state/.afk"
+  sleep 300 &
+  daemon_pid=$!
+  mkdir -p "$home/state/.supervise-daemon.lock"
+  printf '%s\n' "$daemon_pid" > "$home/state/.supervise-daemon.lock/pid"
+  PATH="$fakebin:$BASE_PATH" FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pid_identity "$2"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$daemon_pid" > "$home/state/.supervise-daemon.lock/pid-identity"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$daemon_pid" 2>/dev/null || true
+  wait "$daemon_pid" 2>/dev/null || true
+
+  assert_contains "$out" "away-mode supervision is active but DEGRADED" "AFK digest hid a stale watcher beacon behind a plain active report"
+  assert_contains "$out" "pane-level staleness detection is not running" "the degraded digest line did not name the lost coverage"
+  assert_contains "$out" "state/.supervise-daemon.log" "the degraded digest line did not name the repair entry point"
+  assert_not_contains "$out" "the supervisor is missing" "a live away daemon was reported as a missing supervisor"
+
+  pass "session start reports a live away daemon with a stale beacon as degraded"
+}
+
+test_next_step_afk_reports_missing_supervisor() {
+  local rec root home fakebin out
+  rec=$(new_world next-step-afk-missing)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
@@ -1270,13 +1343,11 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "away-mode supervision is active" "AFK digest did not report away mode"
-  assert_contains "$out" "Away mode is active" "next step did not switch to AFK guidance"
-  assert_contains "$out" "daemon owns the watcher" "next step did not delegate watcher ownership to the daemon"
-  assert_contains "$out" "- Away mode: active" "supervision block did not include active AFK state"
-  assert_not_contains "$out" "  bin/fm-watch-arm.sh" "AFK next step still told the agent to arm the watcher directly"
+  assert_contains "$out" "away-mode flag is present, but the supervisor is missing" "AFK digest falsely reported a missing supervisor as active"
+  assert_not_contains "$out" "present - away-mode supervision is active" "AFK digest still inferred supervisor health from flag presence"
+  assert_contains "$out" "load /afk and ensure the daemon is running" "AFK recovery guidance was missing"
 
-  pass "next step delegates watcher ownership to the AFK daemon"
+  pass "session start distinguishes a present AFK flag from a live away supervisor"
 }
 
 test_supervision_block_exactly_one_and_pi_diagnostic() {
@@ -1456,6 +1527,8 @@ test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon
+test_next_step_afk_reports_missing_supervisor
+test_next_step_afk_reports_degraded_supervision
 test_supervision_block_exactly_one_and_pi_diagnostic
 test_pi_signed_primary_uses_pi_extensions_without_identity_normalization
 test_pi_diagnostic_rejects_stale_loaded_marker

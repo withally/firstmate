@@ -141,11 +141,45 @@ resolve_permissive_tmux_kill_ref() {
 # hence the dispatcher is a copied sibling, while the tmux adapter is extracted
 # from BASE_REF so conformance tests retain the exact historical behavior even
 # when this branch changes tmux dispatch semantics.
-# This sibling set must include every dependency sourced by that extracted adapter.
+# This sibling set must include every dependency sourced by that extracted adapter;
+# close_old_bin_sources below derives the rest from the synthetic tree's own
+# `.`-source lines, so a new dependency cannot silently turn into a bogus
+# old-vs-new behavior difference.
 OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-nm-run-lib.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-secondmate-registry-lib.sh fm-session-lock-lib.sh fm-x-lib.sh"
 # A pull-request merge may add a new main-only dependency that the branch's older baseline does not have yet.
 OLD_BIN_OPTIONAL_SIBLINGS="fm-pending-reply-lib.sh"
 OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh fm-marker-lib.sh"
+
+# Basenames of the sibling scripts a file sources through a literal
+# "$SOME_DIR/.../fm-<name>.sh" path. Dynamic sources (`. "$1"`) have no static
+# name and are skipped.
+old_bin_sourced_siblings() {  # <file> -> echoes sibling basenames, one per line
+  sed -n -E 's|^[[:space:]]*\.[[:space:]]+"[^"]*/(fm-[A-Za-z0-9_.-]+\.sh)".*|\1|p' "$1"
+}
+
+# Transitively satisfy every sibling the synthetic tree actually sources, so
+# the reconstructed old bin can never abort under `set -eu` on a missing
+# source and surface that as a fake old-vs-new behavior difference. Files
+# already present (the BASE_REF-extracted entrypoints and adapter) are never
+# overwritten; a name this checkout cannot supply fails the fixture build with
+# a message that names the dependency gap.
+close_old_bin_sources() {  # <bin dir>
+  local bin=$1 progressed=1 f dep
+  while [ "$progressed" = 1 ]; do
+    progressed=0
+    for f in "$bin"/*.sh "$bin"/backends/*.sh; do
+      [ -f "$f" ] || continue
+      while IFS= read -r dep; do
+        [ -n "$dep" ] || continue
+        [ -e "$bin/$dep" ] && continue
+        [ -f "$ROOT/bin/$dep" ] \
+          || fail "old-bin fixture dependency gap: $(basename "$f") sources bin/$dep, which this checkout does not provide; the reconstructed pre-refactor bin/ would abort before running"
+        cp "$ROOT/bin/$dep" "$bin/$dep"
+        progressed=1
+      done < <(old_bin_sourced_siblings "$f")
+    done
+  done
+}
 
 build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry point)
   local name=$1 root bin f
@@ -165,6 +199,7 @@ build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry p
     git -C "$ROOT" show "$BASE_REF:bin/$f" > "$bin/$f"
     chmod +x "$bin/$f"
   done
+  close_old_bin_sources "$bin"
   printf '%s\n' "$root"
 }
 
@@ -691,7 +726,7 @@ strip_send_preflight() {  # <log>
 
 test_send_conformance_old_vs_new() {
   local old_bin fb log_old log_new home rc_old rc_new filtered_old filtered_new
-  old_bin=$(build_old_bin send-old)
+  old_bin=$(build_old_bin send-old) || fail "old-bin fixture build failed for send-old (see the dependency-gap message above)"
   fb=$(make_send_fakebin "$TMP_ROOT/send-fake")
   home="$TMP_ROOT/send-home"; mkdir -p "$home/state"
   log_old="$TMP_ROOT/send-old.log"; log_new="$TMP_ROOT/send-new.log"
@@ -719,6 +754,8 @@ test_send_conformance_old_vs_new() {
   rc_new=$?
   expect_code 1 "$rc_old" "pre-refactor fm-send --key must fail when tmux rejects the key"
   expect_code 1 "$rc_new" "current fm-send --key must fail when tmux rejects the key"
+  assert_contains "$(cat "$log_old")" $'\x1f''send-keys' "pre-refactor fm-send --key never reached tmux send-keys"
+  assert_contains "$(cat "$log_new")" $'\x1f''send-keys' "current fm-send --key never reached tmux send-keys"
   expect_code "$rc_old" "$rc_new" "fm-send --key send failure: old vs new exit code"
 
   # Case 3: plain text (0.3s settle, no popup).
@@ -773,7 +810,7 @@ SH
 test_peek_conformance_old_vs_new() {
   local old_bin fb log_old log_new home out_old out_new payload neutral_root
   payload=$'line one\nline two\ncaptain on deck'
-  old_bin=$(build_old_bin peek-old)
+  old_bin=$(build_old_bin peek-old) || fail "old-bin fixture build failed for peek-old (see the dependency-gap message above)"
   fb=$(make_peek_fakebin "$TMP_ROOT/peek-fake" "$payload")
   home="$TMP_ROOT/peek-home"; mkdir -p "$home/state"
   log_old="$TMP_ROOT/peek-old.log"; log_new="$TMP_ROOT/peek-new.log"
@@ -981,7 +1018,7 @@ test_teardown_conformance_old_vs_new() {
   BASE_REF=$(git -C "$ROOT" rev-parse HEAD)
   old_tmux_ref=$(resolve_permissive_tmux_kill_ref) \
     || { BASE_REF=$saved_base_ref; fail "unable to locate a historical bin/backends/tmux.sh with permissive kill-window selectors"; }
-  old_bin=$(build_old_bin teardown-old)
+  old_bin=$(build_old_bin teardown-old) || fail "old-bin fixture build failed for teardown-old (see the dependency-gap message above)"
   git -C "$ROOT" show "$old_tmux_ref:bin/backends/tmux.sh" > "$old_bin/bin/backends/tmux.sh" \
     || { BASE_REF=$saved_base_ref; fail "could not materialize historical tmux adapter from $old_tmux_ref"; }
   BASE_REF=$saved_base_ref

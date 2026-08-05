@@ -33,8 +33,8 @@ Otherwise it calls `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] 
 A stale beacon blocks even when a watcher pid is live.
 A fresh leftover beacon blocks when the lock is missing, dead, or identity-mismatched.
 
-While `state/.afk` is present the watcher lock is not the proof of supervision, because the away daemon deliberately runs the watcher one-shot and the lock is legitimately absent between wakes.
-The guard instead calls `fm_daemon_lock_alive <state-dir> [daemon-path]` from `bin/fm-wake-lib.sh`, the single owner of away-daemon liveness that `bin/fm-afk-start.sh` and `bin/fm-session-start.sh` also use.
+While `state/.afk` is present a missing watcher lock is not proof that supervision stopped, because the away daemon deliberately runs the watcher one-shot and the lock is legitimately absent between wakes.
+A healthy watcher still satisfies the guard first; when it does not, the guard falls back to `fm_daemon_lock_alive <state-dir> [daemon-path]` from `bin/fm-wake-lib.sh`, the single owner of away-daemon liveness that `bin/fm-afk-start.sh` and `bin/fm-session-start.sh` also use.
 An identity-matched live daemon allows the turn to end in every mode; a missing one blocks with away-mode recovery guidance.
 
 `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repository-root `state/`.

@@ -131,6 +131,7 @@ Session-lock ownership in `bin/fm-session-lock-lib.sh` is decided against a sess
 Harness identity is read from the executable path and `argv[0]` as well as the command basename, because Claude Code's native installer names the per-session executable by its version (`.../share/claude/versions/2.1.220`): `ps -o comm=` reports that path on macOS and the bare version string on Linux, and neither basename names a harness.
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
 `tests/fm-watch-arm.test.sh` runs a real watcher and attached arm to verify that a delivered reason survives queue draining, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
+It also blocks the best-effort delivery ledger to prove a lost append is still resolved from the cycle's own identity-bound `kind=actionable` close receipt, and holds the negative control that a receipt from another identity leaves the loud unexplained-cycle failure intact.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:
 

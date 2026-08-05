@@ -50,7 +50,10 @@ A zero/empty child return rechecks the home lock and beacon, attaches to a verif
 An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 Before releasing its singleton lock after printing an actionable reason, the watcher records that reason with its PID and process identity in `state/.watch-deliveries.log`.
 A matching PID and identity lets an attached arm report the delivered reason and exit zero even after the durable wake queue was drained, while an unrelated queue producer or a recycled PID cannot satisfy the match.
-Only a cycle with neither a matching clean-close receipt nor a matching delivery record emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
+That ledger append is best-effort and gives up silently under lock contention, so a cycle with no matching record falls back to the watcher's PID-identity-bound `kind=actionable` close receipt, which proves the cycle printed and delivered its wake on its own stdout.
+Because that receipt carries no reason line to replay, the arm silently relaunches with a fresh cycle exactly as it does for a clean-close receipt rather than closing empty.
+A receipt whose PID or identity names another cycle resolves nothing.
+Only a cycle with no matching close receipt of either kind and no matching delivery record emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.

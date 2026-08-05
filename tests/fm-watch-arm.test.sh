@@ -32,7 +32,7 @@ ARM_PID=
 start_seed_watcher() {  # <state> <fakebin> <watch-out>
   local state=$1 fakebin=$2 out=$3 i
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
-    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
   SEED_PID=$!
   i=0
   while [ "$i" -lt 60 ]; do
@@ -146,6 +146,97 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   pass "watch-arm: a cycle that delivered no wake of its own still fails loudly"
 }
 
+# Make the watcher's best-effort delivery ledger unwritable and unreadable for
+# the whole cycle, exactly as a lost append leaves it: the actionable close
+# receipt is then the only identity-bound proof the cycle delivered its wake.
+block_delivery_ledger() {  # <state>
+  mkdir -p "$1/.watch-deliveries.log"
+}
+
+wait_for_file_text() {  # <file> <fixed-text> <tenths>
+  local file=$1 text=$2 limit=$3 i=0
+  while [ "$i" -lt "$limit" ]; do
+    grep -qF "$text" "$file" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+test_attached_arm_resolves_a_lost_ledger_append_from_the_close_receipt() {
+  local dir state fakebin out armout watcher_identity successor i
+  dir=$(make_case attached-receipt-fallback)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  block_delivery_ledger "$state"
+  start_seed_watcher "$state" "$fakebin" "$out"
+  start_attached_arm "$state" "$fakebin" "$armout" 1
+  watcher_identity=$(cat "$state/.watch.lock/pid-identity" 2>/dev/null || true)
+
+  printf 'done: fixture finished\n' > "$state/demo.status"
+  wait_for_exit "$SEED_PID" 120
+  grep -q '^signal:' "$out" || fail "seed watcher did not surface the signal wake: $(cat "$out")"
+  [ ! -f "$state/.watch-deliveries.log" ] \
+    || fail "the delivery ledger recorded the wake, so this case proves nothing"
+  grep -qF "kind=actionable" "$state/.watch-close" \
+    || fail "the watcher did not publish its actionable close receipt: $(cat "$state/.watch-close" 2>/dev/null)"
+  grep -qF "identity=$watcher_identity" "$state/.watch-close" \
+    || fail "the actionable close receipt is not bound to the observed cycle"
+
+  # The receipt proves the delivery but carries no reason line to replay, so the
+  # arm continues supervising with a fresh cycle instead of closing empty.
+  wait_for_file_text "$state/.watch-cycle-exits.log" 'reason=observed-actionable-close' 120 \
+    || fail "the arm did not classify the identity-bound actionable close: $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
+  ! grep -qF 'watcher: FAILED' "$armout" \
+    || fail "attached arm reported a delivered wake as a failed cycle: $(cat "$armout")"
+  is_live_non_zombie "$ARM_PID" \
+    || fail "the arm ended instead of continuing across the actionable close"
+  successor=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill "$ARM_PID" 2>/dev/null || true
+  wait_for_exit "$ARM_PID" 80
+  # The continued arm owns a fresh watcher child; let it finish reaping before
+  # this case's scratch state goes away.
+  if [ -n "$successor" ]; then
+    kill "$successor" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 80 ] && is_live_non_zombie "$successor"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+  pass "watch-arm: a lost ledger append is resolved from the cycle's own actionable close receipt"
+}
+
+test_attached_arm_rejects_a_close_receipt_from_another_identity() {
+  local dir state fakebin out armout status
+  dir=$(make_case attached-foreign-receipt)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  block_delivery_ledger "$state"
+  start_seed_watcher "$state" "$fakebin" "$out"
+  start_attached_arm "$state" "$fakebin" "$armout" 1
+
+  # Negative control: an actionable receipt naming this cycle's pid but a
+  # foreign identity. SIGKILL leaves it in place, so the receipt is the only
+  # evidence the arm can find - and it must not silence the failure.
+  printf 'pid=%s\nkind=actionable\nidentity=%s\n' "$SEED_PID" 'not-this-cycle' > "$state/.watch-close"
+  kill -KILL "$SEED_PID" 2>/dev/null || true
+  wait "$SEED_PID" 2>/dev/null || true
+  wait_for_exit "$ARM_PID" 120
+  status=$?
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "a foreign close receipt silenced a genuinely unexplained cycle: $(cat "$armout")"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "arm did not exit nonzero for a cycle explained only by a foreign receipt (status $status)"
+  pass "watch-arm: a close receipt from another identity cannot resolve this cycle"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
+test_attached_arm_resolves_a_lost_ledger_append_from_the_close_receipt
+test_attached_arm_rejects_a_close_receipt_from_another_identity

@@ -39,10 +39,12 @@
 # reason; on attached it stays live across identity-matched successors. A cycle
 # that ends with no reason line and no healthy successor is resolved first
 # against the watcher's identity-bound clean-close receipt, then against its
-# identity-bound delivery record. A clean receipt silently continues with a new
-# cycle; a matching delivery reports that wake and exits 0; only a cycle that
-# proves neither is the typed nonzero failure. On FAILED it exits non-zero so the
-# failure is loud. A live cycle already present means re-arm attaches - do not
+# identity-bound delivery record, then against its identity-bound actionable
+# close receipt. A clean receipt silently continues with a new cycle; a matching
+# delivery reports that wake and exits 0; an actionable receipt proves the cycle
+# delivered its wake on its own stdout and silently continues with a new cycle;
+# only a cycle that proves none of them is the typed nonzero failure. On FAILED
+# it exits non-zero so the failure is loud. A live cycle already present means re-arm attaches - do not
 # start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
@@ -129,10 +131,14 @@ cycle_refresh_lock_before() {
   cycle_lock_before=$(lock_snapshot)
 }
 
-# The fork's clean-close receipt complements upstream's actionable-delivery
-# ledger. It covers a watcher that intentionally self-evicts after absorbing
-# every event and therefore has no actionable reason to publish.
-watch_close_is_clean() {  # <pid>
+# The fork's intentional-close receipt complements upstream's actionable-delivery
+# ledger. A clean receipt covers a watcher that self-evicts after absorbing every
+# event and therefore has no actionable reason to publish; an actionable receipt
+# covers a watcher that printed and delivered its wake but whose best-effort
+# ledger append never landed. Both are bound to one cycle: the receipt resolves
+# nothing unless it names this cycle's pid AND its identity, so a stale or
+# foreign receipt can never silence a genuinely unexplained cycle.
+watch_close_kind() {  # <pid> - prints clean|actionable for THIS cycle's receipt
   local pid=$1 receipt key value receipt_pid='' receipt_kind='' receipt_identity=''
   receipt="$STATE/.watch-close"
   [ -f "$receipt" ] || return 1
@@ -144,16 +150,19 @@ watch_close_is_clean() {  # <pid>
     esac
   done < "$receipt"
   [ "$receipt_pid" = "$pid" ] || return 1
-  [ "$receipt_kind" = clean ] || return 1
   [ -n "$cycle_watcher_identity" ] || return 1
-  [ "$receipt_identity" = "$cycle_watcher_identity" ]
+  [ "$receipt_identity" = "$cycle_watcher_identity" ] || return 1
+  case "$receipt_kind" in
+    clean|actionable) printf '%s' "$receipt_kind" ;;
+    *) return 1 ;;
+  esac
 }
 
-continue_after_clean_close() {
+continue_after_intentional_close() {
   trap - HUP TERM INT
   export FM_WATCH_PREDECESSOR_ARM_PID="$ARM_PID"
   exec "$SCRIPT_DIR/fm-watch-arm.sh"
-  echo "watcher: FAILED - could not continue after an intentional clean watcher close"
+  echo "watcher: FAILED - could not continue after an intentional watcher close"
   return 1
 }
 
@@ -303,31 +312,48 @@ fail_unexplained_cycle() {
   return 1
 }
 
+# How the last close_unobserved_cycle call resolved: `ledger` printed the wake
+# the cycle durably delivered, `receipt` proved the delivery from the cycle's own
+# actionable close receipt without a reason line to replay.
+CLOSE_UNOBSERVED_OUTCOME=
+
 # Close a cycle whose reason line this arm could not read against the bounded
-# terminal-delivery ledger the watcher publishes before releasing its lock.
+# terminal-delivery ledger the watcher publishes before releasing its lock, and
+# then against the cycle's identity-bound actionable close receipt. The ledger
+# append is best-effort and gives up silently under lock contention, so the
+# receipt is what keeps a genuinely delivered wake from reading as a failure.
 close_unobserved_cycle() {
-  local i reason clean_identity record_pid record_identity record_reason
+  local i locked reason clean_identity record_pid record_identity record_reason
+  CLOSE_UNOBSERVED_OUTCOME=
   clean_identity=$(printf '%s' "$cycle_watcher_identity" | tr '\t\r\n' '   ')
+  locked=0
   i=0
-  while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
-    [ "$i" -lt 20 ] || {
-      fail_unexplained_cycle
-      return 1
-    }
+  while [ "$i" -le 20 ]; do
+    if fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; then
+      locked=1
+      break
+    fi
     sleep 0.02
     i=$((i + 1))
   done
   reason=
-  if [ -f "$WATCH_DELIVERY_LOG" ]; then
-    while IFS=$'\t' read -r record_pid record_identity record_reason; do
-      if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
-        reason=$record_reason
-      fi
-    done < "$WATCH_DELIVERY_LOG"
+  if [ "$locked" -eq 1 ]; then
+    if [ -f "$WATCH_DELIVERY_LOG" ]; then
+      while IFS=$'\t' read -r record_pid record_identity record_reason; do
+        if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
+          reason=$record_reason
+        fi
+      done < "$WATCH_DELIVERY_LOG"
+    fi
+    fm_lock_release "$WATCH_DELIVERY_LOCK"
   fi
-  fm_lock_release "$WATCH_DELIVERY_LOCK"
   if [ -n "$reason" ]; then
+    CLOSE_UNOBSERVED_OUTCOME=ledger
     printf '%s\n' "$reason"
+    return 0
+  fi
+  if [ "$(watch_close_kind "$cycle_watcher_pid" 2>/dev/null || true)" = actionable ]; then
+    CLOSE_UNOBSERVED_OUTCOME=receipt
     return 0
   fi
   fail_unexplained_cycle
@@ -336,7 +362,8 @@ close_unobserved_cycle() {
 
 # Stay alive across identity-matched healthy holders. If one cycle ends, attach
 # to a verified successor. With no successor, continue after an identity-bound
-# clean close, report the wake that cycle durably delivered, or fail loudly -
+# clean close, report the wake that cycle durably delivered, continue after an
+# identity-bound actionable close whose ledger append was lost, or fail loudly -
 # never a clean empty completion that an adapter could mistake for a no-op.
 attach_and_wait() {
   local attached_pid=$1
@@ -358,12 +385,17 @@ attach_and_wait() {
       report_attached
       continue
     fi
-    if watch_close_is_clean "$attached_pid"; then
+    if [ "$(watch_close_kind "$attached_pid" 2>/dev/null || true)" = clean ]; then
       cycle_log_append 0 none clean-close none
-      continue_after_clean_close
+      continue_after_intentional_close
       return $?
     fi
     if close_unobserved_cycle; then
+      if [ "$CLOSE_UNOBSERVED_OUTCOME" = receipt ]; then
+        cycle_log_append 0 none observed-actionable-close none
+        continue_after_intentional_close
+        return $?
+      fi
       cycle_log_append unknown unknown attached-delivered-wake none
       return 0
     fi
@@ -516,12 +548,17 @@ owned_child_finished() {
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=
-    if watch_close_is_clean "$cycle_watcher_pid"; then
+    if [ "$(watch_close_kind "$cycle_watcher_pid" 2>/dev/null || true)" = clean ]; then
       cycle_log_append "$rc" "$signal" clean-close none
-      continue_after_clean_close
+      continue_after_intentional_close
       return $?
     fi
     if close_unobserved_cycle; then
+      if [ "$CLOSE_UNOBSERVED_OUTCOME" = receipt ]; then
+        cycle_log_append "$rc" "$signal" observed-actionable-close none
+        continue_after_intentional_close
+        return $?
+      fi
       cycle_log_append "$rc" "$signal" clean-exit-delivered-wake none
       return 0
     fi

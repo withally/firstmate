@@ -70,11 +70,13 @@ Hints only affect balance: the coverage guard keeps the partition complete and d
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 15 | 285945 ms (~285.9 s) |
-| `portable-serial-2of4` | 18 | 285944 ms (~285.9 s) |
-| `portable-serial-3of4` | 17 | 285929 ms (~285.9 s) |
-| `portable-serial-4of4` | 19 | 285944 ms (~285.9 s) |
+| `portable-serial-1of4` | 21 | 380930 ms (~380.9 s) |
+| `portable-serial-2of4` | 22 | 380946 ms (~380.9 s) |
+| `portable-serial-3of4` | 20 | 380940 ms (~380.9 s) |
+| `portable-serial-4of4` | 25 | 380946 ms (~380.9 s) |
 | imbalance | | 16 ms |
+
+Scripts added since the hint refresh carry `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS`, so those estimates are conservative rather than measured; regenerate the table with `bin/fm-test-run.sh --list --lane portable-serial-<k>of4` whenever the lane membership changes.
 
 The single longest script, `tests/fm-pr-check-security.test.sh` at 199573 ms, is the floor for any shard count.
 
@@ -108,7 +110,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Job | timeout-minutes | Rationale |
 |---|---:|---|
 | portable parallel 1/2 | 10 | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | 15 | Each balanced shard is about five minutes, leaving roughly 3x hang-tripwire margin. |
+| portable serial 1-4 | 15 | Each balanced shard is estimated at about six minutes, leaving better than 2x hang-tripwire margin. |
 | Herdr | 40 | The real-Herdr lane keeps its dedicated timeout. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

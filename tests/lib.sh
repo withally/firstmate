@@ -95,6 +95,30 @@ fm_test_cleanup() {
   fi
 }
 
+# fm_test_stop_worker: stop a background worker recorded in <pid-file> and wait
+# for it to actually leave, so a following rm -rf of its state root cannot race
+# a last write from the dying process ("Directory not empty"). Mirrors the
+# terminate-then-poll shape fm_remote_job_start_linux_worker uses in bin/.
+fm_test_stop_worker() {
+  local pid_file=$1 pid i=0
+  [ -f "$pid_file" ] || return 0
+  pid=$(cat "$pid_file" 2>/dev/null) || return 0
+  case "$pid" in '' | *[!0-9]*) return 0 ;; esac
+  kill "$pid" 2>/dev/null || return 0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+    i=$((i + 1))
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    i=0
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+      i=$((i + 1))
+      sleep 0.1
+    done
+  fi
+}
+
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1

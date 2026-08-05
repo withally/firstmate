@@ -105,6 +105,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
@@ -311,13 +313,9 @@ fi
 AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
 AFK_SUPERVISOR_ALIVE=0
-if [ "$AFK_PRESENT" -eq 1 ] && (
-  # fm-afk-start.sh owns daemon-lock identity validation and is sourceable.
-  # Keep its set -eu side effect inside this subshell.
-  # shellcheck source=bin/fm-afk-start.sh
-  . "$SCRIPT_DIR/fm-afk-start.sh"
-  daemon_lock_held_by_live_daemon
-); then
+# bin/fm-wake-lib.sh owns daemon-lock identity validation, shared with
+# bin/fm-afk-start.sh and bin/fm-turnend-guard.sh.
+if [ "$AFK_PRESENT" -eq 1 ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
   AFK_SUPERVISOR_ALIVE=1
 fi
 X_MODE_PRESENT=0

@@ -226,9 +226,16 @@ _event_cap_ok=0
 _event_cap_fails=0
 
 # afk_present: 0 while the away-mode flag exists. When set, the daemon wraps this
-# watcher and owns triage, so the watcher must behave one-shot (enqueue + exit on
-# every wake) and let the daemon classify - never absorb here, or the daemon's
-# digest/injection layer would never see the wake.
+# watcher and owns classification of everything the watcher enqueues.
+# The signal path runs the same conservative triage it runs when always-on, so a
+# bare turn-end from a provably-working crew is absorbed instead of woken on,
+# and additionally forces immediate delivery of a persistent secondmate report,
+# whose delayed backstops the daemon does not own. The stale-pane and heartbeat
+# paths stay one-shot: enqueue and exit so the daemon classifies them.
+# Absorbing those routine signals removes their process, IPC, disk, and queue
+# overhead. It does NOT fix upstream issue #1692 context amplification and must
+# not be claimed to close it: the amplification is in what the model is handed
+# on a wake, not in how many wakes the watcher enqueues.
 afk_present() { [ -e "$STATE/.afk" ]; }
 
 hash_pane() {
@@ -927,7 +934,9 @@ EOF
     reason="signal:$files"
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
     #   - any status file carries a captain-relevant verb;
-    #   - any status file is a persistent secondmate report;
+    #   - in away mode only, any status file is a persistent secondmate report -
+    #     the daemon, not the watcher, owns the delayed backstops that would
+    #     otherwise redeliver it, so it must reach the queue immediately;
     #   - or it is an ambiguous wake (a bare turn-end, unknown file shape, or
     #     non-working nonterminal event) whose crew is NOT provably working - the
     #     crew stopped its turn with no actively-running pipeline and no busy pane,
@@ -952,7 +961,7 @@ EOF
       signal_absorb_reason="terminal status already delivered"
     elif signal_reason_is_actionable $files; then
       signal_actionable=1
-    elif signal_has_secondmate_report $files; then
+    elif afk_present && signal_has_secondmate_report $files; then
       signal_actionable=1
     elif signal_is_routine_working_progress $files; then
       :

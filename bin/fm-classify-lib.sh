@@ -614,8 +614,8 @@ status_file_kind() {  # <status-file>
 # healthy by design), while the heartbeat backstop only rescans captain-relevant
 # statuses. A secondmate `working [key=...]` line is also its documented sparse
 # material phase report and a valid correlated answer to a marked request
-# (bin/fm-brief.sh's charter contract, bin/fm-pending-reply-lib.sh), so the
-# watcher surfaces it before reaching the provably-working path.
+# (bin/fm-brief.sh's charter contract, bin/fm-pending-reply-lib.sh), so it keeps
+# the conservative provably-working path that used to deliver it.
 # The watcher uses this before consulting semantic busy state in both normal and
 # away modes.
 signal_is_routine_working_progress() {  # <file> ...
@@ -632,8 +632,11 @@ signal_is_routine_working_progress() {  # <file> ...
 }
 
 # 0 when a signal batch contains a status report from a persistent secondmate.
-# Those sparse reports require immediate delivery because neither the ordinary
-# stale path nor the captain-relevant heartbeat scan is a complete backstop.
+# Only the away-mode watcher consults this, to force immediate delivery ahead of
+# the provably-working check: neither the ordinary stale path nor the
+# captain-relevant heartbeat scan is a complete backstop for a sparse secondmate
+# report, and in away mode the watcher does not own those backstops at all. The
+# always-on watcher keeps its existing provably-working path for these reports.
 signal_has_secondmate_report() {  # <file> ...
   local f
   for f in "$@"; do

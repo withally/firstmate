@@ -171,6 +171,36 @@ test_afk_live_daemon_stale_beacon_reports_degraded() {
   pass "fm-guard stale banner: a live away daemon with a stale beacon reports DEGRADED, not supervision-off"
 }
 
+# The 2026-08-04/05 outage shape: a degraded away episode whose daemon then dies
+# while the beacon stays stale. The failing condition alone is unchanged, so only
+# folding the away-supervisor state into the episode key re-prints the full alarm.
+test_afk_degraded_escalating_to_off_reprints_full_banner() {
+  local dir home degraded off pid dead
+  dir=$(make_guard_case afk-degraded-then-dead)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  sleep 60 &
+  pid=$!
+  record_live_daemon_lock "$home" "$pid"
+  degraded=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_contains "$degraded" "AWAY SUPERVISION DEGRADED" \
+    "the first away call did not claim the episode with the degraded banner"
+
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  printf '%s\n' "$dead" > "$home/state/.supervise-daemon.lock/pid"
+  printf 'dead daemon identity\n' > "$home/state/.supervise-daemon.lock/pid-identity"
+  off=$(run_guard_case "$dir")
+  assert_contains "$off" "WATCHER DOWN - SUPERVISION IS OFF" \
+    "a degraded away episode escalating to a dead daemon was downgraded to a reminder"
+  assert_not_contains "$off" "full banner already printed this episode" \
+    "the escalation was deduped against the degraded episode"
+  pass "fm-guard stale banner: a degraded away episode losing its daemon re-prints the full alarm"
+}
+
 test_afk_dead_daemon_keeps_full_alarm() {
   local dir home out dead
   dir=$(make_guard_case afk-dead-daemon)
@@ -476,6 +506,7 @@ test_afk_only_banner_names_away_mode
 test_afk_live_daemon_fresh_beacon_is_silent
 test_afk_live_daemon_stale_beacon_reports_degraded
 test_afk_dead_daemon_keeps_full_alarm
+test_afk_degraded_escalating_to_off_reprints_full_banner
 test_repeated_same_episode_prints_reminder_only
 test_autoarm_fresh_beacon_without_watcher_is_healthy
 test_autoarm_stale_beacon_alarms_with_correct_reason

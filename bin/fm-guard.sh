@@ -62,8 +62,11 @@ STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
 # episode" key change every turn and re-print the full banner. Keying on the
 # failing condition keeps one continuous down-episode stable, while positive
 # recovery clears the marker (below) and re-arms the next episode.
+# The away-supervisor state is part of that condition, not decoration: a degraded
+# away episode whose daemon then dies is a different, worse failure and must
+# re-print the full supervision-off banner instead of a one-line reminder.
 fm_guard_stale_episode_key() {
-  printf '%s\n' "$1"
+  printf '%s away-supervisor=%s\n' "$1" "$2"
 }
 
 # Claim the full banner for this episode. Exit 0 = print full banner (this call
@@ -196,7 +199,7 @@ fi
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
 # calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
-  episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
+  episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason" "$away_supervisor_alive")
   episode_key=${episode_key%$'\n'}
   print_full_banner=0
   if [ "$READ_ONLY" -eq 1 ]; then
@@ -205,18 +208,6 @@ if [ "$watcher_healthy" = false ]; then
     print_full_banner=1
   fi
   if [ "$print_full_banner" -eq 1 ]; then
-    afk=0
-    [ "$afk_needed" = true ] && afk=1
-    queue_arg=0
-    "$queue_pending" && queue_arg=1
-    x_mode=0
-    [ -f "$CONFIG/x-mode.env" ] && x_mode=1
-    fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
-      --read-only "$READ_ONLY" \
-      --afk "$afk" \
-      --x-mode "$x_mode" \
-      --queue-pending "$queue_arg" \
-      --repair-line 2>/dev/null || printf '%s\n' 'Repair missing watcher supervision according to the session-start operating block.')
     rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
     if [ "$away_supervisor_alive" = true ]; then
       {
@@ -234,6 +225,18 @@ if [ "$watcher_healthy" = false ]; then
         printf '●%s\n' "$rule"
       } >&2
     else
+      afk=0
+      [ "$afk_needed" = true ] && afk=1
+      queue_arg=0
+      "$queue_pending" && queue_arg=1
+      x_mode=0
+      [ -f "$CONFIG/x-mode.env" ] && x_mode=1
+      fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
+        --read-only "$READ_ONLY" \
+        --afk "$afk" \
+        --x-mode "$x_mode" \
+        --queue-pending "$queue_arg" \
+        --repair-line 2>/dev/null || printf '%s\n' 'Repair missing watcher supervision according to the session-start operating block.')
       {
         printf '●%s\n' "$rule"
         printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'

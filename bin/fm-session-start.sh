@@ -111,6 +111,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
@@ -328,6 +330,18 @@ AFK_SUPERVISOR_ALIVE=0
 if [ "$AFK_PRESENT" -eq 1 ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
   AFK_SUPERVISOR_ALIVE=1
 fi
+# A live daemon still owns away supervision when its watcher beacon has gone
+# stale, but pane-level staleness detection stops meanwhile, so the digest names
+# that degraded half instead of reporting plain health. bin/fm-guard.sh reads the
+# same beacon predicate for its degraded banner.
+AFK_GRACE=${FM_GUARD_GRACE:-300}
+AFK_WATCHER_FRESH=false
+AFK_BEACON_DESC=never
+if [ "$AFK_SUPERVISOR_ALIVE" -eq 1 ]; then
+  fm_supervision_status "$STATE" "$AFK_GRACE"
+  AFK_WATCHER_FRESH=$FM_SUP_WATCHER_FRESH
+  AFK_BEACON_DESC=$FM_SUP_BEACON_DESC
+fi
 X_MODE_PRESENT=0
 [ -f "$CONFIG/x-mode.env" ] && X_MODE_PRESENT=1
 
@@ -409,8 +423,11 @@ done
 
 subsection "AFK"
 if [ -e "$STATE/.afk" ]; then
-  if [ "$AFK_SUPERVISOR_ALIVE" -eq 1 ]; then
+  if [ "$AFK_SUPERVISOR_ALIVE" -eq 1 ] && [ "$AFK_WATCHER_FRESH" = true ]; then
     printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
+  elif [ "$AFK_SUPERVISOR_ALIVE" -eq 1 ]; then
+    printf 'present - away-mode supervision is active but DEGRADED; the daemon owns the watcher and keeps its marker rechecks and status-file catch-all scan running, but its watcher has no fresh beacon (last beat: %s, grace %ss), so pane-level staleness detection is not running; read state/.supervise-daemon.log for the watcher exit reason.\n' \
+      "$AFK_BEACON_DESC" "$AFK_GRACE"
   else
     printf 'present - away-mode flag is present, but the supervisor is missing; load /afk and ensure the daemon is running.\n'
   fi

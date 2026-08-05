@@ -926,8 +926,8 @@ $pending
 EOF
     reason="signal:$files"
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
-    #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
+    #   - any status file is a persistent secondmate report;
     #   - or it is an ambiguous wake (a bare turn-end, unknown file shape, or
     #     non-working nonterminal event) whose crew is NOT provably working - the
     #     crew stopped its turn with no actively-running pipeline and no busy pane,
@@ -941,18 +941,18 @@ EOF
     # Actionable -> enqueue, advance .seen-*
     # markers, exit. Benign -> advance the markers so it will not re-fire, log,
     # and keep blocking without enqueuing. The provably-working check is the only
-    # costly one (it may run a bounded no-mistakes call), so it runs ONLY for a
-    # non-afk, non-actionable, non-working-progress signal.
+    # costly one (it may run a bounded no-mistakes call), so it runs only for a
+    # non-actionable, non-working-progress signal.
     signal_actionable=0
     signal_absorb_reason=
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if afk_present; then
-      signal_actionable=1
-    elif signal_is_delivered_decision_echo "$STATE" $files; then
+    if signal_is_delivered_decision_echo "$STATE" $files; then
       signal_absorb_reason="delivered decision echo"
     elif signal_captain_relevant_already_surfaced "$STATE" $files; then
       signal_absorb_reason="terminal status already delivered"
     elif signal_reason_is_actionable $files; then
+      signal_actionable=1
+    elif signal_has_secondmate_report $files; then
       signal_actionable=1
     elif signal_is_routine_working_progress $files; then
       :

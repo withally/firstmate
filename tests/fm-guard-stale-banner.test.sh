@@ -67,6 +67,20 @@ test_first_stale_call_prints_full_banner() {
   pass "fm-guard stale banner: first stale call prints the full actionable banner"
 }
 
+test_afk_only_banner_names_away_mode() {
+  local dir home out
+  dir=$(make_guard_case afk-only)
+  home=$(case_home "$dir")
+  rm -f "$home/state/task.meta"
+  : > "$home/state/.afk"
+  out=$(run_guard_case "$dir")
+  assert_contains "$out" "Away mode needs supervision" \
+    "AFK-only watcher warning must name away mode"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" \
+    "AFK-only watcher warning mislabeled the need as X mode"
+  pass "fm-guard stale banner: an AFK-only home is labeled as away mode"
+}
+
 test_repeated_same_episode_prints_reminder_only() {
   local dir out1 out2 marker lines
   dir=$(make_guard_case repeated-stale)
@@ -241,6 +255,7 @@ test_read_only_never_mutates_stale_banner_state_files() {
 }
 
 test_first_stale_call_prints_full_banner
+test_afk_only_banner_names_away_mode
 test_repeated_same_episode_prints_reminder_only
 test_healthy_recovery_rearms_next_stale_episode
 test_concurrent_same_episode_prints_one_full_banner

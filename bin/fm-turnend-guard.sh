@@ -146,7 +146,7 @@ fi
 block_stop() {
   local afk x_mode reason rule
   afk=0
-  [ -e "$STATE/.afk" ] && afk=1
+  [ "$FM_SUP_AFK" = true ] && afk=1
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
   reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
@@ -159,6 +159,8 @@ block_stop() {
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"
+    elif [ "$FM_SUP_AFK" = true ]; then
+      printf '●  Away mode needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     else
       printf '●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     fi
@@ -170,6 +172,10 @@ block_stop() {
   } >&2
   exit 2
 }
+
+if [ "$FM_SUP_AFK" = true ]; then
+  block_stop
+fi
 
 if [ "$CLAUDE_MODE" -eq 0 ]; then
   block_stop

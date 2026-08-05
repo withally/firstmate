@@ -115,7 +115,7 @@ test_guard_warnings() {
   #       warning follows it, and the guidance is repair-after-drain (never the
   #       old conflicting "restart NOW first").
   #   (2) a fresh watcher and an empty queue: total silence.
-  local dir state err first banner_line queue_line
+  local dir state err first banner_line queue_line pid identity
   dir=$(make_case guard)
   state="$dir/state"
   err="$dir/guard.err"
@@ -138,9 +138,9 @@ test_guard_warnings() {
   grep -F 'last beat: never' "$err" >/dev/null || fail "guard banner missing the beacon age"
   grep -F 'guarded operation WILL still run' "$err" >/dev/null || fail "guard banner missing generic continuation wording"
   ! grep -F 'requested message WILL still be sent' "$err" >/dev/null || fail "shared guard used send-specific continuation wording"
-  grep -F 'repair missing watcher supervision' "$err" >/dev/null || fail "guard banner missing the harness-aware fix command"
+  grep -F 'watcher supervision needs Stop-owned automatic recovery' "$err" >/dev/null || fail "guard banner missing neutral automatic-recovery guidance"
   grep -F 'queued wakes pending - drain them' "$err" >/dev/null || fail "guard did not warn about pending queue"
-  grep -F 'After draining queued wakes, repair missing watcher supervision' "$err" >/dev/null || fail "guard did not order supervision repair after drain"
+  grep -F 'After draining queued wakes, watcher supervision needs Stop-owned automatic recovery' "$err" >/dev/null || fail "guard did not order neutral automatic recovery after drain"
   ! grep -F 'Restart it NOW, before anything else' "$err" >/dev/null || fail "guard still gave conflicting restart-first instruction"
   ! grep -F 'as the harness-tracked background task' "$err" >/dev/null || fail "guard still printed the old universal background-task repair text"
   banner_line=$(grep -n 'WATCHER DOWN' "$err" | head -1 | cut -d: -f1)
@@ -156,17 +156,27 @@ test_guard_warnings() {
   CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
   grep -F "source '$dir/config/x-mode.env' first" "$err" >/dev/null || fail "guard repair line did not source the X-mode cadence config"
 
-  # (2) fresh watcher, empty queue -> silence.
+  # (2) live watcher plus fresh beacon, empty queue -> silence.
   dir=$(make_case guard-fresh)
   state="$dir/state"
   err="$dir/guard.err"
   printf 'project=x\n' > "$state/task.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") || fail "could not identify fresh guard watcher"
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
   touch "$state/.last-watcher-beat"
   # Non-git FM_ROOT keeps the worktree-tangle check inert so "fresh watcher ->
   # total silence" stays a pure assertion about watcher state.
   FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
-  [ ! -s "$err" ] || fail "guard warned with a fresh watcher and no queued wakes: $(cat "$err")"
-  pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when fresh"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ ! -s "$err" ] || fail "guard warned with a live watcher and fresh beacon: $(cat "$err")"
+  pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
 
 test_lock_single_winner_under_concurrency() {
@@ -579,8 +589,8 @@ test_arm_all_absorbed_clean_close_rearms_without_failure() {
   pass "all-absorbed clean close silently re-arms and the successor's actionable close stays unchanged"
 }
 
-test_attached_arm_observes_actionable_close_without_false_failure() {
-  local dir state fakebin owner_out attached_out owner_arm attached_arm watcher_pid successor_pid owner_status attached_status i
+test_attached_arm_reports_actionable_close_without_false_failure() {
+  local dir state fakebin owner_out attached_out owner_arm attached_arm watcher_pid owner_status attached_status i
   dir=$(make_case attached-observes-actionable-close)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -617,27 +627,14 @@ test_attached_arm_observes_actionable_close_without_false_failure() {
   [ "$owner_status" -eq 0 ] || fail "owner actionable arm exited $owner_status"
   grep -q '^signal:' "$owner_out" || fail "owner arm lost the actionable close reason"
 
-  i=0
-  successor_pid=
-  while [ "$i" -lt 100 ]; do
-    if grep -qF 'watcher: started pid=' "$attached_out" 2>/dev/null; then
-      successor_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$attached_out" | tail -1)
-      [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_pid" ] && break
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  [ -n "$successor_pid" ] || fail "attached arm did not continue after observing the actionable close receipt"
-  ! grep -qF 'watcher: FAILED' "$attached_out" || fail "attached arm emitted the false reasonless-dead failure"
-  grep -q 'reason=observed-actionable-close' "$state/.watch-cycle-exits.log" \
-    || fail "attached arm did not record the observed actionable close"
-
-  printf 'needs-decision: second actionable close\n' > "$state/task.status"
   attached_status=0
   wait_for_exit "$attached_arm" 80 || attached_status=$?
-  [ "$attached_status" -eq 0 ] || fail "continued attached arm exited $attached_status on its own actionable close"
-  grep -q '^signal:' "$attached_out" || fail "continued attached arm lost its actionable close reason"
-  pass "an attached arm observes an actionable owner close and continues without a false failure"
+  [ "$attached_status" -eq 0 ] || fail "attached arm exited $attached_status after its watcher delivered an actionable wake"
+  ! grep -qF 'watcher: FAILED' "$attached_out" || fail "attached arm emitted the false reasonless-dead failure"
+  grep -q '^signal:' "$attached_out" || fail "attached arm did not report the identity-bound delivered wake"
+  grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
+    || fail "attached arm did not record the upstream delivered-wake classification"
+  pass "an attached arm reports its watcher's identity-bound delivered wake without a false failure"
 }
 
 test_arm_attaches_and_waits_for_live_fresh_watcher() {
@@ -1138,7 +1135,7 @@ test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_arm_all_absorbed_clean_close_rearms_without_failure
-test_attached_arm_observes_actionable_close_without_false_failure
+test_attached_arm_reports_actionable_close_without_false_failure
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals

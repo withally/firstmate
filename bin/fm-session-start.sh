@@ -320,6 +320,16 @@ fi
 # --- 4. supervision operating instructions ----------------------------------
 AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
+AFK_SUPERVISOR_ALIVE=0
+if [ "$AFK_PRESENT" -eq 1 ] && (
+  # fm-afk-start.sh owns daemon-lock identity validation and is sourceable.
+  # Keep its set -eu side effect inside this subshell.
+  # shellcheck source=bin/fm-afk-start.sh
+  . "$SCRIPT_DIR/fm-afk-start.sh"
+  daemon_lock_held_by_live_daemon
+); then
+  AFK_SUPERVISOR_ALIVE=1
+fi
 X_MODE_PRESENT=0
 [ -f "$CONFIG/x-mode.env" ] && X_MODE_PRESENT=1
 
@@ -401,7 +411,11 @@ done
 
 subsection "AFK"
 if [ -e "$STATE/.afk" ]; then
-  printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
+  if [ "$AFK_SUPERVISOR_ALIVE" -eq 1 ]; then
+    printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
+  else
+    printf 'present - away-mode flag is present, but the supervisor is missing; load /afk and ensure the daemon is running.\n'
+  fi
 else
   printf 'absent\n'
 fi

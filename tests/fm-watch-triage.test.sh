@@ -16,8 +16,8 @@
 # against their .hb-surfaced marker on both signal and stale paths, delivered
 # keyed decision echoes absorbed exactly once, the pause resurface throttle surviving
 # tracking clears, the heartbeat
-# backstop fail-safe, and afk coherence (no double-triage while the away-mode
-# daemon owns supervision).
+# backstop fail-safe, and AFK signal triage that absorbs a busy crew's bare
+# turn-end without hiding stopped crews or secondmate reports.
 #
 # Daemon-side classification/injection lives in fm-daemon.test.sh; watcher/lock
 # liveness in fm-watcher-lock.test.sh; the durable-queue safety matrix in
@@ -2293,27 +2293,59 @@ test_beacon_stays_fresh_while_absorbing() {
   pass "the liveness beacon stays fresh while the watcher absorbs benign wakes (fm-guard never false-alarms)"
 }
 
-# --- afk coherence: the daemon owns triage; the watcher does not double-triage ---
+# --- afk signal triage: absorb only when the crew is provably working --------
 
-test_afk_present_reverts_watcher_to_one_shot() {
-  local dir state fakebin out drain_out status_file pid
-  dir=$(make_case afk-coherence); state="$dir/state"; fakebin="$dir/fakebin"
+test_afk_turn_ended_provably_working_absorbed() {
+  local dir state fakebin out pid
+  dir=$(make_case afk-turn-ended-working); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  : > "$state/task.turn-ended"
+  date '+%s' > "$state/.afk"
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "AFK watcher exited for a busy crew's bare turn-end: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "AFK busy turn-end printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "AFK busy turn-end enqueued a durable wake"; }
+  [ -s "$state/.seen-task_turn-ended" ] || { reap "$pid"; fail "AFK busy turn-end did not advance its .seen-* suppressor"; }
+  reap "$pid"
+  pass "AFK absorbs a bare turn-end while its crew is provably working"
+}
+
+test_afk_turn_ended_not_working_surfaced() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case afk-turn-ended-stopped); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
-  status_file="$state/task.status"
-  printf 'working: routine note\n' > "$status_file"
-  date '+%s' > "$state/.afk"   # away mode: the supervise-daemon owns triage
-  # Set a PROVABLY-WORKING verdict: if afk failed to bypass the provably-working
-  # check, this no-verb signal would be absorbed (not surfaced). The test asserting
-  # a surface therefore also proves afk reverts to one-shot and skips the costly read.
+  : > "$state/task.turn-ended"
+  date '+%s' > "$state/.afk"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "AFK watcher did not surface a stopped crew's bare turn-end"
+  grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "AFK watcher omitted the stopped crew's turn-end"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the AFK stopped turn-end failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/task.turn-ended" >/dev/null \
+    || fail "AFK stopped turn-end was not queued"
+  pass "AFK still surfaces a bare turn-end whose crew is not provably working"
+}
+
+test_afk_secondmate_report_surfaced_while_working() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case afk-secondmate-report); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/mate.status"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  printf 'working [key=audit]: findings in data/audit.md corr=req-7\n' > "$status_file"
+  date '+%s' > "$state/.afk"
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 40 || fail "with .afk present the watcher did not exit one-shot for a benign signal"
-  grep -F "signal: $status_file" "$out" >/dev/null || fail "afk-mode watcher did not surface the signal for the daemon"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the afk-mode signal failed"
+  wait_for_exit "$pid" 40 || fail "AFK watcher absorbed a secondmate report while the secondmate was working"
+  grep -F "signal: $status_file" "$out" >/dev/null || fail "AFK watcher omitted the secondmate report"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the AFK secondmate report failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
-    || fail "afk-mode benign signal was not queued for the daemon to classify"
-  pass "with .afk present the watcher reverts to one-shot so the daemon owns triage (no double-triage)"
+    || fail "AFK secondmate report was not queued"
+  pass "AFK preserves immediate delivery for secondmate reports"
 }
 
 # A paused pane can first appear as a changed hash. In AFK mode that initial path
@@ -2406,5 +2438,7 @@ test_procevent_marker_failure_exits_and_replays
 test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing
-test_afk_present_reverts_watcher_to_one_shot
+test_afk_turn_ended_provably_working_absorbed
+test_afk_turn_ended_not_working_surfaced
+test_afk_secondmate_report_surfaced_while_working
 test_afk_paused_changed_pane_hands_off_plain_stale

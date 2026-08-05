@@ -191,6 +191,53 @@ fm_watcher_supervision_verdict() {
   return 0
 }
 
+# Away-mode supervisor lock (state/.supervise-daemon.lock). This is the single
+# owner of "an identity-matched away daemon is alive for this home", shared by
+# bin/fm-afk-start.sh (and through it bin/fm-afk-launch.sh and
+# bin/fm-session-start.sh) and bin/fm-turnend-guard.sh. The lock is either a
+# directory or a symlink to one, matching the watcher lock's shape.
+fm_daemon_lock_owner() {  # <state-dir>
+  local lock=$1/.supervise-daemon.lock owner
+  if [ -L "$lock" ]; then
+    owner=$(readlink "$lock" 2>/dev/null) || return 1
+    [ -n "$owner" ] || return 1
+    case "$owner" in
+      /*) printf '%s\n' "$owner" ;;
+      *) printf '%s/%s\n' "$(dirname "$lock")" "$owner" ;;
+    esac
+    return 0
+  fi
+  [ -d "$lock" ] || return 1
+  printf '%s\n' "$lock"
+}
+
+fm_daemon_lock_pid() {  # <state-dir>
+  local owner
+  owner=$(fm_daemon_lock_owner "$1") || return 1
+  cat "$owner/pid" 2>/dev/null || true
+}
+
+# 0 only when the lock exists, its recorded pid is alive, and that process is
+# provably the daemon: a recorded pid-identity must match exactly, and the
+# command-name fallback applies only to locks written before identities existed.
+fm_daemon_lock_alive() {  # <state-dir> [daemon-path]
+  local daemon=${2:-$FM_WAKE_LIB_DIR/fm-supervise-daemon.sh} owner pid identity current command
+  owner=$(fm_daemon_lock_owner "$1") || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" || return 1
+  identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  if [ -n "$identity" ]; then
+    current=$(fm_pid_identity "$pid") || return 1
+    [ "$current" = "$identity" ]
+    return
+  fi
+  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  case "$command" in
+    *"$daemon"*|*"fm-supervise-daemon.sh"*) return 0 ;;
+  esac
+  return 1
+}
+
 fm_lock_clean_known_files() {
   local lockdir=$1
   rm -f \

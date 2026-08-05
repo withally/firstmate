@@ -30,12 +30,17 @@ For an in-scope primary, the guard counts in-flight work from `state/*.meta`.
 Registered `state/procevent/*.source` records also require supervision even though they have no task metadata.
 The default cross-harness mode exits silently with no supervision need.
 Every mode treats `state/x-watch.check.sh` as supervision need, so X-mode relay polling remains guarded without an in-flight task.
+A present `state/.afk` is itself a supervision need, so an away home is guarded even with no in-flight task, no relay poll, and no registered event source.
 Otherwise it calls `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`, the same PID-strict identity-matched lock and fresh-beacon check used by `bin/fm-watch-arm.sh`: a stale beacon blocks even when a watcher pid is live, and a fresh leftover beacon blocks when the lock is missing, dead, or identity-mismatched.
 The turn-end guard needs that strict check because it fires at the turn boundary, where the auto-arm is bringing a fresh watcher up for the upcoming idle period, and it cooperates with that arm rather than trusting a beacon left by the cycle that just ended.
 `bin/fm-guard.sh`, the pull warning, instead uses the model-aware `fm_watcher_supervision_verdict` from the same library, because it fires mid-turn when the auto-arm model runs no watcher at all.
 Under the Claude Stop auto-arm model a beacon fresh within grace is healthy even with no live watcher process, and only a beacon stale beyond grace (or absent) alarms.
 Under every persistent-watcher harness a live identity-matched watcher with a fresh beacon is still required, so the pull guard keeps the same strict semantics there.
 Its banner names the true failing condition, either a missing live watcher process or a genuinely stale beacon with its real age, and keys the once-per-episode dedup on that condition rather than the beacon mtime.
+
+While `state/.afk` is present the watcher lock is not the proof of supervision, because the away daemon deliberately runs the watcher one-shot and the lock is legitimately absent between wakes.
+The guard instead calls `fm_daemon_lock_alive <state-dir> [daemon-path]` from `bin/fm-wake-lib.sh`, the single owner of away-daemon liveness that `bin/fm-afk-start.sh` and `bin/fm-session-start.sh` also use.
+An identity-matched live daemon allows the turn to end in every mode; a missing one blocks with away-mode recovery guidance.
 
 `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repository-root `state/`.
 `FM_GUARD_GRACE` controls beacon freshness and defaults to 300 seconds.
@@ -69,6 +74,10 @@ After that alarm, the Stop auto-arm suppresses further exit-2 continuations unti
 The alarm cannot repeat during that failure episode, and a later unhealthy stop blocks again.
 A positively verified healthy watcher clears the failure notice, alarm, and block budget for a future independent episode.
 A Claude failure notice describes the automatic mechanism as broken and does not direct a routine manual background arm.
+
+An away home is the one exception to that cooperation, in `--claude` mode as well as the default mode.
+`bin/fm-claude-stop-autoarm.sh` exits without claiming a home while `state/.afk` exists, because the away daemon owns the watcher, so the auto-arm proofs and the degraded allow can never apply there.
+An away home with no live daemon therefore blocks on away-mode recovery guidance alone, without consuming or exhausting the block budget, and the banner omits the auto-arm line that would otherwise report a failure that never happened.
 
 OpenCode, Pi, and pi-signed expose passive callbacks for this purpose.
 Their adapters fail open at the hook boundary to protect the user session but schedule one bounded follow-up when the predicate blocks.

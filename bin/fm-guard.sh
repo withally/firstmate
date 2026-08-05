@@ -181,7 +181,7 @@ if [ "$watcher_healthy" = false ]; then
   fi
   if [ "$print_full_banner" -eq 1 ]; then
     afk=0
-    [ -e "$STATE/.afk" ] && afk=1
+    [ "$afk_needed" = true ] && afk=1
     queue_arg=0
     "$queue_pending" && queue_arg=1
     x_mode=0

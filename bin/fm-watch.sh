@@ -15,15 +15,20 @@
 # the separate idle absorb case, silent by default with an opt-in
 # FM_PAUSE_RESURFACE_SECS recheck cadence,
 # although its initial ambiguous status signal still surfaces in normal mode.
-# While state/.afk exists, the daemon owns triage and this watcher queues and exits
-# on every wake. Printed reason lines:
+# While state/.afk exists, the daemon owns the one-shot watcher lifecycle and the
+# stale-pane and heartbeat paths still queue and exit for daemon classification.
+# The signal path keeps the same conservative triage used in normal mode: routine
+# working progress and a provably-working bare turn-end are absorbed, while
+# captain-relevant, stopped, unknown, ambiguous, and secondmate events surface.
+# Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
 #                          has a captain-relevant verb OR a non-routine signal's
-#                          crew is not provably working, unless afk is active;
+#                          crew is not provably working; away mode also surfaces
+#                          every persistent secondmate report immediately;
 #                          an ordinary direct report's pure working-progress
 #                          status batch, a task+key resolved echo with a confirmed
 #                          delivery receipt, and a byte-identical already-surfaced
-#                          terminal batch are absorbed
+#                          terminal batch are absorbed in both modes
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log

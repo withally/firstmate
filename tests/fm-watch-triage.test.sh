@@ -533,23 +533,6 @@ test_secondmate_report_absorbed_when_provably_working() {
   pass "outside away mode a secondmate report from a provably-working secondmate stays on the conservative absorb path"
 }
 
-test_secondmate_report_surfaced_when_not_working() {
-  local dir state fakebin out drain_out status_file pid
-  dir=$(make_case secondmate-report-stopped); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/mate.status"
-  printf 'kind=secondmate\n' > "$state/mate.meta"
-  printf 'working [key=audit]: findings in data/audit.md corr=req-7\n' > "$status_file"
-  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
-  watch_bg "$state" "$fakebin" "$out"
-  pid=$!
-  wait_for_exit "$pid" 40 || fail "always-on watcher absorbed a secondmate report whose secondmate is not provably working"
-  grep -F "signal: $status_file" "$out" >/dev/null || fail "always-on watcher omitted the secondmate report"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the always-on secondmate report failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
-    || fail "always-on secondmate report was not queued"
-  pass "outside away mode a secondmate report still surfaces when its secondmate is not provably working"
-}
-
 # --- an ambiguous signal whose crew is NOT provably working SURFACES ---------
 # This is the swallowed-finish fix: a crew that finished (or stopped and waits)
 # reports its final turn-end with no captain-relevant status and no running
@@ -626,7 +609,7 @@ test_secondmate_working_note_surfaced() {
     || fail "secondmate working: report was not queued"
   [ -s "$state/.seen-mate_status" ] || fail "surfaced secondmate report did not advance its .seen-* suppressor"
   unset FM_FAKE_CREW_STATE
-  pass "a secondmate working: report is still delivered (no stale or heartbeat backstop covers it)"
+  pass "a secondmate working: report is still delivered when its secondmate is not provably working (the negative control for the absorb case above)"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
@@ -2437,7 +2420,6 @@ test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_secondmate_report_absorbed_when_provably_working
-test_secondmate_report_surfaced_when_not_working
 test_turn_ended_not_working_surfaced
 test_working_note_unknown_runtime_absorbed
 test_secondmate_working_note_surfaced

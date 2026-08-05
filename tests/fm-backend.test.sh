@@ -141,7 +141,8 @@ resolve_permissive_tmux_kill_ref() {
 # hence the dispatcher is a copied sibling, while the tmux adapter is extracted
 # from BASE_REF so conformance tests retain the exact historical behavior even
 # when this branch changes tmux dispatch semantics.
-OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-nm-run-lib.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-secondmate-registry-lib.sh fm-x-lib.sh"
+# This sibling set must include every dependency sourced by that extracted adapter.
+OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-nm-run-lib.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-secondmate-registry-lib.sh fm-session-lock-lib.sh fm-x-lib.sh"
 # A pull-request merge may add a new main-only dependency that the branch's older baseline does not have yet.
 OLD_BIN_OPTIONAL_SIBLINGS="fm-pending-reply-lib.sh"
 OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh fm-marker-lib.sh"
@@ -646,7 +647,7 @@ make_send_fakebin() {  # <dir> -> echoes fakebin dir; logs every tmux call to $F
 set -u
 { printf 'tmux'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
 case "${1:-}" in
-  send-keys) exit 0 ;;
+  send-keys) exit "${FM_TMUX_SEND_KEYS_RC:-0}" ;;
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
@@ -710,7 +711,17 @@ test_send_conformance_old_vs_new() {
     || fail "fm-send --key: tmux command log differs old vs new"$'\n'"$(cat "$TMP_ROOT/send-diff-key.txt")"
   assert_contains "$(cat "$log_new")" $'\x1f''Escape' "fm-send --key did not send the named key"
 
-  # Case 2: plain text (0.3s settle, no popup).
+  # Case 2: a rejected key send must remain a loud failure. This separately
+  # pins the exit contract so a successful fake cannot mask a false success.
+  FM_TMUX_SEND_KEYS_RC=1 run_send_case "$old_bin" "$fb" "$log_old" "$home" -- "sess:win" --key Escape
+  rc_old=$?
+  FM_TMUX_SEND_KEYS_RC=1 run_send_case "$ROOT" "$fb" "$log_new" "$home" -- "sess:win" --key Escape
+  rc_new=$?
+  expect_code 1 "$rc_old" "pre-refactor fm-send --key must fail when tmux rejects the key"
+  expect_code 1 "$rc_new" "current fm-send --key must fail when tmux rejects the key"
+  expect_code "$rc_old" "$rc_new" "fm-send --key send failure: old vs new exit code"
+
+  # Case 3: plain text (0.3s settle, no popup).
   run_send_case "$old_bin" "$fb" "$log_old" "$home" -- "sess:win" hello captain
   rc_old=$?
   run_send_case "$ROOT" "$fb" "$log_new" "$home" -- "sess:win" hello captain
@@ -724,7 +735,7 @@ test_send_conformance_old_vs_new() {
     "fm-send did not send the literal text with send-keys -l"
   assert_contains "$(cat "$log_new")" $'\x1f''Enter' "fm-send did not submit with Enter"
 
-  # Case 3: a slash command still opens the popup-settle path (verified
+  # Case 4: a slash command still opens the popup-settle path (verified
   # elsewhere in tests/fm-send-popup-settle.test.sh) and still ends in the
   # same tmux command shape: send-keys -l, then a retried Enter.
   run_send_case "$old_bin" "$fb" "$log_old" "$home" -- "sess:win" /some-skill

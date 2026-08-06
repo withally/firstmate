@@ -5,9 +5,10 @@
 #
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
-# terminal it is already in. Harnesses with a native in-pane tracked-background
-# tool (claude, grok) run it there directly and it is fine. A harness with NO
-# native background mechanism (pi) has to manufacture a terminal, and doing that
+# terminal it is already in. Claude's native background jobs are not durable
+# enough for away mode, so Claude uses this launcher's tracked terminal path.
+# Grok retains the native path because its long-lived behavior is unverified.
+# A harness with NO native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
 # workspace with --no-focus, or a detached tmux session) that never touches the
@@ -29,6 +30,7 @@
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
+#                              Refuses Claude, whose native jobs are reaped.
 #   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
 #                              cleanup flushes WHILE state/.afk is still present,
 #                              wait for it, close the recorded terminal by exact
@@ -93,11 +95,15 @@ set +e
 
 fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
 
-fm_afk_launch_capability_gate() {  # <captain-backend>
-  local backend=$1 harness version
+fm_afk_launch_capability_gate() {  # <captain-backend> <terminal|native>
+  local backend=$1 launch_mode=$2 harness version
   harness=${FM_AFK_PRIMARY_HARNESS_OVERRIDE:-$("$FM_AFK_LAUNCH_DIR/fm-harness.sh")}
   version=${FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE:-$FM_AFK_DIGEST_SAFETY_VERSION}
   case "$version" in ''|*[!0-9]*) version=0 ;; esac
+  if [ "$launch_mode" = native ] && [ "$harness" = claude ]; then
+    fm_afk_launch_log "refusing native away-mode launch: Claude native background jobs are not durable for away mode; use bin/fm-afk-launch.sh start"
+    return 1
+  fi
   case "$harness:$backend" in
     pi:herdr|pi-signed:herdr)
       if [ "$version" -lt 1 ]; then
@@ -493,7 +499,7 @@ fm_afk_launch_start() {
     fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
   captain_backend=$(discover_supervisor_backend) || {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
-  fm_afk_launch_capability_gate "$captain_backend" || return 1
+  fm_afk_launch_capability_gate "$captain_backend" terminal || return 1
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 
@@ -555,7 +561,6 @@ fm_afk_launch_start() {
 
 fm_afk_launch_start_native() {
   local backup artifact had_afk=0 result=0 captain_backend
-  mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
@@ -565,7 +570,8 @@ fm_afk_launch_start_native() {
   # exactly as the daemon itself accepts it. Only the resolved value matters
   # here, purely so the Pi+Herdr ambiguity gate can see it.
   captain_backend=$(discover_supervisor_backend) || true
-  fm_afk_launch_capability_gate "$captain_backend" || return 1
+  fm_afk_launch_capability_gate "$captain_backend" native || return 1
+  mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
     fm_afk_launch_flag_write || return 1

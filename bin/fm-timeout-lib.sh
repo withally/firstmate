@@ -44,7 +44,10 @@ fm_timeout_mechanism() {
 fm_run_bash_timeout() {
   local seconds=$1 command_status deadline_status child_pid watchdog_pid command_rc recorded_rc monitor_was_on=0
   shift
-  command_status=$(mktemp "${TMPDIR:-/tmp}/fm-bash-timeout-command.XXXXXX" 2>/dev/null) || return 124
+  if ! command_status=$(mktemp "${TMPDIR:-/tmp}/fm-bash-timeout-command.XXXXXX" 2>/dev/null); then
+    "$@"
+    return "$?"
+  fi
   deadline_status="${command_status}.deadline"
   case $- in *m*) monitor_was_on=1 ;; esac
   set -m
@@ -89,7 +92,17 @@ fm_run_bash_timeout() {
 fm_run_external_timeout() {
   local runner=$1 seconds=$2 status_file runner_rc command_rc
   shift 2
-  status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-status.XXXXXX" 2>/dev/null) || return 124
+  if ! status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-status.XXXXXX" 2>/dev/null); then
+    if "$runner" -k 1 "$seconds" "$@"; then
+      runner_rc=0
+    else
+      runner_rc=$?
+    fi
+    case "$runner_rc" in
+      124|137) return 124 ;;
+      *) return "$runner_rc" ;;
+    esac
+  fi
   # shellcheck disable=SC2016  # Expansion is deliberately deferred to the child shell.
   if "$runner" -k 1 "$seconds" bash -c '
     status_file=$1

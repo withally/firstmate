@@ -1385,6 +1385,52 @@ SH
   pass "the whole-digest bound preserves emitted output and reports incomplete stages"
 }
 
+test_timeout_status_file_failure_still_runs_command() {
+  local rec root home fakebin bad_tmp rc out
+  rec=$(new_world timeout-mktemp)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  bad_tmp="$TMP_ROOT/timeout-mktemp/no-such-tmpdir/nested"
+
+  rc=0
+  out=$(TMPDIR="$bad_tmp" FM_TIMEOUT_MECHANISM_OVERRIDE=bash \
+    bash -c '. "$1"; fm_run_timed 5 sh -c "echo digest-ran; exit 7"' _ \
+    "$ROOT/bin/fm-timeout-lib.sh") || rc=$?
+  expect_code 7 "$rc" "bash fallback with an unwritable TMPDIR"
+  assert_contains "$out" "digest-ran" \
+    "the bash fallback skipped the command when mktemp failed"
+
+  cat > "$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+shift 3
+exec "$@"
+SH
+  chmod +x "$fakebin/timeout"
+  rc=0
+  out=$(TMPDIR="$bad_tmp" PATH="$fakebin:$BASE_PATH" \
+    env -u FM_TIMEOUT_MECHANISM_OVERRIDE \
+    bash -c '. "$1"; fm_run_timed 5 sh -c "echo digest-ran; exit 7"' _ \
+    "$ROOT/bin/fm-timeout-lib.sh") || rc=$?
+  expect_code 7 "$rc" "external runner with an unwritable TMPDIR"
+  assert_contains "$out" "digest-ran" \
+    "the external runner skipped the command when mktemp failed"
+
+  cat > "$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+exit 124
+SH
+  chmod +x "$fakebin/timeout"
+  rc=0
+  TMPDIR="$bad_tmp" PATH="$fakebin:$BASE_PATH" \
+    env -u FM_TIMEOUT_MECHANISM_OVERRIDE \
+    bash -c '. "$1"; fm_run_timed 5 sh -c "exit 0"' _ \
+    "$ROOT/bin/fm-timeout-lib.sh" || rc=$?
+  expect_code 124 "$rc" "external runner timeout with an unwritable TMPDIR"
+
+  pass "an unwritable TMPDIR degrades the bound instead of faking a truncation"
+}
+
 test_reemit_skips_startup_sweeps_but_drains_wakes() {
   local rec root home fakebin full reemit
   rec=$(new_world reemit)
@@ -1733,6 +1779,7 @@ test_backlog_queued_bound_preserves_recovery_rows
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
 test_runtime_bound_truncates_loudly
+test_timeout_status_file_failure_still_runs_command
 test_reemit_skips_startup_sweeps_but_drains_wakes
 test_reemit_preserves_lock_holder_repair_ownership
 test_fleet_digest_empty_fleet

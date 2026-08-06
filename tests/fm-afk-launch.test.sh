@@ -175,8 +175,8 @@ unit_dead_daemon_restart_preserves_inflight() {
   rm -rf "$st"
 }
 
-unit_pi_herdr_capability_gate() {
-  local unsafe safe other plain out rc
+unit_native_capability_gate() {
+  local unsafe safe claude grok plain out rc
   unsafe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-unsafe.XXXXXX")
   out=$(FM_HOME="$unsafe" FM_STATE_OVERRIDE="$unsafe/state" FM_SUPERVISOR_BACKEND=herdr \
     FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
@@ -198,13 +198,25 @@ unit_pi_herdr_capability_gate() {
     fail "capability gate: safe Pi + Herdr entry remained blocked"
   fi
 
-  other=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-other.XXXXXX")
-  if FM_HOME="$other" FM_STATE_OVERRIDE="$other/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=claude FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
-    "$LAUNCH" start-native >/dev/null 2>&1; then
-    pass "capability gate: unrelated harness/backend behavior is unchanged"
+  claude=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-claude.XXXXXX")
+  out=$(FM_HOME="$claude" FM_STATE_OVERRIDE="$claude/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=claude "$LAUNCH" start-native 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ] \
+    && printf '%s\n' "$out" | grep -F 'Claude native background jobs are not durable for away mode; use bin/fm-afk-launch.sh start' >/dev/null \
+    && [ ! -e "$claude/state/.afk" ]; then
+    pass "capability gate: Claude native entry refuses loudly before away state"
   else
-    fail "capability gate: unrelated Herdr harness was refused"
+    fail "capability gate: Claude native entry was not refused cleanly ($out)"
+  fi
+
+  grok=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-grok.XXXXXX")
+  if FM_HOME="$grok" FM_STATE_OVERRIDE="$grok/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok "$LAUNCH" start-native >/dev/null 2>&1 \
+    && [ -e "$grok/state/.afk" ]; then
+    pass "capability gate: unverified Grok native behavior is unchanged"
+  else
+    fail "capability gate: Grok native entry was refused without evidence"
   fi
 
   # The gate only needs the RESOLVED backend. A plain terminal (no tmux, no
@@ -212,7 +224,7 @@ unit_pi_herdr_capability_gate() {
   # printed tmux fallback; the ambiguity gate must not start refusing it.
   plain=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-plain.XXXXXX")
   out=$(env -u FM_SUPERVISOR_BACKEND -u FM_SUPERVISOR_TARGET -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
-    FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=claude \
+    FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
     "$LAUNCH" start-native 2>&1)
   rc=$?
   if [ "$rc" -eq 0 ] && [ -e "$plain/state/.afk" ]; then
@@ -220,7 +232,7 @@ unit_pi_herdr_capability_gate() {
   else
     fail "capability gate: native entry now refuses an unresolved backend it used to accept ($out)"
   fi
-  rm -rf "$unsafe" "$safe" "$other" "$plain"
+  rm -rf "$unsafe" "$safe" "$claude" "$grok" "$plain"
 }
 
 # ---------------------------------------------------------------------------
@@ -561,7 +573,8 @@ unit_native_lifecycle() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
+    "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
     && [ ! -e "$st/state/.subsuper-escalations" ]; then
@@ -814,7 +827,7 @@ unit_refresh_validates_record() {
   printf '%s' "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid-identity" )
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
-    FM_SUPERVISOR_BACKEND=tmux bash -c '
+    FM_SUPERVISOR_BACKEND=tmux FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok bash -c '
       . "$1"
       ! fm_afk_launch_start && ! fm_afk_launch_start_native
     ' _ "$LAUNCH" && [ ! -e "$st/state/.afk" ]; then
@@ -832,7 +845,7 @@ unit_clear_failure_aborts_entry() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear-fail.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok bash -c '
     . "$1"
     fm_afk_launch_reconcile() { return 0; }
     fm_afk_clear_stale_artifacts() { return 1; }
@@ -885,7 +898,7 @@ unit_flag_write_failure_aborts() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-flag-fail.XXXXXX")
   mkdir -p "$st/state"
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok bash -c '
     . "$1"
     fm_afk_launch_flag_write() { return 1; }
     ! fm_afk_launch_start_native
@@ -999,7 +1012,7 @@ unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
 unit_dead_daemon_restart_preserves_inflight
-unit_pi_herdr_capability_gate
+unit_native_capability_gate
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state

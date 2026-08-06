@@ -443,6 +443,13 @@ Polling remained active and is covered as the fallback for capability, connect, 
 
 ### Away-mode transport
 
+On 2026-08-06, Claude's native background-bash path was observed being reaped twice in one primary session after approximately 60 minutes and 30 minutes.
+Both runs used `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh`; the background-task output reported `Terminated: 15`, the daemon log reported `daemon shutting down`, and `state/.afk` remained while the daemon lock disappeared.
+The terminal-backed recovery used `bin/fm-afk-launch.sh start` and the daemon logged `target_source=FM_SUPERVISOR_TARGET; backend_source=FM_SUPERVISOR_BACKEND`, proving it supervised the captain pane rather than its own terminal.
+Claude therefore uses the terminal-backed path, and `tests/fm-afk-launch.test.sh` proves the native entry refuses Claude before writing away state.
+This task did not reproduce the timed Claude reap on demand.
+Grok's native background-job lifetime remains unverified and its existing path is unchanged.
+
 The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:
 
 ```sh

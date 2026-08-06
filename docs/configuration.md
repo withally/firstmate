@@ -19,7 +19,7 @@ The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.
 Wake, watcher, away-mode, and X-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
-`docs/sessionstart-nudge.md` owns the native session-open adapter mechanics that nudge the digest command.
+`docs/sessionstart-nudge.md` owns the native session-open adapter mechanics that run or nudge the digest command.
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
@@ -496,8 +496,11 @@ FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops
 FM_BACKEND_CMUX_COMPOSER_LINES=20  # cmux-only: tail lines scanned to locate the composer row for submit verification
 FM_BACKEND_CMUX_IDLE_RE='^Type a message\.\.\.$'  # cmux-only: empty-composer placeholder regex after border/prompt stripping
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
-FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest
+FM_SESSION_START_TIMEOUT=120   # whole-digest runtime bound in seconds for session-start hooks
+FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
+FM_SESSION_START_QUEUED_LIMIT=20   # ready queued backlog rows in the digest; in-flight, held, and blocked rows are never bounded, and done rows are omitted
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording
+FM_BOOTSTRAP_LOCKED=0   # internal companion for a lock-owning --reemit: keep detect-only sweeps skipped without surrendering repair ownership
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operation WILL still run.'   # banner continuation line; fm-send.sh overrides it to name the requested message specifically
 FM_POLL=15              # seconds between watcher poll cycles

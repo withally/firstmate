@@ -517,8 +517,9 @@ section "READ-ONCE CONTRACT"
 cat <<'EOF'
 Everything below is represented for this session start: every state/*.meta, a
 compact data/backlog.md listing, a bounded tail of every state/*.status, and
-the five context files. Do not re-read them after this digest or bulk-read the
-backlog and status logs.
+the five context files - data/projects.md, data/secondmates.md,
+data/captain.md, data/captain-shared.md, data/learnings.md. Do not re-read
+them after this digest or bulk-read the backlog and status logs.
 
 Read a source directly only when this digest marked it ABSENT or corrupt, a
 specific full task body or older status history is needed, a capped line's

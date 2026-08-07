@@ -134,8 +134,8 @@ done
 SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state context next-step'
 
 stage() {
-  [ -n "${FM_SESSION_START_STAGE_FILE:-}" ] || return 0
-  printf '%s\n' "$1" > "$FM_SESSION_START_STAGE_FILE" 2>/dev/null || true
+  [ -n "${STAGE_MARKER_FILE:-}" ] || return 0
+  printf '%s\n' "$1" > "$STAGE_MARKER_FILE" 2>/dev/null || true
 }
 
 # shellcheck source=bin/fm-timeout-lib.sh
@@ -173,6 +173,9 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   fi
   exit 0
 fi
+
+STAGE_MARKER_FILE="$FM_SESSION_START_STAGE_FILE"
+unset FM_SESSION_START_STAGE_FILE
 
 PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 

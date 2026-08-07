@@ -1408,6 +1408,7 @@ exec "$@"
 SH
   chmod +x "$fakebin/timeout"
   rc=0
+  # shellcheck disable=SC2016 # $1 must reach the child bash unexpanded; it is the positional lib path.
   out=$(TMPDIR="$bad_tmp" PATH="$fakebin:$BASE_PATH" \
     env -u FM_TIMEOUT_MECHANISM_OVERRIDE \
     bash -c '. "$1"; fm_run_timed 5 sh -c "echo digest-ran; exit 7"' _ \
@@ -1422,6 +1423,7 @@ exit 124
 SH
   chmod +x "$fakebin/timeout"
   rc=0
+  # shellcheck disable=SC2016 # $1 must reach the child bash unexpanded; it is the positional lib path.
   TMPDIR="$bad_tmp" PATH="$fakebin:$BASE_PATH" \
     env -u FM_TIMEOUT_MECHANISM_OVERRIDE \
     bash -c '. "$1"; fm_run_timed 5 sh -c "exit 0"' _ \

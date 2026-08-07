@@ -8,6 +8,76 @@ Task-specific chronology, temporary paths, run identifiers, and delivery transcr
 
 ## Native session-start delivery
 
+### Run tier (Claude and Codex exec)
+
+The run-tier pass ran on 2026-08-07 with Claude Code 2.1.223 and codex-cli 0.146.0.
+It used a scratch project built with `git archive HEAD` outside `.no-mistakes/`, its own empty `state/`, and no live fleet, so no real home was mutated.
+`NO_MISTAKES_GATE` was unset for every command below, because the gate signal correctly silences both wrappers.
+
+Claude command shape:
+
+```sh
+claude -p 'Do not run any tool. If you received SessionStart hook context containing a Firstmate
+session-start digest, reply with exactly: SS_OK <primary harness named in the SUPERVISION OPERATING
+INSTRUCTIONS header>. Otherwise reply exactly: SS_ABSENT.' \
+  --permission-mode bypassPermissions --output-format text
+```
+
+Observed result: `SS_OK claude`.
+The tracked unmatched `SessionStart` hook ran the digest itself, hook stdout reached model context before the first turn, and `state/.lock` and `state/.session-start-complete` both held the same verified owner pid.
+
+Codex command shape, superseding the 0.144.4 shape below for 0.146.0:
+
+```sh
+codex exec --ephemeral --dangerously-bypass-hook-trust \
+  --dangerously-bypass-approvals-and-sandbox \
+  --output-last-message last.txt \
+  'Do not run any tool. ... reply with exactly: SS_OK <primary harness ...>. Otherwise ... SS_ABSENT.' \
+  </dev/null
+```
+
+`</dev/null` is now required: codex-cli 0.146.0 blocks on `Reading additional input from stdin...` when stdin is not a TTY, which hangs the run rather than failing it.
+Observed result: `SS_OK unknown`, with the digest executed and both the lock and completion records written by the hook.
+
+Two honest limits on the Codex observation.
+The first attempt reported `SS_OK claude` only because the launching Claude Code session exported `CLAUDECODE=1` into the codex child, which is the marker-precedence hazard already recorded in `bin/fm-harness.sh`; the run was repeated with `env -u CLAUDECODE`.
+With that marker removed the digest classified the harness as `unknown` and rendered the unknown-harness fallback supervision block, because `bin/fm-harness.sh` finds no codex-named process in the hook's ancestry.
+That detection path is unchanged by the run-tier adaptation, which newly surfaces it; the fallback block is the safe degraded contract, not a delivery failure.
+
+### Run-tier path battery
+
+Each path was driven by piping the tracked hook payload shape into `bin/fm-sessionstart-run.sh` in the same scratch project.
+The `clear` and `compact` sources were supplied as that payload rather than by a live in-TUI `/clear` or an in-TUI compaction, because neither is reachable from a headless harness invocation; the harness contribution to those paths is only the `source` field, which the live Claude and Codex runs above already proved reaches the wrapper.
+
+| Path | Payload or setting | Observed result |
+| --- | --- | --- |
+| Full run | `{"source":"startup"}` | Complete ordered digest; lock and completion records agree on the owner pid. |
+| Clear re-emit | `{"source":"clear"}` with completion proof | `SESSION START (CONTEXT RE-EMIT)` header, no repeated mutating sweeps. |
+| Compaction re-emit | `{"source":"compact"}` with completion proof | Identical re-emit output. |
+| Unproven reset | `{"source":"clear"}` with the completion record removed | Fell back to the full digest and republished the completion record. |
+| Restored context | `{"source":"resume"}` | Delegated to the nudge wrapper, which stayed silent because the live ancestry already owned the lock. |
+| Unknown source | `{"source":"wat"}` | Ran the full digest rather than skipping startup. |
+| Truncation | `FM_SESSION_START_TIMEOUT=1` | Output already emitted was preserved, the `STARTUP TRUNCATED` banner named `bootstrap` as the incomplete stage and listed every stage not reached, and no completion record was written. |
+| Lock refusal | `state/.lock` set to a live harness-named process outside this ancestry | Loud `READ-ONLY SESSION` banner, wake queue left queued, no completion record, foreign lock untouched. |
+
+Every path exited 0, so no path could block session initialization.
+
+Deterministic entry points rerun for this pass:
+
+```sh
+bin/fm-test-run.sh tests/fm-session-start.test.sh tests/fm-sessionstart-nudge.test.sh
+```
+
+Observed output:
+
+```text
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=193461
+```
+
+### Earlier cross-harness transport pass
+
+This pass predates the run tier, so its Claude and Codex entries record stdout-transport capability only; the run-tier entries above own current Claude and Codex delivery.
+
 The cross-harness transport pass ran on 2026-07-17 with Codex 0.144.4, Grok 0.2.103, OpenCode 1.17.18, Pi 0.80.10, and the tracked Claude hook wiring.
 
 Codex command shape:

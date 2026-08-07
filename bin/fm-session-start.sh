@@ -36,14 +36,17 @@
 #                       locked.
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
 #                       when locked.
-#   4. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs.
-#   5. fleet digest   - a compact data/backlog.md identity/metadata listing,
-#                       every state/*.meta, a bounded state/*.status tail,
+#   4. supervision    - emit the operating block for the detected harness.
+#   5. read-once      - state the contract governing all digest sources before
+#                       any bulk data.
+#   6. fleet digest   - a recovery-focused data/backlog.md listing, every
+#                       state/*.meta, a line-count and per-line bounded status tail,
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
 #                       read-only, always runs.
-#   6. closing reminder - prints the context-specific watcher next step; this
+#   7. context digest - data/projects.md, data/secondmates.md, data/captain.md,
+#                       data/captain-shared.md, data/learnings.md: read-only,
+#                       always safe, always runs after live fleet identity.
+#   8. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
 #
@@ -67,13 +70,14 @@
 # tasks-axi and quota-axi tool checks, and tasks-axi availability - none of
 # which mutate shared state and all of which are safe to compute without
 # verified lock ownership.
-# Only projection cleanup, the five bootstrap mutating sweeps, and the
+# Only projection cleanup, the six bootstrap mutating sweeps, and the
 # wake-queue drain are skipped.
 # The context and fleet-state digests
 # below are always read-only, so they run unconditionally in both modes.
 #
-# BACKLOG DIGEST: FM_SESSION_START_BACKLOG_LIMIT bounds the startup backlog
-# listing, default 80 items.
+# BACKLOG DIGEST: startup is a recovery surface, so done rows are omitted,
+# every in-flight, held, and blocked row is retained, and only ready queued
+# work is bounded by FM_SESSION_START_QUEUED_LIMIT (default 20).
 # When compatible tasks-axi is selected and available, the shared tasks-axi
 # backend probe remains the compatibility owner and this script asks
 # `tasks-axi list` for the compact identity fields plus blocked_by, hold_kind,
@@ -85,12 +89,22 @@
 # Full bodies are targeted follow-up only: `tasks-axi show <id> --full` when
 # compatible tasks-axi is available, or `data/backlog.md` when the file body is
 # truly needed.
+# Status-tail lines are additionally capped by bin/fm-line-cap-lib.sh, while
+# the full status-log path remains beside every tail for targeted recovery.
 #
-# Usage: fm-session-start.sh
+# The whole digest is bounded by FM_SESSION_START_TIMEOUT (default 120s).
+# When the bound is hit, the parent names the incomplete stage and all stages
+# that were not reached while preserving output already emitted by the child.
+#
+# Usage: fm-session-start.sh [--reemit]
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
+#
+#   --reemit re-verifies lock ownership, reruns detect-only bootstrap, drains
+#   queued wakes, and reprints the digest without repeating startup's mutating
+#   bootstrap sweeps or stale Herdr projection cleanup.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,6 +113,70 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+COMPLETION_FILE="$STATE/.session-start-complete"
+
+REEMIT=0
+for arg in "$@"; do
+  case "$arg" in
+    --reemit) REEMIT=1 ;;
+    -h|--help)
+      sed -n '2,/^set -u$/p' "$SCRIPT_DIR/fm-session-start.sh" | sed 's/^# \{0,1\}//; $d'
+      exit 0
+      ;;
+    *)
+      printf 'fm-session-start: unknown argument: %s\n' "$arg" >&2
+      printf 'usage: fm-session-start.sh [--reemit]\n' >&2
+      exit 2
+      ;;
+  esac
+done
+
+SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state context next-step'
+
+stage() {
+  [ -n "${STAGE_MARKER_FILE:-}" ] || return 0
+  printf '%s\n' "$1" > "$STAGE_MARKER_FILE" 2>/dev/null || true
+}
+
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
+
+if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
+  SESSION_START_BUDGET=${FM_SESSION_START_TIMEOUT:-120}
+  case "$SESSION_START_BUDGET" in ''|*[!0-9]*|0) SESSION_START_BUDGET=120 ;; esac
+  SESSION_START_STAGE_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-stage.XXXXXX" 2>/dev/null) || SESSION_START_STAGE_FILE=
+  [ -n "$SESSION_START_STAGE_FILE" ] || SESSION_START_STAGE_FILE=/dev/null
+  fm_run_timed "$SESSION_START_BUDGET" \
+    env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
+    "$SCRIPT_DIR/fm-session-start.sh" "$@"
+  SESSION_START_RC=$?
+  if [ "$SESSION_START_RC" -eq 124 ]; then
+    SESSION_START_LAST_STAGE=$(cat "$SESSION_START_STAGE_FILE" 2>/dev/null) || SESSION_START_LAST_STAGE=
+    [ -n "$SESSION_START_LAST_STAGE" ] || SESSION_START_LAST_STAGE=unknown
+    SESSION_START_PENDING=$(
+      printf '%s\n' "$SESSION_START_STAGES" | tr ' ' '\n' |
+        awk -v from="$SESSION_START_LAST_STAGE" '$0 == from { seen = 1 } seen' | tr '\n' ' '
+    )
+    [ -n "${SESSION_START_PENDING# }" ] || SESSION_START_PENDING='(unknown - the digest may be incomplete anywhere)'
+    BAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+    printf '\n%s\n' "$BAR"
+    printf '●  STARTUP TRUNCATED - SESSION START HIT ITS %ss RUNTIME BOUND\n' "$SESSION_START_BUDGET"
+    printf '●  It stopped during the "%s" stage, so everything above is complete only up to that point.\n' "$SESSION_START_LAST_STAGE"
+    printf '●  RECONCILE these stages before acting on anything they would have shown:\n'
+    printf '●    %s\n' "${SESSION_START_PENDING% }"
+    printf '●  Rerun bin/fm-session-start.sh now. If it truncates again, raise\n'
+    printf '●  FM_SESSION_START_TIMEOUT and report the slow stage.\n'
+    printf '%s\n' "$BAR"
+  fi
+  if [ "$SESSION_START_STAGE_FILE" != /dev/null ]; then
+    rm -f "$SESSION_START_STAGE_FILE" 2>/dev/null || true
+  fi
+  exit 0
+fi
+
+STAGE_MARKER_FILE="$FM_SESSION_START_STAGE_FILE"
+unset FM_SESSION_START_STAGE_FILE
+
 PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # shellcheck source=bin/fm-backend.sh
@@ -113,11 +191,14 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+# shellcheck source=bin/fm-line-cap-lib.sh
+. "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
-BACKLOG_LIMIT=${FM_SESSION_START_BACKLOG_LIMIT:-80}
-case "$BACKLOG_LIMIT" in ''|*[!0-9]*|0) BACKLOG_LIMIT=80 ;; esac
+QUEUED_LIMIT=${FM_SESSION_START_QUEUED_LIMIT:-20}
+case "$QUEUED_LIMIT" in ''|*[!0-9]*|0) QUEUED_LIMIT=20 ;; esac
+BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
 
 RULE='================================================================================'
 SUBRULE='--------------------------------------------------------------------------------'
@@ -149,10 +230,13 @@ print_backlog_pointer() {
   printf 'Full task bodies remain available on demand: tasks-axi show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
 }
 
+MANUAL_KEEP_RE='[(]hold|blocked-by:'
+
 print_backlog_manual_compact() {
   local path=$1 reason=$2
-  printf 'compact backlog listing (%s; max %s item(s); indented task bodies omitted)\n' "$reason" "$BACKLOG_LIMIT"
-  awk -v max="$BACKLOG_LIMIT" '
+  printf 'compact backlog listing (%s; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to %s; indented task bodies omitted)\n' \
+    "$reason" "$QUEUED_LIMIT"
+  awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" '
     function state_for_heading(line, heading) {
       heading = line
       sub(/^##[[:space:]]+/, "", heading)
@@ -164,42 +248,84 @@ print_backlog_manual_compact() {
     }
     /^##[[:space:]]+/ {
       state = state_for_heading($0)
-      if (state != "") print $0
+      if (state != "" && state != "done") print $0
       next
     }
-    state != "" && /^[-*][[:space:]]+/ {
-      total++
-      if (shown < max) {
-        print $0
-        shown++
-      }
+    state == "in_flight" && /^[-*][[:space:]]+/ { in_flight++; print $0; next }
+    state == "done" && /^[-*][[:space:]]+/ { done_total++; next }
+    state == "queued" && /^[-*][[:space:]]+/ {
+      queued_total++
+      if ($0 ~ keep_re) { gated++; print $0; next }
+      if (plain_shown < max) { plain_shown++; print $0 }
       next
     }
     END {
-      if (total == 0) {
+      plain_total = queued_total - gated
+      if (in_flight + queued_total + done_total == 0) {
         print "(no backlog item title lines found)"
       } else {
-        printf "(shown %d of %d backlog item title line(s))\n", shown, total
-        if (total > shown) {
-          printf "(truncated %d item(s); increase FM_SESSION_START_BACKLOG_LIMIT for a larger startup listing)\n", total - shown
+        printf "(shown %d in-flight, %d held or blocked queued, %d of %d other queued title line(s); %d done row(s) omitted)\n", \
+          in_flight, gated, plain_shown, plain_total, done_total
+        if (plain_total > plain_shown) {
+          printf "(%d more queued - raise FM_SESSION_START_QUEUED_LIMIT or read data/backlog.md for the rest)\n", plain_total - plain_shown
         }
       }
     }
   ' "$path"
 }
 
+strip_axi_help() {
+  awk '/^help\[/ { exit } { print }'
+}
+
+print_ready_queued_bounded() {
+  local ready=$1 path=$2
+  printf '%s\n' "$ready" | awk -v max="$QUEUED_LIMIT" -v path="$path" '
+    /^help\[/ { exit }
+    /^ready\[/ { rows = 1; print; next }
+    rows && /^[[:space:]]/ {
+      total++
+      if (shown < max) { print; shown++ }
+      next
+    }
+    { rows = 0; print }
+    END {
+      if (total > 0) {
+        printf "(shown %d of %d ready queued item(s))\n", shown, total
+        if (total > shown) {
+          printf "(%d more queued - tasks-axi ready --file %s)\n", total - shown, path
+        }
+      }
+    }
+  '
+}
+
 print_backlog_tasks_axi_compact() {
-  local path=$1 out rc
-  printf 'compact backlog listing (tasks-axi; max %s item(s); task bodies omitted)\n' "$BACKLOG_LIMIT"
-  out=$(tasks-axi list --file "$path" --limit "$BACKLOG_LIMIT" --fields blocked_by,hold_kind,hold_reason 2>&1)
-  rc=$?
-  if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out"
+  local path=$1 in_flight held blocked ready err
+  if ! in_flight=$(tasks-axi list --file "$path" --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
+    err=$in_flight
+  elif ! held=$(tasks-axi list --file "$path" --state held --fields "$BACKLOG_FIELDS" 2>&1); then
+    err=$held
+  elif ! blocked=$(tasks-axi list --file "$path" --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
+    err=$blocked
+  elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
+    err=$ready
   else
-    printf 'tasks-axi compact listing failed; falling back to title-line rendering.\n'
-    printf '%s\n' "$out"
-    print_backlog_manual_compact "$path" "fallback"
+    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
+      "$QUEUED_LIMIT"
+    printf '\nin flight:\n'
+    printf '%s\n' "$in_flight" | strip_axi_help
+    printf '\nheld (captain- or time-gated; an in-flight item that is also held appears in both groups):\n'
+    printf '%s\n' "$held" | strip_axi_help
+    printf '\nblocked queued:\n'
+    printf '%s\n' "$blocked" | strip_axi_help
+    printf '\nready queued (dispatchable now):\n'
+    print_ready_queued_bounded "$ready" "$path"
+    return 0
   fi
+  printf 'tasks-axi compact listing failed; falling back to title-line rendering.\n'
+  printf '%s\n' "$err"
+  print_backlog_manual_compact "$path" "fallback"
 }
 
 print_backlog_compact() {
@@ -224,9 +350,12 @@ print_backlog_compact() {
 }
 
 print_status_tail() {
-  local status=$1
-  printf 'status tail (last %s line(s), wake-EVENT history, not current state; full log: %s):\n' "$STATUS_TAIL" "$status"
-  tail -n "$STATUS_TAIL" "$status"
+  local status=$1 line
+  printf 'status tail (last %s line(s), each capped at %s characters, wake-EVENT history, not current state; full log: %s):\n' \
+    "$STATUS_TAIL" "$FM_LINE_CAP_DEFAULT" "$status"
+  while IFS= read -r line || [ -n "$line" ]; do
+    fm_cap_line "$line"
+  done < <(tail -n "$STATUS_TAIL" "$status")
 }
 
 hash_file() {
@@ -251,9 +380,17 @@ pi_extension_loaded() {
   [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
 }
 
-section "SESSION START - $FM_HOME"
+if [ "$REEMIT" -eq 1 ]; then
+  section "SESSION START (CONTEXT RE-EMIT) - $FM_HOME"
+  printf 'This session already took the helm at startup and has only lost context.\n'
+  printf 'Lock ownership is re-verified, durable records are reprinted, and queued\n'
+  printf 'wakes are drained, but startup mutation sweeps are not repeated.\n'
+else
+  section "SESSION START - $FM_HOME"
+fi
 
 # --- 1. lock -----------------------------------------------------------
+stage lock
 subsection "LOCK"
 LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
 LOCK_RC=$?
@@ -276,13 +413,19 @@ if [ "$LOCK_RC" -ne 0 ]; then
   }
 fi
 if [ "$READ_ONLY" -eq 0 ]; then
+  if [ "$REEMIT" -eq 0 ]; then
+    rm -f "$COMPLETION_FILE" 2>/dev/null || true
+  fi
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
 fi
 
 # --- 2. bootstrap --------------------------------------------------------
+stage bootstrap
 subsection "BOOTSTRAP"
 if [ "$READ_ONLY" -eq 1 ]; then
   BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+elif [ "$REEMIT" -eq 1 ]; then
+  BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_LOCKED=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 else
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
@@ -305,6 +448,7 @@ fi
 # authority, and another session may be actively draining it. It still runs
 # fm-guard.sh directly with non-mutating advisory text, so the same alarms
 # surface without repair commands.
+stage wake-queue
 subsection "WAKE QUEUE"
 if [ "$READ_ONLY" -eq 1 ]; then
   QLEN=0
@@ -322,6 +466,7 @@ else
 fi
 
 # --- 4. supervision operating instructions ----------------------------------
+stage supervision-instructions
 AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
 AFK_SUPERVISOR_ALIVE=0
@@ -366,15 +511,26 @@ fi
   --afk "$AFK_PRESENT" \
   --x-mode "$X_MODE_PRESENT"
 
-# --- 4. context digest -----------------------------------------------------
-section "CONTEXT"
-print_file_or_absent "$DATA/projects.md" "data/projects.md"
-print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
-print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+# --- 5. read-once contract -------------------------------------------------
+stage read-once
+section "READ-ONCE CONTRACT"
+cat <<'EOF'
+Everything below is represented for this session start: every state/*.meta, a
+compact data/backlog.md listing, a bounded tail of every state/*.status, and
+the five context files - data/projects.md, data/secondmates.md,
+data/captain.md, data/captain-shared.md, data/learnings.md. Do not re-read
+them after this digest or bulk-read the backlog and status logs.
 
-# --- 5. fleet-state digest ---------------------------------------------
+Read a source directly only when this digest marked it ABSENT or corrupt, a
+specific full task body or older status history is needed, a capped line's
+tail matters, omitted queued work is needed, or STARTUP TRUNCATED named the
+stage that would have emitted it.
+EOF
+
+# --- 6. fleet-state digest ---------------------------------------------
+# Fleet identity precedes stable context so tail truncation cannot hide current
+# task endpoints behind curated memory that is recoverable with a targeted read.
+stage fleet-state
 section "FLEET STATE"
 print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
@@ -452,7 +608,17 @@ if fm_pf_relay_active "$FM_HOME" \
   fi
 fi
 
-# --- 6. closing reminder -----------------------------------------------
+# --- 7. context digest -----------------------------------------------------
+stage context
+section "CONTEXT"
+print_file_or_absent "$DATA/projects.md" "data/projects.md"
+print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
+print_file_or_absent "$DATA/captain.md" "data/captain.md"
+print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
+print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+
+# --- 8. closing reminder -----------------------------------------------
+stage next-step
 section "NEXT STEP"
 if [ "$READ_ONLY" -eq 1 ]; then
   cat <<'EOF'
@@ -483,18 +649,22 @@ This script never starts supervision itself.
 EOF
 fi
 cat <<'EOF'
-The digest above is complete for this session start. Do NOT re-read
-data/projects.md, data/secondmates.md, data/captain.md,
-data/captain-shared.md, data/learnings.md,
-or state/*.meta now - they were just printed in full.
-Do NOT bulk-read data/backlog.md now either: the compact identity/metadata
-listing was just printed with a pointer for targeted full-body follow-up.
-Do NOT bulk-read state/*.status now either: their bounded tails were just
-printed with full log paths for targeted follow-up when older wake-event
-history is actually needed. Re-reading everything defeats the entire point
-of this command. Re-read a file only if this digest flagged it ABSENT (then
-rebuild or create it per AGENTS.md), its contents looked unparseable/corrupt,
-or an individual full status log is needed for older wake-event history.
+The digest above is complete. The READ-ONCE CONTRACT near its top governs any
+targeted follow-up reads.
 EOF
+
+if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then
+  COMPLETION_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
+  case "$COMPLETION_PID" in ''|*[!0-9]*) COMPLETION_PID= ;; esac
+  COMPLETION_TMP=$(mktemp "$STATE/.session-start-complete.XXXXXX" 2>/dev/null || true)
+  if [ -n "$COMPLETION_PID" ] && [ -n "$COMPLETION_TMP" ] \
+    && printf '%s\n' "$COMPLETION_PID" > "$COMPLETION_TMP" 2>/dev/null \
+    && mv -f "$COMPLETION_TMP" "$COMPLETION_FILE" 2>/dev/null; then
+    :
+  else
+    [ -z "$COMPLETION_TMP" ] || rm -f "$COMPLETION_TMP" 2>/dev/null || true
+    printf '\nSESSION_START_COMPLETION: not recorded - the next clear or compact will run a full startup.\n'
+  fi
+fi
 
 exit 0

@@ -19,6 +19,9 @@ FM_PUSH_TRANSITION_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
 FM_WAKE_POST_OUTPUT_ACTION=
+# Set only after this watcher has printed a durable actionable reason.
+# The watcher cleanup uses it to distinguish delivery from interruption.
+FM_WATCH_DELIVERED_REASON=
 FM_WATCH_DELIVERY_PID=
 FM_WATCH_DELIVERY_IDENTITY=
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
@@ -92,6 +95,8 @@ wake() {
   if echo "$1"; then
     output_status=0
     watch_delivery_publish "$1" || true
+    # shellcheck disable=SC2034 # Read by the watcher cleanup after this sourced helper returns.
+    FM_WATCH_DELIVERED_REASON=$1
   else
     output_status=1
   fi

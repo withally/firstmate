@@ -61,6 +61,38 @@ start_attached_arm() {  # <state> <fakebin> <arm-out> <confirm-timeout>
     || fail "arm did not attach to the live watcher: $(cat "$armout")"
 }
 
+ack_wakes() {  # <state>
+  local state=$1 sequence generation err
+  err="$state/.test-ack.err"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  rm -f "$err"
+  if [ -z "$sequence" ] || [ -z "$generation" ]; then
+    [ ! -s "$state/.wake-queue" ] || return 1
+    case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in pending:*) return 1 ;; esac
+    return 0
+  fi
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
+    --recovery-generation "$generation"
+}
+
+start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
+  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} i
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_WATCH_PREDECESSOR_ARM_PID="$predecessor" \
+    "$WATCH_ARM" --restart > "$armout" &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -q '^watcher: started ' "$armout" 2>/dev/null && return 0
+    is_live_non_zombie "$ARM_PID" || return 0
+    sleep 0.05
+    i=$((i + 1))
+  done
+}
+
 test_attached_arm_reports_the_delivered_wake() {
   local dir state fakebin out armout status
   dir=$(make_case attached-delivered-wake)
@@ -100,16 +132,16 @@ test_attached_arm_reports_the_delivered_wake_after_drain() {
   armout="$dir/arm.out"
   start_seed_watcher "$state" "$fakebin" "$out"
   # A wider confirmation budget keeps the arm in its successor wait while the
-  # handling turn drains, which is the ordering this case exists to cover.
+  # handling turn presents and acknowledges, which is the ordering this case covers.
   start_attached_arm "$state" "$fakebin" "$armout" 5
 
   printf 'done: fixture finished\n' > "$state/demo.status"
   wait_for_exit "$SEED_PID" 120
-  # The handling turn consumes the records before the attached arm closes: the
+  # The handling turn acknowledges the records before the attached arm closes: the
   # queue is empty again, while the watcher's identity-bound terminal record
   # still proves which cycle delivered the reason.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "drain failed"
-  [ ! -s "$state/.wake-queue" ] || fail "drain left records behind"
+  ack_wakes "$state" || fail "post-handling acknowledgement failed"
+  [ ! -s "$state/.wake-queue" ] || fail "acknowledgement left records behind"
 
   wait_for_exit "$ARM_PID" 200
   status=$?
@@ -194,10 +226,8 @@ test_attached_arm_resolves_a_lost_ledger_append_from_the_close_receipt() {
   is_live_non_zombie "$ARM_PID" \
     || fail "the arm ended instead of continuing across the actionable close"
   successor=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  kill "$ARM_PID" 2>/dev/null || true
-  wait_for_exit "$ARM_PID" 80
   # The continued arm owns a fresh watcher child; let it finish reaping before
-  # this case's scratch state goes away.
+  # terminating the waiting arm, or a shell blocked in wait can defer TERM.
   if [ -n "$successor" ]; then
     kill "$successor" 2>/dev/null || true
     i=0
@@ -206,6 +236,8 @@ test_attached_arm_resolves_a_lost_ledger_append_from_the_close_receipt() {
       i=$((i + 1))
     done
   fi
+  kill "$ARM_PID" 2>/dev/null || true
+  wait_for_exit "$ARM_PID" 80
   pass "watch-arm: a lost ledger append is resolved from the cycle's own actionable close receipt"
 }
 
@@ -235,8 +267,59 @@ test_attached_arm_rejects_a_close_receipt_from_another_identity() {
   pass "watch-arm: a close receipt from another identity cannot resolve this cycle"
 }
 
+test_rearm_resurfaces_decision_without_new_queue_row() {
+  local dir home state fakebin generation sequence
+  dir=$(make_case decision-only-recovery)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+  printf 'needs-decision [key=runtime]: choose recovery policy\n' > "$state/remote.status"
+  printf 'pending:downtime:decision-only\n' > "$state/.watcher-down"
+  : > "$state/.wake-queue"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/arm.out"
+  wait_for_exit "$ARM_PID" 120 || fail "decision-only recovery arm did not close"
+  grep -F 'check: rearm-resurface' "$dir/arm.out" >/dev/null \
+    || fail "re-arm did not emit recovery for decision-only state"
+  [ ! -s "$state/.wake-queue" ] || fail "decision-only recovery invented a queue row"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
+    || fail "decision-only recovery presentation failed"
+  grep -F 'remote [key=runtime] needs-decision: choose recovery policy' "$dir/drain.out" >/dev/null \
+    || fail "decision-only recovery did not re-present the folded decision set"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
+  [ "$sequence" = 0 ] && [ -n "$generation" ] || fail "decision-only recovery omitted its zero-row acknowledgement"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "decision-only recovery acknowledgement failed"
+  pass "watch-arm: decision-only recovery resurfaces without a new queue row"
+}
+
+test_process_event_gets_first_refusal_before_rearm_resurface() {
+  local dir home state fakebin
+  dir=$(make_case process-event-first-refusal)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+  append_wake "$state" check 'procevent:fixture:1' 'check: procevent fixture source 1' \
+    || fail "process-event fixture could not publish"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/arm.out"
+  wait_for_exit "$ARM_PID" 120 || fail "process-event recovery arm did not close"
+  grep -F 'check: process-event result captured:' "$dir/arm.out" >/dev/null \
+    || fail "process-event did not receive first refusal"
+  ! grep -F 'check: rearm-resurface' "$dir/arm.out" >/dev/null \
+    || fail "generic recovery pre-empted process-event delivery"
+  ack_wakes "$state" || fail "process-event recovery acknowledgement failed"
+  pass "watch-arm: process-event delivery gets first refusal before recovery resurfacing"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
 test_attached_arm_resolves_a_lost_ledger_append_from_the_close_receipt
 test_attached_arm_rejects_a_close_receipt_from_another_identity
+test_rearm_resurfaces_decision_without_new_queue_row
+test_process_event_gets_first_refusal_before_rearm_resurface

@@ -34,8 +34,8 @@
 #                       secondmate liveness, pending remote handoff retry,
 #                       X-mode artifact writes, fleet sync) also run only when
 #                       locked.
-#   3. wake-drain     - mutates the durable wake queue, so it also only runs
-#                       when locked.
+#   3. wake-drain     - presents durable wakes and advances recovery handling
+#                       state, so it also only runs when locked.
 #   4. supervision    - emit the operating block for the detected harness.
 #   5. read-once      - state the contract governing all digest sources before
 #                       any bulk data.
@@ -70,8 +70,8 @@
 # tasks-axi and quota-axi tool checks, and tasks-axi availability - none of
 # which mutate shared state and all of which are safe to compute without
 # verified lock ownership.
-# Only projection cleanup, the six bootstrap mutating sweeps, and the
-# wake-queue drain are skipped.
+# Only projection cleanup, the six bootstrap mutating sweeps, and wake-queue
+# presentation are skipped.
 # The context and fleet-state digests
 # below are always read-only, so they run unconditionally in both modes.
 #
@@ -384,7 +384,7 @@ if [ "$REEMIT" -eq 1 ]; then
   section "SESSION START (CONTEXT RE-EMIT) - $FM_HOME"
   printf 'This session already took the helm at startup and has only lost context.\n'
   printf 'Lock ownership is re-verified, durable records are reprinted, and queued\n'
-  printf 'wakes are drained, but startup mutation sweeps are not repeated.\n'
+  printf 'wakes are presented for handling, but startup mutation sweeps are not repeated.\n'
 else
   section "SESSION START - $FM_HOME"
 fi
@@ -405,7 +405,7 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '●  %s\n' "$LOCK_OUT"
     printf '●  Skipping every mutating step: PR-check migration, stale Herdr child cleanup,\n'
     printf '●  secondmate convergence, secondmate liveness, pending remote handoff retry,\n'
-    printf '●  X-mode artifacts, fleet sync, and wake-queue drain. Detect-only bootstrap\n'
+    printf '●  X-mode artifacts, fleet sync, and wake-queue presentation. Detect-only bootstrap\n'
     printf '●  diagnostics and the rest of this read-only-safe digest still ran below.\n'
     printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
     printf '●  otherwise mutate fleet state from this session.\n'
@@ -439,13 +439,13 @@ else
 fi
 
 # --- 3. wake-drain -------------------------------------------------------
-# Drained records are this turn's first work queue, and the drain's separate
-# OPEN DECISIONS section remains actionable even when that queue is empty
-# (AGENTS.md sections 3 and 8).
+# Presented records are this turn's first work queue and remain durable until
+# post-handling acknowledgement. The drain's separate OPEN DECISIONS section
+# remains actionable even when that queue is empty (AGENTS.md sections 3 and 8).
 # The drain also runs fm-guard.sh internally on the locked path, so the
 # tangle/watcher-liveness alarms land right here too, ahead of the bulk digest
 # below. The read-only path never touches the queue because it lacks mutation
-# authority, and another session may be actively draining it. It still runs
+# authority, and another session may be actively handling it. It still runs
 # fm-guard.sh directly with non-mutating advisory text, so the same alarms
 # surface without repair commands.
 stage wake-queue

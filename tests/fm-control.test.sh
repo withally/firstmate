@@ -104,13 +104,6 @@ case "${1:-}" in
          && { [ "$payload" = Escape ] || [ "$payload" = C-c ]; }; then
         printf 'zsh' > "$D/command"
       fi
-      if [ "$payload" = Escape ] && [ -n "${FM_FAKE_MUSE_LOG:-}" ]; then
-        if [ -n "${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" ]; then
-          : > "$D/muse-ack-pending"
-        else
-          printf '%s\n' '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"terminal","terminal":"cancelled","reason":null}}}' >> "$FM_FAKE_MUSE_LOG"
-        fi
-      fi
     fi
     exit 0 ;;
   display-message)
@@ -134,12 +127,6 @@ SH
   chmod +x "$fb/tmux"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
-if [ -n "${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" ] \
-   && [ -e "$FM_FAKE_DIR/muse-ack-pending" ]; then
-  rm -f "$FM_FAKE_DIR/muse-ack-pending"
-  printf 'zsh' > "$FM_FAKE_DIR/command"
-  printf '%s\n' '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"terminal","terminal":"cancelled","reason":null}}}' >> "$FM_FAKE_MUSE_LOG"
-fi
 exit 0
 SH
   chmod +x "$fb/sleep"
@@ -333,8 +320,10 @@ test_unverified_harness_is_refused() {
 test_backend_key_capability_matrix() {
   local backend key
   for backend in tmux herdr zellij cmux; do
-    # C-u is the composer clear muse's interrupt needs; every session provider
-    # but Orca normalizes it (bin/backends/*.sh).
+    # C-u is the composer clear the interrupt path checks for before it sends
+    # anything; every session provider but Orca normalizes it
+    # (bin/backends/*.sh). No verified adapter asks for one today, so this is
+    # what keeps the backend side of that refusal honest.
     for key in Escape Enter C-c C-u; do
       fm_control_backend_supports_key "$backend" "$key" \
         || fail "$backend should be able to deliver $key"
@@ -350,10 +339,11 @@ test_backend_key_capability_matrix() {
 }
 
 # A verified adapter is not automatically verified for every task kind, and the
-# check has to sit on the pre-stop side of a relaunch: muse has no primary
-# supervision protocol, so bin/fm-spawn.sh refuses it for a secondmate, and
-# discovering that only after the running agent was stopped would strand the
-# secondmate with no agent at all.
+# check has to sit on the pre-stop side of a relaunch: the launch owner is
+# reached only AFTER the running agent has been stopped, so an adapter that
+# bin/fm-spawn.sh would refuse for a secondmate has to be refused here instead,
+# while the agent is still up. Every adapter this fork verifies runs every kind,
+# so the closed-table half of that guarantee is what the unverified case pins.
 test_harness_kind_capability() {
   local harness
   for harness in $VERIFIED_HARNESSES; do
@@ -699,49 +689,6 @@ test_interrupt_without_acknowledgement_preserves_busy_state() {
   assert_not_contains "$out" "cancel=confirmed" \
     "an adapter without acknowledgement must not report cancellation"
   pass "fm-control interrupt: unconfirmed delivery preserves observed busy state"
-}
-
-test_muse_interrupt_confirms_adapter_acknowledgement() {
-  local dir root log out rc
-  dir=$(new_case confirmed)
-  add_task "$dir" t1 muse
-  alive_as "$dir" muse
-  root="$dir/muse-sessions"
-  log="$root/2026/08/08/session-1/session.jsonl"
-  mkdir -p "$(dirname "$log")"
-  printf '%s\n' \
-    "{\"schema_version\":1,\"payload_type\":\"runtime.session.metadata\",\"payload\":{\"kind\":\"metadata\",\"record\":{\"workspace_root\":\"$dir/wt-t1\"}}}" \
-    '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"started","prompt":"work"}}}' > "$log"
-  printf 'sessions_root=%s\nworkspace_root=%s\nbinding_id=test\n' \
-    "$root" "$dir/wt-t1" > "$dir/home/state/t1.muse-session"
-  out=$(FM_FAKE_MUSE_LOG="$log" run_control "$dir" t1 interrupt); rc=$?
-  expect_code 0 "$rc" "muse interrupt should observe its adapter acknowledgement"$'\n'"$out"
-  assert_contains "$out" "verified=agent-alive cancel=confirmed" \
-    "the result should report muse's cancelled terminal acknowledgement"
-  pass "fm-control interrupt: muse confirms cancellation from its session log"
-}
-
-test_interrupt_revalidates_agent_after_acknowledgement_wait() {
-  local dir root log out rc
-  dir=$(new_case ack-race)
-  add_task "$dir" t1 muse
-  alive_as "$dir" muse
-  root="$dir/muse-sessions"
-  log="$root/2026/08/08/session-1/session.jsonl"
-  mkdir -p "$(dirname "$log")"
-  printf '%s\n' \
-    "{\"schema_version\":1,\"payload_type\":\"runtime.session.metadata\",\"payload\":{\"kind\":\"metadata\",\"record\":{\"workspace_root\":\"$dir/wt-t1\"}}}" \
-    '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"started","prompt":"work"}}}' > "$log"
-  printf 'sessions_root=%s\nworkspace_root=%s\nbinding_id=test\n' \
-    "$root" "$dir/wt-t1" > "$dir/home/state/t1.muse-session"
-  out=$(FM_FAKE_MUSE_LOG="$log" FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK=1 \
-    run_control "$dir" t1 interrupt); rc=$?
-  expect_code 1 "$rc" "interrupt should fail when the agent stops during acknowledgement polling"
-  assert_contains "$out" "agent is 'dead' after its interrupt key" \
-    "the final postcondition should observe the agent after acknowledgement polling"
-  assert_not_contains "$out" "interrupt-delivered" \
-    "a stale pre-wait liveness proof must not be published"
-  pass "fm-control interrupt: postconditions are revalidated after acknowledgement polling"
 }
 
 test_exit_accepts_agent_stopped_by_busy_interrupt() {

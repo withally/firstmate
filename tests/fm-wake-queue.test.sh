@@ -520,7 +520,7 @@ test_interruption_before_and_after_raw_commit() {
 }
 
 test_malformed_rows_are_quarantined_with_evidence() {
-  local dir state sequence generation quarantine
+  local dir state sequence generation quarantine candidate
   dir=$(make_case malformed-quarantine)
   state="$dir/state"
   append_wake "$state" check good-one 'check: good one' || fail "valid wake append failed"
@@ -533,7 +533,12 @@ test_malformed_rows_are_quarantined_with_evidence() {
     || fail "valid row was not presented alongside malformed rows"
   grep -F '2 malformed row(s) quarantined' "$dir/drain.err" >/dev/null \
     || fail "drain did not surface the quarantine"
-  quarantine=$(ls -d "$state"/.wake-queue.invalid.* 2>/dev/null | head -1)
+  quarantine=""
+  for candidate in "$state"/.wake-queue.invalid.*; do
+    [ -d "$candidate" ] || continue
+    quarantine=$candidate
+    break
+  done
   [ -n "$quarantine" ] && [ -s "$quarantine/rows" ] || fail "quarantine evidence was not retained"
   grep -F 'corrupt-row-without-tabs' "$quarantine/rows" >/dev/null \
     || fail "quarantined evidence lost the tabless malformed row"

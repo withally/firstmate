@@ -29,12 +29,15 @@ If the unready arm does not retire within that bound, the adapter keeps ownershi
 When that retained arm later closes, its actual close is classified as a new supervised event without replaying the earlier fallback.
 After the configured retry bound is exhausted, it delivers the original wake with a typed continuity-restoration failure even if every successor arm hung without reporting readiness.
 This is deliberate Option B ordering: the fleet is protected before the model handles the wake whenever restoration succeeds, but the model is never left blind when it does not.
+Once the wake prompt itself succeeds, the adapter confirms that delivery to the successor with `bin/fm-watch-arm.sh --handling-delivered <generation> --watcher-pid <pid>`, which binds the successor to the presented recovery generation.
+An unconfirmed delivery leaves that generation pending, so the successor resurfaces the work instead of treating an undelivered wake as handed off.
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.
 The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher or auto-arm claim is present.
 For every supported arm path, a successor that observes an accepted down stretch emits `check: rearm-resurface` through the ordinary durable handling path before settling into its live wait.
 That recovery presentation includes all unacknowledged queue rows and the folded `OPEN DECISIONS` set, so a still-open decision reappears even when recovery itself has no new queue row.
 The queue row format remains the existing five-column record.
+A row that does not parse as that record is quarantined beside the queue as retained evidence rather than presented or deleted, so a generation whose rows were all malformed still finalizes through its empty-queue acknowledgement.
 During upgrade, the first presentation of a markerless nonempty queue adopts those rows into a fresh recovery generation, presents them at least once, and retains them until the generation-bound acknowledgement succeeds.
 The model no longer re-arms after ordinary wakes.
 No PreToolUse hook denies fleet commands based on watcher status.

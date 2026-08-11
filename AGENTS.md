@@ -112,8 +112,9 @@ state/               volatile runtime signals; gitignored
   x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnostic dedupe markers
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
+  .wake-queue.invalid.* .watcher-down.invalid.*   quarantined malformed queue rows and recovery markers, retained as evidence so handling can still finalize; never touch
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
-  .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
+  .watch.lock .wake-queue.lock .watcher-down.lock watcher singleton, queue serialization, and recovery-state locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .delivered-decisions/  private task+key answer-delivery receipts written by fm-send and consumed by the shared classifier on the first matching resolved echo; never touch

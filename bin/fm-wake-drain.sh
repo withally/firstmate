@@ -109,6 +109,15 @@ trap 'exit 143' TERM
 fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=true
 
+if fm_wake_queue_quarantine_invalid_locked "$FM_WAKE_QUEUE"; then
+  if [ "$FM_WAKE_QUEUE_QUARANTINED" -gt 0 ]; then
+    printf 'wake queue: %s malformed row(s) quarantined to %s (evidence retained; not presentable)\n' \
+      "$FM_WAKE_QUEUE_QUARANTINED" "$FM_WAKE_QUEUE_QUARANTINE_DIR" >&2
+  fi
+else
+  echo "wake drain: malformed queue rows could not be quarantined; queue left untouched" >&2
+fi
+
 if [ -n "$ACK_THROUGH" ]; then
   fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
   RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN

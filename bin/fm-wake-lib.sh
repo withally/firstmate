@@ -868,6 +868,44 @@ fm_wake_restore_queue() {
   fi
 }
 
+# Quarantine structurally invalid queue rows (fewer than five fields, or a
+# non-numeric sequence) under the queue's append lock, mirroring the invalid
+# recovery-marker quarantine: evidence is retained beside the queue instead of
+# deleted, and the surviving queue holds only presentable rows so an
+# empty-queue acknowledgement can still finalize a recovery generation.
+# Caller must hold FM_WAKE_QUEUE_LOCK. On failure the queue is left untouched.
+FM_WAKE_QUEUE_QUARANTINED=0
+FM_WAKE_QUEUE_QUARANTINE_DIR=
+fm_wake_queue_quarantine_invalid_locked() {  # <queue-path>
+  local queue=$1 bad quarantine tmp
+  FM_WAKE_QUEUE_QUARANTINED=0
+  FM_WAKE_QUEUE_QUARANTINE_DIR=
+  [ -f "$queue" ] && [ -s "$queue" ] || return 0
+  bad=$(awk -F '\t' 'NF < 5 || $2 !~ /^[0-9]+$/ { n++ } END { print n + 0 }' "$queue") || return 1
+  [ "$bad" -gt 0 ] || return 0
+  quarantine=$(mktemp -d "${queue}.invalid.XXXXXX") || return 1
+  if ! awk -F '\t' 'NF < 5 || $2 !~ /^[0-9]+$/' "$queue" > "$quarantine/rows" \
+    || ! chmod 0600 "$quarantine/rows"; then
+    rm -rf -- "$quarantine" 2>/dev/null || true
+    return 1
+  fi
+  tmp=$(mktemp "${queue}.valid.XXXXXX") || {
+    rm -rf -- "$quarantine" 2>/dev/null || true
+    return 1
+  }
+  if ! awk -F '\t' 'NF >= 5 && $2 ~ /^[0-9]+$/' "$queue" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! _fm_atomic_replace "$tmp" "$queue"; then
+    rm -f -- "$tmp" 2>/dev/null || true
+    rm -rf -- "$quarantine" 2>/dev/null || true
+    return 1
+  fi
+  # shellcheck disable=SC2034 # Read by callers after the function returns.
+  FM_WAKE_QUEUE_QUARANTINED=$bad
+  # shellcheck disable=SC2034 # Read by callers after the function returns.
+  FM_WAKE_QUEUE_QUARANTINE_DIR=$quarantine
+}
+
 fm_wake_print_deduped() {
   local file=$1
   awk -F '\t' '

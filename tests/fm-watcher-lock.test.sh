@@ -191,6 +191,44 @@ test_guard_warnings() {
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
 
+test_guard_handling_window_advisory() {
+  # The queued-wakes advisory must track the recovery marker: before a drain the
+  # queue is genuinely undrained (drain wording), during the handling window the
+  # retained rows are already presented (acknowledge wording, never a re-drain
+  # instruction), and a fresh post-acknowledgement wake re-arms drain wording.
+  local dir state err sequence generation
+  dir=$(make_case guard-handling-advisory)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  touch "$state/.last-watcher-beat"
+  append_wake "$state" check advisory 'check: advisory' || fail "advisory wake append failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed before handling"
+  grep -F 'queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
+    || fail "undrained queue lost its drain advisory"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" || fail "presentation drain failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed mid-handling"
+  grep -F 'retained until handling acknowledgement' "$err" >/dev/null \
+    || fail "handling window did not get acknowledge wording"
+  ! grep -F 'drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
+    || fail "guard still told the handling turn to re-drain"
+
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "advisory drain omitted its acknowledgement boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "advisory acknowledgement failed"
+  append_wake "$state" check advisory-two 'check: advisory two' || fail "second advisory wake append failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed after post-acknowledgement wake"
+  grep -F 'queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
+    || fail "genuinely undrained queue lost its drain advisory after acknowledgement"
+  pass "guard queued-wakes advisory is recovery-marker-aware across the handling window"
+}
+
 test_lock_single_winner_under_concurrency() {
   local dir state lockdir marker i pids pid wins
   dir=$(make_case lock-concurrency)
@@ -955,22 +993,19 @@ SH
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
+  # Every earlier cycle's exit republished pending:downtime, so each armed
+  # watcher here resurfaces (check: rearm-resurface) and closes as actionable
+  # on its own - the arm then exits after finishing its ledger record. Wait for
+  # that natural close instead of killing mid-cycle, so a HUP can never land
+  # between the ledger append and its size-cap trim.
   iteration=0
   while [ "$iteration" -lt 6 ]; do
     armout="$dir/bounded-$iteration.out"
     PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_CYCLE_LOG_MAX_BYTES=1400 FM_WATCH_CYCLE_LOG_KEEP_LINES=2 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     successor_arm=$!
-    i=0
-    while [ "$i" -lt 80 ]; do
-      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
-      sleep 0.1
-      i=$((i + 1))
-    done
-    grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
-    successor_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-    [ -z "$successor_pid" ] || kill "$successor_pid" 2>/dev/null || true
-    kill -HUP "$successor_arm" 2>/dev/null || true
-    wait "$successor_arm" 2>/dev/null || true
+    wait "$successor_arm" || fail "bounded ledger cycle $iteration did not close cleanly"
+    grep -qE 'watcher: started pid=|check: rearm-resurface' "$armout" \
+      || fail "bounded ledger cycle $iteration did not run"
     iteration=$((iteration + 1))
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
@@ -1172,6 +1207,7 @@ test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
+test_guard_handling_window_advisory
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency

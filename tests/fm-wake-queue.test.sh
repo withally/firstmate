@@ -519,6 +519,66 @@ test_interruption_before_and_after_raw_commit() {
   pass "interrupted presentation replays until post-handling acknowledgement"
 }
 
+test_malformed_rows_are_quarantined_with_evidence() {
+  local dir state sequence generation quarantine
+  dir=$(make_case malformed-quarantine)
+  state="$dir/state"
+  append_wake "$state" check good-one 'check: good one' || fail "valid wake append failed"
+  printf 'corrupt-row-without-tabs\n' >> "$state/.wake-queue"
+  printf '1700000000\tnot-a-number\tcheck\tbad-seq\tcheck: bad sequence\n' >> "$state/.wake-queue"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
+    || fail "drain with malformed rows failed"
+  grep "$(printf '\tcheck\tgood-one\t')" "$dir/drain.out" >/dev/null \
+    || fail "valid row was not presented alongside malformed rows"
+  grep -F '2 malformed row(s) quarantined' "$dir/drain.err" >/dev/null \
+    || fail "drain did not surface the quarantine"
+  quarantine=$(ls -d "$state"/.wake-queue.invalid.* 2>/dev/null | head -1)
+  [ -n "$quarantine" ] && [ -s "$quarantine/rows" ] || fail "quarantine evidence was not retained"
+  grep -F 'corrupt-row-without-tabs' "$quarantine/rows" >/dev/null \
+    || fail "quarantined evidence lost the tabless malformed row"
+  grep -F 'not-a-number' "$quarantine/rows" >/dev/null \
+    || fail "quarantined evidence lost the non-numeric-sequence row"
+  ! grep -F 'corrupt-row-without-tabs' "$state/.wake-queue" >/dev/null \
+    || fail "malformed row remained in the active queue"
+  grep "$(printf '\tcheck\tgood-one\t')" "$state/.wake-queue" >/dev/null \
+    || fail "quarantine dropped a valid unacknowledged row"
+
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "quarantining drain omitted its acknowledgement boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "acknowledgement after quarantine failed"
+  [ ! -s "$state/.wake-queue" ] || fail "acknowledged queue still held rows after quarantine"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    acked:*) ;;
+    *) fail "recovery generation did not finalize after quarantine" ;;
+  esac
+  pass "malformed rows are quarantined with evidence and acknowledgement still finalizes"
+}
+
+test_all_malformed_queue_finalizes_by_empty_ack() {
+  local dir state generation
+  dir=$(make_case malformed-only)
+  state="$dir/state"
+  printf 'pending:downtime:corruptgen\n' > "$state/.watcher-down"
+  printf 'garbage-only-row\n' > "$state/.wake-queue"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
+    || fail "drain of an all-malformed queue failed"
+  grep -F '1 malformed row(s) quarantined' "$dir/drain.err" >/dev/null \
+    || fail "all-malformed drain did not surface the quarantine"
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through 0 --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
+  [ "$generation" = corruptgen ] || fail "all-malformed queue did not fall through to decision-only recovery"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through 0 --recovery-generation "$generation" \
+    || fail "empty-queue acknowledgement after quarantine failed"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    "acked:handling:corruptgen") ;;
+    *) fail "an all-malformed queue left the recovery generation unfinalized" ;;
+  esac
+  pass "an all-malformed queue quarantines fully and finalizes via empty-queue acknowledgement"
+}
+
 test_concurrent_append_and_drain
 test_signal_catchup_without_running_watcher
 test_stale_enqueue_before_suppressor
@@ -533,3 +593,5 @@ test_slow_annotation_does_not_block_append_and_deleted_file_fails_open
 test_legacy_generationless_wake_is_adopted
 test_stale_recovery_generation_is_rejected
 test_interruption_before_and_after_raw_commit
+test_malformed_rows_are_quarantined_with_evidence
+test_all_malformed_queue_finalizes_by_empty_ack

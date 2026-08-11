@@ -279,12 +279,24 @@ fi
 
 # Queued wakes are an independent hazard; warn whenever they are pending, even if
 # a watcher is alive. Kept after the banner so the no-watcher alarm reads first.
-# Dedup of the watcher-down banner never suppresses this warning.
+# Dedup of the watcher-down banner never suppresses this warning. The advisory is
+# recovery-marker-aware: under the retained-until-ack model, presented rows stay
+# queued for the whole handling window (marker pending:handling), and telling
+# that turn to re-drain would contradict its handle-then-acknowledge protocol,
+# so the handling window gets acknowledge wording instead of drain wording.
 if "$queue_pending"; then
   if [ "$READ_ONLY" -eq 1 ]; then
     echo "WARNING: queued wakes pending - left untouched because this session lacks verified fleet-lock ownership." >&2
   else
-    echo "WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else." >&2
+    fm_recovery_marker_read "$STATE/.watcher-down" || true
+    case "$FM_RECOVERY_MARKER_TOKEN" in
+      pending:handling:*)
+        echo "WARNING: presented wakes retained until handling acknowledgement - finish handling them, then run the acknowledgement from the drain's WAKE_ACK_REQUIRED line; do not re-drain mid-handling." >&2
+        ;;
+      *)
+        echo "WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else." >&2
+        ;;
+    esac
   fi
 fi
 exit 0

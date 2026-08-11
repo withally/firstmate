@@ -601,3 +601,10 @@ The host-tool sequence was:
 Observed guarantee: a Desktop-owned thread can write Firstmate lifecycle files when the prompt provides an authorized absolute path, and create, send, read, and archive work at the Desktop host-tool layer.
 The missing guarantee remains a supported shell-callable bridge that lets Firstmate perform those operations against the same visible Desktop endpoint.
 App-server partial methods and raw socket experiments do not satisfy that bridge contract.
+# Agent lifecycle control verification - 2026-08-11
+
+The fork-preserving lifecycle adaptation was verified through the portable control, transactional relaunch, task-publication race, strict send, teardown, and trace-context suites.
+The exact commands were `bash tests/fm-control.test.sh`, `bash tests/fm-control-relaunch.test.sh`, `bash tests/fm-secondmate-safety.test.sh`, `bash tests/fm-teardown.test.sh`, `bash tests/fm-send-strict.test.sh`, `bash tests/fm-trace-context-lib.test.sh`, and `bash tests/fm-trace-context-spawn.test.sh`.
+Each command exited 0 on 2026-08-11.
+`bin/fm-lint.sh` under pinned ShellCheck 0.11.0 and `bin/fm-doc-audience-check.sh` also exited 0.
+The opt-in real-Herdr control guard remains `FM_HERDR_CONTROL_E2E=1 bash tests/fm-control-herdr-smoke.test.sh` and was not run under the task's non-Herdr-lab safety declaration.

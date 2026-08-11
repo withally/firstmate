@@ -2,8 +2,9 @@
 # tests/fm-wake-daemon-lifecycle-e2e.test.sh - the watcher + supervise-daemon
 # lifecycle, end to end, over one shared state root and a shimmed tmux:
 #
-#   routine status -> absorbed by the watcher without a queued daemon wake
-#   terminal status written while the watcher is DOWN -> caught on restart (catch-up)
+#   routine status -> absorbed by the fork's conservative AFK triage
+#   terminal status written while the watcher is DOWN -> recovery resurfaces,
+#   then the terminal is caught on the next watcher cycle
 #   drain queued records -> exactly ONE captain-relevant digest is buffered
 #   housekeeping catch-all scan -> NO duplicate digest
 #   buffered digest flushes to the supervisor pane as exactly ONE submission
@@ -33,10 +34,9 @@ fi
 
 TMP_ROOT=$(fm_test_tmproot fm-wake-daemon-e2e)
 
-# Start the daemon-managed watcher under away mode. Its signal path absorbs
-# routine progress and exits only for a signal that must reach the daemon; stale
-# and heartbeat wakes remain one-shot. fakebin shadows tmux. Echoes nothing; the
-# caller reads $out and $WATCHER_PID.
+# Start the daemon-managed watcher under away mode. The fork deliberately keeps
+# conservative signal triage here: routine progress is absorbed, while recovery
+# and actionable signals become one-shot handoffs to the daemon.
 start_watcher() {
   local state=$1 fakebin=$2 out=$3
   mkdir -p "$state"
@@ -51,17 +51,27 @@ run_watcher_once() {
   wait_for_exit "$WATCHER_PID" 50
 }
 
-# --- Phase 1: routine absorbed; terminal caught after restart ----------------
+ack_handled_wakes() {  # <state> <drain-stderr>
+  local state=$1 drain_err=$2 sequence generation
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$drain_err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$drain_err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
+    --recovery-generation "$generation"
+}
+
+# --- Phase 1: routine absorbed; recovery and terminal routed then acked -------
 test_routine_then_terminal_after_restart() {
-  local dir state fakebin out drain_out status_file seen_file i
+  local dir state fakebin out drain_out drain_err status_file seen_file i
   dir=$(make_supercase wd-lifecycle)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
   drain_out="$dir/drain.out"
+  drain_err="$dir/drain.err"
   status_file="$state/task-w1.status"
 
-  # A routine status fires a signal; the watcher absorbs it and stays alive.
+  # A routine status fires a signal; fork-deliberate AFK triage absorbs it.
   printf 'working: building\n' > "$status_file"
   start_watcher "$state" "$fakebin" "$out"
   seen_file="$state/.seen-task-w1_status"
@@ -75,22 +85,37 @@ test_routine_then_terminal_after_restart() {
   [ ! -s "$out" ] || fail "absorbed routine signal printed a wake reason"
   [ ! -s "$state/.wake-queue" ] || fail "absorbed routine signal was queued for the daemon"
 
-  # End this daemon-owned watcher cycle without a wake, then prove a terminal
-  # status written while it is down is caught by the replacement watcher.
+  # Simulate an interrupted watcher stretch, then land an actionable event while
+  # it is down. Recovery must surface first even though it did not originate from
+  # a newly observed status row.
   kill "$WATCHER_PID" 2>/dev/null || true
   wait "$WATCHER_PID" 2>/dev/null || true
 
-  # The watcher is now DOWN (one-shot exit). A terminal status lands while it is
-  # down; the next watcher run must catch it up (losslessness across restart).
   printf 'done: PR https://example.test/pr/900\n' >> "$status_file"
   : > "$out"
-  run_watcher_once "$state" "$fakebin" "$out" || fail "restarted watcher did not exit for the terminal signal"
+  run_watcher_once "$state" "$fakebin" "$out" || fail "restarted watcher did not exit for recovery"
+  grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "watcher downtime did not surface recovery before normal polling"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$drain_err" \
+    || fail "drain after recovery wake failed"
+  FM_STATE_OVERRIDE="$state" handle_wake 'check: rearm-resurface' "$state"
+  ack_handled_wakes "$state" "$drain_err" || fail "recovery wake acknowledgement failed"
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+    || fail "recovery wake was not routed exactly once by the AFK daemon"
+  : > "$state/.subsuper-escalations"
+
+  # Once recovery handling is acknowledged, the next cycle catches the terminal
+  # status that landed during the down stretch.
+  : > "$out"
+  run_watcher_once "$state" "$fakebin" "$out" || fail "successor watcher did not exit for the terminal signal"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "terminal signal written while watcher down was not caught on restart"
 
   # Drain and route the terminal: exactly ONE digest is buffered.
   : > "$drain_out"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after terminal signal failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$drain_err" \
+    || fail "drain after terminal signal failed"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status_file" "$state"
+  ack_handled_wakes "$state" "$drain_err" || fail "terminal wake acknowledgement failed"
   [ -s "$state/.subsuper-escalations" ] || fail "captain-relevant terminal status was not buffered"
   [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
     || fail "expected exactly one buffered digest after the terminal signal"
@@ -111,7 +136,7 @@ test_routine_then_terminal_after_restart() {
     || fail "escalate_flush failed for the buffered digest"
   [ "$(grep -c '\[ENTER\]' "$sent")" -eq 1 ] || fail "buffered digest was not submitted exactly once"
   [ ! -s "$state/.subsuper-escalations" ] || fail "buffer not cleared after a successful flush"
-  pass "lifecycle: routine signal absorbs, terminal survives a watcher restart, buffers once, no dup, injects once"
+  pass "lifecycle: routine absorbs, recovery and terminal route+ack, terminal buffers once, no dup, injects once"
 }
 
 # --- Phase 2: stale working-pane transient -> persistent -> resumed ----------

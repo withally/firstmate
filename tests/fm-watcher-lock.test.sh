@@ -22,6 +22,19 @@ mark_pr_check_migration_complete() {
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
 }
 
+terminate_test_pid() {  # <pid>
+  local pid=$1 i=0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt 30 ] && is_live_non_zombie "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if is_live_non_zombie "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 
 test_singleton_start() {
   local dir state fakebin out1 out2 pid1 pid2 live i
@@ -51,9 +64,8 @@ test_singleton_start() {
     i=$((i + 1))
   done
   grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null || fail "second watcher did not report existing singleton"
-  kill "$pid1" "$pid2" 2>/dev/null || true
-  wait "$pid1" 2>/dev/null || true
-  wait "$pid2" 2>/dev/null || true
+  terminate_test_pid "$pid1"
+  terminate_test_pid "$pid2"
   pass "simultaneous watcher starts leave exactly one live process"
 }
 
@@ -177,6 +189,44 @@ test_guard_warnings() {
   wait "$pid" 2>/dev/null || true
   [ ! -s "$err" ] || fail "guard warned with a live watcher and fresh beacon: $(cat "$err")"
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
+}
+
+test_guard_handling_window_advisory() {
+  # The queued-wakes advisory must track the recovery marker: before a drain the
+  # queue is genuinely undrained (drain wording), during the handling window the
+  # retained rows are already presented (acknowledge wording, never a re-drain
+  # instruction), and a fresh post-acknowledgement wake re-arms drain wording.
+  local dir state err sequence generation
+  dir=$(make_case guard-handling-advisory)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  touch "$state/.last-watcher-beat"
+  append_wake "$state" check advisory 'check: advisory' || fail "advisory wake append failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed before handling"
+  grep -F 'queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
+    || fail "undrained queue lost its drain advisory"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" || fail "presentation drain failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed mid-handling"
+  grep -F 'retained until handling acknowledgement' "$err" >/dev/null \
+    || fail "handling window did not get acknowledge wording"
+  ! grep -F 'drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
+    || fail "guard still told the handling turn to re-drain"
+
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "advisory drain omitted its acknowledgement boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "advisory acknowledgement failed"
+  append_wake "$state" check advisory-two 'check: advisory two' || fail "second advisory wake append failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed after post-acknowledgement wake"
+  grep -F 'queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
+    || fail "genuinely undrained queue lost its drain advisory after acknowledgement"
+  pass "guard queued-wakes advisory is recovery-marker-aware across the handling window"
 }
 
 test_lock_single_winner_under_concurrency() {
@@ -410,7 +460,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
 }
 
 test_watch_restart_rejects_reused_pid() {
-  local dir state fakebin out live pid i lock_pid
+  local dir state fakebin out live pid i
   dir=$(make_case restart-reused-pid)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -425,26 +475,19 @@ test_watch_restart_rejects_reused_pid() {
   printf '%s\n' "stale watcher identity" > "$state/.watch.lock/pid-identity"
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" --restart > "$out" &
   pid=$!
-  # The honest arm forks the fresh watcher as a tracked child and waits on it, so
-  # the lock now names that child, not the arm invocation. The property is the
-  # same: the stale reused-pid lock is replaced by a genuinely live watcher, which
-  # the arm confirms before reporting it. Wait for that confirmation, not just for
-  # the lock pid to appear (identity and beacon land a beat later).
   i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$out" 2>/dev/null && break
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$pid"; do
     sleep 0.1
     i=$((i + 1))
   done
-  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  { [ -n "$lock_pid" ] && [ "$lock_pid" != "$live" ] && kill -0 "$lock_pid" 2>/dev/null; } \
-    || fail "restart did not replace stale reused-pid lock with a live watcher (got '$lock_pid')"
-  grep -F "watcher: started pid=$lock_pid" "$out" >/dev/null || fail "restart did not report the fresh watcher it confirmed"
-  is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
-  kill "$pid" "$lock_pid" "$live" 2>/dev/null || true
+  is_live_non_zombie "$pid" && fail "restart did not surface recovery after replacing a reused-pid lock"
   wait "$pid" 2>/dev/null || true
+  grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "restart replaced reused-pid lock without surfacing recovery: $(cat "$out")"
+  is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
+  kill "$live" 2>/dev/null || true
   wait "$live" 2>/dev/null || true
-  pass "watch restart refuses to signal a reused pid"
+  pass "watch restart preserves recovery without signaling a reused pid"
 }
 
 test_watch_restart_attaches_to_healthy_peer() {
@@ -743,9 +786,20 @@ test_arm_starts_and_self_heals() {
     armpid=$!
     i=0
     while [ "$i" -lt 80 ]; do
-      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+      if [ "$row" = dead-pid ]; then
+        is_live_non_zombie "$armpid" || break
+      else
+        grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+      fi
       sleep 0.1; i=$((i + 1))
     done
+    if [ "$row" = dead-pid ]; then
+      is_live_non_zombie "$armpid" && fail "arm did not surface recovery after reclaiming a dead-pid lock"
+      wait "$armpid" 2>/dev/null || true
+      grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+        || fail "arm reclaimed dead-pid lock without surfacing recovery: $(cat "$armout")"
+      continue
+    fi
     grep -qF 'watcher: started pid=' "$armout" || fail "arm ($row) did not report a started watcher"
     ! grep -qE 'watcher: (healthy|attached)' "$armout" || fail "arm ($row) wrongly reported attached/healthy instead of starting a fresh watcher"
     lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
@@ -754,11 +808,10 @@ test_arm_starts_and_self_heals() {
     grep -F "watcher: started pid=$lock_pid (beacon fresh)" "$armout" >/dev/null \
       || fail "arm ($row) started line did not name the confirmed live watcher (lock '$lock_pid')"
     kill -0 "$lock_pid" 2>/dev/null || fail "arm ($row) confirmed-started watcher is not actually alive"
-    [ -z "$dead_pid" ] || [ "$lock_pid" != "$dead_pid" ] || fail "arm ($row) did not replace the dead-pid lock with a live watcher"
     kill "$armpid" "$lock_pid" 2>/dev/null || true
     wait "$armpid" 2>/dev/null || true
   done
-  pass "arm starts+confirms a fresh watcher on a clean lock and self-heals a dead-pid lock (never healthy off a dead pid)"
+  pass "arm starts cleanly and resurfaces recovery after a dead-pid lock"
 }
 
 test_arm_hup_cleans_child_and_temp_output() {
@@ -934,25 +987,25 @@ SH
   grep -qF "watcher: started pid=$successor_pid" "$armout" || fail "successor ledger cycle did not start"
   grep -q "arm_pid=$first_arm.*successor=started:$successor_pid" "$state/.watch-cycle-exits.log" \
     || fail "predecessor ledger record was not linked to its verified successor"
+  kill "$successor_pid" 2>/dev/null || true
   kill -HUP "$successor_arm" 2>/dev/null || true
   wait "$successor_arm" 2>/dev/null || true
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
+  # Every earlier cycle's exit republished pending:downtime, so each armed
+  # watcher here resurfaces (check: rearm-resurface) and closes as actionable
+  # on its own - the arm then exits after finishing its ledger record. Wait for
+  # that natural close instead of killing mid-cycle, so a HUP can never land
+  # between the ledger append and its size-cap trim.
   iteration=0
   while [ "$iteration" -lt 6 ]; do
     armout="$dir/bounded-$iteration.out"
     PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_CYCLE_LOG_MAX_BYTES=1400 FM_WATCH_CYCLE_LOG_KEEP_LINES=2 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     successor_arm=$!
-    i=0
-    while [ "$i" -lt 80 ]; do
-      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
-      sleep 0.1
-      i=$((i + 1))
-    done
-    grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
-    kill -HUP "$successor_arm" 2>/dev/null || true
-    wait "$successor_arm" 2>/dev/null || true
+    wait "$successor_arm" || fail "bounded ledger cycle $iteration did not close cleanly"
+    grep -qE 'watcher: started pid=|check: rearm-resurface' "$armout" \
+      || fail "bounded ledger cycle $iteration did not run"
     iteration=$((iteration + 1))
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
@@ -1116,13 +1169,45 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+test_stale_watch_reclaim_publishes_before_clear() {
+  local dir state lockdir rc token
+  dir=$(make_case stale-watch-publish-before-clear)
+  state="$dir/state"
+  lockdir="$state/.watch.lock"
+  mkdir -p "$lockdir"
+  printf '99999999\n' > "$lockdir/pid"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_remove_path() {
+      if [ "$1" = "$STATE/.watch.lock" ]; then
+        kill -KILL "${BASHPID:-$$}"
+      fi
+      return 1
+    }
+    fm_lock_try_acquire "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "interrupted stale watcher reclaim unexpectedly completed"
+  [ -e "$lockdir" ] || [ -L "$lockdir" ] || fail "stale watcher lock cleared before recovery publication"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") || fail "interrupted stale reclaim left no durable recovery evidence"
+  case "$token" in pending:downtime:*) ;; *) fail "invalid stale-reclaim recovery token: $token" ;; esac
+  pass "stale watcher reclaim publishes recovery before clearing lock evidence"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
+test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
+test_guard_handling_window_advisory
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency

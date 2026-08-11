@@ -29,9 +29,16 @@ If the unready arm does not retire within that bound, the adapter keeps ownershi
 When that retained arm later closes, its actual close is classified as a new supervised event without replaying the earlier fallback.
 After the configured retry bound is exhausted, it delivers the original wake with a typed continuity-restoration failure even if every successor arm hung without reporting readiness.
 This is deliberate Option B ordering: the fleet is protected before the model handles the wake whenever restoration succeeds, but the model is never left blind when it does not.
+Once the wake prompt itself succeeds, the adapter confirms that delivery to the successor with `bin/fm-watch-arm.sh --handling-delivered <generation> --watcher-pid <pid>`, which binds the successor to the presented recovery generation.
+An unconfirmed delivery leaves that generation pending, so the successor resurfaces the work instead of treating an undelivered wake as handed off.
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.
 The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher or auto-arm claim is present.
+For every supported arm path, a successor that observes an accepted down stretch emits `check: rearm-resurface` through the ordinary durable handling path before settling into its live wait.
+That recovery presentation includes all unacknowledged queue rows and the folded `OPEN DECISIONS` set, so a still-open decision reappears even when recovery itself has no new queue row.
+The queue row format remains the existing five-column record.
+A row that does not parse as that record is quarantined beside the queue as retained evidence rather than presented or deleted, so a generation whose rows were all malformed still finalizes through its empty-queue acknowledgement.
+During upgrade, the first presentation of a markerless nonempty queue adopts those rows into a fresh recovery generation, presents them at least once, and retains them until the generation-bound acknowledgement succeeds.
 The model no longer re-arms after ordinary wakes.
 No PreToolUse hook denies fleet commands based on watcher status.
 A genuine auto-arm failure describes the automatic mechanism as broken and never directs a routine manual background arm.
@@ -49,7 +56,7 @@ An actionable child output returns that reason normally.
 A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, silently relaunches after a matching PID-identity-bound clean-close receipt, or resolves the close against the watcher's bounded terminal-delivery ledger.
 An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 Before releasing its singleton lock after printing an actionable reason, the watcher records that reason with its PID and process identity in `state/.watch-deliveries.log`.
-A matching PID and identity lets an attached arm report the delivered reason and exit zero even after the durable wake queue was drained, while an unrelated queue producer or a recycled PID cannot satisfy the match.
+A matching PID and identity lets an attached arm report the delivered reason and exit zero even after its durable wake was handled and acknowledged, while an unrelated queue producer or a recycled PID cannot satisfy the match.
 That ledger append is best-effort and gives up silently under lock contention, so a cycle with no matching record falls back to the watcher's PID-identity-bound `kind=actionable` close receipt, which proves the cycle printed and delivered its wake on its own stdout.
 Because that receipt carries no reason line to replay, the arm silently relaunches with a fresh cycle exactly as it does for a clean-close receipt rather than closing empty.
 A receipt whose PID or identity names another cycle resolves nothing.

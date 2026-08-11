@@ -20,7 +20,7 @@ The run wrapper reads a Claude/Codex-shaped `source` field from hook input, or a
 
 The full digest removes stale completion proof after acquiring the lock and publishes `state/.session-start-complete` only after every stage finishes.
 The record contains the verified lock owner's pid, so a clear or compaction cannot trust another session's startup.
-`--reemit` re-verifies lock ownership, skips the already-completed mutating bootstrap sweeps, and still drains queued wakes.
+`--reemit` re-verifies lock ownership, skips the already-completed mutating bootstrap sweeps, and still presents queued wakes, which stay durable until the handling turn acknowledges them.
 
 ## Runtime bound
 

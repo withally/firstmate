@@ -805,13 +805,8 @@ fm_backend_busy_state() {  # <backend> <target>
 # input guard or an adapter's conservative submit fallback. It is exposed so a
 # caller other than the send path (the away-mode daemon's supervisor-pane
 # pending-input guard, bin/fm-supervise-daemon.sh) can ask the same question
-# without duplicating per-backend composer-reading logic. tmux and herdr both
-# expose a named classifier already (fm_tmux_composer_state,
-# fm_backend_herdr_composer_state), as do orca and cmux
-# (fm_backend_orca_composer_state, fm_backend_cmux_composer_state); zellij's
-# submit path uses an internal content-diff approach with no separately named
-# classifier, so it reports unknown here - callers fall back to their own
-# policy, exactly as an unknown fm_backend_busy_state already does.
+# without duplicating per-backend composer-reading logic. Every adapter exposes
+# a thin capture-and-capabilities wrapper around fm_composer_classify_screen.
 fm_backend_composer_state() {  # <backend> <target> -> empty|pending|pending-unproven|unknown
   local backend=$1
   shift
@@ -821,6 +816,7 @@ fm_backend_composer_state() {  # <backend> <target> -> empty|pending|pending-unp
     herdr) fm_backend_herdr_composer_state "$@" ;;
     orca) fm_backend_orca_composer_state "$@" ;;
     cmux) fm_backend_cmux_composer_state "$@" ;;
+    zellij) fm_backend_zellij_composer_state "$@" ;;
     *) printf 'unknown' ;;
   esac
 }

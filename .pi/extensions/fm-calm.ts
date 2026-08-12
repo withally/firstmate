@@ -6,9 +6,10 @@
 // with a disposable component factory, and setHiddenThinkingLabel().
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
-// newer Pi solely for its version. The collapsed-thinking and operational-user
-// presentation adapters probe the exact API they patch and degrade independently with a
-// diagnostic (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
+// newer Pi solely for its version. The collapsed-thinking, operational-user, and
+// transcript-redraw presentation adapters probe the exact API they patch and degrade
+// independently with a diagnostic naming the adapter and the running Pi version
+// (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
 // still exposes no global renderer for arbitrary built-in or custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
 import { randomUUID } from "node:crypto";
@@ -23,6 +24,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ExtensionAPI,
+  ExtensionContext,
   ExtensionUIContext,
   ToolDefinition,
   ToolRenderResultOptions,
@@ -35,6 +37,7 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
 import {
   Box,
@@ -185,15 +188,38 @@ export default function (pi: ExtensionAPI) {
   // zero height until a later unrelated frame. The documented widget factory is the
   // extension surface that supplies the current TUI, whose forced request discards the
   // stale frame. Capture it without keeping a widget or changing transcript geometry.
-  const capturePresentationTui = (ui: ExtensionUIContext): void => {
-    ui.setWidget(CALM_REDRAW_CAPTURE_WIDGET_KEY, (tui) => {
-      presentationTui = tui;
-      return new Container();
+  // Outside "tui" mode Pi supplies a no-op setWidget by design, so only a TUI session
+  // that fails to yield a usable TUI is drift, and that drift is reported through the
+  // same adapter diagnostic as every other Calm seam.
+  const capturePresentationTui = (ctx: ExtensionContext): void => {
+    presentationTui = undefined;
+    installCalmPresentationAdapter("transcript-redraw", () => {
+      let captured: TUI | undefined;
+      ctx.ui.setWidget(CALM_REDRAW_CAPTURE_WIDGET_KEY, (tui) => {
+        captured = tui;
+        return new Container();
+      });
+      ctx.ui.setWidget(CALM_REDRAW_CAPTURE_WIDGET_KEY, undefined);
+      if (captured && typeof captured.requestRender === "function") {
+        presentationTui = captured;
+        return;
+      }
+      if (ctx.mode !== "tui") return;
+      throw new Error(
+        captured
+          ? `Pi ${PI_VERSION} no longer exposes TUI.requestRender(), so Calm cannot force a transcript redraw.`
+          : `Pi ${PI_VERSION} did not invoke the setWidget() component factory while capturing the TUI, so Calm cannot force a transcript redraw.`,
+      );
     });
-    ui.setWidget(CALM_REDRAW_CAPTURE_WIDGET_KEY, undefined);
   };
   const forcePresentationRedraw = (): void => {
     presentationTui?.requestRender(true);
+  };
+  const rebuildTranscriptRows = (ui: ExtensionUIContext): void => {
+    const expanded = ui.getToolsExpanded();
+    ui.setToolsExpanded(!expanded);
+    ui.setToolsExpanded(expanded);
+    forcePresentationRedraw();
   };
 
   registerFirstmateSyntheticPresentation(pi);
@@ -316,7 +342,7 @@ export default function (pi: ExtensionAPI) {
     workingShipShown = false;
     // A genuine new session lifetime starts the boat at the normal initial position.
     workingShipAnimation.reset();
-    capturePresentationTui(ctx.ui);
+    capturePresentationTui(ctx);
     applyWorkingPresentation(ctx.ui, true);
     ctx.ui.setHiddenThinkingLabel(calmPresentationIsActive() ? "" : undefined);
     ctx.ui.setStatus("firstmate-calm", undefined);
@@ -340,10 +366,7 @@ export default function (pi: ExtensionAPI) {
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
-        const expanded = ctx.ui.getToolsExpanded();
-        ctx.ui.setToolsExpanded(!expanded);
-        ctx.ui.setToolsExpanded(expanded);
-        forcePresentationRedraw();
+        rebuildTranscriptRows(ctx.ui);
       }, 0);
     });
   });
@@ -378,10 +401,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setHiddenThinkingLabel(active ? "" : undefined);
       ctx.ui.setStatus("firstmate-calm", undefined);
 
-      const expanded = ctx.ui.getToolsExpanded();
-      ctx.ui.setToolsExpanded(!expanded);
-      ctx.ui.setToolsExpanded(expanded);
-      forcePresentationRedraw();
+      rebuildTranscriptRows(ctx.ui);
     },
   });
 }

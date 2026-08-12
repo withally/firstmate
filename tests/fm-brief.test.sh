@@ -439,6 +439,75 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
   pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
+test_content_mutation_contract_is_explicit_and_complete() {
+  local home id brief
+  home="$TMP_ROOT/content-mutation-home"
+  mkdir -p "$home/data"
+  id="brief-content-mutation-d3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --content-mutation >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "content-mutating brief was not scaffolded"
+  assert_grep "# Content conservation - REQUIRED" "$brief" \
+    "content-mutating brief missing its conservation contract"
+  assert_grep "every content class" "$brief" \
+    "content-mutating brief did not require a complete class inventory"
+  assert_grep "class name, before count, and after count" "$brief" \
+    "content-mutating brief did not require before/after counts"
+  assert_grep "Identity-level deltas are required" "$brief" \
+    "content-mutating brief allowed aggregate counts to hide swaps"
+  assert_grep "Name every dropped identity" "$brief" \
+    "content-mutating brief did not require named drops"
+  assert_grep "reason and the decision it belongs to" "$brief" \
+    "content-mutating brief did not bind drops to reasons and decisions"
+  assert_grep "drops to zero requires an explicit captain reference" "$brief" \
+    "content-mutating brief allowed worker judgement to zero a class"
+  assert_grep "independently re-derive the before/after inventory for every content class" "$brief" \
+    "ship brief missing the standing independent deletion audit"
+  assert_no_grep "Content mutation declaration - NOT ENABLED" "$brief" \
+    "content-mutating brief retained the unguarded declaration"
+  pass "fm-brief.sh: --content-mutation emits the complete conservation contract"
+}
+
+test_content_mutation_omission_is_loud_and_scouts_rederive_deletions() {
+  local home id brief help status=0 out
+  home="$TMP_ROOT/content-conservation-gate-home"
+  mkdir -p "$home/data"
+
+  id="brief-content-gate-ship"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "# Content mutation declaration - NOT ENABLED" "$brief" \
+    "ship brief silently omitted the content-mutation declaration"
+  assert_grep "regenerate the brief with \`--content-mutation\` before dispatch" "$brief" \
+    "ship brief missing the fail-visible regeneration instruction"
+
+  id="brief-content-audit-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "# Deletion audit" "$brief" \
+    "scout brief missing the standing deletion-audit contract"
+  assert_grep "independently re-derive the before/after inventory for every content class" "$brief" \
+    "scout brief allowed the verifier to accept the deliverer's ledger"
+  assert_grep "nothing was silently dropped" "$brief" \
+    "scout brief did not state the subtraction check"
+  assert_grep "nothing beyond the approved scope was added" "$brief" \
+    "scout brief did not pair deletion with the existing addition check"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-content-scout-refusal firstmate --scout --content-mutation 2>&1) || status=$?
+  expect_code 1 "$status" "scout --content-mutation must be rejected"
+  assert_contains "$out" "--content-mutation applies only to ship briefs" \
+    "scout refusal did not explain the ship-only content mutation contract"
+  assert_absent "$home/data/brief-content-scout-refusal/brief.md" \
+    "rejected scout --content-mutation still wrote a brief"
+
+  help=$("$ROOT/bin/fm-brief.sh" --help)
+  assert_contains "$help" "--content-mutation" \
+    "fm-brief.sh --help did not document the explicit content-mutation contract"
+  assert_contains "$help" "identity-level" \
+    "fm-brief.sh --help did not explain why aggregate counts are insufficient"
+  pass "fm-brief.sh: content mutation is fail-visible and scout verification audits deletions independently"
+}
+
 test_secondmate_no_projects_charter() {
   local home brief status
   home="$TMP_ROOT/no-projects-home"
@@ -721,6 +790,8 @@ test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
+test_content_mutation_contract_is_explicit_and_complete
+test_content_mutation_omission_is_loud_and_scouts_rederive_deletions
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract

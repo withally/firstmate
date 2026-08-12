@@ -39,7 +39,8 @@ The collapsed-thinking, operational-user-row, and transcript-replay presentation
 If Pi removes one of those seams, Calm logs a diagnostic naming the unavailable adapter and skips only that adapter; `/calm`, the other adapters, and unrelated Pi extensions remain available.
 Losing only the transcript-replay adapter keeps operational user rows, acknowledgement origin, and every other Calm rule active, and a rebuild inside a run then only makes more replies visible.
 
-[`calm-mode-feasibility.md`](calm-mode-feasibility.md) owns the version-scoped renderer taxonomy and empirical evidence.
+[`calm-mode-feasibility.md`](calm-mode-feasibility.md) owns the renderer taxonomy and mechanism rationale.
+[`verification/runtime-backends.md`](verification/runtime-backends.md#pi-calm-transcript-redraw) owns the current dated per-harness rendering evidence.
 [`configuration.md`](configuration.md#pi-calm-preference-configcalm) owns the persisted preference file and resolution rules.
 `.pi/extensions/lib/fm-calm-visibility.ts` owns the visibility policy, `.pi/extensions/lib/fm-calm-operational-user-layout.ts` owns the zero-height operational-user row, the assistant-origin association, and the separately probed transcript replay window, `.pi/extensions/lib/fm-calm-assistant-layout.ts` owns collapsed-thinking and exact-acknowledgement layout, and `.pi/extensions/lib/fm-calm-working-ship.ts` owns the animated working presentation.
 

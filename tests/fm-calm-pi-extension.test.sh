@@ -153,6 +153,11 @@ const context = {
     setHiddenThinkingLabel() {},
     setStatus() {},
     setToolsExpanded() {},
+    setWidget(_key, content) {
+      if (typeof content === "function") {
+        content({ requestRender() {} });
+      }
+    },
     setWorkingVisible() {},
   },
 };
@@ -838,6 +843,12 @@ let editorText = "";
 let terminalInputHandler;
 let workingVisible;
 const layoutWidgets = new Map();
+const forcedPresentationRedraws = [];
+const presentationTui = {
+  requestRender(force) {
+    forcedPresentationRedraws.push(force);
+  },
+};
 let hiddenThinkingLabel = "unset";
 const statuses = new Map();
 const sessionEntries = [{ type: "message", message: { role: "toolResult", content: "kept" } }];
@@ -871,7 +882,10 @@ const commandContext = {
     },
     setWidget(key, factory) {
       if (factory === undefined) layoutWidgets.delete(key);
-      else layoutWidgets.set(key, factory);
+      else layoutWidgets.set(
+        key,
+        typeof factory === "function" ? factory(presentationTui, theme) : factory,
+      );
     },
     setWorkingVisible(value) {
       workingVisible = value;
@@ -901,6 +915,9 @@ if (
 await calmCommand.handler("", commandContext);
 if (expanded !== true || workingVisible !== true || hiddenThinkingLabel !== "" || statuses.get("firstmate-calm") !== undefined) {
   throw new Error("Calm did not preserve working visibility or apply its thinking and footer presentation controls");
+}
+if (JSON.stringify(forcedPresentationRedraws) !== JSON.stringify([true])) {
+  throw new Error(`Calm did not request one forced presentation redraw when hiding transcript rows: ${JSON.stringify(forcedPresentationRedraws)}`);
 }
 if (readFileSync(`${process.env.FM_HOME}/config/calm`, "utf8") !== "on\n") {
   throw new Error("Calm did not persist the active choice in the effective Firstmate home");

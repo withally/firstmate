@@ -94,6 +94,33 @@ pi-signed
 0.82.0
 ```
 
+### Pi Calm transcript redraw
+
+Pi Calm's renderer-dependent transcript guarantees were reverified on 2026-08-12 against the installed Pi 0.84.1 package and CLI in a real isolated 180 by 44 tmux TUI.
+Pi 0.84.1 called the registered watcher tool's renderer with Calm active but could leave the prior zero-height row painted until a later frame, so Calm now captures the current TUI through the documented widget factory and requests one forced redraw whenever its presentation choice takes effect.
+The portable renderer fixture proves that activating Calm requests that forced redraw, while the real TUI fixture proves the already-rendered `fm_watch_arm_pi` call and result, built-in tool rows, collapsed thinking labels, and operational wake are absent without weakening their negative assertions.
+
+```sh
+pi --version
+tests/fm-calm-pi-extension.test.sh
+```
+
+Observed bounded output:
+
+```text
+0.84.1
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+```
+
+The credentialed provider and watcher-continuity guard remains opt-in in the `live-harness-optin` family:
+
+```sh
+FM_PI_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-pi-primary-live-e2e.test.sh
+```
+
+That broader guard is not the owner of the deterministic transcript-redraw verdict above.
+
 The isolated process and endpoint checks used:
 
 ```sh

@@ -13,8 +13,9 @@ Changing persisted context to remove hidden content, filtering provider context,
 ## Compatibility evidence
 
 [`calm.md`](calm.md#pi-compatibility) owns the current Pi compatibility contract.
-Pi 0.81.1 was installed when Calm was first built, and Pi 0.82.0 was the later reverification target.
-The inspected Pi CHANGELOG shows no relevant presentation API introduced at either version, so those versions remain verification evidence rather than compatibility bounds.
+Pi 0.81.1 was installed when Calm was first built, Pi 0.82.0 was the first reverification target, and Pi 0.84.1 is the current one.
+The inspected Pi CHANGELOG introduces no supported transcript-row renderer at any of those versions, so they remain verification evidence rather than compatibility bounds.
+Pi 0.84's TUI rendering work did change when an already-painted row is discarded, which is why Calm adds the transcript-redraw adapter below; like every other adapter it probes its seam rather than gating on a version.
 The exported classes used by the adapters (`AssistantMessageComponent` and `InteractiveMode`) are undocumented internals with no stated version guarantee.
 `tests/fm-calm-pi-extension.test.sh` records the installed Pi version as evidence without gating on it and covers both newer synthetic versions and an unavailable adapter seam.
 

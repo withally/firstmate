@@ -763,6 +763,154 @@ fm_lock_release() {
   rmdir "$lockdir" 2>/dev/null || true
 }
 
+fm_meta_lock_path() {
+  local meta=$1 dir base id
+  dir=${meta%/*}
+  base=${meta##*/}
+  [ "$dir" != "$meta" ] || dir=.
+  case "$base" in
+    *.meta) id=${base%.meta} ;;
+    *) return 1 ;;
+  esac
+  case "$id" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  printf '%s/.meta-%s.lock\n' "$dir" "$id"
+}
+
+# fm_task_set_lock_path: the per-home lock guarding WHICH tasks exist in a home,
+# as opposed to fm_meta_lock_path, which guards one task's record.
+#
+# A per-task lock cannot protect a task that does not exist yet. Forced
+# secondmate teardown enumerates a home's task set, locks what it found, and
+# then re-enumerates while removing; a fresh spawn publishing a record inside
+# that window is invisible to the first enumeration and visible to the second,
+# so it gets destructively processed while never lifecycle-locked (reproduced
+# with real agents: a record published 0.249s after teardown began was removed
+# and its worktree returned to the pool, with both commands reporting success).
+#
+# The two roles are asymmetric, so the guard is a shared/exclusive pair rather
+# than one mutex. Destructive owners (forced teardown) take this lock
+# EXCLUSIVELY from enumeration through cleanup. Fresh spawns are SHARED: several
+# of them may publish different tasks into one home at once - concurrent spawns
+# are ordinary fleet behavior - so each registers itself with
+# fm_task_set_publish_begin instead of taking this lock, and holds that
+# registration until its record is published.
+#
+# Registration is published before the exclusive lock is read, and the exclusive
+# lock is created before registrations are read, so neither side can slip
+# through the other's window: either the spawn sees the teardown's lock and
+# refuses, or the teardown sees the spawn's registration and refuses (or both
+# refuse). Every direction fails closed, and spawns never exclude each other.
+fm_task_set_lock_path() {  # <state-dir>
+  local state=$1
+  [ -n "$state" ] || return 1
+  case "$state" in *[$'\n\r\t']*) return 1 ;; esac
+  printf '%s/.task-set.lock\n' "$state"
+}
+
+# fm_task_set_publishers_dir: where shared publication registrations live, one
+# file per in-flight fresh spawn. Entries are named by mktemp rather than by
+# pid, so two spawns can never contend over one name and a recycled pid can
+# never land on an existing entry.
+fm_task_set_publishers_dir() {  # <state-dir>
+  local state=$1
+  [ -n "$state" ] || return 1
+  case "$state" in *[$'\n\r\t']*) return 1 ;; esac
+  printf '%s/.task-set-publishers\n' "$state"
+}
+
+# fm_task_set_lock_is_owned: is the exclusive task-set lock held by a live owner?
+# Observation only - a spawn must never steal a teardown's lock, so this reads
+# the lock rather than acquiring it, and applies the same liveness and
+# mid-acquire freshness rules fm_lock_try_acquire uses before reclaiming.
+fm_task_set_lock_is_owned() {  # <state-dir>
+  local state=$1 lock pid
+  lock=$(fm_task_set_lock_path "$state") || return 0
+  [ -e "$lock" ] || [ -L "$lock" ] || return 1
+  pid=$(cat "$lock/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" && return 0
+  fm_lock_mid_acquire_is_fresh "$lock" "$pid" && return 0
+  return 1
+}
+
+# fm_task_set_publish_begin: register this process as publishing a task into the
+# home. On success FM_TASK_SET_PUBLISH_ENTRY holds the registration to release
+# later with fm_task_set_publish_end; on failure FM_TASK_SET_PUBLISH_REASON says
+# whether a destructive owner holds the exclusive lock (owned) or the
+# registration itself could not be established (error).
+#
+# The result is returned in variables rather than on stdout because the
+# registration records the CALLER's pid: read through a command substitution it
+# would record a subshell that exits immediately, leaving a registration nothing
+# is actually publishing behind. Call it directly.
+FM_TASK_SET_PUBLISH_REASON=
+FM_TASK_SET_PUBLISH_ENTRY=
+fm_task_set_publish_begin() {  # <state-dir>
+  local state=$1 dir entry pid
+  FM_TASK_SET_PUBLISH_REASON=error
+  FM_TASK_SET_PUBLISH_ENTRY=
+  dir=$(fm_task_set_publishers_dir "$state") || return 1
+  [ ! -L "$dir" ] || return 1
+  mkdir -p -- "$dir" 2>/dev/null || return 1
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  pid=${BASHPID:-$$}
+  entry=$(mktemp "$dir/publisher.XXXXXX" 2>/dev/null) || return 1
+  if ! { printf '%s\n' "$pid" > "$entry"; } 2>/dev/null; then
+    rm -f -- "$entry" 2>/dev/null || true
+    return 1
+  fi
+  # Publish first, then look: an exclusive owner that started before this point
+  # is visible here, and one that starts after this point sees this entry.
+  if fm_task_set_lock_is_owned "$state"; then
+    rm -f -- "$entry" 2>/dev/null || true
+    FM_TASK_SET_PUBLISH_REASON=owned
+    return 1
+  fi
+  # shellcheck disable=SC2034 # Both are read by callers after this returns.
+  FM_TASK_SET_PUBLISH_REASON=
+  # shellcheck disable=SC2034 # Read by callers as the registration to release.
+  FM_TASK_SET_PUBLISH_ENTRY=$entry
+}
+
+fm_task_set_publish_end() {  # <registration-path>
+  local entry=$1
+  [ -n "$entry" ] || return 0
+  rm -f -- "$entry" 2>/dev/null || true
+}
+
+# fm_task_set_publish_in_flight: 0 when a fresh spawn may be publishing into the
+# home, 1 only when that is definitively not the case. Called by the exclusive
+# owner after it holds the lock, so anything unreadable answers 0 - a
+# destructive operation must not proceed on an unproven task set. Registrations
+# left behind by a killed spawn are reclaimed once their pid is gone.
+fm_task_set_publish_in_flight() {  # <state-dir>
+  local state=$1 dir entry pid write_window
+  dir=$(fm_task_set_publishers_dir "$state") || return 0
+  [ ! -L "$dir" ] || return 0
+  [ -d "$dir" ] || return 1
+  write_window=$FM_LOCK_STALE_AFTER
+  [ "$write_window" -ge 2 ] || write_window=2
+  for entry in "$dir"/publisher.*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    [ -f "$entry" ] && [ ! -L "$entry" ] || return 0
+    pid=$(cat "$entry" 2>/dev/null || true)
+    case "$pid" in
+      ''|*[!0-9]*)
+        # Caught between the registration's creation and its pid write: fail
+        # closed while it is fresh, and only reclaim it once it is older than
+        # any real write window.
+        [ "$(fm_path_age "$entry")" -lt "$write_window" ] && return 0
+        rm -f -- "$entry" 2>/dev/null || true
+        continue
+        ;;
+    esac
+    fm_pid_alive "$pid" && return 0
+    rm -f -- "$entry" 2>/dev/null || true
+  done
+  return 1
+}
+
 fm_failure_episode_reset() {
   local state=$1 mode=${2:-acquire} lock current pid acquired=0 path
   lock="$state/.turnend-claude-blocks.lock"

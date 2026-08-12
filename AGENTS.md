@@ -168,7 +168,8 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 
 ## 4. Harness and runtime dispatch
 
-Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
+Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, resume, or adapter verification.
+Interrupt, stop, or relaunch a worker running in this home only through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, never by hand-typing an interrupt key or exit command through `fm-send`, which marks it as chat the worker reasons about instead of executing ([`docs/agent-control.md`](docs/agent-control.md)).
 The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `kimi`; never dispatch on an unverified adapter.
 If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
@@ -507,7 +508,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi output.
-- `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
+- `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, resuming an exited agent, or verifying a new harness adapter; interrupt, exit, and relaunch run through `bin/fm-control.sh` instead (section 4).
 - `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - load before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.

@@ -47,6 +47,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
 | `fm-spawn.sh`            | Spawn crewmates, scouts, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
+| `fm-control.sh`          | Deliver allowlisted, postcondition-verified interrupt, exit, and transactional relaunch operations to an exact task id |
+| `fm-control-lib.sh`      | Own the lifecycle verb, harness, backend, and per-harness wiring capability tables |
 | `fm-backend.sh`          | Runtime-backend selection, meta helpers, selector resolution, and operation dispatch |
 | `fm-backend-hometag-lib.sh` | Shared per-installation home-tag derivation for zellij tab and cmux workspace titles |
 | `fm-composer-lib.sh`     | Single fleet-wide owner of composer-content classification for all backends          |
@@ -85,7 +87,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor for the bootstrap diagnostic                  |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
 | `fm-wake-drain.sh`       | Present durable watcher wakes and OPEN DECISIONS, consume only a generation-bound post-handling acknowledgement, then assert supervision health |
-| `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable locks, and watcher/away-daemon identity-health helpers |
+| `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable task, metadata, and task-set locks, and watcher/away-daemon identity-health helpers |
 | `fm-classify-lib.sh`     | Shared wake classification, keyed decision folds, delivery receipts, scans, and terminal-signal dedupe |
 | `fm-send.sh`             | Send one verified literal line or supported key through the target's recorded backend |
 | `fm-busy-lib.sh`         | Single owner of the semantic busy-state contract: verdicts, source attribution, and per-harness sources |

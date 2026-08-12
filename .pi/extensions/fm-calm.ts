@@ -1,14 +1,15 @@
 // Firstmate's home-persistent Pi transcript presentation toggle.
 //
-// Verified against Pi 0.81.1 and 0.82.0, which expose built-in ToolDefinitions, per-slot
+// Verified against Pi 0.81.1, 0.82.0, and 0.84.1, which expose built-in ToolDefinitions, per-slot
 // renderers, renderShell: "self", session_start replacement reasons, agent_start and
 // agent_settled, ExtensionUIContext.setToolsExpanded(), setWorkingVisible(), setWidget()
 // with a disposable component factory, and setHiddenThinkingLabel().
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
-// newer Pi solely for its version. The collapsed-thinking and operational-user
-// presentation adapters probe the exact API they patch and degrade independently with a
-// diagnostic (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
+// newer Pi solely for its version. The collapsed-thinking, operational-user, and
+// transcript-redraw presentation adapters probe the exact API they patch and degrade
+// independently with a diagnostic naming the adapter and the running Pi version
+// (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
 // still exposes no global renderer for arbitrary built-in or custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
 import { randomUUID } from "node:crypto";
@@ -23,6 +24,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ExtensionAPI,
+  ExtensionContext,
   ExtensionUIContext,
   ToolDefinition,
   ToolRenderResultOptions,
@@ -35,8 +37,15 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, getKeybindings, type Component } from "@earendil-works/pi-tui";
+import {
+  Box,
+  Container,
+  getKeybindings,
+  type Component,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import {
   installCalmAssistantLayout,
@@ -91,6 +100,7 @@ type StandardShellState = {
 const extensionFile = fileURLToPath(import.meta.url);
 const extensionDir = dirname(extensionFile);
 const root = resolve(extensionDir, "../..");
+const CALM_REDRAW_CAPTURE_WIDGET_KEY = "firstmate-calm-redraw-capture";
 
 // Each presentation adapter probes the exact Pi API it patches. If a future Pi removes
 // that API, only the affected adapter degrades; the rest of Calm keeps working.
@@ -110,6 +120,7 @@ export default function (pi: ExtensionAPI) {
 
   let exportRendering = false;
   let removeTerminalInputHandler: (() => void) | undefined;
+  let presentationTui: TUI | undefined;
   // One logical agent run, tracked from agent_start through agent_settled rather than
   // from turns or tool calls, so the boat never flickers between tool calls, automatic
   // continuations, retries, or compaction that stay inside the same run.
@@ -171,6 +182,44 @@ export default function (pi: ExtensionAPI) {
       active: calmPresentationIsActive(),
       stockExportRendering: exportRendering,
     });
+  };
+
+  // Pi 0.84's regular TUI can retain already-painted rows when a renderer shrinks to
+  // zero height until a later unrelated frame. The documented widget factory is the
+  // extension surface that supplies the current TUI, whose forced request discards the
+  // stale frame. Capture it without keeping a widget or changing transcript geometry.
+  // Outside "tui" mode Pi supplies a no-op setWidget by design, so only a TUI session
+  // that fails to yield a usable TUI is drift, and that drift is reported through the
+  // same adapter diagnostic as every other Calm seam.
+  const capturePresentationTui = (ctx: ExtensionContext): void => {
+    presentationTui = undefined;
+    installCalmPresentationAdapter("transcript-redraw", () => {
+      let captured: TUI | undefined;
+      ctx.ui.setWidget(CALM_REDRAW_CAPTURE_WIDGET_KEY, (tui) => {
+        captured = tui;
+        return new Container();
+      });
+      ctx.ui.setWidget(CALM_REDRAW_CAPTURE_WIDGET_KEY, undefined);
+      if (captured && typeof captured.requestRender === "function") {
+        presentationTui = captured;
+        return;
+      }
+      if (ctx.mode !== "tui") return;
+      throw new Error(
+        captured
+          ? `Pi ${PI_VERSION} no longer exposes TUI.requestRender(), so Calm cannot force a transcript redraw.`
+          : `Pi ${PI_VERSION} did not invoke the setWidget() component factory while capturing the TUI, so Calm cannot force a transcript redraw.`,
+      );
+    });
+  };
+  const forcePresentationRedraw = (): void => {
+    presentationTui?.requestRender(true);
+  };
+  const rebuildTranscriptRows = (ui: ExtensionUIContext): void => {
+    const expanded = ui.getToolsExpanded();
+    ui.setToolsExpanded(!expanded);
+    ui.setToolsExpanded(expanded);
+    forcePresentationRedraw();
   };
 
   registerFirstmateSyntheticPresentation(pi);
@@ -293,6 +342,7 @@ export default function (pi: ExtensionAPI) {
     workingShipShown = false;
     // A genuine new session lifetime starts the boat at the normal initial position.
     workingShipAnimation.reset();
+    capturePresentationTui(ctx);
     applyWorkingPresentation(ctx.ui, true);
     ctx.ui.setHiddenThinkingLabel(calmPresentationIsActive() ? "" : undefined);
     ctx.ui.setStatus("firstmate-calm", undefined);
@@ -316,9 +366,7 @@ export default function (pi: ExtensionAPI) {
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
-        const expanded = ctx.ui.getToolsExpanded();
-        ctx.ui.setToolsExpanded(!expanded);
-        ctx.ui.setToolsExpanded(expanded);
+        rebuildTranscriptRows(ctx.ui);
       }, 0);
     });
   });
@@ -353,9 +401,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setHiddenThinkingLabel(active ? "" : undefined);
       ctx.ui.setStatus("firstmate-calm", undefined);
 
-      const expanded = ctx.ui.getToolsExpanded();
-      ctx.ui.setToolsExpanded(!expanded);
-      ctx.ui.setToolsExpanded(expanded);
+      rebuildTranscriptRows(ctx.ui);
     },
   });
 }

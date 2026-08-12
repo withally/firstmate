@@ -21,7 +21,7 @@ PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 TMUX_SOCKET="fm-calm-$$"
 TMUX_SESSION="fm-calm-e2e"
-# Verified against Pi 0.81.1 and 0.82.0 (docs/calm-mode-feasibility.md). This is
+# Verified against Pi 0.81.1, 0.82.0, and 0.84.1 (docs/calm-mode-feasibility.md). This is
 # known-good evidence, not a support ceiling: the fixtures below run against whatever
 # Pi is actually installed, and record_pi_version_evidence never rejects a newer
 # version. The tracked presentation adapters probe the exact API they patch (see
@@ -153,6 +153,11 @@ const context = {
     setHiddenThinkingLabel() {},
     setStatus() {},
     setToolsExpanded() {},
+    setWidget(_key, content) {
+      if (typeof content === "function") {
+        content({ requestRender() {} });
+      }
+    },
     setWorkingVisible() {},
   },
 };
@@ -195,6 +200,140 @@ test_pi_compat_no_upper_bound() {
     fail "record_pi_version_evidence accepted a missing/malformed Pi version"
   fi
   pass "Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version"
+}
+
+test_pi_compat_redraw_capture_drift() {
+  local fixture out status version
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "skip: node or npm not found for Pi calm redraw-capture drift test"
+    return 0
+  fi
+  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
+    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    return 0
+  fi
+  version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
+  record_pi_version_evidence "$version" "Pi calm redraw-capture drift"
+
+  fixture="$TMP_ROOT/redraw-capture-drift"
+  mkdir -p \
+    "$fixture/project/.pi/extensions/lib" \
+    "$fixture/project/node_modules/@earendil-works" \
+    "$fixture/home"
+  cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
+  cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
+  ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
+  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
+  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
+  printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
+
+  out=$(cd "$fixture/project" && \
+    EXT="$fixture/project/.pi/extensions/fm-calm.ts" \
+    FM_HOME="$fixture/home" \
+    PI_VERSION="$version" \
+    node --input-type=module 2>&1 <<'JS'
+import { pathToFileURL } from "node:url";
+
+const extension = await import(`${pathToFileURL(process.env.EXT).href}?drift=${Date.now()}`);
+
+const registerCalm = () => {
+  const handlers = new Map();
+  const pi = {
+    events: { emit() {}, on() {} },
+    on(event, handler) {
+      handlers.set(event, handler);
+    },
+    registerCommand() {},
+    registerEntryRenderer() {},
+    registerTool() {},
+  };
+  extension.default(pi);
+  return handlers.get("session_start");
+};
+
+const contextFor = (mode, setWidget) => ({
+  mode,
+  ui: {
+    getEditorText: () => "",
+    getToolsExpanded: () => false,
+    onTerminalInput: () => () => {},
+    setHiddenThinkingLabel() {},
+    setStatus() {},
+    setToolsExpanded() {},
+    setWidget,
+    setWorkingVisible() {},
+  },
+});
+
+const runSessionStart = async (context) => {
+  const messages = [];
+  const stockError = console.error;
+  console.error = (...args) => messages.push(args.join(" "));
+  try {
+    await registerCalm()({ reason: "startup" }, context);
+  } finally {
+    console.error = stockError;
+  }
+  return messages;
+};
+
+// A TUI session whose widget factory never runs is real drift and must name the harness.
+const droppedFactory = await runSessionStart(contextFor("tui", () => {}));
+const droppedReport = droppedFactory.join("\n");
+if (
+  droppedFactory.length !== 1 ||
+  !droppedReport.includes("transcript-redraw") ||
+  !droppedReport.includes(`Pi ${process.env.PI_VERSION}`)
+) {
+  throw new Error(
+    `a TUI that never invoked the widget factory did not report Calm's redraw drift with the harness and version: ${JSON.stringify(droppedFactory)}`,
+  );
+}
+
+// A TUI whose captured TUI lost requestRender() is drift too.
+const missingRequestRender = await runSessionStart(
+  contextFor("tui", (_key, factory) => {
+    if (typeof factory === "function") factory({});
+  }),
+);
+const missingReport = missingRequestRender.join("\n");
+if (
+  missingRequestRender.length !== 1 ||
+  !missingReport.includes("requestRender") ||
+  !missingReport.includes(`Pi ${process.env.PI_VERSION}`)
+) {
+  throw new Error(
+    `a TUI without requestRender() did not report Calm's redraw drift with the harness and version: ${JSON.stringify(missingRequestRender)}`,
+  );
+}
+
+// Non-TUI modes get a no-op setWidget by design and must stay silent.
+for (const mode of ["print", "json", "rpc"]) {
+  const quiet = await runSessionStart(contextFor(mode, () => {}));
+  if (quiet.length !== 0) {
+    throw new Error(`Calm warned about the redraw capture in ${mode} mode: ${JSON.stringify(quiet)}`);
+  }
+}
+
+// The shipped TUI surface still captures a usable TUI without warning.
+const healthy = await runSessionStart(
+  contextFor("tui", (_key, factory) => {
+    if (typeof factory === "function") factory({ requestRender() {} });
+  }),
+);
+if (healthy.length !== 0) {
+  throw new Error(`Calm warned about a healthy redraw capture: ${JSON.stringify(healthy)}`);
+}
+JS
+)
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi calm redraw-capture drift path failed: $out"
+  [ -z "$out" ] || fail "Pi calm redraw-capture drift test printed output: $out"
+  pass "a Pi TUI that stops supplying a forcible-render TUI fails loudly with the harness and version instead of silently losing Calm's transcript redraw, while non-TUI modes stay quiet"
 }
 
 test_pi_compat_degraded_adapter() {
@@ -838,6 +977,12 @@ let editorText = "";
 let terminalInputHandler;
 let workingVisible;
 const layoutWidgets = new Map();
+const forcedPresentationRedraws = [];
+const presentationTui = {
+  requestRender(force) {
+    forcedPresentationRedraws.push(force);
+  },
+};
 let hiddenThinkingLabel = "unset";
 const statuses = new Map();
 const sessionEntries = [{ type: "message", message: { role: "toolResult", content: "kept" } }];
@@ -870,8 +1015,14 @@ const commandContext = {
       imageRow.setExpanded(value);
     },
     setWidget(key, factory) {
-      if (factory === undefined) layoutWidgets.delete(key);
-      else layoutWidgets.set(key, factory);
+      const existing = layoutWidgets.get(key);
+      if (existing && typeof existing.dispose === "function") existing.dispose();
+      layoutWidgets.delete(key);
+      if (factory === undefined) return;
+      layoutWidgets.set(
+        key,
+        typeof factory === "function" ? factory(presentationTui, theme) : factory,
+      );
     },
     setWorkingVisible(value) {
       workingVisible = value;
@@ -901,6 +1052,9 @@ if (
 await calmCommand.handler("", commandContext);
 if (expanded !== true || workingVisible !== true || hiddenThinkingLabel !== "" || statuses.get("firstmate-calm") !== undefined) {
   throw new Error("Calm did not preserve working visibility or apply its thinking and footer presentation controls");
+}
+if (JSON.stringify(forcedPresentationRedraws) !== JSON.stringify([true])) {
+  throw new Error(`Calm did not request one forced presentation redraw when hiding transcript rows: ${JSON.stringify(forcedPresentationRedraws)}`);
 }
 if (readFileSync(`${process.env.FM_HOME}/config/calm`, "utf8") !== "on\n") {
   throw new Error("Calm did not persist the active choice in the effective Firstmate home");
@@ -3636,6 +3790,7 @@ JS
 test_home_resolution
 test_pi_compat_no_upper_bound
 test_pi_compat_degraded_adapter
+test_pi_compat_redraw_capture_drift
 test_pi_compat_missing_adapter_exports
 test_rendering_and_session_lifecycle
 test_operational_followup_turn_e2e

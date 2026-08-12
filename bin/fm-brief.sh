@@ -2,10 +2,23 @@
 # Scaffold a crewmate brief or persistent secondmate charter at
 # data/<task-id>/brief.md under the active firstmate home.
 # For ordinary tasks, the standard Setup/Rules/Definition-of-done contract is
-# filled in. Firstmate then replaces the {TASK} placeholder with the task
-# description, acceptance criteria, and context, and may adjust other sections
-# when the task genuinely deviates (e.g. working an existing external PR instead
-# of shipping a new one).
+# filled in. Firstmate then fills the task's Purpose, Authorities, The bar, and
+# Boundaries placeholders, including the explicit judgment budget, and may
+# adjust other sections when the task genuinely deviates (e.g. working an
+# existing external PR instead of shipping a new one).
+# Purpose is one sentence naming the outcome rather than the activity.
+# Authorities are numbered, named for what they govern, and state that the
+# higher authority wins while the worker records any conflict.
+# The bar states one global law and acceptance as rejection conditions, never
+# as an implementation recipe.
+# Boundaries name what survives and explicit non-goals.
+# Seeded examples are hypotheses, not mandates.
+# The four-part shape is a discipline, not a fixed-length form; fill each part
+# only as far as this task's real constraints require.
+# The judgment-budget line is the per-model dial: widen it and remove recipes
+# for high-capability models, or narrow it with measured boundaries for others.
+# An unstated judgment budget is never neutral because every model fills it with
+# initiative.
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--content-mutation] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
@@ -24,22 +37,20 @@
 #   Set FM_SECONDMATE_SCOPE='<scope>' to write a routing scope distinct from the charter text.
 #   --herdr-lab is mandatory when the task will issue Herdr lifecycle commands.
 #   It adds the hard isolation contract backed by bin/fm-herdr-lab.sh.
-#   The flag must be explicit because {TASK} is filled after scaffolding and the
-#   caller-supplied repo string cannot reliably identify this repo. Briefs made
-#   without it carry a loud declaration so an omitted contract cannot be silent.
+#   The flag must be explicit because the task is filled after scaffolding and
+#   the caller-supplied repo string cannot reliably identify this repo.
 #   --content-mutation is mandatory for a ship task that mutates an existing
 #   document, packet, dataset, or similar content artifact, but not ordinary
 #   source code. It requires before/after counts and identity-level deltas for
 #   every content class, reasons and decisions for every drop, and an explicit
-#   captain reference before any class drops to zero. Briefs made without it
-#   carry a loud declaration because {TASK} is filled after scaffolding.
+#   captain reference before any class drops to zero.
 #   Every ship and scout brief also makes deletion auditing the standing dual of
 #   addition auditing: a verifier independently re-derives the inventory rather
 #   than accepting the deliverer's ledger.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:
-#   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
+#   no-mistakes  implement -> no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
@@ -281,6 +292,24 @@ fi
 
 REPO=${POS[1]}
 
+IFS= read -r -d '' TASK_SECTION <<'EOF' || true
+# Task
+
+## Purpose
+{PURPOSE - one sentence outcome, not activity}
+
+## Authorities, in order
+{AUTHORITIES - numbered and named for what they govern; higher authority wins; record the conflict}
+
+## The bar
+{THE BAR - one global law plus rejection conditions, never an implementation recipe}
+
+## Boundaries
+{BOUNDARIES - what survives, explicit non-goals, and seeded examples marked as hypotheses}
+Judgment budget: {WORKER CHOICES}; not yours: {WITHHELD CHOICES}.
+EOF
+TASK_SECTION=${TASK_SECTION%$'\n'}
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -304,13 +333,7 @@ HERDR_SECTION=$(printf '%s\n' \
 'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.' \
 'The captain fleet uses the running `default` session.')
 else
-IFS= read -r -d '' HERDR_SECTION <<'EOF' || true
-# Herdr lifecycle declaration - NOT ENABLED
-**HARD SAFETY GATE:** this scaffold cannot inspect the task text that replaces `{TASK}` later.
-If the task will start, stop, delete, restart, profile, or otherwise drive Herdr lifecycle behavior, stop and regenerate the brief with `--herdr-lab` before dispatch.
-Do not add Herdr lifecycle commands to this unguarded brief by hand.
-EOF
-HERDR_SECTION=${HERDR_SECTION%$'\n'}
+HERDR_SECTION=""
 fi
 
 if [ "$CONTENT_MUTATION" -eq 1 ]; then
@@ -325,14 +348,21 @@ Any class that drops to zero requires an explicit captain reference; worker judg
 Include the ledger in the delivery artifact and, when the task ships by PR, in the PR body.
 EOF
 else
-IFS= read -r -d '' CONTENT_SECTION <<'EOF' || true
-# Content mutation declaration - NOT ENABLED
-**HARD SAFETY GATE:** this scaffold cannot inspect the task text that replaces `{TASK}` later.
-If the task will mutate an existing document, packet, dataset, or similar body of content rather than ordinary source code, stop and regenerate the brief with `--content-mutation` before dispatch.
-Do not add the content-conservation contract to this unguarded brief by hand.
-EOF
+CONTENT_SECTION=""
 fi
 CONTENT_SECTION=${CONTENT_SECTION%$'\n'}
+
+SAFETY_PREFIX=""
+if [ -n "$HERDR_SECTION" ]; then
+  SAFETY_PREFIX="$HERDR_SECTION
+
+"
+fi
+if [ -n "$CONTENT_SECTION" ]; then
+  SAFETY_PREFIX="${SAFETY_PREFIX}${CONTENT_SECTION}
+
+"
+fi
 
 IFS= read -r -d '' DELETION_AUDIT_SECTION <<'EOF' || true
 # Deletion audit
@@ -347,12 +377,9 @@ if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
-{TASK}
+$TASK_SECTION
 
-$HERDR_SECTION
-
-$DELETION_AUDIT_SECTION
+$SAFETY_PREFIX$DELETION_AUDIT_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -389,7 +416,7 @@ Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-l
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
-echo "scaffolded: $BRIEF (scout; replace {TASK})"
+echo "scaffolded: $BRIEF (scout; fill task shape)"
 exit 0
 fi
 
@@ -407,7 +434,7 @@ Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+Do not run the no-mistakes pipeline. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
   local-only)
@@ -430,22 +457,17 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
-
-You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
+The task is complete only when the implementation is committed, the no-mistakes pipeline has opened a PR, and its CI-ready checks are green.
+After committing, invoke the no-mistakes skill using the invocation form supported by your harness and drive its gates through that CI-ready return point without waiting for a second instruction from firstmate.
+Do not append \`done:\` or stop between the implementation commit and that CI-ready result.
+Follow the guidance no-mistakes itself provides for the mechanics: \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
-
-Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
-  Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
-  When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
-- Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
-
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+ask-user findings are never yours to answer: escalate them to firstmate under rule 6 and stop.
+Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
+When the decision comes back, feed it to \`no-mistakes axi respond\`; never answer it yourself or route it to "the user".
+Never use \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
+After no-mistakes reports CI green, append \`done: PR {url} checks green\` to the status file and stop; do not wait for background merge monitoring.
 EOF
     ;;
 esac
@@ -458,14 +480,9 @@ DOD=${DOD%$'\n'}
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
-{TASK}
+$TASK_SECTION
 
-$HERDR_SECTION
-
-$CONTENT_SECTION
-
-$DELETION_AUDIT_SECTION
+$SAFETY_PREFIX$DELETION_AUDIT_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -510,4 +527,4 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE; fill task shape)"

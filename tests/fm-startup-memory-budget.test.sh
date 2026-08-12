@@ -61,7 +61,9 @@ case "$*" in
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1' ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0 ;;
-  *capture-pane*) printf '\n' ;;
+  # Row 0 (the cursor row) is a proven-empty bare agent composer: a verified
+  # submit needs positive container proof, so a blank pane would defer.
+  *capture-pane*) printf '\342\235\257 \n' ;;
 esac
 exit 0
 SH

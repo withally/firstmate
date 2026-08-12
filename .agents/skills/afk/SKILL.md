@@ -98,8 +98,8 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
   This narrow delivery guard never classifies a recorded worker task and never uses a global union of vendor patterns.
 - **Composer-state guard** - `inject_msg` reads the full `empty`/`pending`/`unknown` verdict from `fm_backend_composer_state` and injects only when it is affirmatively `empty`.
   `pending` means real unsubmitted text, while `unknown` includes an unreadable pane and a bare shell prompt left after the agent exits, so both defer.
-  The shared `bin/fm-composer-lib.sh` owns the content decision after each backend captures and structurally identifies its own composer row.
-  It preserves idle bordered composers such as claude's `│ > … │` and bare agent glyphs as empty, but a bare shell glyph is unknown unless inside a genuine bordered composer box; see `docs/herdr-backend.md` "Composer and injection safety" for the complete contract.
+  The shared `bin/fm-composer-lib.sh` owns every composer shape and the verdict; each backend only captures a screen and declares what its capture primitive can see.
+  It preserves idle bordered composers such as claude's `│ > … │` and bare agent glyphs as empty, but a bare shell glyph is unknown unless inside a genuine bordered composer box, and a blank row with no positive container proof is unknown rather than an injection target; see `docs/herdr-backend.md` "Composer and injection safety" for the complete contract.
   `pane_input_pending` remains the tested predicate for callers that only need to know whether real unsubmitted text is present, but it is insufficient for an injection-safety decision because it cannot distinguish `empty` from `unknown`.
 
 A busy primary pane, or any composer verdict other than `empty`, defers the pre-submit injection; the buffered escalation survives in `state/.subsuper-escalations` and can be attempted on a later housekeeping tick.
@@ -127,8 +127,10 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
 If confirmation remains ambiguous after that one submit invocation, later flushes never type the digest again.
-For tmux that confirmation is a cleared composer, using the same corrected,
-border-aware detector as the composer guard.
+For tmux that confirmation is a positively proven empty composer from the same
+shared classifier as the composer guard, or, when a working harness hides its
+composer entirely, a baseline-gated idle-to-busy transition across the submit's
+own Enter (`docs/tmux-backend.md` owns that exception).
 For herdr, normal idle-baseline submits are confirmed by native agent-state showing a real turn started; the ANSI-aware composer classifier remains the affirmative-empty pre-injection guard and conservative fallback for non-idle or unreadable baselines.
 A bordered-empty or ghost-only composer is recognized as empty where that backend uses composer confirmation, rather than mistaken for a swallowed Enter.
 `fm-send.sh` uses the same primitive and exits non-zero
@@ -192,11 +194,11 @@ the operational prefix lets firstmate distinguish it from a real captain message
 - **Busy and composer guards on the supervisor pane** - before injecting, the daemon runs the detected-primary-harness rendered busy guard and reads `fm_backend_composer_state` directly.
   Only `empty` permits injection; `pending` protects half-typed or swallowed input, and `unknown` protects unreadable panes and bare dead-shell prompts.
   Every other pre-submit result preserves the buffer for a later guarded attempt, so the daemon never merges its digest into the captain's half-typed line or types it into a shell.
-- The shared composer classifier receives a candidate row only after the active backend performs its own capture and structural row recognition.
-  tmux and herdr route their raw styled candidate rows through the shared `fm_composer_strip_ghost` extractor, which removes dim/faint and dark-TRUECOLOR ghost/placeholder text before classification.
-  They read the composer shape from a separately ANSI-stripped plain row because a dark TRUECOLOR border can be stripped with ghost content.
+- The shared composer classifier receives a whole captured screen plus the backend's capture capabilities and selects the composer shape itself; no backend recognizes shapes on its own.
+  The ANSI-capable captures (tmux, herdr, zellij) route through the shared `fm_composer_strip_ghost` extractor, which removes dim/faint and dark-TRUECOLOR ghost/placeholder text before classification.
+  The classifier reads shape from a separately ANSI-stripped plain screen because a dark TRUECOLOR border can be stripped with ghost content.
   A ghost-only or idle bordered composer such as claude's `│ > ... │` therefore reads empty without allowing an unbordered shell prompt to do the same.
-  `FM_COMPOSER_IDLE_RE` still overrides tmux empty-composer matching after shared ghost and border stripping, and `FM_BUSY_REGEX` overrides the rendered delivery guards plus Grok's isolated task-state fallback.
+  `FM_COMPOSER_IDLE_RE` overrides the fleet-wide idle-placeholder set (matches still require structural position and styling proof), and `FM_BUSY_REGEX` overrides the rendered delivery guards plus Grok's isolated task-state fallback.
 - **Max-defer escape** - the daemon must never silently wedge. If anything stays
   buffered past `FM_MAX_DEFER_SECS` (default 300s), the daemon attempts one
   normal flush, which still requires an idle pane and an affirmatively empty composer. If that

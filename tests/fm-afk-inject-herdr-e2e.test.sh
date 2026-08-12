@@ -18,9 +18,9 @@
 # binary untouched.
 #
 # The "supervisor pane" is a tiny deterministic bash loop (not a real harness
-# binary): it draws a bordered composer row ("│ > <buf> │") that exercises the
-# bordered branch of fm_backend_herdr_composer_state, and logs every submitted
-# line (hex + text + injection/user classification) - the same technique
+# binary): it draws the verified bare agent-glyph composer row ("❯ <buf>") that
+# exercises fm_backend_herdr_composer_state, and logs every submitted line
+# (hex + text + injection/user classification) - the same technique
 # tests/fm-afk-inject-e2e.test.sh uses for its tmux supervisor pane, so this
 # test asserts on submitted CONTENT, not pane appearance. It ALSO registers
 # itself as a real herdr agent via `herdr pane report-agent` and reports an
@@ -131,12 +131,15 @@ read -r _FAKE_TAB_ID FAKE_CREW_PANE_ID <<EOF
 $FAKE_CREW_IDS
 EOF
 
-# --- deterministic bordered-composer loop, drawn in the scratch pane ---------
-# Mirrors tests/fm-afk-inject-e2e.test.sh's supervisor-loop.sh, but draws a
-# "│ > <buf> │" border so the bordered branch of
-# fm_backend_herdr_composer_state recognizes it, exactly like a bordered-TUI
-# harness composer. ALSO registers itself as a real herdr agent via `herdr
-# pane report-agent` and reports idle/working transitions around each
+# --- deterministic agent-composer loop, drawn in the scratch pane ------------
+# Mirrors tests/fm-afk-inject-e2e.test.sh's supervisor-loop.sh, drawing the
+# verified agent glyph before the in-progress input ("❯ <buf>") so the strict
+# shared classifier has positive container proof for the empty composer. A lone
+# side-bordered row ("│ > <buf> │") is deliberately NOT used: without its top
+# and bottom border rows it is not a container the classifier can prove, so it
+# reads `unknown` and the injector correctly defers forever.
+# The loop ALSO registers itself as a real herdr agent via `herdr pane
+# report-agent` and reports idle/working transitions around each
 # submission: fm_backend_herdr_send_text_submit's confirmation is now native
 # agent-state (agent get), not composer content (docs/herdr-backend.md
 # "Native agent-state submit confirmation"), so a synthetic pane that only
@@ -168,10 +171,10 @@ report_agent_state idle
 
 _buf=
 # redraw: keep the composer visually pinned to ONE terminal row regardless of
-# _buf's length - a realistic bordered single-line composer horizontally
+# _buf's length - a realistic single-line composer horizontally
 # scrolls to show the tail near the cursor rather than letting the terminal
 # hard-wrap a too-long line across multiple rows (which would break the
-# structural border-row classifier's one-row assumption: a batched escalation
+# structural classifier's one-row assumption: a batched escalation
 # digest easily exceeds a narrow pane's column width). A hardcoded width
 # (not `tput cols`) is used deliberately: verified empirically against a real
 # herdr pane launched this same way that `tput cols` inside this script's own
@@ -187,7 +190,7 @@ redraw() {
   else
     shown="$_buf"
   fi
-  printf '\r\033[K│ > %s │' "$shown"
+  printf '\r\033[K❯ %s' "$shown"
 }
 submit_line() {
   local _line=$_buf _c _hex

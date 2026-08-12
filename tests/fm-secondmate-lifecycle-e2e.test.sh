@@ -135,7 +135,9 @@ phase_spawn() {
 
 phase_send() {
   : > "$LOG"
-  : > "$PANE"
+  # Row 0 (the cursor row) is a proven-empty bare agent composer: a verified
+  # submit needs positive container proof, so a blank pane would defer.
+  printf '\342\235\257 \n' > "$PANE"
   # The meta window (firstmate:fm-design) must win over a foreign same-named
   # window returned by list-windows.
   PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_WINDOW="other-session:fm-design" \

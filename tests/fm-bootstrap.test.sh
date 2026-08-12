@@ -811,7 +811,9 @@ case "${1:-}" in
       *) printf '%s\n' codex ;;
     esac
     ;;
-  capture-pane) printf '\n' ;;
+  # Row 0 (the cursor row) is a proven-empty bare agent composer: a verified
+  # submit needs positive container proof, so a blank pane would defer.
+  capture-pane) printf '\342\235\257 \n' ;;
   list-windows) printf '%s\n' fm-sm ;;
 esac
 exit 0

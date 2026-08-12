@@ -76,10 +76,12 @@ LOG_FILE="$STATE_DIR/submitted.log"
 "$REAL_TMUX" -L "$SOCKET" new-session -d -s supervisor -x 200 -y 50
 SUPERVISOR_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t supervisor '#{pane_id}')
 
-# Supervisor pane loop: a small deterministic composer that logs each submitted
-# line verbatim (hex + text + classification). It draws the in-progress input
-# itself instead of relying on the terminal driver's canonical-mode echo, because
-# tmux cursor placement for that echo varies across CI environments.
+# Supervisor pane loop: a small deterministic agent composer that logs each
+# submitted line verbatim (hex + text + classification). It draws the verified
+# agent glyph before the in-progress input, giving the strict classifier
+# positive container proof while remaining borderless. It draws the input
+# itself instead of relying on the terminal driver's canonical-mode echo,
+# because tmux cursor placement for that echo varies across CI environments.
 LOOP_SCRIPT="$STATE_DIR/supervisor-loop.sh"
 cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
@@ -94,7 +96,7 @@ trap cleanup EXIT INT TERM
 
 _buf=
 redraw() {
-  printf '\r\033[K%s' "$_buf"
+  printf '\r\033[K❯ %s' "$_buf"
 }
 submit_line() {
   local _line=$_buf _c _hex

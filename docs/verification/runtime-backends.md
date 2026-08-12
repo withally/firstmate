@@ -124,7 +124,7 @@ Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identiti
 Herdr uses native registered-agent state and needs no process-name branch.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
-The structural multi-row composer reader, Kimi pointer-delivery path, and OpenCode 1.18.4 busy-queue behavior are pinned by:
+The shared composer classifier, Kimi pointer-delivery path, and OpenCode 1.18.4 busy-queue behavior are pinned by:
 
 ```sh
 tests/fm-composer-ghost.test.sh
@@ -132,8 +132,8 @@ tests/fm-kimi-harness.test.sh
 tests/fm-tmux-submit-busy.test.sh
 ```
 
-Expected structural matrix: real text on any content row is pending; all-empty complete boxes are empty; unreadable, incomplete, or unsafe boxes are unknown; and non-bordered panes retain cursor-row compatibility.
-Expected submit matrix: proven pending plus busy is accepted as queued; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; and only a proven empty composer succeeds directly.
+The current cross-backend shape matrix and live refresh command are recorded in [Composer classification matrix](#composer-classification-matrix).
+Expected submit matrix: proven pending plus busy is accepted as queued; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; an unknown post-submit screen converts only after an observed idle-to-busy transition; and only a proven empty composer succeeds directly.
 
 ### Cleanup endpoint identity
 
@@ -162,6 +162,50 @@ The dedicated tmux cell removed ambient tmux variables, required a socket-bound 
 Valid cleanup removed only the exact task-bound target and left the control window live.
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanup boundary; their harness-specific hook files and token cleanup run only after it, so no harness needs a separate endpoint parser.
+
+## Composer classification matrix
+
+`bin/fm-composer-lib.sh` owns bordered, bare-agent-glyph, OpenCode left-bar, and identity-gated Pi separated composers for tmux, Herdr, Zellij, Orca, and cmux.
+Each backend contributes only its capture capabilities and any native identity fact.
+Portable coverage exercises the complete capability matrix in both the ambient UTF-8 locale and `LC_ALL=C`:
+
+```sh
+bash tests/fm-composer-lib.test.sh
+bash tests/fm-composer-ghost.test.sh
+bash tests/fm-tmux-submit-busy.test.sh
+bash tests/fm-backend-herdr.test.sh
+bash tests/fm-backend-zellij.test.sh
+bash tests/fm-backend-orca.test.sh
+bash tests/fm-backend-cmux.test.sh
+```
+
+The env-gated live guard was run on 2026-08-12 from this isolated worktree on macOS 26.5.1 arm64, tmux 3.6a, and Bash 3.2.57:
+
+```sh
+FM_COMPOSER_MATRIX_LIVE=1 tests/fm-composer-matrix-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - claude (2.1.228 (Claude Code)): real idle composer classifies empty
+ok - codex (codex-cli 0.147.0): real idle composer classifies empty
+# harness absent, not verified here: opencode
+not ok - pi (0.84.1): idle composer never classified empty (last verdict: unknown)
+# harness absent, not verified here: pi-signed
+# harness absent, not verified here: grok
+# harness absent, not verified here: kimi
+ok - strict posture live: a blank shell row classifies unknown and injection defers
+# harness absent, not verified here: zellij (false-positive regression not exercised)
+not ok - live composer-matrix guard observed failures above
+```
+
+Claude and Codex passed against their real idle renderings without submitting a prompt.
+The portable tmux regression proves that an observed idle-to-busy transition confirms an accepted Enter when a working harness hides its composer, but this live guard never submits a Codex prompt.
+Therefore the exact `fm-send-verify-fn-k8` busy-Codex incident is not proven closed by this verification and must not be silently closed from this change alone.
+The Pi failure was a first-launch trust dialog in the disposable worktree, which the guard correctly left unconfirmed and classified `unknown`.
+The absent binaries were reported explicitly rather than counted as passes.
+Refresh this section with the same guard after a harness upgrade or from an already-trusted checkout; never convert a trust or vendor modal into composer proof.
 
 ## Herdr
 

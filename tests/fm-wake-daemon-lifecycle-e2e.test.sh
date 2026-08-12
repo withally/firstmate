@@ -129,7 +129,9 @@ test_routine_then_terminal_after_restart() {
   # submission (one typed line + one Enter), then the buffer clears.
   local sent
   sent="$dir/sent.log"; : > "$sent"
-  : > "$dir/pane.txt"
+  # A proven-empty bare agent composer row: injection requires positive
+  # container proof, so an entirely blank pane is `unknown` and defers.
+  printf '\342\235\257 \n' > "$dir/pane.txt"
   afk_enter "$state"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \

@@ -500,6 +500,14 @@ test_content_mutation_omission_is_loud_and_scouts_rederive_deletions() {
   assert_absent "$home/data/brief-content-scout-refusal/brief.md" \
     "rejected scout --content-mutation still wrote a brief"
 
+  status=0
+  out=$(FM_HOME="$home" FM_SECONDMATE_CHARTER=ops "$ROOT/bin/fm-brief.sh" brief-content-secondmate-refusal --secondmate firstmate --content-mutation 2>&1) || status=$?
+  expect_code 1 "$status" "secondmate --content-mutation must be rejected"
+  assert_contains "$out" "--content-mutation applies only to ship briefs" \
+    "secondmate refusal did not explain the ship-only content mutation contract"
+  assert_absent "$home/data/brief-content-secondmate-refusal/brief.md" \
+    "rejected secondmate --content-mutation still wrote a brief"
+
   help=$("$ROOT/bin/fm-brief.sh" --help)
   assert_contains "$help" "--content-mutation" \
     "fm-brief.sh --help did not document the explicit content-mutation contract"

@@ -66,7 +66,7 @@ The single-thinking, tool-call-only, tool-result, Calm-off, and `clearOnShrink` 
 PR 927 made Calm persistent and described controlled rows as gapless while retaining a documented unsupported boundary for collapsed-thinking spacing.
 PR 936 removed the unsafe operational-input reroute and preserved legacy zero-height entries but did not change assistant-message layout.
 
-The fix installs one idempotent presentation adapter, verified on Pi 0.81.1 through 0.82.0, on the exported `AssistantMessageComponent.updateContent` method.
+The fix installs one idempotent presentation adapter, verified on Pi 0.81.1 through 0.84.1, on the exported `AssistantMessageComponent.updateContent` method.
 The adapter probes for that exact method and, per the [compatibility contract](calm.md#pi-compatibility), degrades independently with a diagnostic rather than gating on a version number.
 Only while Calm is active and Pi has collapsed thinking does the adapter pass a shallow thinking-free presentation copy into Pi's ordinary layout calculation, then retain the original message on the component for invalidation and thinking expansion.
 The persisted assistant message, provider context, tool execution, export data, and expansion history remain unchanged.
@@ -124,7 +124,7 @@ The real Pi viewport moved the unchanged assistant text from row 7 to row 2, ren
 The leading cause would have been falsified if the row or height remained, the provider lost or duplicated the message, or the persisted role or bytes changed.
 None occurred.
 
-The fix installs a separate idempotent presentation adapter, verified on Pi 0.81.1 through 0.82.0, on the exported `InteractiveMode.addMessageToChat` method.
+The fix installs a separate idempotent presentation adapter, verified on Pi 0.81.1 through 0.84.1, on the exported `InteractiveMode.addMessageToChat` method.
 The adapter probes for that exact method and, per the [compatibility contract](calm.md#pi-compatibility), degrades independently with a diagnostic rather than gating on a version number.
 It delegates current recognition to `bin/fm-operational-input.sh`, adds only the evidence-backed bare-U+2063 `Supervisor escalate (` presentation compatibility shape, mounts a `UserMessageComponent` subclass that preserves Pi's stock row plus leading spacer while Calm is off, and returns zero rendered lines while Calm is on.
 It never intercepts the input event, rewrites the message, changes its role, filters model context, or changes session data.
@@ -213,7 +213,9 @@ The test fixture enumerates every class below through the centralized policy, an
 | `unknown` | Future or unclassified transcript component | Policy-hidden, but no generic renderer exists; never claimed as covered. |
 
 The installed extension API has no supported global transcript filter, user-message renderer, assistant-message renderer, chat-container API, or generic custom-tool wrapper.
-Pi 0.81.1 through 0.84.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses three separate idempotent, API-probed adapters for assistant layout, the complete operational-user transcript row, and the transcript replay window while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports or seams is handled.
+Pi 0.81.1 through 0.84.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses three separate idempotent, API-probed exported-class adapters for assistant layout, the complete operational-user transcript row, and the transcript replay window while leaving all message data and non-Calm rendering unchanged.
+A fourth adapter, transcript-redraw, probes the documented `setWidget()` factory and forcible render instead of an exported class, and is the only one probed per session because Pi's non-TUI modes supply a no-op `setWidget()` by design.
+See the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports or seams is handled.
 The current dated Pi rendering evidence and refresh commands are recorded in [`docs/verification/runtime-backends.md`](verification/runtime-backends.md#pi-calm-transcript-redraw).
 General component replacement, ANSI cursor erasure, provider-context mutation, and installed-file patching remain rejected as unsupported or preservation-breaking workarounds.
 
@@ -239,7 +241,7 @@ grok 0.2.106 (bde89716f679)
 | Claude Code 2.1.218 | Not feasible through the inspected supported project surface. | Project hooks can observe lifecycle and tool events, while the plugin CLI packages supported components; neither inspected surface exposes a transcript-row renderer or transcript-wide redraw API. |
 | Codex CLI 0.144.6 | Not feasible through the inspected supported project surface. | The tracked hooks expose session, pre-tool, and stop handling, while the plugin and feature inventories expose no TUI tool-row renderer or transcript redraw control. |
 | OpenCode 1.17.18 | Not feasible without violating the preservation boundary. | Plugins expose events and tool execution hooks, not a built-in transcript-row renderer; same-name tool replacement changes execution rather than presentation alone. |
-| Pi (verified 0.81.1 through 0.82.0) | Partially feasible with three API-probed exported-class adapters. | Public APIs control working visibility, collapsed labels, known tool slots, custom entries, and expansion redraws; exported assistant and interactive-mode classes provide the collapsed-thinking, operational-user layout, and transcript replay boundaries, each gated on the exact method's presence rather than a version number, while generic user, tool, and status filtering remains unavailable. |
+| Pi (verified 0.81.1 through 0.84.1) | Partially feasible with three API-probed exported-class adapters plus the probed transcript-redraw capture. | Public APIs control working visibility, collapsed labels, known tool slots, custom entries, and expansion redraws; exported assistant and interactive-mode classes provide the collapsed-thinking, operational-user layout, and transcript replay boundaries, and the documented widget factory supplies the TUI whose forced render discards a stale frame, each gated on the exact method's presence rather than a version number, while generic user, tool, and status filtering remains unavailable. |
 | Grok CLI 0.2.106 | Not feasible through the inspected supported project surface. | Project hooks expose lifecycle and tool interception, while the plugin CLI exposes no row-renderer contract; `--minimal` changes the whole screen mode rather than selected transcript rows. |
 
 These conclusions are deliberately limited to the named versions and supported surfaces.

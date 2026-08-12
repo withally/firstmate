@@ -99,6 +99,7 @@ pi-signed
 Pi Calm's renderer-dependent transcript guarantees were reverified on 2026-08-12 against the installed Pi 0.84.1 package and CLI in a real isolated 180 by 44 tmux TUI.
 Pi 0.84.1 called the registered watcher tool's renderer with Calm active but could leave the prior zero-height row painted until a later frame, so Calm now captures the current TUI through the documented widget factory and requests one forced redraw whenever its presentation choice takes effect.
 The portable renderer fixture proves that activating Calm requests that forced redraw, while the real TUI fixture proves the already-rendered `fm_watch_arm_pi` call and result, built-in tool rows, collapsed thinking labels, and operational wake are absent without weakening their negative assertions.
+That capture is probed per session like every other Calm adapter: in Pi's `tui` mode a harness that stops invoking the documented widget factory, or stops exposing a forcible render, is reported as an unavailable `transcript-redraw` adapter naming the running Pi version, while the non-TUI modes where Pi supplies a no-op `setWidget()` by design stay quiet.
 
 ```sh
 pi --version
@@ -109,6 +110,7 @@ Observed bounded output:
 
 ```text
 0.84.1
+ok - a Pi TUI that stops supplying a forcible-render TUI fails loudly with the harness and version instead of silently losing Calm's transcript redraw, while non-TUI modes stay quiet
 ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
 ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
 ```

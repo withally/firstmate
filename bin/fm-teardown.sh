@@ -1830,10 +1830,20 @@ collect_descendant_task_locks() {
     return 1
   }
   if ! fm_lock_try_acquire "$task_set_lock"; then
-    echo "REFUSED: secondmate home $home is publishing a task right now (task-set lock is held); forced teardown changed nothing" >&2
+    echo "REFUSED: secondmate home $home has its task set claimed by another lifecycle operation (task-set lock is held); forced teardown changed nothing" >&2
     return 1
   fi
   DESCENDANT_LOCK_PATHS+=("$task_set_lock")
+  # The lock excludes every spawn that starts from here on, but one that
+  # registered before it existed is still mid-publication, and its record would
+  # land inside the enumerate-then-remove window. Checked only after the lock is
+  # owned, so the two orders interlock (bin/fm-wake-lib.sh's
+  # fm_task_set_lock_path owns why), and unreadable registrations count as
+  # in-flight.
+  if fm_task_set_publish_in_flight "$sub_state"; then
+    echo "REFUSED: secondmate home $home is publishing a task right now (a fresh spawn is registered against its task set); forced teardown changed nothing" >&2
+    return 1
+  fi
   child_ids=()
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue

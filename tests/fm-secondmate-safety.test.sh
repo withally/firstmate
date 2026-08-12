@@ -2361,6 +2361,45 @@ hold_task_set_lock() {  # <state-dir> -> echoes "<holder-pid> <lock-path>"
   printf '%s %s\n' "$holder" "$lock"
 }
 
+task_set_publishers_dir() {  # <state-dir>
+  local state=$1
+  ( . "$ROOT/bin/fm-wake-lib.sh"; fm_task_set_publishers_dir "$state" )
+}
+
+# A fresh spawn does NOT take the exclusive lock - several spawns publish into
+# one home at once - so "a task is being published" is staged as a live shared
+# registration, exactly what bin/fm-spawn.sh holds across its own publication.
+# The registering process must stay ALIVE: a registration whose pid is gone is
+# reclaimed, so the contention under test would not happen.
+hold_task_set_publication() {  # <state-dir> -> echoes "<holder-pid> <registration>"
+  local state=$1 dir holder i=0 entry
+  dir=$(task_set_publishers_dir "$state") || return 1
+  [ -n "$dir" ] || return 1
+  # stdout/stderr are redirected so the long-lived publisher does not inherit
+  # this function's command-substitution pipe (see hold_task_set_lock).
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_task_set_publish_begin "$state" || exit 1
+    # shellcheck disable=SC2031 # Set and read inside this same subshell, which
+    # is deliberately the registered publisher for the rest of its life.
+    printf '%s\n' "$FM_TASK_SET_PUBLISH_ENTRY" > "$dir.staged"
+    sleep 30
+  ) >/dev/null 2>&1 &
+  holder=$!
+  while [ ! -s "$dir.staged" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  entry=$(cat "$dir.staged" 2>/dev/null || true)
+  [ -n "$entry" ] && [ -e "$entry" ] || {
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    return 1
+  }
+  printf '%s %s\n' "$holder" "$entry"
+}
+
 seed_empty_task_set_home() {  # <tag> -> echoes "<home>|<subhome>"
   local tag=$1 home subhome
   home="$TMP_ROOT/$tag-home"
@@ -2489,17 +2528,19 @@ SH
 }
 
 test_force_teardown_refuses_while_a_task_is_being_published() {
-  local home subhome fakebin err log lock rec held holder
+  local home subhome fakebin err log lock rec held holder entry
   rec=$(seed_task_set_lock_home taskset-teardown)
   IFS='|' read -r home subhome <<EOF
 $rec
 EOF
   err="$TMP_ROOT/taskset-teardown.err"
   # Stand in for a fresh spawn that is mid-publication in the secondmate's home.
-  held=$(hold_task_set_lock "$subhome/state") \
-    || fail "could not stage a held task-set lock"
+  held=$(hold_task_set_publication "$subhome/state") \
+    || fail "could not stage a live task-set publication"
   holder=${held%% *}
-  lock=${held#* }
+  entry=${held#* }
+  lock=$(task_set_lock_path "$subhome/state") \
+    || fail "could not resolve the task-set lock"
   fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-fake")
   log="$TMP_ROOT/taskset-teardown-fake/tmux.log"
   if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
@@ -2511,12 +2552,74 @@ EOF
   [ -e "$subhome/state/child.meta" ] || fail "forced teardown removed child metadata despite refusing"
   [ -e "$home/state/domain.meta" ] || fail "forced teardown cleared parent metadata despite refusing"
   grep -F 'kill-window' "$log" >/dev/null && fail "forced teardown killed a window despite refusing"
-  [ -e "$lock" ] || fail "forced teardown removed the publisher's task-set lock"
-  grep -F 'task-set lock is held' "$err" >/dev/null \
+  [ -e "$entry" ] || fail "forced teardown removed the live publication registration"
+  [ ! -e "$lock" ] || fail "the refused teardown left its exclusive task-set lock behind"
+  grep -F 'a fresh spawn is registered against its task set' "$err" >/dev/null \
     || fail "the refusal did not name the task-set contention: $(cat "$err")"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   pass "forced teardown refuses while a fresh task is being published in the home"
+}
+
+# The other exclusive direction: a second destructive owner of the same task set
+# is refused by the lock itself, before any registration is consulted.
+test_force_teardown_refuses_while_the_task_set_lock_is_owned() {
+  local home subhome fakebin err log lock rec held holder
+  rec=$(seed_task_set_lock_home taskset-teardown-owned)
+  IFS='|' read -r home subhome <<EOF
+$rec
+EOF
+  err="$TMP_ROOT/taskset-teardown-owned.err"
+  held=$(hold_task_set_lock "$subhome/state") \
+    || fail "could not stage a held task-set lock"
+  holder=${held%% *}
+  lock=${held#* }
+  fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-owned-fake")
+  log="$TMP_ROOT/taskset-teardown-owned-fake/tmux.log"
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/taskset-teardown-owned-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err"; then
+    fail "forced teardown proceeded while another owner held the task set"
+  fi
+  [ -d "$subhome" ] || fail "forced teardown removed the home despite refusing"
+  [ -e "$subhome/state/child.meta" ] || fail "forced teardown removed child metadata despite refusing"
+  grep -F 'kill-window' "$log" >/dev/null && fail "forced teardown killed a window despite refusing"
+  [ -e "$lock" ] || fail "forced teardown removed the other owner's task-set lock"
+  grep -F 'task-set lock is held' "$err" >/dev/null \
+    || fail "the refusal did not name the task-set lock: $(cat "$err")"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "forced teardown refuses while another owner holds the task-set lock"
+}
+
+# A registration left behind by a killed spawn must not wedge the home forever:
+# the destructive owner reclaims it once its process is gone, so teardown is
+# blocked by live publication only.
+test_force_teardown_reclaims_a_dead_publication_registration() {
+  local home subhome fakebin err log rec dir dead
+  rec=$(seed_task_set_lock_home taskset-teardown-dead)
+  IFS='|' read -r home subhome <<EOF
+$rec
+EOF
+  err="$TMP_ROOT/taskset-teardown-dead.err"
+  dir=$(task_set_publishers_dir "$subhome/state") \
+    || fail "could not resolve the publishers directory"
+  mkdir -p "$dir"
+  # A pid that has certainly exited: reaped here, so nothing can reuse it while
+  # this test runs.
+  ( exit 0 ) &
+  dead=$!
+  wait "$dead" 2>/dev/null || true
+  printf '%s\n' "$dead" > "$dir/publisher.dead"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-dead-fake")
+  log="$TMP_ROOT/taskset-teardown-dead-fake/tmux.log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/taskset-teardown-dead-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err" \
+    || fail "forced teardown was blocked by a dead publication registration: $(cat "$err")"
+  [ ! -e "$dir/publisher.dead" ] || fail "the dead publication registration was not reclaimed"
+  [ ! -e "$home/state/domain.meta" ] || fail "forced teardown did not remove the secondmate record"
+  pass "forced teardown reclaims a registration whose publisher is gone"
 }
 
 test_fresh_spawn_refuses_while_a_forced_teardown_owns_the_task_set() {
@@ -2543,9 +2646,41 @@ EOF
     || fail "the spawn refusal did not name the task-set contention: $(cat "$err")"
   [ ! -e "$subhome/state/.spawn-newtask.lock" ] \
     || fail "a refused spawn left its own task lock behind"
+  [ -z "$(find "$(task_set_publishers_dir "$subhome/state")" -name 'publisher.*' 2>/dev/null)" ] \
+    || fail "a refused spawn left its publication registration behind"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   pass "a fresh spawn refuses to publish while a forced teardown owns the task set"
+}
+
+# Spawning several tasks into one home at once is ordinary fleet behavior, and
+# the task-set guard must not turn it into a refusal: the exclusive lock is for
+# destructive owners only, so a spawn proceeds past the guard while another
+# spawn's publication is registered, and gets to its own brief check.
+test_concurrent_fresh_spawns_do_not_exclude_each_other() {
+  local home subhome err rec held holder entry
+  rec=$(seed_task_set_lock_home taskset-shared)
+  IFS='|' read -r home subhome <<EOF
+$rec
+EOF
+  err="$TMP_ROOT/taskset-shared.err"
+  held=$(hold_task_set_publication "$subhome/state") \
+    || fail "could not stage a live task-set publication"
+  holder=${held%% *}
+  entry=${held#* }
+  if FM_HOME="$subhome" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" sharedtask "$subhome/projects/alpha" --scout >/dev/null 2>"$err"; then
+    kill "$holder" 2>/dev/null || true
+    fail "a briefless spawn unexpectedly succeeded"
+  fi
+  grep -F "task set is locked" "$err" >/dev/null \
+    && fail "a concurrent fresh spawn was refused by another spawn's publication"
+  grep -F "no brief at" "$err" >/dev/null \
+    || fail "the concurrent spawn did not reach its own brief check: $(cat "$err")"
+  [ -e "$entry" ] || fail "the concurrent spawn removed the other publisher's registration"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "concurrent fresh spawns share the task set instead of excluding each other"
 }
 
 test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned() {
@@ -2958,7 +3093,10 @@ test_force_teardown_refuses_non_directory_descendant_state
 test_force_teardown_refuses_symlinked_descendant_state
 test_force_teardown_locks_descendant_with_absent_state
 test_force_teardown_refuses_while_a_task_is_being_published
+test_force_teardown_refuses_while_the_task_set_lock_is_owned
+test_force_teardown_reclaims_a_dead_publication_registration
 test_fresh_spawn_refuses_while_a_forced_teardown_owns_the_task_set
+test_concurrent_fresh_spawns_do_not_exclude_each_other
 test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned
 test_secondmate_force_teardown_refuses_child_active_home_descendant
 test_secondmate_force_teardown_refuses_child_repo_descendant

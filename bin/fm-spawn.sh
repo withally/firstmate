@@ -600,9 +600,9 @@ spawn_remote_secondmate() {
     [ -z "$remote_recorded_traceparent" ] || echo "traceparent=$remote_recorded_traceparent"
   } > "$tmp"
   mv -f -- "$tmp" "$meta"
-  if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
-    SPAWN_TASK_SET_LOCK_HELD=0
-    fm_lock_release "$SPAWN_TASK_SET_LOCK"
+  if [ "$SPAWN_TASK_SET_PUBLISHER_HELD" = 1 ]; then
+    SPAWN_TASK_SET_PUBLISHER_HELD=0
+    fm_task_set_publish_end "$SPAWN_TASK_SET_PUBLISHER"
   fi
   fm_lock_release "$remote_lock" || true
   fm_lock_release "$registry_lock" || true
@@ -634,8 +634,8 @@ SPAWN_META_TMP=
 SPAWN_META_LOCK=
 SPAWN_META_LOCK_HELD=0
 SPAWN_META_PUBLISH_STARTED=0
-SPAWN_TASK_SET_LOCK=
-SPAWN_TASK_SET_LOCK_HELD=0
+SPAWN_TASK_SET_PUBLISHER=
+SPAWN_TASK_SET_PUBLISHER_HELD=0
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -741,9 +741,9 @@ spawn_abort_cleanup() {
     SPAWN_META_LOCK_HELD=0
     fm_lock_release "$SPAWN_META_LOCK" || true
   fi
-  if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
-    SPAWN_TASK_SET_LOCK_HELD=0
-    fm_lock_release "$SPAWN_TASK_SET_LOCK" || true
+  if [ "$SPAWN_TASK_SET_PUBLISHER_HELD" = 1 ]; then
+    SPAWN_TASK_SET_PUBLISHER_HELD=0
+    fm_task_set_publish_end "$SPAWN_TASK_SET_PUBLISHER" || true
   fi
   if [ "$SPAWN_CONTROL_LOCK_HELD" = 1 ]; then
     SPAWN_CONTROL_LOCK_HELD=0
@@ -880,9 +880,15 @@ if [ "$RELAUNCH" -eq 0 ]; then
   # published inside the enumerate-then-remove window is invisible to the
   # teardown's per-task preflight but visible to its cleanup, and gets mutated
   # while never lifecycle-locked (bin/fm-wake-lib.sh's fm_task_set_lock_path
-  # owns the evidence; bin/fm-teardown.sh holds the same lock from enumeration
-  # through cleanup). Taken before this task's own locks, matching the
-  # acquisition order documented there, and held through publication.
+  # owns the evidence; bin/fm-teardown.sh holds that lock exclusively from
+  # enumeration through cleanup).
+  #
+  # This is the SHARED side of that guard: spawning several tasks into one home
+  # at once is ordinary fleet behavior, so a spawn registers itself as a
+  # publisher rather than taking the lock. Concurrent spawns therefore never
+  # exclude each other, while a forced teardown still sees this registration and
+  # refuses. Taken before this task's own locks, matching the acquisition order
+  # documented there, and held through publication.
   #
   # A relaunch is exempt: it republishes a task that already exists, so it is
   # already covered by that task's control lock, which the teardown preflight
@@ -890,15 +896,16 @@ if [ "$RELAUNCH" -eq 0 ]; then
   #
   # Refusing rather than waiting is the fail-closed direction: the home may be
   # moments from removal, so there is nothing worth waiting for.
-  SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
-    echo "error: could not resolve the task-set lock for $STATE" >&2
-    exit 1
-  }
-  if ! fm_lock_try_acquire "$SPAWN_TASK_SET_LOCK"; then
-    echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
+  if ! fm_task_set_publish_begin "$STATE"; then
+    if [ "$FM_TASK_SET_PUBLISH_REASON" = owned ]; then
+      echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
+    else
+      echo "error: could not register task publication against the task set for $STATE" >&2
+    fi
     exit 1
   fi
-  SPAWN_TASK_SET_LOCK_HELD=1
+  SPAWN_TASK_SET_PUBLISHER=$FM_TASK_SET_PUBLISH_ENTRY
+  SPAWN_TASK_SET_PUBLISHER_HELD=1
 fi
 if [ "$KIND" = secondmate ]; then
   if spawn_remote_secondmate "$ID"; then
@@ -2369,9 +2376,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
-if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
-  SPAWN_TASK_SET_LOCK_HELD=0
-  fm_lock_release "$SPAWN_TASK_SET_LOCK"
+if [ "$SPAWN_TASK_SET_PUBLISHER_HELD" = 1 ]; then
+  SPAWN_TASK_SET_PUBLISHER_HELD=0
+  fm_task_set_publish_end "$SPAWN_TASK_SET_PUBLISHER"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 

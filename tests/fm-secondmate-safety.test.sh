@@ -2668,8 +2668,12 @@ EOF
     || fail "could not stage a live task-set publication"
   holder=${held%% *}
   entry=${held#* }
+  # An explicit harness, like every other spawn assertion in this file: this
+  # spawn must run past harness resolution to reach the brief check, and the
+  # resolved default depends on the harness the test itself runs under, which is
+  # 'unknown' (no launch template, so an earlier refusal) on a bare CI runner.
   if FM_HOME="$subhome" FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" sharedtask "$subhome/projects/alpha" --scout >/dev/null 2>"$err"; then
+    "$ROOT/bin/fm-spawn.sh" sharedtask "$subhome/projects/alpha" codex --scout >/dev/null 2>"$err"; then
     kill "$holder" 2>/dev/null || true
     fail "a briefless spawn unexpectedly succeeded"
   fi

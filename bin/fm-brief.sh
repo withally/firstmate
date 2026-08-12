@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--content-mutation] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -27,6 +27,15 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
+#   --content-mutation is mandatory for a ship task that mutates an existing
+#   document, packet, dataset, or similar content artifact, but not ordinary
+#   source code. It requires before/after counts and identity-level deltas for
+#   every content class, reasons and decisions for every drop, and an explicit
+#   captain reference before any class drops to zero. Briefs made without it
+#   carry a loud declaration because {TASK} is filled after scaffolding.
+#   Every ship and scout brief also makes deletion auditing the standing dual of
+#   addition auditing: a verifier independently re-derives the inventory rather
+#   than accepting the deliverer's ledger.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:
@@ -103,6 +112,7 @@ else
 fi
 KIND=ship
 HERDR_LAB=0
+CONTENT_MUTATION=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
@@ -124,6 +134,7 @@ for a in "$@"; do
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
+    --content-mutation) CONTENT_MUTATION=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
@@ -158,6 +169,11 @@ ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
+  exit 1
+fi
+
+if [ "$KIND" != ship ] && [ "$CONTENT_MUTATION" -eq 1 ]; then
+  echo "error: --content-mutation applies only to ship briefs; scouts do not deliver mutations and secondmate charters are not task briefs" >&2
   exit 1
 fi
 
@@ -297,6 +313,36 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+if [ "$CONTENT_MUTATION" -eq 1 ]; then
+IFS= read -r -d '' CONTENT_SECTION <<'EOF' || true
+# Content conservation - REQUIRED
+This brief was explicitly scaffolded with `--content-mutation` because the task mutates an existing document, packet, dataset, or similar body of content rather than ordinary source code.
+The delivery must carry a before/after inventory for every content class in the artifact.
+For each class, record the class name, before count, and after count.
+Identity-level deltas are required, not just aggregate counts: name every added and dropped identity so a deletion hidden by a different addition cannot pass.
+Name every dropped identity with its reason and the decision it belongs to.
+Any class that drops to zero requires an explicit captain reference; worker judgement is not sufficient.
+Include the ledger in the delivery artifact and, when the task ships by PR, in the PR body.
+EOF
+else
+IFS= read -r -d '' CONTENT_SECTION <<'EOF' || true
+# Content mutation declaration - NOT ENABLED
+**HARD SAFETY GATE:** this scaffold cannot inspect the task text that replaces `{TASK}` later.
+If the task will mutate an existing document, packet, dataset, or similar body of content rather than ordinary source code, stop and regenerate the brief with `--content-mutation` before dispatch.
+Do not add the content-conservation contract to this unguarded brief by hand.
+EOF
+fi
+CONTENT_SECTION=${CONTENT_SECTION%$'\n'}
+
+IFS= read -r -d '' DELETION_AUDIT_SECTION <<'EOF' || true
+# Deletion audit
+If this task verifies or audits a delivery that mutated existing content, independently re-derive the before/after inventory for every content class from the source artifact and the delivered result.
+Do not accept or copy the deliverer's conservation ledger as proof.
+Check identity-level additions and drops, not only aggregate counts, and verify that nothing was silently dropped as the explicit dual of checking that nothing beyond the approved scope was added.
+Name every unexplained drop and any class reduced to zero, and verify each against its owning decision and required captain reference.
+EOF
+DELETION_AUDIT_SECTION=${DELETION_AUDIT_SECTION%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -305,6 +351,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$DELETION_AUDIT_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -414,6 +462,10 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$CONTENT_SECTION
+
+$DELETION_AUDIT_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.

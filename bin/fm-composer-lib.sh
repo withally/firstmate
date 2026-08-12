@@ -464,6 +464,17 @@ _fm_composer_pi_separator_row() {  # <trimmed-row>
   return 1
 }
 
+# 0 when <side-family> is the side border a <bottom-family> border closes.
+# `+---+` is deliberately absent: an ascii border row is indistinguishable from
+# a top border, so the scan already reads it as one and an ascii box can never
+# be clipped.
+_fm_composer_clipped_side_family_ok() {  # <bottom-family> <side-family>
+  case "$1:$2" in
+    rounded:single|light:single|heavy:heavy|double:double) return 0 ;;
+  esac
+  return 1
+}
+
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
 # has no nameref); they are internal to this owner.
 _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
@@ -478,6 +489,13 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_BOX_BOTTOM=-1
   FM_COMPOSER_SCAN_BOX_AMBIG=0
   FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
+  # Clipped-box results: a bottom border closing a contiguous run of
+  # same-family side-bordered rows that reaches the FIRST captured row, i.e. a
+  # box whose top border sits above the bounded tail window rather than a
+  # malformed structure.
+  FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST=-1
+  FM_COMPOSER_SCAN_CLIPPED_BOX_LAST=-1
+  FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM=-1
   FM_COMPOSER_SCAN_UNSAFE=0
   FM_COMPOSER_SCAN_CURSOR_EDGE=0
   FM_COMPOSER_SCAN_BARE_ROW=-1
@@ -489,6 +507,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_PI_OPEN=-1
   FM_COMPOSER_SCAN_PI_CLOSE=-1
   FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=-1
+  local clip_start=-1 clip_family='' clip_indent='' row_side_family
   local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max
   pi_max=$FM_COMPOSER_PI_MAX_LINES
   case "$pi_max" in ''|*[!0-9]*|0) pi_max=8 ;; esac
@@ -614,7 +633,13 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
         fi
         FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
       else
-        if [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -lt 0 ]; then
+        if [ "$clip_start" -eq 0 ] && [ "$row" -gt 0 ] && [ "$indent" = "$clip_indent" ] \
+           && _fm_composer_clipped_side_family_ok "$family" "$clip_family"; then
+          FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST=0
+          FM_COMPOSER_SCAN_CLIPPED_BOX_LAST=$((row - 1))
+          FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM=$row
+          FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
+        elif [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -lt 0 ]; then
           FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=$row
         fi
         if [ -n "$cy" ]; then
@@ -658,6 +683,38 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
           ;;
         *) valid=0 ;;
       esac
+    fi
+    # Clipped-box run tracking, independent of the complete-box state machine
+    # and updated AFTER it so a bottom border still sees the run that ended on
+    # the row above it. Any non-side-bordered row, a family change, or an
+    # indent change restarts the run, so a run that still starts at row 0 is
+    # contiguous from the first captured row.
+    case "$trimmed" in
+      '│'*'│') row_side_family=single ;;
+      '┃'*'┃') row_side_family=heavy ;;
+      '║'*'║') row_side_family=double ;;
+      '|'*'|') row_side_family=ascii ;;
+      *) row_side_family= ;;
+    esac
+    if [ -z "$row_side_family" ]; then
+      clip_start=-1
+      clip_family=
+      clip_indent=
+    elif [ "$clip_start" -lt 0 ] || [ "$row_side_family" != "$clip_family" ] \
+         || [ "$indent" != "$clip_indent" ]; then
+      clip_start=$row
+      clip_family=$row_side_family
+      clip_indent=$indent
+    fi
+    # Any side-bordered row BELOW a clipped box withdraws it: the container it
+    # belongs to is newer, so the clipped candidate is stale exactly as a lower
+    # incomplete box makes an earlier complete box stale. A lower COMPLETE box
+    # still wins on its own; only the clipped candidate is withdrawn here.
+    if [ -n "$row_side_family" ] && [ "$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM" -ge 0 ] \
+       && [ "$row" -gt "$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM" ]; then
+      FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST=-1
+      FM_COMPOSER_SCAN_CLIPPED_BOX_LAST=-1
+      FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM=-1
     fi
     row=$((row + 1))
   done <<EOF
@@ -897,17 +954,32 @@ _fm_composer_leftbar_floor_row() {  # <trimmed-row>
 }
 
 _fm_composer_select_cursorless() {
-  local plain=$1 generic=-1 next boundary raw trimmed
+  local plain=$1 generic=-1 next boundary raw trimmed box_bottom=-1
   FM_COMPOSER_SELECTED_KIND=
   FM_COMPOSER_SELECTED_FIRST=-1
   FM_COMPOSER_SELECTED_LAST=-1
   FM_COMPOSER_SELECTED_AMBIG=0
   if [ "$FM_COMPOSER_SCAN_BOX_BOTTOM" -ge 0 ]; then
     generic=$FM_COMPOSER_SCAN_BOX_BOTTOM
+    box_bottom=$FM_COMPOSER_SCAN_BOX_BOTTOM
     FM_COMPOSER_SELECTED_KIND=box
     FM_COMPOSER_SELECTED_FIRST=$((FM_COMPOSER_SCAN_BOX_TOP + 1))
     FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_BOX_BOTTOM - 1))
     FM_COMPOSER_SELECTED_AMBIG=$FM_COMPOSER_SCAN_BOX_AMBIG
+  fi
+  # A composer taller than the bounded tail window keeps only its content rows
+  # and its bottom border in view. The side borders still carry the SAME
+  # container proof a complete box has, so the shape is a box - but its top
+  # border, and with it the whole geometry proof, is out of window, so it is
+  # always AMBIGUOUS: typed text reads pending-unproven (which still earns its
+  # Enter retries) and blank rows read unknown, never a positive empty.
+  if [ "$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM" -gt "$generic" ]; then
+    generic=$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM
+    box_bottom=$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM
+    FM_COMPOSER_SELECTED_KIND=box
+    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST
+    FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_CLIPPED_BOX_LAST
+    FM_COMPOSER_SELECTED_AMBIG=1
   fi
   if [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$generic" ]; then
     generic=$FM_COMPOSER_SCAN_BARE_ROW
@@ -958,7 +1030,7 @@ _fm_composer_select_cursorless() {
      || [ "$FM_COMPOSER_SELECTED_KIND" = leftbar ]; then
     boundary=$FM_COMPOSER_SELECTED_LAST
     if [ "$FM_COMPOSER_SELECTED_KIND" = box ]; then
-      boundary=$FM_COMPOSER_SCAN_BOX_BOTTOM
+      boundary=$box_bottom
     else
       next=$((boundary + 1))
       raw=$(_fm_composer_screen_row "$next" "$plain")

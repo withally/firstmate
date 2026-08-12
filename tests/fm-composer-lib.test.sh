@@ -300,6 +300,37 @@ test_cursorless_candidate_selection() {
   pass "fm_composer_classify_screen: cursorless selection rejects stale and incomplete candidates"
 }
 
+# A composer taller than the bounded tail window (FM_COMPOSER_CAPTURE_LINES)
+# keeps only its content rows and its bottom border in view. The side borders
+# are the same container proof a complete box carries, so the shape must stay a
+# container and a long draft must keep earning its Enter retries
+# (fm_composer_submit_retry_core only continues on pending/pending-unproven) -
+# but with the top border and its geometry proof out of window, it is always
+# ambiguous, so blank rows can never become a positive empty.
+test_clipped_box_keeps_container_proof() {
+  local clipped blank stale
+  clipped=$'│ > a draft that started above  │\n│ the capture window            │\n╰───────────────────────────────╯'
+  assert_screen "clipped box on herdr" pending-unproven "$CAPS_STYLED" "$clipped"
+  assert_screen "clipped box on zellij" pending-unproven "$CAPS_STYLED_NOID" "$clipped"
+  assert_screen "clipped box on cmux/orca" pending-unproven "$CAPS_PLAIN" "$clipped"
+  blank=$'│                               │\n╰───────────────────────────────╯'
+  assert_screen "clipped blank box is never empty" unknown "$CAPS_PLAIN" "$blank"
+  assert_screen "clipped box under activity" unknown "$CAPS_PLAIN" \
+    $'│ > a draft                     │\n╰───────────────────────────────╯\nWorking on request...'
+  assert_screen "clipped box with a shifted indent" unknown "$CAPS_PLAIN" \
+    $'  │ > a draft                   │\n╰───────────────────────────────╯'
+  assert_screen "clipped box with a mixed border family" unknown "$CAPS_PLAIN" \
+    $'┃ > a draft                     ┃\n╰───────────────────────────────╯'
+  assert_screen "side rows above the first captured row" unknown "$CAPS_PLAIN" \
+    $'transcript line\n│ > a draft                     │\n╰───────────────────────────────╯'
+  stale=$'│ old │\n╰──────╯\n│ newer unclosed draft │'
+  assert_screen "clipped box under a newer container" unknown "$CAPS_PLAIN" "$stale"
+  [ "$(fm_composer_extract_selected_content "$CAPS_PLAIN" "$clipped")" \
+    = 'a draft that started above the capture window' ] \
+    || fail "clipped-box extraction should return the whole visible draft"
+  pass "fm_composer_classify_screen: a top-clipped box stays a container, always ambiguous"
+}
+
 test_titled_bottom_requires_matching_width() {
   local screen out
   screen=$'╭────────────────────────╮\n│ ❯                      │\n╰─ Grok ─╯'
@@ -349,5 +380,6 @@ test_matrix_claude_inside_zellij_ansi_dump
 test_strict_blank_row_divergence
 test_bare_wrap_region_classifies
 test_cursorless_candidate_selection
+test_clipped_box_keeps_container_proof
 test_titled_bottom_requires_matching_width
 test_selected_content_is_composer_scoped

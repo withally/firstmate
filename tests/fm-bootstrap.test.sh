@@ -802,8 +802,9 @@ make_routine_bootstrap_fixture() {
   } > "$home/state/sm.meta"
   fakebin=$(make_fake_toolchain "$case_dir")
   add_real_jq "$fakebin"
-  cat > "$fakebin/tmux" <<'SH'
+cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
+D=$(dirname "$0")
 case "${1:-}" in
   display-message)
     case "$*" in
@@ -813,7 +814,19 @@ case "${1:-}" in
     ;;
   # Row 0 (the cursor row) is a proven-empty bare agent composer: a verified
   # submit needs positive container proof, so a blank pane would defer.
-  capture-pane) printf '\342\235\257 \n' ;;
+  capture-pane)
+    if [ -s "$D/composer" ]; then
+      printf '\342\235\257 %s\n' "$(cat "$D/composer")"
+    else
+      printf '\342\235\257 \n'
+    fi
+    ;;
+  send-keys)
+    case " $* " in
+      *' -l '*) printf '%s' "${@: -1}" > "$D/composer" ;;
+      *' Enter '*) : > "$D/composer" ;;
+    esac
+    ;;
   list-windows) printf '%s\n' fm-sm ;;
 esac
 exit 0

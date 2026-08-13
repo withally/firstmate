@@ -161,8 +161,24 @@ case "${1:-}" in
         -l) shift; [ "$#" -gt 0 ] && {
           printf '%s\n' "$1" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
           # Reflect sent text into capture so pane_input_pending sees it as
-          # pending input (text in the composer).
-          [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && printf '%s\n' "$1" >> "$FM_FAKE_TMUX_CAPTURE"
+          # pending input (text in the composer). Preserve the pre-typing
+          # capture so Enter can restore the exact empty surface.
+          if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ]; then
+            cp "$FM_FAKE_TMUX_CAPTURE" "$FM_FAKE_TMUX_CAPTURE.before-submit"
+            _last=$(tail -n 1 "$FM_FAKE_TMUX_CAPTURE" 2>/dev/null || true)
+            case "$_last" in
+              '❯ '*|'❯'|'>'|'>'\ *)
+                _tmp=$(mktemp 2>/dev/null) || _tmp="${FM_FAKE_TMUX_CAPTURE}.tmp"
+                sed '$d' "$FM_FAKE_TMUX_CAPTURE" > "$_tmp" 2>/dev/null || true
+                case "$_last" in
+                  '❯ '*|'❯') printf '❯ %s\n' "$1" >> "$_tmp" ;;
+                  *) printf '> %s\n' "$1" >> "$_tmp" ;;
+                esac
+                mv -f "$_tmp" "$FM_FAKE_TMUX_CAPTURE"
+                ;;
+              *) printf '%s\n' "$1" >> "$FM_FAKE_TMUX_CAPTURE" ;;
+            esac
+          fi
         } ;;
         Enter)
           # Optionally swallow Enter (file-based flag) to test the retry path.
@@ -170,12 +186,11 @@ case "${1:-}" in
             rm -f "$FM_FAKE_TMUX_SWALLOW_FILE"
           else
             printf '[ENTER]\n' >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
-            # Enter submits: clear the last line (the typed text) from the
-            # capture, simulating the composer being cleared on submit.
-            if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && [ -s "$FM_FAKE_TMUX_CAPTURE" ]; then
-              _tmp=$(mktemp 2>/dev/null) || _tmp="${FM_FAKE_TMUX_CAPTURE}.tmp"
-              sed '$d' "$FM_FAKE_TMUX_CAPTURE" > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$FM_FAKE_TMUX_CAPTURE"
-              rm -f "$_tmp" 2>/dev/null
+            # Enter submits: restore the exact empty composer captured before
+            # literal typing.
+            if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] \
+               && [ -f "$FM_FAKE_TMUX_CAPTURE.before-submit" ]; then
+              mv -f "$FM_FAKE_TMUX_CAPTURE.before-submit" "$FM_FAKE_TMUX_CAPTURE"
             fi
           fi
           ;;

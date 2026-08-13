@@ -13,9 +13,9 @@
 # plain.
 #
 # OpenCode's busy-queued Enter conversion accepts only structurally proven
-# pending text after retries, while the separate turn-started conversion accepts
-# an unknown post-Enter composer only after this submit observed an idle baseline
-# become busy.
+# pending text after retries and an explicit OpenCode harness identity.
+# The separate turn-started conversion accepts an unknown post-Enter composer
+# only after this submit observed an idle baseline become busy.
 # Herdr's OpenCode busy-queue limitation remains documented in
 # docs/herdr-backend.md.
 #
@@ -247,19 +247,38 @@ fm_pane_is_busy() {  # <target> [harness]
 # fm_tmux_submit_enter_core caller, or a pane already busy before typing) an
 # `unknown` verdict is preserved untouched: busy conversion without the
 # transition evidence could mark an undelivered message delivered.
-fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle]
-  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} i=0 j state
+fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle] [harness] [typed-observed]
+  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} harness=${5:-} typed_observed=${6:-1} i=0 j state
   while :; do
     tmux send-keys -t "$target" Enter 2>/dev/null || true
     sleep "$sleep_s"
     state=$(fm_tmux_composer_state "$target")
     case "$state" in
-      pending|pending-unproven) ;;
+      pending|pending-unproven) typed_observed=1 ;;
+      empty)
+        if [ "$typed_observed" = 1 ]; then
+          printf 'empty'
+          return 0
+        fi
+        if [ "$baseline_idle" = 1 ]; then
+          j=0
+          while [ "$j" -lt "$retries" ]; do
+            if fm_pane_is_busy "$target" "$harness"; then
+              printf 'empty'
+              return 0
+            fi
+            j=$((j + 1))
+            [ "$j" -ge "$retries" ] || sleep "$sleep_s"
+          done
+        fi
+        printf 'unknown'
+        return 0
+        ;;
       unknown)
         if [ "$baseline_idle" = 1 ]; then
           j=0
           while [ "$j" -lt "$retries" ]; do
-            if fm_pane_is_busy "$target"; then
+            if fm_pane_is_busy "$target" "$harness"; then
               printf 'empty'
               return 0
             fi
@@ -284,21 +303,38 @@ fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle
   # and queued the message for processing when the current turn ends.
   # Treat it as submitted so the caller does not re-send.
   # On an idle pane, keep reporting pending - a genuine swallow.
-  if fm_pane_is_busy "$target"; then
+  if [ "$harness" = opencode ] && fm_pane_is_busy "$target" "$harness"; then
     printf 'empty'
   else
     printf 'pending'
   fi
 }
 
-fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 baseline_idle='' baseline_state
+fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness=${7:-} baseline_idle='' baseline_state
+  local typed_observed=0 typed_state i=0
   # The turn-started baseline must predate our own typing: a pane already
   # busy before the text lands can turn "busy" for reasons unrelated to our
   # Enter, so only a clean idle-to-busy transition may confirm a submit.
-  baseline_state=$(fm_pane_busy_state "$target")
+  baseline_state=$(fm_pane_busy_state "$target" "$harness")
   [ "$baseline_state" = idle ] && baseline_idle=1
   tmux send-keys -t "$target" -l "$text" 2>/dev/null || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  fm_tmux_submit_enter_core "$target" "$retries" "$sleep_s" "$baseline_idle"
+  # Do not let a stale pre-render screen count as post-Enter clearance. Observe
+  # the typed text when the harness exposes it; if rendering is delayed, poll
+  # the condition within the existing retry budget instead of adding a fixed
+  # race-masking sleep. A harness that hides its composer can still confirm via
+  # the independently observed idle-to-busy transition below.
+  while [ "$i" -lt "$retries" ]; do
+    typed_state=$(fm_tmux_composer_state "$target")
+    case "$typed_state" in
+      pending|pending-unproven) typed_observed=1; break ;;
+      empty)
+        i=$((i + 1))
+        [ "$i" -ge "$retries" ] || sleep "$sleep_s"
+        ;;
+      *) break ;;
+    esac
+  done
+  fm_tmux_submit_enter_core "$target" "$retries" "$sleep_s" "$baseline_idle" "$harness" "$typed_observed"
 }

@@ -1786,7 +1786,8 @@ test_fm_send_exits_nonzero_on_confirmed_swallow() {
     "$ROOT/bin/fm-send.sh" sess:win 'fix findings 1 and 3, skip 2' >/dev/null 2>"$err"; then
     fail "fm-send exited zero despite a swallowed Enter (silent unsubmitted instruction)"
   fi
-  grep -F 'not submitted' "$err" >/dev/null || fail "fm-send did not explain the swallowed submit: $(cat "$err")"
+  grep -F 'Enter swallowed; text left in composer' "$err" >/dev/null \
+    || fail "fm-send did not explain the swallowed submit: $(cat "$err")"
   pass "fm-send exits non-zero on a confirmed swallow, zero on a clean submit"
 }
 

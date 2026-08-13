@@ -201,7 +201,9 @@ Slash and dollar-prefixed input uses the shared harness-aware settle before the 
 Text is typed once; only Enter is retried.
 
 On an idle or done native baseline, submit confirmation waits for `working` or `blocked` across a bounded polling window.
-On an already active or unreadable baseline, it falls back to conservative composer clearance.
+When native state is unknown before and after submission, an explicit harness identity permits one independent fallback: a rendered idle baseline must become a harness-scoped rendered busy state after Enter.
+A preexisting rendered busy state never qualifies, so unrelated activity cannot confirm the new steer.
+On an already active or otherwise unreadable baseline, it falls back to conservative composer clearance.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
 Away-mode digests add a durable cross-invocation boundary around this primitive.

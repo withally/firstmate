@@ -3222,6 +3222,30 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message"
 }
 
+test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-pi-rendered-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: native pre-Enter agent status is unavailable for this harness/model.
+  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/1.out"
+  # 2: rendered pre-submit capture is idle.
+  printf '›\n' > "$resp/2.out"
+  # 3: send-text is silent.
+  # 4: send-keys Enter is silent.
+  # 5: the submitted turn has replaced the composer, so structural composer
+  # classification is unknown rather than pending or empty.
+  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/5.out"
+  # 6: an independent rendered busy read sees Pi's verified active footer.
+  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "build the curriculum" 2 0.01 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "an unknown native status with a proven Pi idle-to-working transition should confirm submission, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a proven Pi turn start must not provoke another Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: rendered Pi idle-to-working transition confirms a submitted turn when native status is unknown"
+}
+
 # Regression for the submit-confirmation side of the 2026-07-07 incident:
 # even if a Codex idle composer displays suggestion text, an idle-baseline
 # submit must confirm from native agent-state rather than composer scraping.
@@ -4058,6 +4082,7 @@ test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
+test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition
 test_send_text_submit_confirms_despite_codex_idle_tip_composer
 test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
 test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmation_change

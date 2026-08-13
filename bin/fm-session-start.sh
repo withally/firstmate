@@ -10,6 +10,10 @@
 # and every state/*.status.
 # Every one of those reads is UNCONDITIONAL at every session start, so they
 # belong in a script, not in N agent turns.
+# A linked disposable task worktree is not a Firstmate session: before any
+# stage runs, the script identifies that worker plainly and exits without
+# acquiring the lock or emitting fleet state. The primary checkout and marked
+# secondmate homes keep the full behavior below.
 #
 # COMPOSITION, NOT DUPLICATION: this script calls fm-lock.sh, fm-bootstrap.sh,
 # and fm-wake-drain.sh as real subprocesses and prints their real output. It
@@ -130,6 +134,37 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# A linked worktree that is not this repository's main checkout is a disposable
+# crewmate task worktree, not a Firstmate operational home. Stop before the
+# lock or any digest stage so inherited Firstmate instructions cannot make a
+# worker adopt primary-session duties. Registered secondmate homes carry their
+# own durable identity marker and remain legitimate Firstmate homes.
+fm_session_start_is_task_worktree() {
+  local root_real home_real main_worktree main_real
+  [ ! -f "$FM_HOME/.fm-secondmate-home" ] || return 1
+  # The main checkout has a .git directory. Only linked worktrees carry a
+  # .git file, so the primary path returns before invoking git at all.
+  [ -f "$FM_ROOT/.git" ] || return 1
+  root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || return 1
+  home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || return 1
+  # An explicitly distinct operational home may legitimately execute tracked
+  # code from a linked checkout (including tests and isolated installations).
+  # A task worker is the self-home shape: its code root is also its FM_HOME.
+  [ "$root_real" = "$home_real" ] || return 1
+  main_worktree=$(git -C "$FM_ROOT" worktree list --porcelain 2>/dev/null \
+    | awk 'NR == 1 && $1 == "worktree" { sub(/^worktree /, ""); print; exit }')
+  [ -n "$main_worktree" ] || return 1
+  main_real=$(cd "$main_worktree" 2>/dev/null && pwd -P) || return 1
+  [ "$root_real" != "$main_real" ]
+}
+
+if fm_session_start_is_task_worktree; then
+  printf '%s\n' 'CREWMATE TASK WORKTREE - SESSION START DOES NOT APPLY'
+  printf '%s\n' 'You are a crewmate in a disposable task worktree, not the lock-owning Firstmate session.'
+  printf '%s\n' 'Do not acquire the fleet lock or inspect the fleet digest; execute the assigned brief in this worktree.'
+  exit 0
+fi
 
 SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state context next-step'
 

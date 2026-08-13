@@ -1324,7 +1324,7 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state] [durable] [item-count]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded durable=${3:-transient}
+  local msg=$1 state target backend harness retries sleep_s verdict composer encoded durable=${3:-transient}
   local items=${4:-0} digest_id inflight existing_id phase retired created
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
@@ -1437,7 +1437,8 @@ inject_msg() {  # <message> [state] [durable] [item-count]
     digest_inflight_write "$state" "$digest_id" prepared "$backend" "$target" not-attempted \
       "$created" "$items" || { log "inject deferred: could not persist digest identity before submit"; return 1; }
   fi
-  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
+  harness=$(fm_daemon_primary_harness)
+  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s" '' "$harness")
   if [ "$verdict" = empty ]; then
     if [ "$durable" = durable ]; then
       digest_inflight_write "$state" "$digest_id" confirmed "$backend" "$target" empty "$created" "$items" \

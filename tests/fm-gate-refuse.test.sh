@@ -222,11 +222,22 @@ case "${1:-}" in
       esac
     done
     printf 'send-keys target=%s literal=%s arg=%s\n' "$target" "$literal" "${1:-}" >> "$FM_TMUX_LOG"
+    if [ "$literal" = 1 ]; then
+      printf '%s' "${1:-}" > "$FM_TMUX_LOG.composer"
+    elif [ "${1:-}" = Enter ]; then
+      : > "$FM_TMUX_LOG.composer"
+    fi
     exit 0 ;;
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf '%%1\n'; exit 0 ;;
-  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
+  capture-pane)
+    if [ -s "$FM_TMUX_LOG.composer" ]; then
+      printf '╭────╮\n│ > %s │\n╰────╯\n' "$(cat "$FM_TMUX_LOG.composer")"
+    else
+      printf '╭────╮\n│    │\n╰────╯\n'
+    fi
+    exit 0 ;;
 esac
 exit 0
 SH

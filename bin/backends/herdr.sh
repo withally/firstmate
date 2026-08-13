@@ -76,6 +76,11 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # every backend so the decision cannot drift.
 # shellcheck source=bin/fm-composer-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-composer-lib.sh"
+# The rendered delivery-busy matcher is currently owned by fm-tmux-lib.sh even
+# when a non-tmux backend supplies the capture. Herdr reuses only that shared,
+# harness-scoped classifier; its capture and submit mechanics remain local.
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-tmux-lib.sh"
 
 # Shared, backend-neutral normalized-transition shape and the single-owner
 # status->action policy table (bin/fm-transition-lib.sh). This adapter's event
@@ -2438,6 +2443,20 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
   printf '%s' "$verdict"
 }
 
+fm_backend_herdr_rendered_busy_state() {  # <target> <harness> -> busy|idle|unknown
+  local target=$1 harness=$2 tail40 visible
+  [ -n "$harness" ] || { printf 'unknown'; return 0; }
+  tail40=$(fm_backend_herdr_capture "$target" 40 2>/dev/null) \
+    || { printf 'unknown'; return 0; }
+  visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
+  [ -n "$visible" ] || { printf 'unknown'; return 0; }
+  if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
+    printf 'busy'
+  else
+    printf 'idle'
+  fi
+}
+
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
 # (Enter only, never retyped) until herdr's NATIVE agent-state (agent get)
@@ -2499,13 +2518,23 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
 # submit vocabulary. Empty means confirmed submitted for every backend; how
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
-fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness=${7:-} i=0 verdict baseline confirm_sleep
+  local rendered_baseline=unknown rendered_after
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  if [ -n "$harness" ]; then
+    baseline=$(fm_backend_herdr_classify_submit_agent_status \
+      "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+    if [ "$baseline" = unknown ]; then
+      rendered_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
+    fi
+  fi
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  baseline=$(fm_backend_herdr_classify_submit_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  if [ -z "$harness" ]; then
+    baseline=$(fm_backend_herdr_classify_submit_agent_status \
+      "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  fi
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   while :; do
     fm_backend_herdr_send_key "$target" Enter || true
@@ -2519,7 +2548,17 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
-      unknown) printf 'unknown'; return 0 ;;
+      unknown)
+        if [ "$rendered_baseline" = idle ]; then
+          rendered_after=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
+          if [ "$rendered_after" = busy ]; then
+            printf 'empty'
+            return 0
+          fi
+        fi
+        printf 'unknown'
+        return 0
+        ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }

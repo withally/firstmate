@@ -715,6 +715,30 @@ EOF
   pass "a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest"
 }
 
+test_task_worktree_refuses_before_session_digest_or_lock() {
+  local rec root home fakebin task_worktree out status
+  rec=$(new_world task-worktree-refusal)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  task_worktree="${root%/root}/task-worktree"
+  git -C "$root" worktree add -q --detach "$task_worktree" main
+  mkdir -p "$task_worktree/state" "$task_worktree/data" "$task_worktree/config"
+
+  status=0
+  out=$(run_session_start "$task_worktree" "$task_worktree" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "a crewmate task-worktree guard should be an explanatory no-op"
+  assert_contains "$out" "crewmate in a disposable task worktree" "task-worktree guard did not identify the reader's role"
+  assert_contains "$out" "execute the assigned brief" "task-worktree guard did not direct the crewmate to its real job"
+  assert_not_contains "$out" "SESSION START -" "task-worktree invocation emitted the primary fleet digest"
+  assert_not_contains "$out" "cannot locate harness process in ancestry" "task-worktree invocation leaked the lock's internal ancestry refusal"
+  assert_absent "$task_worktree/state/.lock" "task-worktree invocation attempted to acquire a fleet lock"
+  pass "session start identifies a crewmate task worktree before any digest or lock attempt"
+}
+
 test_lock_write_failure_read_only_path() {
   local rec root home fakebin out status
   rec=$(new_world lock-write-failure)
@@ -1772,6 +1796,7 @@ EOF
 
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
+test_task_worktree_refuses_before_session_digest_or_lock
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner

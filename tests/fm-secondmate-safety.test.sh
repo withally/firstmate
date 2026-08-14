@@ -2857,7 +2857,7 @@ EOF
 }
 
 test_secondmate_idle_pane_is_not_stale() {
-  local home fakebin out pid window
+  local home fakebin out pid window i=0
   home="$TMP_ROOT/watch-home"
   mkdir -p "$home/state"
   window="firstmate:fm-domain"
@@ -2875,12 +2875,31 @@ EOF
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_LOG="$TMP_ROOT/watch-fake/tmux.log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/watch-fake/pane.txt" \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$ROOT/bin/fm-watch.sh" > "$out" &
   pid=$!
+  while [ ! -e "$home/state/.last-watcher-beat" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -e "$home/state/.last-watcher-beat" ]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "watcher did not publish readiness before idle-secondmate supervision"
+  fi
   if ! wait_live "$pid" 25; then
     wait "$pid" || true
     grep -F "stale: $window" "$out" >/dev/null && fail "idle secondmate pane triggered stale wake"
     fail "watcher exited unexpectedly while supervising idle secondmate"
   fi
   kill "$pid" 2>/dev/null || true
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "watcher ignored TERM after publishing readiness"
+  fi
   wait "$pid" 2>/dev/null || true
   grep -F "stale: $window" "$out" >/dev/null && fail "idle secondmate pane triggered stale wake"
   pass "idle kind=secondmate pane is healthy and not stale"

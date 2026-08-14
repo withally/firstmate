@@ -162,7 +162,7 @@ tests/fm-tmux-submit-busy.test.sh
 ```
 
 The current cross-backend shape matrix and live refresh command are recorded in [Composer classification matrix](#composer-classification-matrix).
-Expected submit matrix: proven pending plus busy is accepted as queued; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; an unknown post-submit screen converts only after an observed idle-to-busy transition; and only a proven empty composer succeeds directly.
+Expected submit matrix: proven pending plus busy is accepted as queued only for an explicitly identified OpenCode harness; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; a newly cleared composer succeeds only after this submit observed its typed text; and a hidden or unknown post-submit composer converts only after an observed harness-scoped idle-to-busy transition.
 
 ### Cleanup endpoint identity
 
@@ -208,7 +208,7 @@ bash tests/fm-backend-orca.test.sh
 bash tests/fm-backend-cmux.test.sh
 ```
 
-The env-gated live guard was run on 2026-08-12 from this isolated worktree on macOS 26.5.1 arm64, tmux 3.6a, and Bash 3.2.57:
+The read-only env-gated live guard was run on 2026-08-12 from an isolated worktree on macOS 26.5.1 arm64, tmux 3.6a, and Bash 3.2.57:
 
 ```sh
 FM_COMPOSER_MATRIX_LIVE=1 tests/fm-composer-matrix-live-e2e.test.sh
@@ -230,11 +230,31 @@ not ok - live composer-matrix guard observed failures above
 ```
 
 Claude and Codex passed against their real idle renderings without submitting a prompt.
-The portable tmux regression proves that an observed idle-to-busy transition confirms an accepted Enter when a working harness hides its composer, but this live guard never submits a Codex prompt.
-Therefore the exact `fm-send-verify-fn-k8` busy-Codex incident is not proven closed by this verification and must not be silently closed from this change alone.
 The Pi failure was a first-launch trust dialog in the disposable worktree, which the guard correctly left unconfirmed and classified `unknown`.
 The absent binaries were reported explicitly rather than counted as passes.
 Refresh this section with the same guard after a harness upgrade or from an already-trusted checkout; never convert a trust or vendor modal into composer proof.
+
+The submit-confirmation mode was then run on 2026-08-13 against Codex 0.147.0 in an isolated tmux pane.
+Its shim dropped the first Enter after literal text was visible, then removed the fault and retried Enter without retyping:
+
+```sh
+FM_COMPOSER_MATRIX_LIVE=1 \
+FM_COMPOSER_MATRIX_HARNESSES=codex \
+FM_SUBMIT_CONFIRM_LIVE=codex \
+  tests/fm-composer-matrix-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - codex (codex-cli 0.147.0): real idle composer classifies empty
+ok - codex (codex-cli 0.147.0): retained text fails closed, Enter-only recovery submits exactly once
+ok - strict posture live: a blank shell row classifies unknown and injection defers
+ok - live composer-matrix guard verified 3 live surface(s)
+```
+
+This closes the exact retained-Codex-text false-positive direction without a fixed race-masking sleep.
+The portable delayed-render regression separately holds the capture on a stale empty frame until the typed text appears, proving that clearance cannot succeed before this submission has observed its own pending composer.
 
 ## Herdr
 
@@ -523,7 +543,7 @@ Claude therefore uses the terminal-backed path, and `tests/fm-afk-launch.test.sh
 This task did not reproduce the timed Claude reap on demand.
 Grok's native background-job lifetime remains unverified and its existing path is unchanged.
 
-The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:
+The Pi/Herdr return and injection path was originally verified on Herdr 0.7.3 and Pi 0.80.7:
 
 ```sh
 FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
@@ -532,6 +552,23 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+
+The opposite submit-confirmation direction was reverified on 2026-08-13 against Herdr 0.7.5 and Pi 0.84.1 with the targeted submit-only mode:
+
+```sh
+FM_AFK_PI_HERDR_E2E=1 FM_PI_HERDR_SUBMIT_ONLY=1 \
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-afk-pi-herdr-return-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - real Pi/Herdr type-once submit is positively confirmed with exactly one delivered prompt
+```
+
+The native Herdr status stayed unknown while Pi's rendered idle surface became `Working...`.
+That independent idle-to-working transition confirmed the real submission without retyping; the prompt transcript contained exactly one copy.
 
 The accepted-but-unconfirmed away-digest path is covered separately, against a real Pi primary with Calm on in an isolated non-default Herdr lab:
 

@@ -34,6 +34,13 @@ case "${1:-}" in
       esac
     done
     printf 'send-keys target=%s literal=%s arg=%s\n' "$target" "$literal" "${1:-}" >> "$FM_TMUX_LOG"
+    if [ -z "${FM_FAKE_TMUX_CAPTURE_FILE:-}" ]; then
+      if [ "$literal" -eq 1 ]; then
+        printf 'pending\n' > "$FM_TMUX_LOG.state"
+      elif [ "${1:-}" = Enter ]; then
+        printf 'empty\n' > "$FM_TMUX_LOG.state"
+      fi
+    fi
     exit 0 ;;
   display-message)
     target=
@@ -52,7 +59,13 @@ case "${1:-}" in
     printf '%%1\n'
     exit 0 ;;
   capture-pane)
-    printf '╭────╮\n│    │\n╰────╯\n'
+    if [ -n "${FM_FAKE_TMUX_CAPTURE_FILE:-}" ]; then
+      cat "$FM_FAKE_TMUX_CAPTURE_FILE"
+    elif [ "$(cat "$FM_TMUX_LOG.state" 2>/dev/null || true)" = pending ]; then
+      printf '╭────╮\n│ > typed │\n╰────╯\n'
+    else
+      printf '╭────╮\n│    │\n╰────╯\n'
+    fi
     exit 0 ;;
   list-windows)
     printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
@@ -192,6 +205,27 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+test_codex_pending_composer_never_false_confirms_from_stale_busy_footer() {
+  local dir fb home err log pane rc got
+  dir="$TMP_ROOT/codex-pending"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home codexpending); err="$dir/send.err"; log="$dir/tmux.log"; pane="$dir/pane"; : > "$log"
+  fm_write_meta "$home/state/lane-pending.meta" "window=sess:fm-lane-pending" "kind=ship" "harness=codex"
+  printf 'esc to interrupt\n› Read and execute the dated brief now.\n' > "$pane"
+
+  rc=0
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE_FILE="$pane" FM_SEND_RETRIES=2 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-pending "Read and execute the dated brief now." >/dev/null 2>"$err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "Codex text retained in the composer was falsely reported delivered"
+  assert_contains "$(cat "$err")" "Enter swallowed; text left in composer" "swallowed-Enter failure did not use fm-send's documented signal"
+  got=$(cat "$log")
+  [ "$(printf '%s\n' "$got" | grep -c 'literal=1' || true)" -eq 1 ] \
+    || fail "Codex swallowed-Enter handling must type the text exactly once"
+  [ "$(printf '%s\n' "$got" | grep -c 'arg=Enter' || true)" -eq 2 ] \
+    || fail "Codex swallowed-Enter handling must retry only Enter to the configured bound"
+  pass "fm-send strict: Codex pending text cannot be confirmed by a stale busy footer"
+}
+
 test_successful_keyed_decision_send_records_only_an_open_task_key() {
   local dir fb home err log rc
   dir="$TMP_ROOT/decision"; mkdir -p "$dir"
@@ -285,6 +319,7 @@ test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
+test_codex_pending_composer_never_false_confirms_from_stale_busy_footer
 test_successful_keyed_decision_send_records_only_an_open_task_key
 test_resolve_key_closes_only_after_confirmed_answer_delivery
 test_resolve_key_closes_each_named_key_and_no_others

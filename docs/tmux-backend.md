@@ -76,21 +76,22 @@ Busy state is not read from rendered text on this backend.
 A task's busy, idle, unknown, or dead verdict comes from the semantic busy-state contract owned by `bin/fm-busy-lib.sh`; [architecture](architecture.md#busy-state-is-semantic-per-adapter) owns its boundaries.
 The one remaining rendered-tail reader is Grok's isolated fallback inside that contract, which can only classify a Grok task.
 The submit acknowledgement and away-mode supervisor-pane busy guard below still consult rendered output, but only to decide whether input can be delivered, never to decide recorded task state.
-The supervisor guard selects only the detected primary harness's signature rather than a global union of vendor patterns.
+The supervisor guard selects the detected primary harness's signature; the [`afk`](../.agents/skills/afk/SKILL.md) skill owns what that guard reads when primary-harness detection does not resolve.
 
 `bin/fm-tmux-lib.sh` owns exact type-and-submit mechanics.
 It types a message once and retries Enter only until the composer clears.
-Only a proven empty composer is a positive delivery acknowledgement.
+A cleared composer is a positive delivery acknowledgement only once that submit has itself observed its own typed text, before or between its Enter retries, so a stale pre-render empty screen cannot confirm a later swallowed Enter.
+That observation is polled inside the existing Enter-retry budget rather than bought with a fixed sleep, and a harness whose composer stays hidden falls through to the turn-started conversion below instead of succeeding on unobserved clearance.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
 `fm-send.sh` reports every unconfirmed verdict as a failure instead of retyping or assuming delivery.
 
 OpenCode 1.18.4 has one busy-queue exception.
 While OpenCode is mid-turn, Enter queues the message but leaves its text visible until the turn completes.
-After the normal retry budget, only structurally proven pending text in a provably busy pane is accepted as queued, while an idle pane remains `pending` as a genuine swallowed Enter.
+After the normal retry budget, structurally proven pending text in a provably busy pane is accepted as queued only when the caller passed the `opencode` harness identity; an idle pane, another harness, or a caller that names no harness at all keeps `pending` as a genuine swallowed Enter.
 Ambiguous pending text never receives the busy-queue conversion.
-A second, baseline-gated conversion covers harnesses whose mid-turn screen the classifier cannot identify (Pi replaces its separated composer while working): when and only when the pane was idle before the text was typed, an idle-to-busy transition across the submit's own Enter confirms delivery, the same turn-started signal Herdr reads natively.
+A second, baseline-gated conversion covers harnesses whose mid-turn screen the classifier cannot identify (Pi replaces its separated composer while working): when and only when the pane was idle before the text was typed, a harness-scoped idle-to-busy transition across the submit's own Enter confirms delivery, the same turn-started signal Herdr reads natively.
 Without that baseline, an `unknown` verdict is preserved untouched, so a busy-looking pane can never convert an unread composer into a confirmation.
-`tests/fm-tmux-submit-busy.test.sh` covers busy and idle panes with proven, ambiguous, and cleared composers.
+`tests/fm-tmux-submit-busy.test.sh` covers busy and idle panes with proven, ambiguous, and cleared composers, the harness scoping that keeps a busy Codex footer from converting retained text, and a delayed typed render that must not be confirmed by the stale empty frame preceding it.
 
 ## Limits and regression entry points
 

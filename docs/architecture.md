@@ -106,8 +106,12 @@ The always-on watcher also uses that library's routine-progress and absorb class
 In away mode, seen-status dedupe does not clear possible-wedge aging for nonterminal progress, so housekeeping still re-escalates an unchanged idle pane at the configured bound.
 The daemon escalates captain-relevant events, plus an opted-in bounded recheck for a declared pause that remains idle, as one batched, single-line digest using the canonical `away-supervisor` kind from `bin/fm-operational-input.sh` so firstmate can distinguish it structurally from real messages.
 Its supervisor injection path supports tmux and herdr panes, with `FM_SUPERVISOR_BACKEND` and `FM_SUPERVISOR_TARGET` resolved independently from the task-spawn backend.
-Pane existence, busy checks, composer checks, capture, and verified submit route through `bin/fm-backend.sh`: tmux keeps the same submit core used by the tmux send backend, while herdr uses native busy state, native agent-state submit confirmation on idle baselines, and the shared composer classifier for pending-input guards and submit fallback.
-The tmux submit core (shared `fm_tmux_submit_enter_core`) treats a busy pane + retries-exhausted + composer-still-pending as a queued Enter (opencode 1.18.4 accepts Enter mid-turn and queues it for after the turn), reported as `empty` so the daemon and `fm-send` do not re-send; an idle pane keeps the `pending` verdict as a genuine swallow. The same opencode busy-queue case is a known gap on the herdr adapter and is recorded in `docs/herdr-backend.md` rather than patched here.
+Pane existence, busy checks, composer checks, capture, and verified submit route through `bin/fm-backend.sh`.
+Tmux keeps the same submit core used by the tmux send backend, observes the typed composer before accepting later clearance, and can independently confirm an idle-to-busy turn start when a harness hides its composer.
+Herdr uses native agent-state submit confirmation on idle baselines and, when that state remains unknown, accepts only a harness-scoped rendered idle-to-busy transition; the shared composer classifier still owns pending-input guards and conservative fallback.
+The tmux submit core (shared `fm_tmux_submit_enter_core`) treats a busy pane plus retries-exhausted plus composer-still-pending as a queued Enter only for an explicitly identified OpenCode harness, because OpenCode 1.18.4 accepts Enter mid-turn and queues it for after the turn.
+An idle pane keeps the `pending` verdict as a genuine swallow, and no other harness inherits that OpenCode exception.
+The same OpenCode busy-queue case remains a known gap on the Herdr adapter and is recorded in `docs/herdr-backend.md`.
 Composer classification has one shared owner, `bin/fm-composer-lib.sh`, which owns every composer shape as well as the verdict for tmux, herdr, zellij, Orca, and cmux; each adapter only captures a screen and declares what its capture primitive can see (styling, cursor row, native identity), so a capability gap lowers confidence rather than forking the decision.
 The daemon injects only into an affirmatively `empty` composer, so both `pending` and `unknown` defer and a bare dead-shell prompt cannot receive an escalation; the current boundary is in [Composer and injection safety](herdr-backend.md#composer-and-injection-safety).
 Unsupported supervisor backends refuse at daemon startup.
@@ -136,8 +140,9 @@ Endpoint death is the only process-level override and yields dead; child process
 `state/<id>.turn-ended` files remain wake notifications, not current state.
 
 Each record is bound to an incarnation token minted when the task's wiring is armed, so an event from a superseded incarnation is rejected rather than applied, and a record left behind by one classifies unknown.
-Three rendered-text readers deliberately remain outside this contract because they answer delivery questions: the submit acknowledgement and away-mode supervisor-pane busy guard in `bin/fm-tmux-lib.sh`, and the secondmate delivery-confirmation observation in `bin/fm-pending-reply-lib.sh`.
-All are harness-scoped rather than a global pattern union, and none is a recorded worker state source.
+Three rendered-text readers deliberately remain outside this contract because they answer delivery questions: the submit acknowledgement, the away-mode supervisor-pane busy guard, and the secondmate delivery-confirmation observation in `bin/fm-pending-reply-lib.sh`.
+The first two share one visible-tail window and one harness-scoped busy match in `bin/fm-tmux-lib.sh`; the Herdr adapter's own submit fallback supplies only its capture and reuses that same owner instead of forking a second heuristic.
+All are harness-scoped wherever a harness is known, and none is a recorded worker state source.
 
 ## Runtime session backends
 

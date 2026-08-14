@@ -31,6 +31,17 @@ case "${1:-}" in
     done
     exit 0 ;;
   capture-pane)
+    styled=0
+    for a in "$@"; do [ "$a" != -e ] || styled=1; done
+    if [ "$styled" -eq 1 ] && [ -n "${FM_FAKE_DELAYED_PENDING_AFTER:-}" ]; then
+      count=0
+      [ ! -f "$FM_FAKE_DELAYED_PENDING_COUNT" ] || count=$(cat "$FM_FAKE_DELAYED_PENDING_COUNT")
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$FM_FAKE_DELAYED_PENDING_COUNT"
+      if [ "$count" -ge "$FM_FAKE_DELAYED_PENDING_AFTER" ]; then
+        printf '╭────────────╮\n│ > delayed  │\n╰────────────╯\n' > "$COMPOSER"
+      fi
+    fi
     if [ -n "${FM_FAKE_CAPTURE_COUNT:-}" ]; then
       count=0
       [ ! -f "$FM_FAKE_CAPTURE_COUNT" ] || count=$(cat "$FM_FAKE_CAPTURE_COUNT")
@@ -80,11 +91,52 @@ test_busy_pane_pending_returns_empty() {
   # Now test the submit - write verdict to file to avoid nested $().
   PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$composer" FM_FAKE_SENT="$sent" \
     FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_FAKE_PANE_BUSY=1 \
-    fm_tmux_submit_enter_core "win" 3 0.05 > "$vfile" 2>/dev/null
+    fm_tmux_submit_enter_core "win" 3 0.05 '' opencode > "$vfile" 2>/dev/null
   [ "$(cat "$vfile")" = empty ] || fail "busy-pane pending should return empty, got '$(cat "$vfile")'"
   [ "$(grep -c '^Enter$' "$sent" 2>/dev/null || true)" -eq 3 ] \
     || fail "proven pending should consume the configured Enter retry budget"
   pass "fm_tmux_submit_enter_core: busy pane + pending composer returns empty (message queued)"
+}
+
+test_codex_busy_pane_pending_stays_pending() {
+  local dir fakebin composer sent vfile
+  dir="$TMP_ROOT/codex-busy-swallow"
+  fakebin=$(make_submit_mock "$dir")
+  composer="$dir/composer"
+  sent="$dir/sent.log"
+  vfile="$dir/verdict"
+  printf '╭────────────╮\n│ > fix      │\n╰────────────╯\n' > "$composer"
+  : > "$sent"
+  touch "$dir/.swallow"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_FAKE_PANE_BUSY=1 \
+    fm_tmux_submit_enter_core "win" 3 0.05 '' codex > "$vfile" 2>/dev/null
+  [ "$(cat "$vfile")" = pending ] \
+    || fail "Codex pending text must not inherit OpenCode's queued-Enter confirmation, got '$(cat "$vfile")'"
+  [ "$(grep -c '^Enter$' "$sent" 2>/dev/null || true)" -eq 3 ] \
+    || fail "Codex pending text should consume the configured Enter retry budget"
+  pass "fm_tmux_submit_enter_core: Codex busy footer cannot confirm retained composer text"
+}
+
+test_delayed_codex_typed_render_cannot_false_confirm_stale_empty() {
+  local dir fakebin composer sent vfile
+  dir="$TMP_ROOT/codex-delayed-render"
+  fakebin=$(make_submit_mock "$dir")
+  composer="$dir/composer"
+  sent="$dir/sent.log"
+  vfile="$dir/verdict"
+  printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$composer"
+  : > "$sent"
+  touch "$dir/.swallow"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_FAKE_PANE_BUSY=0 \
+    FM_FAKE_DELAYED_PENDING_AFTER=2 FM_FAKE_DELAYED_PENDING_COUNT="$dir/delayed-count" \
+    fm_tmux_submit_core "win" "delayed" 3 0.05 0 codex-label codex > "$vfile" 2>/dev/null
+  [ "$(cat "$vfile")" = pending ] \
+    || fail "a stale empty screen before delayed typed text rendered was falsely confirmed as submitted: $(cat "$vfile")"
+  [ "$(grep -c '^Enter$' "$sent" 2>/dev/null || true)" -eq 3 ] \
+    || fail "delayed-render handling must retry only Enter to the configured bound"
+  pass "fm_tmux_submit_core: typed text is observed before stale empty can confirm a Codex submit"
 }
 
 test_idle_pane_pending_returns_pending() {
@@ -351,6 +403,8 @@ test_claude_busy_signature_uses_real_capture_shapes() {
 }
 
 test_busy_pane_pending_returns_empty
+test_codex_busy_pane_pending_stays_pending
+test_delayed_codex_typed_render_cannot_false_confirm_stale_empty
 test_idle_pane_pending_returns_pending
 test_wrapped_continuation_retries_swallowed_enter
 test_placeholder_like_bare_input_retries_swallowed_enter

@@ -1786,7 +1786,8 @@ test_fm_send_exits_nonzero_on_confirmed_swallow() {
     "$ROOT/bin/fm-send.sh" sess:win 'fix findings 1 and 3, skip 2' >/dev/null 2>"$err"; then
     fail "fm-send exited zero despite a swallowed Enter (silent unsubmitted instruction)"
   fi
-  grep -F 'not submitted' "$err" >/dev/null || fail "fm-send did not explain the swallowed submit: $(cat "$err")"
+  grep -F 'Enter swallowed; text left in composer' "$err" >/dev/null \
+    || fail "fm-send did not explain the swallowed submit: $(cat "$err")"
   pass "fm-send exits non-zero on a confirmed swallow, zero on a clean submit"
 }
 
@@ -1890,6 +1891,20 @@ test_primary_busy_guard_is_harness_scoped() {
       || fail "OpenCode's rendered signature should classify an OpenCode primary busy"
   ) || fail "harness-scoped primary busy guard subshell failed"
   pass "primary busy guard isolates rendered signatures by detected harness"
+}
+
+test_unresolved_primary_harness_keeps_the_agnostic_busy_default() {
+  local out
+  out=$(FM_DAEMON_PRIMARY_HARNESS=unknown fm_daemon_primary_harness)
+  [ -z "$out" ] \
+    || fail "an unresolved harness must not be published as the identity '$out'; harness-scoped matchers treat an unregistered name as no signature at all"
+  (
+    fm_backend_busy_state() { printf 'unknown'; }
+    fm_backend_capture() { printf 'Working...\n'; }
+    FM_DAEMON_PRIMARY_HARNESS=unknown pane_is_busy "default:w1:p2" herdr \
+      || fail "an unresolved harness must fall back to the harness-agnostic busy default, not silently classify every busy pane idle"
+  ) || fail "unresolved-harness busy subshell failed"
+  pass "fm_daemon_primary_harness: unresolved ancestry degrades to the agnostic busy default instead of a name that matches nothing"
 }
 
 test_pane_is_busy_defaults_to_tmux_when_backend_omitted() {
@@ -2126,6 +2141,7 @@ test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
 test_pane_is_busy_herdr_native_busy_state
 test_primary_busy_guard_is_harness_scoped
+test_unresolved_primary_harness_keeps_the_agnostic_busy_default
 test_pane_is_busy_defaults_to_tmux_when_backend_omitted
 test_pane_input_pending_herdr_dispatch
 test_inject_msg_herdr_busy_guard_defers

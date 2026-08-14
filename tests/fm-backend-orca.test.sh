@@ -141,7 +141,7 @@ test_send_text_submit_verifies_empty_composer_after_enter() {
   printf '{"ok":true,"result":{"terminal":{"tail":["╭───╮","│ > │","╰───╯"]}}}\n' > "$RESP/3.out"
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_send_text_submit term-123 "hello captain" 3 0.01 0.01' "$ROOT" )
-  [ "$out" = empty ] || fail "send_text_submit should report empty on successful Orca send, got '$out'"
+  [ "$out" = unknown ] || fail "send_text_submit must not confirm from a cleared composer that never showed this submit's own text, got '$out'"
   assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-123'$'\x1f''--text'$'\x1f''hello captain'$'\x1f''--json' \
     "send_text_submit did not type the text literally before Enter"
   assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-123'$'\x1f''--text'$'\x1f\x1f''--enter'$'\x1f''--json' \
@@ -152,7 +152,7 @@ test_send_text_submit_verifies_empty_composer_after_enter() {
   # composer.
   assert_not_contains "$(cat "$LOG")" $'\x1f''--cursor'$'\x1f' \
     "the composer read must never page backward into scrollback"
-  pass "fm_backend_orca_send_text_submit: verifies empty composer after Enter with one bounded read"
+  pass "fm_backend_orca_send_text_submit: an unobserved cleared composer stays unverified after one bounded read"
 }
 
 test_send_text_submit_borderless_claude_confirms() {
@@ -167,8 +167,8 @@ test_send_text_submit_borderless_claude_confirms() {
   printf '{"ok":true,"result":{"terminal":{"tail":["────────────────","❯","────────────────"]}}}\n' > "$RESP/3.out"
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_send_text_submit term-123 "hello captain" 3 0.01 0.01' "$ROOT" )
-  [ "$out" = empty ] || fail "a borderless claude composer should confirm the submit, got '$out'"
-  pass "fm_backend_orca_send_text_submit: a borderless claude composer confirms delivery"
+  [ "$out" = unknown ] || fail "a borderless claude composer that never showed this submit's own text must not confirm, got '$out'"
+  pass "fm_backend_orca_send_text_submit: a borderless claude clear without observed text stays unverified"
 }
 
 test_composer_state_stale_banner_never_wins() {

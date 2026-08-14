@@ -94,8 +94,10 @@ The daemon never injects into an in-use pane. Two checks run before every
 injection, dispatched through `bin/fm-backend.sh` for the supervisor's own
 backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 
-- **Primary-pane busy guard** - `pane_is_busy` trusts Herdr native `busy` when available, otherwise matches rendered output against only the detected primary harness's signature.
-  This narrow delivery guard never classifies a recorded worker task and never uses a global union of vendor patterns.
+- **Primary-pane busy guard** - `pane_is_busy` trusts Herdr native `busy` when available, otherwise matches rendered output against the detected primary harness's signature.
+  A registered harness never borrows another harness's signature.
+  When ancestry detection cannot name the primary harness at all, the guard passes no harness and reads the shared harness-agnostic default signature set, because an unresolved primary must still be able to look busy and defer an injection rather than match nothing.
+  This narrow delivery guard never classifies a recorded worker task.
 - **Composer-state guard** - `inject_msg` reads the full `empty`/`pending`/`unknown` verdict from `fm_backend_composer_state` and injects only when it is affirmatively `empty`.
   `pending` means real unsubmitted text, while `unknown` includes an unreadable pane and a bare shell prompt left after the agent exits, so both defer.
   The shared `bin/fm-composer-lib.sh` owns every composer shape and the verdict; each backend only captures a screen and declares what its capture primitive can see.
@@ -127,30 +129,23 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
 If confirmation remains ambiguous after that one submit invocation, later flushes never type the digest again.
-For tmux that confirmation is a positively proven empty composer from the same
-shared classifier as the composer guard, or, when a working harness hides its
-composer entirely, a baseline-gated idle-to-busy transition across the submit's
-own Enter (`docs/tmux-backend.md` owns that exception).
-For herdr, normal idle-baseline submits are confirmed by native agent-state showing a real turn started; the ANSI-aware composer classifier remains the affirmative-empty pre-injection guard and conservative fallback for non-idle or unreadable baselines.
+For tmux that confirmation is a proven empty composer from the same shared
+classifier as the composer guard, accepted only once this submit has observed
+its own typed text, or, when a working harness hides its composer entirely, a
+baseline-gated idle-to-busy transition across the submit's own Enter
+(`docs/tmux-backend.md` owns both conversions).
+For herdr, normal idle-baseline submits are confirmed by native agent-state showing a real turn started, and a native state that stays unknown may instead be confirmed by the same harness-scoped rendered idle-to-busy transition (`docs/herdr-backend.md` owns it); the ANSI-aware composer classifier remains the affirmative-empty pre-injection guard and conservative fallback for non-idle or otherwise unreadable baselines.
 A bordered-empty or ghost-only composer is recognized as empty where that backend uses composer confirmation, rather than mistaken for a swallowed Enter.
 `fm-send.sh` uses the same primitive and exits non-zero
 when a steer's Enter is positively swallowed, so firstmate learns an instruction
 did not land instead of leaving it unsubmitted.
 
-**Busy-queued Enter exception (tmux backend, opencode 1.18.4).** While opencode
-is mid-turn, Enter is accepted and queued for after the current turn but the
-composer keeps showing the typed text the whole time, so the cleared-composer
-check alone false-positives on a swallowed Enter for every steer sent to a
-busy opencode pane. The shared `fm_tmux_submit_enter_core` falls back to
-`fm_pane_is_busy` once the Enter-retry budget is spent: a busy pane means the
-Enter was accepted and queued (reported as `empty` so the caller does not
-re-send), while an idle pane keeps `pending` as a genuine swallow. The
-strict-buffer-clears-only-on-`empty` policy above still holds for the daemon
-and the lenient-`pending`-fails-for-`fm-send` policy still holds for steer
-verification - this exception is a busy-queue is treated as a delivered
-Enter, not a swallowed one. The herdr adapter observes the same opencode
-behavior but needs a separate fix; the gap is recorded in
-`docs/herdr-backend.md` rather than papered over here.
+**Busy-queued Enter exception (tmux backend, opencode 1.18.4).**
+While opencode is mid-turn, Enter is accepted and queued for after the current turn but the composer keeps showing the typed text the whole time, so a cleared-composer check alone would call every steer sent to a busy opencode pane a swallowed Enter.
+`docs/tmux-backend.md` owns that exception and its exact conditions.
+It converts a still-pending composer only for a caller that names the `opencode` harness, which is why the daemon passes its detected primary harness into the submit primitive and no other harness inherits the conversion.
+The daemon's own policy is unchanged: only a confirmed `empty` clears the buffer, `pending` still fails an `fm-send` steer, and a busy-queued Enter counts as a delivered Enter rather than a swallowed one.
+The herdr adapter observes the same opencode behavior but needs a separate fix; the gap is recorded in `docs/herdr-backend.md` rather than papered over here.
 
 ## Classification policy
 

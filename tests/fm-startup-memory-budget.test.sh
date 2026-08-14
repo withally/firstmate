@@ -57,13 +57,23 @@ SH
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 [ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+composer="$(dirname "$0")/tmux.composer"
 case "$*" in
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1' ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0 ;;
-  # Row 0 (the cursor row) is a proven-empty bare agent composer: a verified
-  # submit needs positive container proof, so a blank pane would defer.
-  *capture-pane*) printf '\342\235\257 \n' ;;
+  # Row 0 (the cursor row) is a bare agent composer: it carries the typed text
+  # after `send-keys -l` and clears on Enter, so a verified submit can observe
+  # its own typing before believing the post-Enter empty composer.
+  *send-keys*' -l '*) printf '%s' "${!#}" > "$composer" ;;
+  *send-keys*Enter*) : > "$composer" ;;
+  *capture-pane*)
+    if [ -s "$composer" ]; then
+      printf '\342\235\257 %s\n' "$(cat "$composer")"
+    else
+      printf '\342\235\257 \n'
+    fi
+    ;;
 esac
 exit 0
 SH

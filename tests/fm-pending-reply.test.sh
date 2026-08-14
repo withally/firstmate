@@ -56,12 +56,21 @@ case "${1:-}" in
     done
     if [ "$literal" = 1 ]; then
       printf '%s' "${1:-}" >> "$FM_SEND_LOG"
+      printf '%s' "${1:-}" > "$FM_SEND_LOG.composer"
+    elif [ "${1:-}" = Enter ]; then
+      : > "$FM_SEND_LOG.composer"
     fi
     exit 0 ;;
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
-  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
+  capture-pane)
+    if [ -s "$FM_SEND_LOG.composer" ]; then
+      printf '╭────╮\n│ > %s │\n╰────╯\n' "$(cat "$FM_SEND_LOG.composer")"
+    else
+      printf '╭────╮\n│    │\n╰────╯\n'
+    fi
+    exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0

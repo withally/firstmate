@@ -36,11 +36,22 @@ make_stubs() {  # <dir> -> echoes fakebin dir
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
-  send-keys) exit 0 ;;
+  send-keys)
+    case " $* " in
+      *' -l '*) printf 'pending\n' > "$FM_TMUX_STATE" ;;
+      *' Enter '*) printf 'empty\n' > "$FM_TMUX_STATE" ;;
+    esac
+    exit 0 ;;
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
-  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
+  capture-pane)
+    if [ "$(cat "$FM_TMUX_STATE" 2>/dev/null || true)" = pending ]; then
+      printf '╭────╮\n│ > typed │\n╰────╯\n'
+    else
+      printf '╭────╮\n│    │\n╰────╯\n'
+    fi
+    exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
@@ -64,8 +75,9 @@ run_send() {
   local fb=$1 log=$2 home; shift 2
   home="$TMP_ROOT/home-$RANDOM"; mkdir -p "$home/state"
   : > "$log"
+  : > "$home/tmux.state"
   env "$@" PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SLEEP_LOG="$log" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SLEEP_LOG="$log" FM_TMUX_STATE="$home/tmux.state" \
     "$SEND" "sess:win" "hello captain" 2>/dev/null
 }
 
@@ -111,7 +123,9 @@ test_key_path_never_pauses() {
   fb=$(make_stubs "$dir"); log="$dir/sleep.log"
   home="$dir/home"; mkdir -p "$home/state"
   : > "$log"
+  : > "$home/tmux.state"
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SLEEP_LOG="$log" \
+    FM_TMUX_STATE="$home/tmux.state" \
     "$SEND" "sess:win" --key Escape 2>/dev/null; rc=$?
   expect_code 0 "$rc" "--key send should succeed"
   [ ! -s "$log" ] || fail "--key path paused but must not"$'\n'"--- sleeps ---"$'\n'"$(cat "$log")"

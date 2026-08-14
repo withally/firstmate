@@ -76,6 +76,11 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # every backend so the decision cannot drift.
 # shellcheck source=bin/fm-composer-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-composer-lib.sh"
+# The rendered delivery-busy matcher is currently owned by fm-tmux-lib.sh even
+# when a non-tmux backend supplies the capture. Herdr reuses only that shared,
+# harness-scoped classifier; its capture and submit mechanics remain local.
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-tmux-lib.sh"
 
 # Shared, backend-neutral normalized-transition shape and the single-owner
 # status->action policy table (bin/fm-transition-lib.sh). This adapter's event
@@ -2438,6 +2443,34 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
   printf '%s' "$verdict"
 }
 
+fm_backend_herdr_rendered_busy_state() {  # <target> <harness> -> busy|idle|unknown
+  local target=$1 harness=$2 tail40
+  [ -n "$harness" ] || { printf 'unknown'; return 0; }
+  tail40=$(fm_backend_herdr_capture "$target" 40 2>/dev/null) \
+    || { printf 'unknown'; return 0; }
+  printf '%s' "$tail40" | fm_busy_tail_state "$harness"
+}
+
+# fm_backend_herdr_rendered_turn_started: herdr's counterpart to the tmux
+# turn-started conversion. Only a rendered idle baseline may convert, and the
+# post-Enter read is POLLED across the remaining retry budget rather than
+# sampled once, because the turn takes a beat to render and a single early
+# sample would report a real submission as unconfirmed.
+fm_backend_herdr_rendered_turn_started() {  # <target> <harness> <baseline> <retries> <sleep> -> busy|unknown
+  local target=$1 harness=$2 baseline=$3 retries=$4 sleep_s=$5 j=0
+  if [ "$baseline" = idle ]; then
+    while [ "$j" -lt "$retries" ]; do
+      if [ "$(fm_backend_herdr_rendered_busy_state "$target" "$harness")" = busy ]; then
+        printf 'busy'
+        return 0
+      fi
+      j=$((j + 1))
+      [ "$j" -ge "$retries" ] || sleep "$sleep_s"
+    done
+  fi
+  printf 'unknown'
+}
+
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
 # (Enter only, never retyped) until herdr's NATIVE agent-state (agent get)
@@ -2499,14 +2532,44 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
 # submit vocabulary. Empty means confirmed submitted for every backend; how
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
-fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness i=0 verdict baseline confirm_sleep
+  local rendered_baseline=unknown rendered_after observed_pending=0 typed_state
+  harness=$(fm_busy_harness_scope "${7:-}")
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  # Only the rendered busy baseline must predate our own typing (the typed
+  # text changes what the pane renders). The native agent-state baseline is
+  # read after the settle, so a turn that starts during the settle window
+  # reads as a non-idle baseline instead of arming a false idle-to-busy
+  # conversion.
+  if [ -n "$harness" ]; then
+    rendered_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
+  fi
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   baseline=$(fm_backend_herdr_classify_submit_agent_status \
     "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  [ "$baseline" = unknown ] || rendered_baseline=unknown
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
+  # The composer-evidence path (non-idle baseline) mirrors the tmux
+  # typed-text observation: seeing our own text pending before the first
+  # Enter is what lets a later positively classified clearance confirm. If
+  # rendering is delayed, the condition is polled within the existing retry
+  # budget rather than masked by a fixed sleep.
+  if [ "$baseline" != idle ]; then
+    while [ "$i" -lt "$retries" ]; do
+      typed_state=$(fm_backend_herdr_composer_state "$target")
+      case "$typed_state" in
+        pending|pending-unproven) observed_pending=1; break ;;
+        empty)
+          i=$((i + 1))
+          [ "$i" -ge "$retries" ] || sleep "$sleep_s"
+          ;;
+        *) break ;;
+      esac
+    done
+    i=0
+  fi
   while :; do
     fm_backend_herdr_send_key "$target" Enter || true
     if [ "$baseline" = idle ]; then
@@ -2518,8 +2581,35 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
-      empty) printf 'empty'; return 0 ;;
-      unknown) printf 'unknown'; return 0 ;;
+      pending|pending-unproven) observed_pending=1 ;;
+      empty)
+        # A composer that reads empty without this submit's own text ever
+        # having been observed in it may be a stale pre-typing frame, not a
+        # cleared composer; only the independent rendered turn-start may
+        # convert it, never a bare confirmation.
+        if [ "$observed_pending" = 1 ]; then
+          printf 'empty'
+          return 0
+        fi
+        rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
+          "$rendered_baseline" "$retries" "$sleep_s")
+        if [ "$rendered_after" = busy ]; then
+          printf 'empty'
+          return 0
+        fi
+        printf 'unknown'
+        return 0
+        ;;
+      unknown)
+        rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
+          "$rendered_baseline" "$retries" "$sleep_s")
+        if [ "$rendered_after" = busy ]; then
+          printf 'empty'
+          return 0
+        fi
+        printf 'unknown'
+        return 0
+        ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }

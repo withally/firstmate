@@ -63,7 +63,7 @@ That alternative expands trust and writes outside this repository, so Firstmate 
 ## Regression coverage
 
 `tests/fm-sessionstart-nudge.test.sh` proves exact nudge output, gate and scope silence, full-run routing, completion-gated clear and compaction re-emission, and resume delegation.
-`tests/fm-session-start.test.sh` proves lock-refusal delivery, whole-digest timeout reporting, stage truncation, status-line caps, and recovery-preserving backlog bounds.
+`tests/fm-session-start.test.sh` proves lock-refusal delivery, the crewmate task-worktree no-op that runs before any lock or digest stage, whole-digest timeout reporting, stage truncation, status-line caps, and recovery-preserving backlog bounds.
 `tests/fm-pi-primary-live-e2e.test.sh` and `tests/fm-opencode-primary-live-e2e.test.sh` exercise the unchanged native nudge paths with first-message and later-message Ahoy regressions.
 `tests/fm-turnend-guard.test.sh`, `tests/fm-pi-watch-extension.test.sh`, and `tests/fm-daemon.test.sh` cover marked guard, monitoring, and away-mode delivery.
 

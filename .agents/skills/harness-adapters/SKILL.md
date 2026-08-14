@@ -255,16 +255,22 @@ turn actually finishes.
 Without a fix, every `fm-send` to a busy opencode pane exits non-zero on a
 false "Enter swallowed", and every daemon escalation that lands while the
 primary is mid-turn is treated as wedged.
-The shared `fm_tmux_submit_enter_core` (`bin/fm-tmux-lib.sh`) now falls back
-to `fm_pane_is_busy` once the Enter-retry budget is spent: a busy pane means
-the Enter was accepted and queued (reported as `empty` so the caller does not
-re-send), while an idle pane keeps `pending` as a genuine swallow. The herdr
-adapter observes the same opencode behavior but needs a separate fix; it is
-recorded as a known gap in `docs/herdr-backend.md` rather than patched here,
-so the tmux adapter does not paper over a herdr-specific shape.
-Regression coverage: `tests/fm-tmux-submit-busy.test.sh` covers the four
-scenarios (busy + pending -> `empty`, idle + pending -> `pending`, busy +
-cleared -> `empty`, idle + cleared -> `empty`).
+The shared `fm_tmux_submit_enter_core` (`bin/fm-tmux-lib.sh`) falls back to
+`fm_pane_is_busy` once the Enter-retry budget is spent: a busy pane means the
+Enter was accepted and queued (reported as `empty` so the caller does not
+re-send), while an idle pane keeps `pending` as a genuine swallow.
+That conversion is scoped to a caller-supplied `opencode` harness identity, so
+no other harness - and no caller that passes no harness at all - can turn its
+own retained composer text into a confirmed submit.
+Pass the recorded harness through `fm_backend_send_text_submit` whenever a
+caller wants it. The herdr adapter observes the same opencode behavior but
+needs a separate fix; it is recorded as a known gap in
+`docs/herdr-backend.md` rather than patched here, so the tmux adapter does not
+paper over a herdr-specific shape.
+Regression coverage: `tests/fm-tmux-submit-busy.test.sh` covers opencode busy +
+pending -> `empty`, codex busy + pending -> `pending`, idle + pending ->
+`pending`, busy + cleared -> `empty`, and idle + cleared -> `empty` once this
+submit has observed its own typed text.
 
 **Primary-session guard fact (verified 2026-07-08, OpenCode 1.17.6).**
 The firstmate PRIMARY's own `.opencode/plugins/fm-primary-turnend-guard.js` listens for `session.idle`.

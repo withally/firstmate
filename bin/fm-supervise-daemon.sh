@@ -664,11 +664,19 @@ mark_escalated_seen() {  # <kind> <arg> <state>
 # Resolved lazily and memoized: harness detection walks process ancestry, which
 # is too heavy to pay on every source of this library (the unit tests and the
 # launcher source it purely for its pure functions).
+#
+# Echoes a real harness name or the EMPTY string. `unknown` is fm-harness.sh's
+# "ancestry did not resolve" answer, not a harness identity: every consumer here
+# feeds this value to harness-scoped matchers that must never treat an
+# unregistered name as a signature, so an unresolved ancestry deliberately
+# degrades to the harness-agnostic default rather than to a name that matches
+# nothing.
 fm_daemon_primary_harness() {
   if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
     FM_DAEMON_PRIMARY_HARNESS=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
     [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
   fi
+  [ "$FM_DAEMON_PRIMARY_HARNESS" != unknown ] || return 0
   printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
 }
 
@@ -680,8 +688,7 @@ pane_is_busy() {  # <target> [backend]
     busy) return 0 ;;
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
-  printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"
+  [ "$(printf '%s' "$tail40" | fm_busy_tail_state "$harness")" = busy ]
 }
 
 # pane_input_pending dispatches through fm_backend_composer_state and treats
@@ -1324,7 +1331,7 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state] [durable] [item-count]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded durable=${3:-transient}
+  local msg=$1 state target backend harness retries sleep_s verdict composer encoded durable=${3:-transient}
   local items=${4:-0} digest_id inflight existing_id phase retired created
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
@@ -1437,7 +1444,8 @@ inject_msg() {  # <message> [state] [durable] [item-count]
     digest_inflight_write "$state" "$digest_id" prepared "$backend" "$target" not-attempted \
       "$created" "$items" || { log "inject deferred: could not persist digest identity before submit"; return 1; }
   fi
-  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
+  harness=$(fm_daemon_primary_harness)
+  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s" '' "$harness")
   if [ "$verdict" = empty ]; then
     if [ "$durable" = durable ]; then
       digest_inflight_write "$state" "$digest_id" confirmed "$backend" "$target" empty "$created" "$items" \

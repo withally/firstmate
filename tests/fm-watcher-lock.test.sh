@@ -714,8 +714,10 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
   # Crash counterfactual: the seed dies without a close receipt or successor,
   # so the attached arm must still fail loudly.
-  kill "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
+  # Use the suite's bounded process terminator: a shell with a pending trap can
+  # defer TERM while waiting on a child, and a raw wait would then hang this
+  # safety test instead of exercising the successor-gap assertion below.
+  terminate_test_pid "$wpid"
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
@@ -755,8 +757,7 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*exit_code=143.*signal=TERM.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
     || fail "attached arm signal was not recorded in the lifecycle ledger"
   is_live_non_zombie "$wpid" || fail "signaling an attached arm terminated the peer watcher"
-  kill "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
+  terminate_test_pid "$wpid"
   pass "attached arm signals record a classified lifecycle entry"
 }
 

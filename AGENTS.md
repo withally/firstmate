@@ -132,6 +132,7 @@ Treat `data/captain.md` as the domain-local record of captain preferences, optio
 
 Run `bin/fm-session-start.sh` exactly once at session start.
 Its header is the single owner of composed commands, ordering, and digest contents.
+In an unmarked disposable task worktree that is its own operational home, that command is a deliberate no-op: it identifies the reader as a crewmate that must execute its assigned brief, and it takes no lock and prints no fleet digest, so nothing in this file makes a task worker adopt primary-session duties.
 `bin/fm-supervision-instructions.sh` renders the emitted supervision block from `docs/supervision-protocols/`.
 Do not reimplement it by separately running its lock, bootstrap, or initial wake-drain components.
 Tracked native session-open adapters either run or nudge this command according to harness capability; `docs/sessionstart-nudge.md` owns their current behavior and compatibility.

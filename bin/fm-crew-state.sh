@@ -335,57 +335,15 @@ nm_ci_checks_state() {
 # matching row's status word (running/completed/cancelled/failed), or empty
 # when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
 #
-# `no-mistakes runs` is a REPO-wide read, identical for every crew of the same
-# repo, so a caller that reads many crews in one pass would otherwise pay one
-# identical bounded CLI round-trip per crew. Such a caller (bin/fm-fleet-
-# snapshot.sh) exports FM_CREW_STATE_RUNS_CACHE_DIR pointing at a directory it
-# creates and removes for that pass alone; nothing here creates a durable cache,
-# and with the variable unset every read behaves exactly as before. The key is
-# the repo the listing belongs to (the worktree's git common dir) plus the row
-# limit, so crews of different repos never share an answer, and only non-empty
-# output is stored, so a timed-out call is retried by the next crew rather than
-# cached as "this branch has no run".
-nm_runs_cache_file() {
-  local dir=${FM_CREW_STATE_RUNS_CACHE_DIR:-} repo key
-  [ -n "$dir" ] && [ -d "$dir" ] || return 1
-  repo=$(cd "$WT" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd) || return 1
-  [ -n "$repo" ] || return 1
-  key=$(printf '%s|%s' "$repo" "$FM_CREW_STATE_RUNS_LIMIT" | cksum | cut -d' ' -f1)
-  printf '%s/runs-%s' "$dir" "$key"
-}
-
-nm_runs_cache_present() {
-  local cache
-  cache=$(nm_runs_cache_file) || return 1
-  [ -s "$cache" ]
-}
-
-# `fresh` bypasses the cached copy for THIS read and refreshes it, so a later
-# crew in the same pass sees the newer listing too. The reconciliation below
-# spends it only where the cache would otherwise invert the read ordering its
-# correctness depends on.
-nm_runs_list() {  # [fresh]
-  local cache out tmp
-  cache=$(nm_runs_cache_file) || cache=''
-  if [ "${1:-}" != fresh ] && [ -n "$cache" ] && [ -s "$cache" ]; then
-    cat "$cache"
-    return 0
-  fi
-  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
-  if [ -n "$cache" ] && [ -n "$out" ]; then
-    tmp="$cache.$$"
-    if printf '%s\n' "$out" > "$tmp" 2>/dev/null; then
-      mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-    else
-      rm -f "$tmp" 2>/dev/null
-    fi
-  fi
-  printf '%s' "$out"
-}
-
-nm_runs_status_for_branch() {  # <branch> [fresh]
+# The read is deliberately per-crew and uncached. A pass-scoped cache shared
+# across crews was tried and removed: it makes the listing an EARLIER read than
+# the `axi status` object it is used to overrule, which broke the reconciliation
+# below in both directions (a cached terminal row can call a live rerun failed;
+# a cached alive row can call an ended run working). Correctness at one bounded
+# round-trip per crew is the deliberate trade.
+nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br sha
-  out=$(nm_runs_list "${2:-}")
+  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -453,16 +411,6 @@ nm_coarse_status_is_modeled() {  # <status>
   esac
 }
 
-# A coarse word that ENDS the run. Only these can turn an alive detailed verdict
-# into a terminal one, which is the single direction where the listing must be
-# strictly newer than the detailed object it overrules.
-nm_coarse_status_is_terminal() {  # <status>
-  case "$1" in
-    completed|failed|cancelled) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -502,27 +450,11 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # and head, so bind its detail against the later, newest-first runs read.
       # A disagreement means the listing's row is current and the detailed
       # object is stale; retain the current coarse verdict rather than emitting
-      # a terminal result from the superseded run.
-      #
-      # That argument holds only while the listing is the LATER read. A
-      # pass-scoped cached copy is by construction OLDER than this crew's
-      # `axi status` object, so it may not be the one to declare an alive run
-      # dead: a same-head rerun whose new row had not landed when the pass began
-      # would otherwise surface a healthy running pipeline as failed for the rest
-      # of the pass. In exactly that direction - cached, terminal, overruling an
-      # alive detailed verdict - re-read the listing uncached and decide on the
-      # newer answer. Every other case (agreement, an alive coarse word, or an
-      # already-uncached read) keeps the single cached round-trip.
-      FULL_COARSE_STATUS=$(nm_full_coarse_status)
-      COARSE_FROM_CACHE=0
-      nm_runs_cache_present && COARSE_FROM_CACHE=1
+      # a terminal result from the superseded run. The argument depends on the
+      # listing being the LATER of the two reads, so it is taken fresh here for
+      # every crew.
       COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      if [ "$COARSE_FROM_CACHE" = 1 ] \
-        && nm_coarse_status_is_terminal "$COARSE_STATUS" \
-        && ! nm_coarse_status_is_terminal "$FULL_COARSE_STATUS"; then
-        COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH" fresh)
-      fi
-      if nm_coarse_status_is_modeled "$COARSE_STATUS" && [ "$FULL_COARSE_STATUS" != "$COARSE_STATUS" ]; then
+      if nm_coarse_status_is_modeled "$COARSE_STATUS" && [ "$(nm_full_coarse_status)" != "$COARSE_STATUS" ]; then
         RUN_SOURCE=coarse
       fi
     else

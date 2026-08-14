@@ -814,53 +814,16 @@ test_unmodeled_runs_list_status_does_not_demote_full_detail() {
   pass "unmodeled runs-list status does not demote full detail"
 }
 
-# The runs listing is a REPO-wide read, identical for every crew of the same
-# repo, so a fleet pass may fetch it once and reuse it - but only within that one
-# pass. With the pass-scoped cache directory the second crew reuses the first
-# crew's listing; with no directory (a later pass) every read goes to the CLI
-# again, so no verdict is ever carried across snapshots.
-test_runs_listing_is_read_once_per_snapshot() {
+# The listing must be the LATER of the two reads it reconciles, so every crew
+# takes its own. Sharing one listing across a fleet pass was tried and removed:
+# an earlier listing overruling a later `axi status` object misreads BOTH
+# directions - a stale terminal row calls a live same-head rerun failed, and a
+# stale alive row calls an ended run working. This pins the read as per-crew and
+# uncached, in both directions, so neither defect can return unnoticed.
+test_runs_listing_is_read_fresh_for_every_crew() {
   reset_fakes
   local d short out calls
-  d=$(new_case runs-listing-cache)
-  make_repo_on_branch "$d/wt" fm/feat-shared
-  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/crew-a.meta" "window=fm:fm-crew-a" "worktree=$d/wt" "kind=ship"
-  fm_write_meta "$d/state/crew-b.meta" "window=fm:fm-crew-b" "worktree=$d/wt" "kind=ship"
-  FM_FAKE_AXI_STATUS="$(run_running fm/feat-shared)"
-  FM_FAKE_RUNS_LIST="  running   fm/feat-shared ${short}  2026-08-07 10:00"
-  FM_FAKE_RUNS_CALLS="$d/runs-calls"
-  : > "$FM_FAKE_RUNS_CALLS"
-  mkdir -p "$d/runs-cache"
-  FM_CREW_STATE_RUNS_CACHE_DIR="$d/runs-cache"
-  export FM_CREW_STATE_RUNS_CACHE_DIR
-
-  out=$(run_crew_state "$d" crew-a)
-  assert_contains "$out" "state: working" "first crew of the pass reads its run"
-  out=$(run_crew_state "$d" crew-b)
-  assert_contains "$out" "state: working" "second crew of the pass reads the same run"
-  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
-  [ "$calls" = 1 ] || fail "runs listing should be read once per snapshot, got $calls call(s)"
-
-  unset FM_CREW_STATE_RUNS_CACHE_DIR
-  rm -rf "$d/runs-cache"
-  out=$(run_crew_state "$d" crew-a)
-  assert_contains "$out" "state: working" "a later pass re-reads the listing"
-  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
-  [ "$calls" = 2 ] || fail "a pass with no cache directory must re-read the listing, got $calls call(s)"
-  pass "runs listing is read once per snapshot and never reused across snapshots"
-}
-
-# The pass-scoped cached listing is by construction OLDER than each later crew's
-# `axi status` read, so it must not be the read that declares an alive run dead:
-# a same-head rerun whose row lands mid-pass would otherwise surface a healthy
-# running pipeline as failed until the next pass. Only that direction pays a
-# fresh listing read; agreement still costs nothing.
-test_cached_terminal_listing_revalidates_before_overruling_alive_run() {
-  reset_fakes
-  local d short out calls
-  d=$(new_case cached-terminal-revalidate)
+  d=$(new_case runs-listing-fresh)
   make_repo_on_branch "$d/wt" fm/feat-rerun
   short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
   make_fakebin "$d" >/dev/null
@@ -869,35 +832,32 @@ test_cached_terminal_listing_revalidates_before_overruling_alive_run() {
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-rerun)"
   FM_FAKE_RUNS_CALLS="$d/runs-calls"
   : > "$FM_FAKE_RUNS_CALLS"
-  mkdir -p "$d/runs-cache"
-  FM_CREW_STATE_RUNS_CACHE_DIR="$d/runs-cache"
-  export FM_CREW_STATE_RUNS_CACHE_DIR
 
-  # Pass begins before the rerun's row lands: the listing's newest row is the
-  # previous failed run at the same head, and that IS current for this crew.
+  # The newest row is the previous failed run at this same head, and it IS
+  # current for this crew: a stale healthy detail object does not mask it.
   FM_FAKE_RUNS_LIST="  failed    fm/feat-rerun ${short}  2026-08-07 10:00"
   out=$(run_crew_state "$d" crew-a)
-  assert_contains "$out" "state: failed" "an uncached terminal listing still outranks a stale healthy detail"
+  assert_contains "$out" "state: failed" "the current terminal row outranks a stale healthy detail"
   calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
-  [ "$calls" = 1 ] || fail "first crew of the pass reads the listing once, got $calls"
+  [ "$calls" = 1 ] || fail "the first crew reads the listing once, got $calls"
 
-  # The rerun's row lands mid-pass. The cached copy predates this crew's own
-  # axi read, so it may not turn the running run terminal without revalidating.
+  # A same-head rerun lands between the two crew reads. The second crew must see
+  # it, never a carried-over terminal row.
   FM_FAKE_RUNS_LIST="  running   fm/feat-rerun ${short}  2026-08-07 10:01"
   out=$(run_crew_state "$d" crew-b)
   assert_contains "$out" "state: working" "a healthy running rerun must never surface as failed"
-  assert_not_contains "$out" "state: failed" "a stale cached terminal row must not outrank a live run"
+  assert_not_contains "$out" "state: failed" "no crew may reuse an earlier crew's terminal row"
   calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
-  [ "$calls" = 2 ] || fail "the flip case revalidates with one fresh read, got $calls"
+  [ "$calls" = 2 ] || fail "every crew takes its own listing read, got $calls"
 
-  # Agreement costs nothing: the refreshed cache serves the rest of the pass.
-  out=$(run_crew_state "$d" crew-b)
-  assert_contains "$out" "state: working" "the refreshed cached listing keeps serving the pass"
+  # Mirror direction: the run ends between reads, and the ended verdict must not
+  # be masked by a carried-over alive row either.
+  FM_FAKE_RUNS_LIST="  failed    fm/feat-rerun ${short}  2026-08-07 10:02"
+  out=$(run_crew_state "$d" crew-a)
+  assert_contains "$out" "state: failed" "an ended run must not keep reading working"
   calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
-  [ "$calls" = 2 ] || fail "an agreeing cached listing must not re-read, got $calls"
-
-  unset FM_CREW_STATE_RUNS_CACHE_DIR
-  pass "a cached terminal row revalidates before overruling an alive run"
+  [ "$calls" = 3 ] || fail "every crew takes its own listing read, got $calls"
+  pass "the runs listing is read fresh for every crew, in both directions"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1550,8 +1510,7 @@ test_current_terminal_run_outranks_stale_running_detail
 test_newest_same_branch_head_mismatch_does_not_latch_older_run
 test_pending_run_reads_working
 test_unmodeled_runs_list_status_does_not_demote_full_detail
-test_runs_listing_is_read_once_per_snapshot
-test_cached_terminal_listing_revalidates_before_overruling_alive_run
+test_runs_listing_is_read_fresh_for_every_crew
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

@@ -12,7 +12,10 @@
 #
 # A hold identity is <origin-id>-decision-<decision-key>. Origin ids and decision
 # keys must already be privacy-safe slugs. Repeating `hold` with the same identity
-# is idempotent. A different decision key creates a different backlog identity.
+# is idempotent while that hold is still live. Once the decision is closed, `hold`
+# refuses the identity even after retention moves it out of the live backlog, so a
+# new decision needs a new decision key. A different decision key creates a
+# different backlog identity.
 # All backlog mutations run in the active FM_HOME, which keeps main-home and
 # secondmate-home ownership aligned with the work that discovered the decision.
 #

@@ -519,7 +519,10 @@ test_watch_restart_attaches_to_healthy_peer() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$out" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  # --restart can spend its first 50 poll turns waiting for this deliberately
+  # TERM-resistant peer. Leave startup ample scheduling runway under full-suite
+  # load, but stop immediately if the arm exits so a real failure stays fast.
+  while [ "$i" -lt 200 ] && is_live_non_zombie "$armpid"; do
     grep -qF "watcher: attached pid=$peer" "$out" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))

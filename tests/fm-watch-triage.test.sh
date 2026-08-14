@@ -139,16 +139,8 @@ record_pi_busy() {  # <state-dir> <id>
 }
 
 reap() {
-  local pid=$1 i=0
-  kill "$pid" 2>/dev/null || true
-  while [ "$i" -lt 20 ] && is_live_non_zombie "$pid"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if is_live_non_zombie "$pid"; then
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-  wait "$pid" 2>/dev/null || true
+  local pid=$1
+  fm_test_terminate_or_fail "$pid" "triage watcher cleanup"
 }
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
@@ -1987,7 +1979,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   pid=$!
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "matching stale suppressor with missing timer did not initialize stale-since"; }
   if ! kill -0 "$pid" 2>/dev/null; then
-    wait "$pid" 2>/dev/null || true
+    fm_test_wait_or_fail "$pid" 600 "stale-timer repair watcher"
     fail "watcher exited while repairing a missing stale-since timer: $(cat "$out")"
   fi
   [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "missing stale-since repair enqueued a wake"; }
@@ -2224,8 +2216,10 @@ test_procevent_surface_serializes_with_drain() {
   wait_live "$drain_pid" 10 || fail "a concurrent drain split the surfacing transition"
   [ -s "$state/.wake-queue" ] || fail "the concurrent drain consumed the record before marker commit"
   touch "$release"
-  wait "$pid" || fail "the paused watcher did not finish surfacing"
-  wait "$drain_pid" || fail "the concurrent drain failed after surfacing committed"
+  fm_test_wait_or_fail "$pid" 600 "paused procevent watcher surfacing"
+  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "the paused watcher did not finish surfacing"
+  fm_test_wait_or_fail "$drain_pid" 600 "concurrent procevent drain"
+  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "the concurrent drain failed after surfacing committed"
   grep -F "procevent:drain-race:1" "$drain_out" >/dev/null \
     || fail "the serialized drain lost the process-event record"
   pass "queue revalidation, proactive output, and marker commit serialize with drain"
@@ -2241,7 +2235,7 @@ test_procevent_surface_crash_boundaries() {
     FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$fifo" &
   pid=$!
-  wait "$reader" || true
+  fm_test_wait_or_fail "$reader" 600 "failed-output FIFO reader"
   wait_for_exit "$pid" 100
   exit_status=$?
   [ "$exit_status" -ne 124 ] || fail "the watcher survived a failed actionable output write"

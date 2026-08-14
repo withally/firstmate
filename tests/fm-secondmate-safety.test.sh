@@ -2354,8 +2354,7 @@ hold_task_set_lock() {  # <state-dir> -> echoes "<holder-pid> <lock-path>"
     i=$((i + 1))
   done
   [ -e "$lock" ] || {
-    kill "$holder" 2>/dev/null || true
-    wait "$holder" 2>/dev/null || true
+    fm_test_terminate_or_fail "$holder" "task-set lock holder cleanup after setup failure"
     return 1
   }
   printf '%s %s\n' "$holder" "$lock"
@@ -2393,8 +2392,7 @@ hold_task_set_publication() {  # <state-dir> -> echoes "<holder-pid> <registrati
   done
   entry=$(cat "$dir.staged" 2>/dev/null || true)
   [ -n "$entry" ] && [ -e "$entry" ] || {
-    kill "$holder" 2>/dev/null || true
-    wait "$holder" 2>/dev/null || true
+    fm_test_terminate_or_fail "$holder" "task-set publisher cleanup after setup failure"
     return 1
   }
   printf '%s %s\n' "$holder" "$entry"
@@ -2508,7 +2506,7 @@ SH
   done
   [ -e "$ready" ] || {
     : > "$release"
-    wait "$pid" 2>/dev/null || true
+    fm_test_wait_or_fail "$pid" 600 "forced teardown preflight cleanup"
     fail "forced teardown did not reach the post-lock preflight: $(cat "$err")"
   }
   lock=$(task_set_lock_path "$subhome/state") \
@@ -2517,7 +2515,8 @@ SH
   [ -e "$lock" ] || fail "forced teardown did not own the descendant task-set lock during preflight"
   kill -0 "$pid" 2>/dev/null || fail "forced teardown exited before task-set ownership was observed"
   : > "$release"
-  if wait "$pid"; then
+  fm_test_wait_or_fail "$pid" 600 "forced teardown post-lock preflight"
+  if [ "$FM_TEST_WAIT_STATUS" -eq 0 ]; then
     fail "forced teardown ignored the staged process-event preflight refusal"
   fi
   [ -d "$subhome" ] || fail "post-lock refusal removed the descendant home"
@@ -2556,8 +2555,7 @@ EOF
   [ ! -e "$lock" ] || fail "the refused teardown left its exclusive task-set lock behind"
   grep -F 'a fresh spawn is registered against its task set' "$err" >/dev/null \
     || fail "the refusal did not name the task-set contention: $(cat "$err")"
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
+  fm_test_terminate_or_fail "$holder" "live task-set publisher cleanup"
   pass "forced teardown refuses while a fresh task is being published in the home"
 }
 
@@ -2587,8 +2585,7 @@ EOF
   [ -e "$lock" ] || fail "forced teardown removed the other owner's task-set lock"
   grep -F 'task-set lock is held' "$err" >/dev/null \
     || fail "the refusal did not name the task-set lock: $(cat "$err")"
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
+  fm_test_terminate_or_fail "$holder" "live task-set lock holder cleanup"
   pass "forced teardown refuses while another owner holds the task-set lock"
 }
 
@@ -2609,7 +2606,7 @@ EOF
   # this test runs.
   ( exit 0 ) &
   dead=$!
-  wait "$dead" 2>/dev/null || true
+  fm_test_wait_or_fail "$dead" 600 "dead publisher fixture"
   printf '%s\n' "$dead" > "$dir/publisher.dead"
   fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-dead-fake")
   log="$TMP_ROOT/taskset-teardown-dead-fake/tmux.log"
@@ -2648,8 +2645,7 @@ EOF
     || fail "a refused spawn left its own task lock behind"
   [ -z "$(find "$(task_set_publishers_dir "$subhome/state")" -name 'publisher.*' 2>/dev/null)" ] \
     || fail "a refused spawn left its publication registration behind"
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
+  fm_test_terminate_or_fail "$holder" "task-set lock holder after refused spawn"
   pass "a fresh spawn refuses to publish while a forced teardown owns the task set"
 }
 
@@ -2682,8 +2678,7 @@ EOF
   grep -F "no brief at" "$err" >/dev/null \
     || fail "the concurrent spawn did not reach its own brief check: $(cat "$err")"
   [ -e "$entry" ] || fail "the concurrent spawn removed the other publisher's registration"
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
+  fm_test_terminate_or_fail "$holder" "concurrent publisher cleanup"
   pass "concurrent fresh spawns share the task set instead of excluding each other"
 }
 
@@ -2710,8 +2705,7 @@ test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned() {
     || fail "the remote spawn refusal did not name task-set contention: $(cat "$err")"
   [ ! -e "$home/state/.spawn-remote-new.lock" ] \
     || fail "a refused remote secondmate spawn left its own task lock behind"
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
+  fm_test_terminate_or_fail "$holder" "remote-spawn task-set holder cleanup"
   pass "a fresh remote secondmate spawn refuses while the task set is owned"
 }
 
@@ -2885,7 +2879,7 @@ EOF
     fail "watcher did not publish readiness before idle-secondmate supervision"
   fi
   if ! wait_live "$pid" 25; then
-    wait "$pid" || true
+    fm_test_wait_or_fail "$pid" 600 "unexpected idle secondmate watcher exit"
     grep -F "stale: $window" "$out" >/dev/null && fail "idle secondmate pane triggered stale wake"
     fail "watcher exited unexpectedly while supervising idle secondmate"
   fi

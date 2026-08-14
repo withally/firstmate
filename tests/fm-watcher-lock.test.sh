@@ -23,16 +23,31 @@ mark_pr_check_migration_complete() {
 }
 
 terminate_test_pid() {  # <pid>
-  local pid=$1 i=0
-  kill "$pid" 2>/dev/null || true
-  while [ "$i" -lt 30 ] && is_live_non_zombie "$pid"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if is_live_non_zombie "$pid"; then
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-  wait "$pid" 2>/dev/null || true
+  local pid=$1
+  fm_test_terminate_or_fail "$pid" "test-process termination"
+}
+
+test_background_wait_is_bounded() {
+  local output pid status=0
+  sleep 300 &
+  pid=$!
+  fm_test_wait_for_exit "$pid" 2 || status=$?
+  [ "$status" -eq 124 ] || fail "background wait did not report timeout status 124 (got $status)"
+  [ "$FM_TEST_WAIT_TIMED_OUT" -eq 1 ] || fail "background wait did not identify status 124 as its own timeout"
+  ! fm_test_pid_live_non_zombie "$pid" || fail "timed-out background process remained live"
+  status=0
+  output=$(bash -c '
+    . "$1"
+    sleep 300 &
+    pid=$!
+    fm_test_wait_or_fail "$pid" 2 "stuck fixture wait"
+  ' _ "$ROOT/tests/lib.sh" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "named background wait timeout returned success"
+  case "$output" in
+    *"not ok - stuck fixture wait timed out after 0.2s waiting for pid "*) ;;
+    *) fail "background wait timeout was not named: $output" ;;
+  esac
+  pass "background process waits return a typed timeout instead of hanging"
 }
 
 
@@ -96,8 +111,7 @@ test_stale_watch_lock_reclaimed() {
   done
   [ "$live" -eq 1 ] || fail "watcher did not reclaim stale lock and stay alive"
   [ "$lock_pid" != "$dead_pid" ] || fail "stale watch lock pid was not replaced"
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  fm_test_terminate_or_fail "$pid" "stale-lock watcher cleanup"
   pass "killed watcher stale lock is reclaimed"
 }
 
@@ -185,8 +199,7 @@ test_guard_warnings() {
   # Non-git FM_ROOT keeps the worktree-tangle check inert so "fresh watcher ->
   # total silence" stays a pure assertion about watcher state.
   FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  fm_test_terminate_or_fail "$pid" "fresh guard watcher cleanup"
   [ ! -s "$err" ] || fail "guard warned with a live watcher and fresh beacon: $(cat "$err")"
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
@@ -252,7 +265,7 @@ test_lock_single_winner_under_concurrency() {
     i=$((i + 1))
   done
   for pid in $pids; do
-    wait "$pid" 2>/dev/null || true
+    fm_test_wait_or_fail "$pid" 600 "concurrent lock contender"
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one lock winner under concurrency, got $wins"
@@ -302,7 +315,7 @@ test_lock_stale_steal_single_winner_under_concurrency() {
     i=$((i + 1))
   done
   for pid in $pids; do
-    wait "$pid" 2>/dev/null || true
+    fm_test_wait_or_fail "$pid" 600 "concurrent stale-lock contender"
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one stale-lock stealer, got $wins"
@@ -337,7 +350,8 @@ test_lock_live_steal_mutex_is_not_reclaimed() {
     if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
     printf "rc=%s held=%s lockpid=%s stealpid=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}" "$(cat "$2/pid" 2>/dev/null || true)" "$(cat "$2.steal/pid" 2>/dev/null || true)"
   ' _ "$LIB" "$lockdir")
-  wait "$holder" || fail "live steal mutex holder failed"
+  fm_test_wait_or_fail "$holder" 600 "live steal mutex holder"
+  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "live steal mutex holder failed"
   case "$out" in
     *"rc=1"*) ;;
     *) fail "stale lock was stolen while a live stealer held the mutex: $out" ;;
@@ -363,8 +377,7 @@ test_lock_does_not_steal_live_lock() {
     if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
     printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
   ' _ "$LIB" "$lockdir")
-  kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  fm_test_terminate_or_fail "$live" "live lock holder cleanup"
   case "$out" in
     *"rc=1"*) ;;
     *) fail "live-held lock was acquired instead of refused: $out" ;;
@@ -481,12 +494,11 @@ test_watch_restart_rejects_reused_pid() {
     i=$((i + 1))
   done
   is_live_non_zombie "$pid" && fail "restart did not surface recovery after replacing a reused-pid lock"
-  wait "$pid" 2>/dev/null || true
+  fm_test_wait_or_fail "$pid" 600 "reused-pid restart arm"
   grep -F 'check: rearm-resurface' "$out" >/dev/null \
     || fail "restart replaced reused-pid lock without surfacing recovery: $(cat "$out")"
   is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
-  kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  fm_test_terminate_or_fail "$live" "reused unrelated pid cleanup"
   pass "watch restart preserves recovery without signaling a reused pid"
 }
 
@@ -519,10 +531,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$out" &
   armpid=$!
   i=0
-  # --restart can spend its first 50 poll turns waiting for this deliberately
-  # TERM-resistant peer. Leave startup ample scheduling runway under full-suite
-  # load, but stop immediately if the arm exits so a real failure stays fast.
-  while [ "$i" -lt 200 ] && is_live_non_zombie "$armpid"; do
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
     grep -qF "watcher: attached pid=$peer" "$out" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -531,7 +540,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   is_live_non_zombie "$armpid" || fail "restart arm exited instead of following the healthy peer"
   is_live_non_zombie "$peer" || fail "restart killed a TERM-resistant peer unexpectedly"
   kill -KILL "$peer" 2>/dev/null || true
-  wait "$peer" 2>/dev/null || true
+  fm_test_terminate_or_fail "$peer" "TERM-resistant peer cleanup"
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status)"
@@ -720,7 +729,7 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   # Use the suite's bounded process terminator: a shell with a pending trap can
   # defer TERM while waiting on a child, and a raw wait would then hang this
   # safety test instead of exercising the successor-gap assertion below.
-  terminate_test_pid "$wpid"
+  fm_test_terminate_or_fail "$wpid" "attached seed watcher cleanup"
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
@@ -760,7 +769,7 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*exit_code=143.*signal=TERM.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
     || fail "attached arm signal was not recorded in the lifecycle ledger"
   is_live_non_zombie "$wpid" || fail "signaling an attached arm terminated the peer watcher"
-  terminate_test_pid "$wpid"
+  fm_test_terminate_or_fail "$wpid" "attached signal peer cleanup"
   pass "attached arm signals record a classified lifecycle entry"
 }
 
@@ -799,7 +808,7 @@ test_arm_starts_and_self_heals() {
     done
     if [ "$row" = dead-pid ]; then
       is_live_non_zombie "$armpid" && fail "arm did not surface recovery after reclaiming a dead-pid lock"
-      wait "$armpid" 2>/dev/null || true
+      fm_test_wait_or_fail "$armpid" 600 "dead-pid recovery arm"
       grep -F 'check: rearm-resurface' "$armout" >/dev/null \
         || fail "arm reclaimed dead-pid lock without surfacing recovery: $(cat "$armout")"
       continue
@@ -813,7 +822,7 @@ test_arm_starts_and_self_heals() {
       || fail "arm ($row) started line did not name the confirmed live watcher (lock '$lock_pid')"
     kill -0 "$lock_pid" 2>/dev/null || fail "arm ($row) confirmed-started watcher is not actually alive"
     kill "$armpid" "$lock_pid" 2>/dev/null || true
-    wait "$armpid" 2>/dev/null || true
+    fm_test_terminate_or_fail "$armpid" "started arm cleanup ($row)"
   done
   pass "arm starts cleanly and resurfaces recovery after a dead-pid lock"
 }
@@ -916,8 +925,7 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm falsely reported FAILED during peer startup race"
   is_live_non_zombie "$armpid" || fail "arm exited while the peer was still healthy"
   # After the peer dies without a successor, the attached arm must fail loudly.
-  kill "$peer" 2>/dev/null || true
-  wait "$peer" 2>/dev/null || true
+  fm_test_terminate_or_fail "$peer" "peer startup-race cleanup"
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
@@ -950,8 +958,7 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   ! grep -qE 'watcher: (healthy|attached)' "$armout" || fail "arm reported attached/healthy off a stale beacon"
   ! grep -qF 'watcher: started' "$armout" || fail "arm falsely reported started"
   is_live_non_zombie "$live" || fail "arm killed the unrelated live lock holder"
-  kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  fm_test_terminate_or_fail "$live" "unconfirmable live holder cleanup"
   pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
 }
 
@@ -973,7 +980,8 @@ SH
 
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=0 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
   first_arm=$!
-  wait "$first_arm" || fail "first ledger cycle did not surface its actionable wake"
+  fm_test_wait_or_fail "$first_arm" 600 "first ledger cycle"
+  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "first ledger cycle did not surface its actionable wake"
   grep -q "arm_pid=$first_arm.*reason=actionable-check.*successor=none" "$state/.watch-cycle-exits.log" \
     || fail "first ledger record omitted its actionable classification"
 
@@ -993,7 +1001,7 @@ SH
     || fail "predecessor ledger record was not linked to its verified successor"
   kill "$successor_pid" 2>/dev/null || true
   kill -HUP "$successor_arm" 2>/dev/null || true
-  wait "$successor_arm" 2>/dev/null || true
+  fm_test_terminate_or_fail "$successor_arm" "successor ledger arm cleanup"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
@@ -1007,7 +1015,8 @@ SH
     armout="$dir/bounded-$iteration.out"
     PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_CYCLE_LOG_MAX_BYTES=1400 FM_WATCH_CYCLE_LOG_KEEP_LINES=2 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     successor_arm=$!
-    wait "$successor_arm" || fail "bounded ledger cycle $iteration did not close cleanly"
+    fm_test_wait_or_fail "$successor_arm" 600 "bounded ledger cycle $iteration"
+    [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "bounded ledger cycle $iteration did not close cleanly"
     grep -qE 'watcher: started pid=|check: rearm-resurface' "$armout" \
       || fail "bounded ledger cycle $iteration did not run"
     iteration=$((iteration + 1))
@@ -1096,8 +1105,7 @@ SH
     real_first=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_ALL=C bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
     real_second=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_TIME=ko_KR.UTF-8 bash -c 'unset LC_ALL; . "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
   fi
-  kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  fm_test_terminate_or_fail "$live" "locale identity process cleanup"
   [ -n "$baseline" ] || fail "fm_pid_identity produced no baseline identity under LC_ALL=C"
   [ "$via_lc_all" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_ALL (got '$via_lc_all', want '$baseline')"
   [ "$via_lc_time" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_TIME (got '$via_lc_time', want '$baseline')"
@@ -1164,8 +1172,7 @@ test_msys_pid_identity_uses_proc() {
   sleep 300 &
   live=$!
   identity=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
-  kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  fm_test_terminate_or_fail "$live" "MSYS identity process cleanup"
   case "$identity" in
     proc-starttime=*" cmdline-hex="*) ;;
     *) fail "MSYS process identity did not use compatible /proc fields ('$identity')" ;;
@@ -1203,6 +1210,7 @@ test_stale_watch_reclaim_publishes_before_clear() {
   pass "stale watcher reclaim publishes recovery before clearing lock evidence"
 }
 
+test_background_wait_is_bounded
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse

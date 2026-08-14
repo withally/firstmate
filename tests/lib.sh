@@ -50,6 +50,91 @@ pass() {
   printf 'ok - %s\n' "$1"
 }
 
+# Wait up to <limit> 0.1s ticks for a background child and preserve its exit
+# status. A timed-out child gets a bounded TERM-then-KILL cleanup and sets the
+# timeout flag so callers can distinguish it from a child that exits 124.
+fm_test_wait_for_exit() {  # <pid> [limit]
+  local pid=$1 limit=${2:-200} i=0 detail
+  FM_TEST_WAIT_TIMED_OUT=0
+  FM_TEST_WAIT_TIMEOUT_DETAIL=
+  while [ "$i" -lt "$limit" ]; do
+    if ! fm_test_pid_live_non_zombie "$pid"; then
+      wait "$pid"
+      return "$?"
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+
+  detail=$(ps -p "$pid" -o stat= -o wchan= -o command= 2>/dev/null || true)
+  FM_TEST_WAIT_TIMEOUT_DETAIL=$(printf '%s' "$detail" | tr '\t\r\n' '   ' | cut -c1-512)
+  kill -TERM "$pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ] && fm_test_pid_live_non_zombie "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if fm_test_pid_live_non_zombie "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 20 ] && fm_test_pid_live_non_zombie "$pid"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+  if ! fm_test_pid_live_non_zombie "$pid"; then
+    wait "$pid" 2>/dev/null || true
+  fi
+  FM_TEST_WAIT_TIMED_OUT=1
+  return 124
+}
+
+fm_test_pid_live_non_zombie() {  # <pid>
+  local pid=$1 stat
+  kill -0 "$pid" 2>/dev/null || return 1
+  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+  case "$stat" in
+    Z*) return 1 ;;
+  esac
+  return 0
+}
+
+FM_TEST_WAIT_STATUS=0
+FM_TEST_WAIT_TIMED_OUT=0
+FM_TEST_WAIT_TIMEOUT_DETAIL=
+fm_test_wait_or_fail() {  # <pid> <limit> <timeout-description>
+  local pid=$1 limit=$2 description=$3 status=0
+  fm_test_wait_for_exit "$pid" "$limit" || status=$?
+  if [ "$FM_TEST_WAIT_TIMED_OUT" -eq 1 ]; then
+    fail "$description timed out after $((limit / 10)).$((limit % 10))s waiting for pid $pid (${FM_TEST_WAIT_TIMEOUT_DETAIL:-process state unavailable})"
+  fi
+  # shellcheck disable=SC2034 # Sourced test callers inspect the preserved status.
+  FM_TEST_WAIT_STATUS=$status
+}
+
+fm_test_terminate_or_fail() {  # <pid> <timeout-description>
+  local pid=$1 description=$2 i=0 detail
+  kill -TERM "$pid" 2>/dev/null || true
+  while [ "$i" -lt 30 ] && fm_test_pid_live_non_zombie "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if fm_test_pid_live_non_zombie "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 20 ] && fm_test_pid_live_non_zombie "$pid"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+  if fm_test_pid_live_non_zombie "$pid"; then
+    detail=$(ps -p "$pid" -o stat= -o wchan= -o command= 2>/dev/null || true)
+    detail=$(printf '%s' "$detail" | tr '\t\r\n' '   ' | cut -c1-512)
+    fail "$description timed out after bounded TERM/KILL cleanup for pid $pid (${detail:-process state unavailable})"
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 # --- self-cleaning temp root ------------------------------------------------
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal

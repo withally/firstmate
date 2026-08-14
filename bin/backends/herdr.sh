@@ -2534,7 +2534,7 @@ fm_backend_herdr_rendered_turn_started() {  # <target> <harness> <baseline> <ret
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness i=0 verdict baseline confirm_sleep
-  local rendered_baseline=unknown rendered_after
+  local rendered_baseline=unknown rendered_after observed_pending=0
   harness=$(fm_busy_harness_scope "${7:-}")
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   # Only the rendered busy baseline must predate our own typing (the typed
@@ -2562,7 +2562,25 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
-      empty) printf 'empty'; return 0 ;;
+      pending|pending-unproven) observed_pending=1 ;;
+      empty)
+        # A composer that reads empty without this submit's own text ever
+        # having been observed in it may be a stale pre-typing frame, not a
+        # cleared composer; only the independent rendered turn-start may
+        # convert it, never a bare confirmation.
+        if [ "$observed_pending" = 1 ]; then
+          printf 'empty'
+          return 0
+        fi
+        rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
+          "$rendered_baseline" "$retries" "$sleep_s")
+        if [ "$rendered_after" = busy ]; then
+          printf 'empty'
+          return 0
+        fi
+        printf 'unknown'
+        return 0
+        ;;
       unknown)
         rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
           "$rendered_baseline" "$retries" "$sleep_s")

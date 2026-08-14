@@ -3225,11 +3225,11 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
 test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-pi-rendered-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: native pre-Enter agent status is unavailable for this harness/model.
-  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/1.out"
-  # 2: rendered pre-submit capture is idle.
-  printf '›\n' > "$resp/2.out"
-  # 3: send-text is silent.
+  # 1: rendered pre-submit capture is idle.
+  printf '›\n' > "$resp/1.out"
+  # 2: send-text is silent.
+  # 3: native post-settle agent status is unavailable for this harness/model.
+  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/3.out"
   # 4: send-keys Enter is silent.
   # 5: the submitted turn has replaced the composer, so structural composer
   # classification is unknown rather than pending or empty.
@@ -3253,8 +3253,8 @@ test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
 test_send_text_submit_polls_a_slow_pi_rendered_turn_start() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-pi-slow-render"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/1.out"
-  printf '\xe2\x80\xba\n' > "$resp/2.out"
+  printf '\xe2\x80\xba\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/3.out"
   printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/5.out"
   # The first post-Enter rendered sample has not painted the footer yet.
   printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/6.out"

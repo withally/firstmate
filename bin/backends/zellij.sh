@@ -587,7 +587,7 @@ fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep
   fm_backend_zellij_composer_observed_append "$target" "$before" "$text" "$expected_label" \
     || { printf 'unknown'; return 0; }
   fm_composer_submit_retry_core fm_backend_zellij_send_key fm_backend_zellij_composer_state \
-    "$target" "$retries" "$sleep_s" "$expected_label"
+    "$target" "$retries" "$sleep_s" "$expected_label" 1
 }
 
 # fm_backend_zellij_kill: remove the task's tab, best-effort (mirrors

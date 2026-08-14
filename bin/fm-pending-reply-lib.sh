@@ -599,12 +599,14 @@ fm_pending_reply_fallback_idle_eligible() {  # <record-path>
 # category as the submit acknowledgement in bin/fm-tmux-lib.sh - never task
 # state, and never a source consumers can confuse with semantic state.
 #
-# It stays harness-scoped (fm_busy_lines_match with the recorded harness, no
-# global OR of every vendor signature), so one harness's output cannot make
-# another read busy, and a weak rendered idle degrades to `fallback-idle`,
-# which the caller accepts as idle only after its grace window.
+# It stays harness-scoped (fm_busy_lines_match with the recorded harness
+# normalized through fm_busy_harness_scope, no global OR of every vendor
+# signature), so one harness's output cannot make another read busy, and a
+# weak rendered idle degrades to `fallback-idle`, which the caller accepts as
+# idle only after its grace window.
 fm_pending_reply_backend_observation() {  # <backend> <target> [expected-label] [harness]
-  local backend=$1 target=$2 expected_label=${3-} harness=${4-} native tail40
+  local backend=$1 target=$2 expected_label=${3-} harness native tail40
+  harness=$(fm_busy_harness_scope "${4-}")
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || printf 'unknown')
   case "$native" in
     busy|idle) printf '%s' "$native"; return 0 ;;

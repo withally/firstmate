@@ -811,12 +811,12 @@ test_send_text_submit_detects_landed_send() {
   fb=$(make_cmux_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
     bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_send_text_submit "aaaaaaaa-0000-0000-0000-000000000000:bbbbbbbb-1111-1111-1111-111111111111" "hello captain" 3 0.01 0.01' "$ROOT" )
-  [ "$out" = empty ] || fail "send_text_submit should report empty (submitted) once the composer row reads empty, got '$out'"
+  [ "$out" = unknown ] || fail "send_text_submit must not confirm from a cleared composer that never showed this submit's own text (a stale pre-typing frame reads the same), got '$out'"
   assert_contains "$(cat "$dir/log")" $'\x1f''send'$'\x1f''--workspace'$'\x1f''aaaaaaaa-0000-0000-0000-000000000000'$'\x1f''--surface'$'\x1f''bbbbbbbb-1111-1111-1111-111111111111'$'\x1f''--'$'\x1f''hello captain' \
     "send_text_submit did not type the literal text first"
   enter_count=$(grep -c $'\x1f''send-key'$'\x1f''--workspace'$'\x1f''aaaaaaaa-0000-0000-0000-000000000000'$'\x1f''--surface'$'\x1f''bbbbbbbb-1111-1111-1111-111111111111'$'\x1f''enter' "$dir/log")
-  [ "$enter_count" -eq 1 ] || fail "send_text_submit should not need a second Enter for a plain message with no popup, sent $enter_count Enter(s)"
-  pass "fm_backend_cmux_send_text_submit: reports 'empty' once the composer row reads empty after one Enter"
+  [ "$enter_count" -eq 1 ] || fail "an unobserved cleared composer returns immediately without extra Enters, sent $enter_count Enter(s)"
+  pass "fm_backend_cmux_send_text_submit: an unobserved cleared composer reports 'unknown', never a confirmed submit"
 }
 
 test_send_text_submit_detects_swallowed_enter() {

@@ -1248,14 +1248,24 @@ EOF
 # and idle-baseline turn-started conversions its busy primitive enables), and
 # herdr confirms through native agent-state; both consume the same shared
 # verdict, so no shape knowledge lives in any of the three loops.
-fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label]
-  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} i=0 state
+# <observed> declares whether the caller positively observed this submit's
+# own typed text in the composer before entering the loop (zellij's
+# observed-append precheck). Without that evidence - and until a loop read
+# proves it via pending - a post-Enter 'empty' may be a stale pre-typing
+# frame rather than a cleared composer, so it degrades to 'unknown' instead
+# of confirming delivery.
+fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label] [observed]
+  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} observed=${7:-0} i=0 state
   while :; do
     "$send_key_fn" "$target" Enter "$expected_label" || true
     sleep "$sleep_s"
     state=$("$state_fn" "$target" "$expected_label")
     case "$state" in
-      pending|pending-unproven) ;;
+      pending|pending-unproven) observed=1 ;;
+      empty)
+        if [ "$observed" = 1 ]; then printf 'empty'; else printf 'unknown'; fi
+        return 0
+        ;;
       *) printf '%s' "$state"; return 0 ;;
     esac
     i=$((i + 1))

@@ -355,6 +355,107 @@ EOF
   pass "verification recognizes live and configured-archive resolutions without accepting weaker evidence"
 }
 
+# The archive is the durable authority whenever retention has moved a decision out
+# of the live backlog: it is located the way tasks-axi locates it, every record
+# sharing an identity is weighed, re-holding a retained identity is refused, and an
+# unusable archive declaration never reads as a missing decision.
+test_archive_authority_covers_defaults_duplicates_and_reuse() {
+  local home derived_origin derived_hold derived_route duplicate_origin duplicate_hold \
+    duplicate_route malformed_origin
+  home=$(make_home resolution-archive-authority)
+  cat > "$home/.tasks.toml" <<'EOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+done_keep = 10
+EOF
+
+  derived_origin=sample-derived-archive
+  derived_route=sample-derived-route
+  write_origin_meta "$home" "$derived_origin"
+  derived_hold=$(run_decisions "$home" hold "$derived_origin" choice \
+    --title "Choose the derived sample" --reason "captain derived sample choice pending" --repo sample)
+  run_decisions "$home" complete "$derived_origin" choice >/dev/null
+  tasks_in "$home" add "$derived_route" "Apply the derived sample choice" \
+    --kind ship --repo sample --blocked-by "$derived_hold" >/dev/null
+  printf 'Use the derived sample choice.\n' > "$home/derived-decision.txt"
+  run_decisions "$home" resolve "$derived_origin" choice \
+    --decision-file "$home/derived-decision.txt" --routed-to "$derived_route" >/dev/null
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not apply the derived retention fixture"
+  assert_grep "- [x] $derived_hold -" "$home/data/done-archive.md" \
+    "retention did not use the tasks-axi default archive derived from the configured path"
+  run_decisions "$home" verify "$derived_origin" >/dev/null \
+    || fail "a durable resolution in the derived default archive did not verify"
+
+  # A hold closed without a resolution archives a markerless record first; the real
+  # resolution for the same identity is archived after it.
+  duplicate_origin=sample-duplicate-archive
+  duplicate_route=sample-duplicate-route
+  write_origin_meta "$home" "$duplicate_origin"
+  duplicate_hold=$(run_decisions "$home" hold "$duplicate_origin" choice \
+    --title "Choose the duplicate sample" --reason "captain duplicate sample choice pending" --repo sample)
+  run_decisions "$home" complete "$duplicate_origin" choice >/dev/null
+  tasks_in "$home" "done" "$duplicate_hold" >/dev/null \
+    || fail "could not close the first duplicate-archive hold"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not archive the weaker duplicate record"
+  if run_decisions "$home" verify "$duplicate_origin" \
+    > "$home/duplicate-weak.out" 2> "$home/duplicate-weak.err"; then
+    fail "an archived hold closed without a resolution verified"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/duplicate-weak.err" \
+    "an archived markerless record lost the existing refusal"
+  tasks_in "$home" add "$duplicate_hold" "Choose the duplicate sample" \
+    --kind captain --repo sample >/dev/null \
+    || fail "could not rebuild the duplicate identity fixture"
+  tasks_in "$home" hold "$duplicate_hold" --reason "captain duplicate sample choice pending" \
+    --kind captain >/dev/null || fail "could not re-hold the duplicate identity fixture"
+  tasks_in "$home" add "$duplicate_route" "Apply the duplicate sample choice" \
+    --kind ship --repo sample --blocked-by "$duplicate_hold" >/dev/null
+  printf 'Use the duplicate sample choice.\n' > "$home/duplicate-decision.txt"
+  run_decisions "$home" resolve "$duplicate_origin" choice \
+    --decision-file "$home/duplicate-decision.txt" --routed-to "$duplicate_route" >/dev/null
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not archive the later durable resolution"
+  run_decisions "$home" verify "$duplicate_origin" >/dev/null \
+    || fail "an older weaker archived record shadowed a later durable resolution"
+
+  # The retained identity is answered, so a later pass over the same origin must not
+  # be able to reopen it under a fresh hold.
+  if run_decisions "$home" hold "$duplicate_origin" choice \
+    --title "Choose the duplicate sample" --reason "captain duplicate sample choice pending" \
+    --repo sample > "$home/duplicate-hold.out" 2> "$home/duplicate-hold.err"; then
+    fail "a durably resolved archived decision was reopened as a new captain hold"
+  fi
+  assert_grep "already durably resolved" "$home/duplicate-hold.err" \
+    "reopening an archived resolution lost the already-resolved refusal"
+  assert_no_grep "- [ ] $duplicate_hold -" "$home/data/backlog.md" \
+    "the refused hold still created a duplicate open captain item"
+
+  malformed_origin=sample-malformed-archive
+  write_origin_meta "$home" "$malformed_origin"
+  printf 'decisions_reviewed=1\ndecision_keys=choice\n' >> "$home/state/$malformed_origin.meta"
+  cat > "$home/.tasks.toml" <<'EOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = data/done-archive.md
+done_keep = 10
+EOF
+  if run_decisions "$home" verify "$malformed_origin" \
+    > "$home/malformed-verify.out" 2> "$home/malformed-verify.err"; then
+    fail "a malformed archive declaration verified"
+  fi
+  assert_grep "archive declaration" "$home/malformed-verify.err" \
+    "a malformed archive declaration was not reported as a configuration failure"
+  assert_no_grep "is absent from the live backlog" "$home/malformed-verify.err" \
+    "a malformed archive declaration was reported as a missing captain decision"
+  pass "archive authority derives its default, weighs duplicates, refuses reuse, and stays loud"
+}
+
 test_scout_teardown_always_requires_inventory_verification() {
   local home id
   home=$(make_home unconditional-teardown)
@@ -634,6 +735,7 @@ test_uninventoried_report_decision_refuses_completion
 test_scout_teardown_always_requires_inventory_verification
 test_structured_holds_survive_teardown_and_route_resolution
 test_verify_accepts_only_live_or_archived_durable_resolutions
+test_archive_authority_covers_defaults_duplicates_and_reuse
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds

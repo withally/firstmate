@@ -22,7 +22,11 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 Verification reads live items through tasks-axi and, when needed, reads the structured retention file declared by `[markdown].archive` through the same tasks-axi field parser.
-An archived item verifies only when its kind, Done state, resolution marker, and routed-work record satisfy the same durable-resolution contract as a live item.
+When that key is absent the archive is the tasks-axi default derived from `[markdown].path`, so a home that never declares one is still verified against the file retention actually writes.
+Every archived record sharing an identity is weighed, so an older weaker record cannot shadow a later durable resolution.
+An archived item verifies only when its kind, Done state, resolution marker, and routed-work record satisfy the same durable-resolution contract as a live item, which one predicate owns for live and archived records alike.
+A malformed archive declaration or an archive that cannot be inspected fails loudly as its own configuration failure and is never reported as a missing captain decision.
+`hold` consults the same live-then-archive lookup before creating a new identity, so a retained decision cannot be reopened as a fresh captain hold.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
@@ -52,6 +56,7 @@ It begins with a completed investigation and visual review whose genuine unresol
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
 The retention regression covers answered live and archived decisions, a configured non-default archive path, an archived answer shadowed by a weaker live duplicate, a closed unanswered hold, and a never-created identity.
+A further archive-authority regression covers the derived default archive, a later archived resolution behind an older markerless archived record for the same identity, a refused attempt to reopen a retained decision, and a malformed archive declaration.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -61,6 +66,7 @@ ok - report-only unresolved decision is reproduced and completion refuses before
 ok - non-forced scout teardown always requires durable inventory verification
 ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
 ok - verification recognizes live and configured-archive resolutions without accepting weaker evidence
+ok - archive authority derives its default, weighs duplicates, refuses reuse, and stays loud
 ok - completion and verification validate origins before constructing paths
 ok - ended visual review follows the same decision-hold completion owner
 ok - resolved findings and decision-like prose do not create false holds

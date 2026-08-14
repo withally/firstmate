@@ -1257,6 +1257,39 @@ EOF
   pass "fm-session-start.sh composes the real fm-lock.sh, fm-bootstrap.sh, and fm-wake-drain.sh output verbatim"
 }
 
+test_locked_startup_reconciles_before_wake_presentation() {
+  local rec root home fakebin out old
+  rec=$(new_world inactive-reconcile)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'state: done · source: startup-test\n'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  fm_write_meta "$home/state/missed.meta" \
+    'window=firstmate:fm-missed' 'worktree=/tmp/missed' 'project=alpha' \
+    'harness=codex' 'kind=ship' 'mode=no-mistakes' 'spawn_gen=startup-missed'
+  printf 'done: terminal edge was missed\n' > "$home/state/missed.status"
+  : > "$home/state/missed.turn-ended"
+  old=$(( $(date +%s) - 120 ))
+  touch -t "$(date -r "$old" +%Y%m%d%H%M.%S)" \
+    "$home/state/missed.meta" "$home/state/missed.status" "$home/state/missed.turn-ended"
+
+  out=$(FM_INACTIVE_RECONCILE_SECS=60 FM_INACTIVE_RECONCILE_BUDGET_SECS=3 \
+    FM_INACTIVE_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'inactive terminal outcome awaiting captain presentation: child=missed state=done' \
+    "locked startup did not run inactive reconciliation"
+  assert_contains "$out" "$(printf '\tcheck\tinactive-outcome:')" \
+    "startup did not present the newly reconciled wake in the same digest"
+  [ -s "$home/state/.wake-queue" ] || fail "startup consumed the reconciled wake before handling"
+  pass "locked startup reconciles missed terminal outcomes before wake presentation"
+}
+
 # --- fleet-state digest: compact backlog rendering --------------------------
 
 write_long_body_backlog() {
@@ -1948,6 +1981,7 @@ test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
+test_locked_startup_reconciles_before_wake_presentation
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_preserves_recovery_rows
 test_backlog_compact_manual_backend_skips_indented_bodies

@@ -69,14 +69,19 @@ EOF
 }
 
 phase_seed() {
-  local out
+  local out parent_abs
   out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
     "$ROOT/bin/fm-home-seed.sh" design "$SUB" alpha beta gamma) \
     || fail "seed failed"
   SUB_ABS=$(cd "$SUB" && pwd -P)
+  parent_abs=$(cd "$HOME_DIR" && pwd -P)
 
   assert_contains "$out" "home=$SUB_ABS" "seed did not report the subhome"
   assert_present "$SUB/.fm-secondmate-home" "seed did not mark the subhome"
+  assert_present "$SUB/.fm-secondmate-parent" "seed did not publish the durable parent route"
+  assert_grep 'schema=fm-secondmate-parent.v1' "$SUB/.fm-secondmate-parent" "seed wrote an incompatible parent route"
+  assert_grep 'route=local' "$SUB/.fm-secondmate-parent" "seed did not identify the local parent route"
+  assert_grep "parent_home=$parent_abs" "$SUB/.fm-secondmate-parent" "seed did not bind the actual parent home"
   assert_present "$SUB/data/charter.md" "seed did not copy the charter into the subhome"
   assert_grep 'customer onboarding charter' "$SUB/data/charter.md" "charter body was not copied verbatim"
 

@@ -1037,6 +1037,19 @@ while :; do
   # first refusal before the generic recovery reason.
   resurface_after_downtime
 
+  # Defense in depth after the existing lifecycle/process-event control plane:
+  # this cheap helper is independently interval-gated, aggregate-budgeted, and
+  # silent unless it creates a durable terminal-outcome obligation.
+  inactive_outcome=
+  if inactive_outcome=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-inactive-reconcile.sh" scan 2>/dev/null); then
+    if [ -n "$inactive_outcome" ]; then
+      wake "check: inactive-outcome"
+    fi
+  else
+    triage_log "inactive-outcome reconciliation unavailable"
+  fi
+
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).
   # Time-based via .last-check mtime so the cadence survives watcher restarts.
   # Evaluated BEFORE the signal scan: wake() exits the cycle, so a check placed

@@ -7,7 +7,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 
 | Script                   | Purpose                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------ |
-| `fm-session-start.sh`    | Compose lock, bootstrap, and wake drain into the single ordered session-start digest |
+| `fm-session-start.sh`    | Compose lock, bootstrap, inactive-terminal reconciliation, and wake drain into the single ordered session-start digest |
 | `fm-startup-network.sh`  | Run session-start network checks in a bounded detached worker and deliver every result inline or as a wake |
 | `fm-sessionstart-run.sh` | Run the bounded session-start digest or its completion-gated context re-emit |
 | `fm-sessionstart-nudge.sh` | Print the native session-start hook nudge when the primary has not already run the digest |
@@ -70,6 +70,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-watch-arm.sh`        | Verified home-scoped watcher arm wrapper with loud cycle endings and bounded lifecycle ledger |
 | `fm-watch-checkpoint.sh` | Run one bounded foreground watcher checkpoint for Codex-style supervision            |
 | `fm-watch.sh`            | Singleton-safe always-on watcher: absorb benign wakes, queue and exit on actionable ones |
+| `fm-inactive-reconcile.sh` | Run the bounded local scan for missed terminal outcomes and route durable obligations |
+| `fm-inactive-reconcile-lib.sh` | Own inactive-terminal receipt creation and one-way closure transitions |
+| `fm-secondmate-parent-lib.sh` | Parse a seeded secondmate home's durable parent return-route binding |
 | `fm-afk-start.sh`        | Run the common sourceable away-mode daemon entry in the foreground                      |
 | `fm-afk-launch.sh`       | Own away-mode entry, exit, rollback, and any backend terminal lifecycle                 |
 | `fm-afk-return.sh`       | Own deterministic return shutdown, catch-up evidence, and the firstmate-actionable blocker gate |

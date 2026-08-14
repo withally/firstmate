@@ -16,9 +16,10 @@
 # secondmate homes keep the full behavior below.
 #
 # COMPOSITION, NOT DUPLICATION: this script calls fm-lock.sh, fm-bootstrap.sh,
-# fm-wake-drain.sh, and fm-startup-network.sh as real subprocesses and prints their real output. It
+# fm-inactive-reconcile.sh, fm-wake-drain.sh, and fm-startup-network.sh as real
+# subprocesses and prints their real output. It
 # never re-implements their logic; all sequencing/formatting logic added here
-# stays local to this file. Those four scripts remain fully working
+# stays local to this file. Those five scripts remain fully working
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
 # install <tools> after consent, /updatefirstmate, the afk daemon, existing
 # tests) still call them directly. The one seam this script needed -
@@ -38,8 +39,9 @@
 #                       secondmate liveness, pending remote handoff retry,
 #                       X-mode artifact writes, fleet sync) also run only when
 #                       locked; network sweeps run in the deferred stage.
-#   3. wake-drain     - presents durable wakes and advances recovery handling
-#                       state, so it also only runs when locked.
+#   3. reconcile/drain - performs one bounded local inactive-terminal scan,
+#                       then presents durable wakes and advances recovery
+#                       handling state; both run only when locked.
 #   4. supervision    - emit the operating block for the detected harness.
 #   5. read-once      - state the contract governing all digest sources before
 #                       any bulk data.
@@ -503,6 +505,11 @@ if [ "$READ_ONLY" -eq 1 ]; then
   GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
   [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
 else
+  INACTIVE_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-inactive-reconcile.sh" scan --startup 2>&1) || INACTIVE_OUT=
+  if [ -n "$INACTIVE_OUT" ]; then
+    printf 'inactive outcome reconciliation: %s\n' "$INACTIVE_OUT"
+  fi
   DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"

@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-inactive-reconcile-lib.sh
+. "$SCRIPT_DIR/fm-inactive-reconcile-lib.sh"
 
 DRAIN_TMP=
 DRAIN_LOCK_HELD=false
@@ -17,6 +19,7 @@ RECOVERY_MARKER_TOKEN=
 RECOVERY_ACK_REQUIRED=false
 ACK_THROUGH=
 ACK_GENERATION=
+ACK_INACTIVE_FINGERPRINTS=
 
 case "${1:-}" in
   '') ;;
@@ -60,6 +63,30 @@ print_unread_status_section() {  # <presentation-snapshot>
   done <<EOF
 $unread
 EOF
+}
+
+inactive_outcome_fingerprints() { # <sequence>
+  local cutoff=$1 epoch seq kind key payload
+  while IFS=$(printf '\t') read -r epoch seq kind key payload; do
+    [ "$kind" = check ] || continue
+    case "$seq" in ''|*[!0-9]*) continue ;; esac
+    [ "$seq" -le "$cutoff" ] || continue
+    case "$key" in inactive-outcome:*) printf '%s\n' "${key#inactive-outcome:}" ;; esac
+  done < "$FM_WAKE_QUEUE"
+}
+
+close_inactive_outcome_receipts() { # <newline-separated-fingerprints>
+  local fingerprints=$1 fingerprint lock="$STATE/.inactive-outcome-reconcile.lock" rc=0
+  [ -n "$fingerprints" ] || return 0
+  fm_lock_acquire_wait "$lock" || return 1
+  while IFS= read -r fingerprint; do
+    [ -n "$fingerprint" ] || continue
+    fm_inactive_receipt_close_presented "$STATE" "$fingerprint" || { rc=$?; break; }
+  done <<EOF
+$fingerprints
+EOF
+  fm_lock_release "$lock"
+  return "$rc"
 }
 
 # Print the consolidated OPEN DECISIONS section: every still-open
@@ -164,6 +191,21 @@ if [ -n "$ACK_THROUGH" ]; then
   RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
   if [ "${RECOVERY_MARKER_TOKEN##*:}" != "$ACK_GENERATION" ]; then
     echo "wake drain: recovery generation is stale or could not be acknowledged safely" >&2
+    exit 1
+  fi
+  ACK_INACTIVE_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH") || exit 1
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=false
+  if ! close_inactive_outcome_receipts "$ACK_INACTIVE_FINGERPRINTS"; then
+    echo "wake drain: inactive outcome receipt could not be recorded safely" >&2
+    exit 1
+  fi
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=true
+  fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
+  RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
+  if [ "${RECOVERY_MARKER_TOKEN##*:}" != "$ACK_GENERATION" ]; then
+    echo "wake drain: recovery generation changed while recording inactive outcome receipts" >&2
     exit 1
   fi
   DRAIN_TMP=$(mktemp "$STATE/.wake-queue.ack.XXXXXX") || exit 1

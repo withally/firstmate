@@ -267,18 +267,7 @@ SH
 }
 
 wait_for_exit() {
-  local pid=$1 limit=${2:-50} i=0
-  while [ "$i" -lt "$limit" ]; do
-    if ! is_live_non_zombie "$pid"; then
-      wait "$pid"
-      return "$?"
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  return 124
+  fm_test_wait_for_exit "$@"
 }
 
 is_live_non_zombie() {

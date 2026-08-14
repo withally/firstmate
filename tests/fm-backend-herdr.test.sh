@@ -3246,6 +3246,30 @@ test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
   pass "fm_backend_herdr_send_text_submit: rendered Pi idle-to-working transition confirms a submitted turn when native status is unknown"
 }
 
+# The rendered turn-start read must be POLLED across the retry budget, exactly
+# like its tmux counterpart: under the startup contention this path exists for,
+# Pi's `Working...` footer can render a beat after the Enter, and a single
+# early sample would report a landed submission as unconfirmed.
+test_send_text_submit_polls_a_slow_pi_rendered_turn_start() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-pi-slow-render"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/1.out"
+  printf '\xe2\x80\xba\n' > "$resp/2.out"
+  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/5.out"
+  # The first post-Enter rendered sample has not painted the footer yet.
+  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/6.out"
+  # The second sample, inside the same retry budget, shows the started turn.
+  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "build the curriculum" 2 0.01 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a Pi turn start that renders after the first sample must still be confirmed within the retry budget, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "polling for a slow render must not retype or re-Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: a slow Pi rendered turn start is polled across the retry budget, not sampled once"
+}
+
 # Regression for the submit-confirmation side of the 2026-07-07 incident:
 # even if a Codex idle composer displays suggestion text, an idle-baseline
 # submit must confirm from native agent-state rather than composer scraping.
@@ -4083,6 +4107,7 @@ test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
 test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition
+test_send_text_submit_polls_a_slow_pi_rendered_turn_start
 test_send_text_submit_confirms_despite_codex_idle_tip_composer
 test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
 test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmation_change

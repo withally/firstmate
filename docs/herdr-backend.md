@@ -202,7 +202,9 @@ Text is typed once; only Enter is retried.
 
 On an idle or done native baseline, submit confirmation waits for `working` or `blocked` across a bounded polling window.
 When native state is unknown before and after submission, an explicit harness identity permits one independent fallback: a rendered idle baseline must become a harness-scoped rendered busy state after Enter.
+The post-Enter rendered read is polled across the same retry budget rather than sampled once, because the turn takes a beat to render and a single early sample would report a real submission as unconfirmed.
 A preexisting rendered busy state never qualifies, so unrelated activity cannot confirm the new steer.
+The rendered read itself is not a second implementation: the visible-tail window and the harness-scoped busy match are the shared owners in `bin/fm-tmux-lib.sh`, and this adapter supplies only its own capture.
 On an already active or otherwise unreadable baseline, it falls back to conservative composer clearance.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.

@@ -203,13 +203,16 @@ fm_pane_input_pending() {  # <target>
   [ "$(fm_tmux_composer_state "$1")" != empty ]
 }
 
-# fm_pane_is_busy: 0 if the pane's last few non-blank lines show a busy footer
-# (an agent mid-turn). Scans a 40-line tail like fm-watch.sh.
-fm_pane_busy_state() {  # <target> [harness] -> busy|idle|unknown
-  local win=$1 harness=${2:-} tail40 visible
-  tail40=$(tmux capture-pane -p -t "$win" -S -40 2>/dev/null) \
-    || { printf 'unknown'; return 0; }
-  visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
+# fm_busy_tail_state: the single owner of the rendered busy READ - which slice
+# of a captured screen is "visible" (the last non-blank lines) and what an
+# unreadable slice means - on top of the single owner of the busy MATCH
+# (fm_busy_lines_match). Takes an already-captured screen tail on stdin, so
+# every backend supplies only its own capture primitive and no backend keeps a
+# private copy of the window heuristic.
+fm_busy_tail_state() {  # [harness]  (captured tail on stdin) -> busy|idle|unknown
+  local harness=${1:-} captured visible
+  IFS= read -r -d '' captured || true
+  visible=$(printf '%s' "$captured" | grep -v '^[[:space:]]*$' | tail -12)
   [ -n "$visible" ] || { printf 'unknown'; return 0; }
   if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
     printf 'busy'
@@ -218,8 +221,37 @@ fm_pane_busy_state() {  # <target> [harness] -> busy|idle|unknown
   fi
 }
 
+# fm_pane_is_busy: 0 if the pane's last few non-blank lines show a busy footer
+# (an agent mid-turn). Scans a 40-line tail like fm-watch.sh.
+fm_pane_busy_state() {  # <target> [harness] -> busy|idle|unknown
+  local win=$1 harness=${2:-} tail40
+  tail40=$(tmux capture-pane -p -t "$win" -S -40 2>/dev/null) \
+    || { printf 'unknown'; return 0; }
+  printf '%s' "$tail40" | fm_busy_tail_state "$harness"
+}
+
 fm_pane_is_busy() {  # <target> [harness]
   [ "$(fm_pane_busy_state "$1" "${2:-}")" = busy ]
+}
+
+# fm_tmux_turn_started_state: the sole implementation of the turn-started
+# conversion documented below, shared by every post-Enter composer verdict this
+# submit cannot itself prove. Without an idle baseline it converts nothing. With
+# one, it polls the busy read across the remaining retry budget, because the
+# turn takes a beat to render.
+fm_tmux_turn_started_state() {  # <target> <retries> <enter-sleep> <baseline-idle> [harness] -> empty|unknown
+  local target=$1 retries=$2 sleep_s=$3 baseline_idle=$4 harness=${5:-} j=0
+  if [ "$baseline_idle" = 1 ]; then
+    while [ "$j" -lt "$retries" ]; do
+      if fm_pane_is_busy "$target" "$harness"; then
+        printf 'empty'
+        return 0
+      fi
+      j=$((j + 1))
+      [ "$j" -ge "$retries" ] || sleep "$sleep_s"
+    done
+  fi
+  printf 'unknown'
 }
 
 # fm_tmux_submit_core: type <text> into <target> ONCE, then submit with Enter,
@@ -248,7 +280,7 @@ fm_pane_is_busy() {  # <target> [harness]
 # `unknown` verdict is preserved untouched: busy conversion without the
 # transition evidence could mark an undelivered message delivered.
 fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle] [harness] [typed-observed]
-  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} harness=${5:-} typed_observed=${6:-1} i=0 j state
+  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} harness=${5:-} typed_observed=${6:-1} i=0 state
   while :; do
     tmux send-keys -t "$target" Enter 2>/dev/null || true
     sleep "$sleep_s"
@@ -260,33 +292,11 @@ fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle
           printf 'empty'
           return 0
         fi
-        if [ "$baseline_idle" = 1 ]; then
-          j=0
-          while [ "$j" -lt "$retries" ]; do
-            if fm_pane_is_busy "$target" "$harness"; then
-              printf 'empty'
-              return 0
-            fi
-            j=$((j + 1))
-            [ "$j" -ge "$retries" ] || sleep "$sleep_s"
-          done
-        fi
-        printf 'unknown'
+        fm_tmux_turn_started_state "$target" "$retries" "$sleep_s" "$baseline_idle" "$harness"
         return 0
         ;;
       unknown)
-        if [ "$baseline_idle" = 1 ]; then
-          j=0
-          while [ "$j" -lt "$retries" ]; do
-            if fm_pane_is_busy "$target" "$harness"; then
-              printf 'empty'
-              return 0
-            fi
-            j=$((j + 1))
-            [ "$j" -ge "$retries" ] || sleep "$sleep_s"
-          done
-        fi
-        printf 'unknown'
+        fm_tmux_turn_started_state "$target" "$retries" "$sleep_s" "$baseline_idle" "$harness"
         return 0
         ;;
       *) printf '%s' "$state"; return 0 ;;

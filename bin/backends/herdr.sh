@@ -2444,17 +2444,31 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
 }
 
 fm_backend_herdr_rendered_busy_state() {  # <target> <harness> -> busy|idle|unknown
-  local target=$1 harness=$2 tail40 visible
+  local target=$1 harness=$2 tail40
   [ -n "$harness" ] || { printf 'unknown'; return 0; }
   tail40=$(fm_backend_herdr_capture "$target" 40 2>/dev/null) \
     || { printf 'unknown'; return 0; }
-  visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
-  [ -n "$visible" ] || { printf 'unknown'; return 0; }
-  if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
-    printf 'busy'
-  else
-    printf 'idle'
+  printf '%s' "$tail40" | fm_busy_tail_state "$harness"
+}
+
+# fm_backend_herdr_rendered_turn_started: herdr's counterpart to the tmux
+# turn-started conversion. Only a rendered idle baseline may convert, and the
+# post-Enter read is POLLED across the remaining retry budget rather than
+# sampled once, because the turn takes a beat to render and a single early
+# sample would report a real submission as unconfirmed.
+fm_backend_herdr_rendered_turn_started() {  # <target> <harness> <baseline> <retries> <sleep> -> busy|unknown
+  local target=$1 harness=$2 baseline=$3 retries=$4 sleep_s=$5 j=0
+  if [ "$baseline" = idle ]; then
+    while [ "$j" -lt "$retries" ]; do
+      if [ "$(fm_backend_herdr_rendered_busy_state "$target" "$harness")" = busy ]; then
+        printf 'busy'
+        return 0
+      fi
+      j=$((j + 1))
+      [ "$j" -ge "$retries" ] || sleep "$sleep_s"
+    done
   fi
+  printf 'unknown'
 }
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
@@ -2549,12 +2563,11 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
       unknown)
-        if [ "$rendered_baseline" = idle ]; then
-          rendered_after=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
-          if [ "$rendered_after" = busy ]; then
-            printf 'empty'
-            return 0
-          fi
+        rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
+          "$rendered_baseline" "$retries" "$sleep_s")
+        if [ "$rendered_after" = busy ]; then
+          printf 'empty'
+          return 0
         fi
         printf 'unknown'
         return 0

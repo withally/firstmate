@@ -664,11 +664,19 @@ mark_escalated_seen() {  # <kind> <arg> <state>
 # Resolved lazily and memoized: harness detection walks process ancestry, which
 # is too heavy to pay on every source of this library (the unit tests and the
 # launcher source it purely for its pure functions).
+#
+# Echoes a real harness name or the EMPTY string. `unknown` is fm-harness.sh's
+# "ancestry did not resolve" answer, not a harness identity: every consumer here
+# feeds this value to harness-scoped matchers that must never treat an
+# unregistered name as a signature, so an unresolved ancestry deliberately
+# degrades to the harness-agnostic default rather than to a name that matches
+# nothing.
 fm_daemon_primary_harness() {
   if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
     FM_DAEMON_PRIMARY_HARNESS=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
     [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
   fi
+  [ "$FM_DAEMON_PRIMARY_HARNESS" != unknown ] || return 0
   printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
 }
 
@@ -680,8 +688,7 @@ pane_is_busy() {  # <target> [backend]
     busy) return 0 ;;
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
-  printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"
+  [ "$(printf '%s' "$tail40" | fm_busy_tail_state "$harness")" = busy ]
 }
 
 # pane_input_pending dispatches through fm_backend_composer_state and treats

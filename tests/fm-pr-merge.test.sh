@@ -9,11 +9,13 @@
 #   (a) merge records pr= and pr_head= before merging, and merges
 #   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
-#   (d) merge is refused before gh-axi when task meta is missing
-#   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
-#   (f) malformed PR URL fails fast without calling gh-axi
-#   (g) explicit merge method is not overridden by the default --squash
-#   (h) repo override args fail fast because the repo comes from the URL
+#   (d) merge is refused before gh-axi when task meta and teardown receipt are missing
+#   (e) a completed-task receipt for a different PR is refused
+#   (f) a failed completed-task merge preserves its receipt for retry
+#   (g) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
+#   (h) malformed PR URL fails fast without calling gh-axi
+#   (i) explicit merge method is not overridden by the default --squash
+#   (j) repo override args fail fast because the repo comes from the URL
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -179,6 +181,61 @@ test_missing_meta_refuses_before_merge() {
   pass "fm-pr-merge refuses before merging when task meta is missing"
 }
 
+test_completed_task_receipt_for_other_pr_refuses() {
+  local case_dir fakebin rc receipt
+  case_dir="$TMP_ROOT/completed-other-pr"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  add_gh_mocks "$case_dir" 3434343434343434343434343434343434343434
+  : > "$case_dir/gh-axi.log"
+  receipt="$case_dir/state/task-x1.teardown-pr"
+  printf '%s\n' \
+    'version=1' \
+    'task_id=task-x1' \
+    'pr=https://github.com/example/repo/pull/20' > "$receipt"
+  chmod 0600 "$receipt"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "completed-other-pr: fm-pr-merge should refuse a different PR"
+  assert_grep 'no matching completed-task PR receipt exists' "$case_dir/stderr" \
+    "completed-other-pr: refusal did not explain the receipt mismatch"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "completed-other-pr: gh-axi pr merge was invoked"
+  [ -f "$receipt" ] || fail "completed-other-pr: mismatched receipt should be preserved"
+  pass "fm-pr-merge refuses a different PR than the one preserved by completed-task teardown"
+}
+
+test_completed_task_merge_failure_preserves_receipt() {
+  local case_dir fakebin rc receipt
+  case_dir="$TMP_ROOT/completed-merge-fails"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  add_gh_mocks_merge_fails "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  receipt="$case_dir/state/task-x1.teardown-pr"
+  printf '%s\n' \
+    'version=1' \
+    'task_id=task-x1' \
+    'pr=https://github.com/example/repo/pull/24' > "$receipt"
+  chmod 0600 "$receipt"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/24 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "completed-merge-fails: fm-pr-merge should propagate the merge failure"
+  grep -qxF 'pr merge 24 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "completed-merge-fails: gh-axi did not receive the exact merge request"
+  [ -f "$receipt" ] || fail "completed-merge-fails: failed merge should preserve the receipt for retry"
+  pass "fm-pr-merge preserves a completed-task receipt when the merge fails"
+}
+
 test_malformed_url_refuses_before_merge() {
   local case_dir rc
   case_dir=$(make_case malformed-url)
@@ -305,6 +362,8 @@ test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
+test_completed_task_receipt_for_other_pr_refuses
+test_completed_task_merge_failure_preserves_receipt
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
-# clear volatile state, refresh/prune the project's clone for PR-based ship
+# clear volatile state, retain an exact-PR completion receipt for a PR-bearing
+# ship task, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
@@ -2441,6 +2442,15 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
+if [ "$FORCE" != --force ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] \
+  && [ "$MODE" != local-only ] && [ -n "$PR_URL" ]; then
+  if ! fm_pr_metadata_identity_parse "$META" \
+    || [ "$FM_PR_META_URL" != "$PR_URL" ] \
+    || ! fm_pr_teardown_receipt_publish "$STATE" "$ID" "$PR_URL"; then
+    echo "error: could not publish the completed-task PR receipt; preserving task metadata" >&2
+    exit 1
+  fi
+fi
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/.$ID.open-decisions-cursor" \

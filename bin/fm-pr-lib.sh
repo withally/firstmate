@@ -327,6 +327,53 @@ fm_pr_metadata_identity_parse() {
   [ -n "$FM_PR_META_URL" ]
 }
 
+# A successful teardown of a PR-bearing ship task leaves one private receipt so
+# fm-pr-merge.sh can later merge that exact PR without recreating live-task
+# metadata. The fixed three-line format is version, task id, and canonical PR
+# URL. Only fm-teardown.sh publishes it, after every cleanup guard has passed.
+fm_pr_teardown_receipt_parse() {
+  local file=$1 expected_id=$2 line number=0 version='' task_id='' url=''
+  FM_PR_TEARDOWN_URL=
+  fm_pr_task_id_valid "$expected_id" || return 1
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    number=$((number + 1))
+    case "$number:$line" in
+      1:version=1) version=1 ;;
+      2:task_id=*) task_id=${line#task_id=} ;;
+      3:pr=*) url=${line#pr=} ;;
+      *) return 1 ;;
+    esac
+  done < "$file"
+  [ "$number" -eq 3 ] && [ "$version" = 1 ] && [ "$task_id" = "$expected_id" ] || return 1
+  fm_pr_url_parse "$url" || return 1
+  FM_PR_TEARDOWN_URL=$FM_PR_URL
+}
+
+fm_pr_teardown_receipt_publish() {
+  local state=$1 id=$2 url=$3 state_device destination tmp=
+  fm_pr_task_id_valid "$id" || return 1
+  fm_pr_url_parse "$url" || return 1
+  url=$FM_PR_URL
+  state_device=$(fm_pr_file_device "$state") || return 1
+  destination="$state/$id.teardown-pr"
+  fm_pr_regular_destination_on_device_or_absent "$destination" "$state_device" || return 1
+  tmp=$(mktemp "$state/.fm-pr-teardown.XXXXXX") || return 1
+  if ! printf 'version=1\ntask_id=%s\npr=%s\n' "$id" "$url" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! fm_pr_private_file_valid "$tmp" 600 "$state_device" \
+    || ! fm_pr_teardown_receipt_parse "$tmp" "$id" \
+    || [ "$FM_PR_TEARDOWN_URL" != "$url" ] \
+    || ! mv -f -- "$tmp" "$destination"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  fm_pr_private_file_valid "$destination" 600 "$state_device" \
+    && fm_pr_teardown_receipt_parse "$destination" "$id" \
+    && [ "$FM_PR_TEARDOWN_URL" = "$url" ]
+}
+
 # Sidecar layout: provider, url, host, path, number, one per line. A sidecar
 # written before the provider tag existed has a URL on its first line and one
 # line fewer, so it fails both the field count and the provider comparison and

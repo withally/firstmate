@@ -2304,6 +2304,15 @@ fi
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_META_PATH="$STATE/$ID.meta"
+if [ "$RELAUNCH" -eq 0 ]; then
+  # Reusing a completed task id starts a new lifecycle. The per-id spawn lock
+  # excludes a concurrent post-teardown merge while this retires the old
+  # lifecycle's exact-PR receipt before publishing new live metadata.
+  rm -f -- "$STATE/$ID.teardown-pr" || {
+    echo "error: could not retire the prior completed-task PR receipt for $ID" >&2
+    exit 1
+  }
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"

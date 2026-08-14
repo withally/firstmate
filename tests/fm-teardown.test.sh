@@ -57,6 +57,7 @@ fm_git_identity fmtest fmtest@example.invalid
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
+PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
 REAL_GIT_FOR_TEST=$(command -v git)
 export REAL_GIT_FOR_TEST
@@ -577,6 +578,47 @@ test_local_only_fork_remote_allows() {
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
+}
+
+test_deliver_teardown_then_merge_later_allows() {
+  local case_dir rc receipt
+  case_dir=$(make_case teardown-then-merge)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "delivered work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/18' >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" > "$case_dir/teardown.stdout" 2> "$case_dir/teardown.stderr" \
+    || fail "teardown-then-merge: teardown failed"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "teardown-then-merge: live task metadata should be retired"
+  receipt="$case_dir/state/task-x1.teardown-pr"
+  [ -f "$receipt" ] || fail "teardown-then-merge: teardown did not preserve the exact-PR receipt"
+
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_MERGE" task-x1 https://github.com/example/repo/pull/18 \
+      > "$case_dir/merge.stdout" 2> "$case_dir/merge.stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "teardown-then-merge: exact delivered PR should merge after teardown"
+  grep -qxF 'pr merge 18 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "teardown-then-merge: gh-axi did not receive the exact merge request"
+  assert_absent "$receipt" "teardown-then-merge: successful merge did not retire the receipt"
+  pass "delivered PR can be torn down and later merged through its exact completed-task receipt"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
@@ -2569,6 +2611,7 @@ EOF
 }
 
 test_local_only_fork_remote_allows
+test_deliver_teardown_then_merge_later_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses

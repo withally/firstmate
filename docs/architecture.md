@@ -140,8 +140,9 @@ Endpoint death is the only process-level override and yields dead; child process
 `state/<id>.turn-ended` files remain wake notifications, not current state.
 
 Each record is bound to an incarnation token minted when the task's wiring is armed, so an event from a superseded incarnation is rejected rather than applied, and a record left behind by one classifies unknown.
-Three rendered-text readers deliberately remain outside this contract because they answer delivery questions: the submit acknowledgement and away-mode supervisor-pane busy guard in `bin/fm-tmux-lib.sh`, and the secondmate delivery-confirmation observation in `bin/fm-pending-reply-lib.sh`.
-All are harness-scoped rather than a global pattern union, and none is a recorded worker state source.
+Three rendered-text readers deliberately remain outside this contract because they answer delivery questions: the submit acknowledgement, the away-mode supervisor-pane busy guard, and the secondmate delivery-confirmation observation in `bin/fm-pending-reply-lib.sh`.
+The first two share one visible-tail window and one harness-scoped busy match in `bin/fm-tmux-lib.sh`; the Herdr adapter's own submit fallback supplies only its capture and reuses that same owner instead of forking a second heuristic.
+All are harness-scoped wherever a harness is known, and none is a recorded worker state source.
 
 ## Runtime session backends
 

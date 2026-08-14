@@ -992,15 +992,30 @@ SH
 if [ -n "${FM_FAKE_TMUX_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 fi
+composer="$(dirname "$0")/tmux.composer"
 case "$*" in
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex; exit 0 ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1'; exit 0 ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0; exit 0 ;;
-  # Row 0 (the cursor row) is a proven-empty bare agent composer: a verified
-  # submit needs positive container proof, so a blank pane would defer.
-  *capture-pane*) printf '\342\235\257 \n'; exit 0 ;;
+  # Row 0 (the cursor row) is a bare agent composer: it carries the typed text
+  # after `send-keys -l` and clears on Enter, so a verified submit can observe
+  # its own typing before believing the post-Enter empty composer.
+  *capture-pane*)
+    if [ -s "$composer" ]; then
+      printf '\342\235\257 %s\n' "$(cat "$composer")"
+    else
+      printf '\342\235\257 \n'
+    fi
+    exit 0
+    ;;
   *'send-keys'*' -l '*)
     [ "${FM_FAKE_TMUX_FAIL_LITERAL:-0}" = 1 ] && exit 1
+    printf '%s' "${!#}" > "$composer"
+    exit 0
+    ;;
+  *send-keys*Enter*)
+    [ "${FM_FAKE_TMUX_FAIL_LITERAL:-0}" = 1 ] && exit 1
+    : > "$composer"
     exit 0
     ;;
   *send-keys*)

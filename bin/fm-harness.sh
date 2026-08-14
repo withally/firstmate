@@ -40,9 +40,11 @@ detect_own() {
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
     return
   fi
-  # grok sets GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
-  # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this marker
-  # is unambiguous when firstmate runs natively on grok.
+  # grok set GROK_AGENT=1 for its child/tool processes on 0.2.73.
+  # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this
+  # marker is unambiguous when present, but a grok 1.0.0 hook process carried
+  # GROK_HOOK_EVENT and related hook markers without GROK_AGENT. Treat this as
+  # a fast path only; the ancestry walk below guarantees grok identification.
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
   # Layer 2: walk the parent chain and match the command name.
   local pid=$$ comm args

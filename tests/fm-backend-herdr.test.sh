@@ -833,67 +833,274 @@ test_create_task_creates_with_no_focus_flag() {
 
 # --- default-on disposable presentation projection --------------------------
 
-# fm_backend_herdr_presentation_enabled is the one gate bin/fm-spawn.sh consults
-# before projecting a crewmate or scout, so these cases pin the default-on
-# contract and its explicit opt-out at that interface.
-presentation_enabled_verdict() {  # <config-dir> -> "on"/"off" on stdout, warnings on stderr
-  bash -c '
-    . "$0/bin/backends/herdr.sh"
-    if fm_backend_herdr_presentation_enabled "$1"; then printf "on\n"; else printf "off\n"; fi
-  ' "$ROOT" "$1"
+# A status-only Herdr stub for the presentation release-floor contract.
+# Empty protocol or version values omit those fields, "unreadable" makes the
+# whole status call fail, and a server-running value other than true or false
+# leaves that state unknown.
+make_release_fakebin() {  # <dir> <client-protocol> <client-version> [<server-running> <server-protocol> <server-version>]
+  local dir=$1 protocol=$2 version=$3 server_running=${4:-false} server_protocol=${5:-} server_version=${6:-}
+  local fb="$1/release-fakebin" fields="" server_fields=""
+  mkdir -p "$fb"
+  if [ -n "$version" ]; then
+    fields="\"version\":\"$version\""
+  fi
+  if [ -n "$protocol" ]; then
+    [ -n "$fields" ] && fields="$fields,"
+    fields="$fields\"protocol\":$protocol"
+  fi
+  case "$server_running" in
+    true|false) server_fields="\"running\":$server_running" ;;
+  esac
+  if [ -n "$server_version" ]; then
+    [ -n "$server_fields" ] && server_fields="$server_fields,"
+    server_fields="$server_fields\"version\":\"$server_version\""
+  fi
+  if [ -n "$server_protocol" ]; then
+    [ -n "$server_fields" ] && server_fields="$server_fields,"
+    server_fields="$server_fields\"protocol\":$server_protocol"
+  fi
+  cat > "$fb/herdr" <<SH
+#!/usr/bin/env bash
+set -u
+[ "\${1:-}" = status ] || exit 3
+SH
+  if [ "$protocol" = unreadable ] || [ "$version" = unreadable ]; then
+    printf 'exit 4\n' >> "$fb/herdr"
+  else
+    printf 'printf %s\n' "'{\"client\":{$fields},\"server\":{$server_fields}}\\n'" >> "$fb/herdr"
+  fi
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
 }
 
-test_presentation_defaults_on_without_config() {
-  local dir config verdict
+# fm_backend_herdr_presentation_enabled is the one gate bin/fm-spawn.sh consults
+# before projecting a crewmate or scout, so these cases pin explicit choices
+# and the release-dependent unconfigured default at that interface.
+presentation_enabled_verdict() {  # <config-dir> <fakebin> [state-dir] [session] -> on|off
+  HERDR_SESSION="${4:-}" PATH="$2:$PATH" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    if fm_backend_herdr_presentation_enabled "$1" "$2"; then printf "on\n"; else printf "off\n"; fi
+  ' "$ROOT" "$1" "${3:-}"
+}
+
+AT_FLOOR_PROTOCOL=19
+AT_FLOOR_VERSION=0.8.0
+BELOW_FLOOR_PROTOCOL=17
+BELOW_FLOOR_VERSION=0.7.5
+
+test_presentation_defaults_on_at_or_above_the_floor() {
+  local dir config fb verdict stderr
   dir="$TMP_ROOT/presentation-default-on"; config="$dir/config"; mkdir -p "$config"
-  verdict=$(presentation_enabled_verdict "$config" 2>/dev/null)
-  [ "$verdict" = on ] || fail "an absent presentation config must resolve on, got '$verdict'"
-  verdict=$(presentation_enabled_verdict "$dir/missing-config-dir" 2>/dev/null)
-  [ "$verdict" = on ] || fail "a missing config dir must resolve on, got '$verdict'"
-  pass "herdr presentation: a home that set nothing gets the projection by default"
+  stderr="$dir/default-on.err"
+  fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "an absent presentation config at the floor must resolve on, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "a supported release must not warn: $(cat "$stderr")"
+  verdict=$(presentation_enabled_verdict "$dir/missing-config-dir" "$fb" 2>/dev/null)
+  [ "$verdict" = on ] || fail "a missing config dir at the floor must resolve on, got '$verdict'"
+  pass "herdr presentation: a home that set nothing gets the projection by default at or above the floor"
+}
+
+test_presentation_default_falls_back_below_the_floor() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-below-floor"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/below-floor.err"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unconfigured home below the floor must fall back flat, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "$BELOW_FLOOR_VERSION" \
+    "the below-floor warning must name the running release"
+  assert_contains "$(cat "$stderr")" "$AT_FLOOR_VERSION" \
+    "the below-floor warning must name the upgrade that fixes it"
+  pass "herdr presentation: an unconfigured home below the floor falls back flat with a naming warning"
+}
+
+test_presentation_unreadable_release_falls_back() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-unreadable"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/unreadable.err"
+  fb=$(make_release_fakebin "$dir" unreadable unreadable)
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unverifiable release must fall back flat, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "could not be read" \
+    "an unverifiable release must say the floor could not be checked"
+  pass "herdr presentation: an unreadable client release falls back flat instead of guessing"
 }
 
 test_presentation_legacy_opt_in_file_still_resolves_on() {
-  local dir config verdict stderr
+  local dir config fb verdict stderr
   dir="$TMP_ROOT/presentation-legacy-opt-in"; config="$dir/config"; mkdir -p "$config"
   stderr="$dir/legacy.err"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
   # The historical opt-in was a bare `touch` of the file, so an empty file must
   # keep meaning on - and must not warn, or every migrated home warns on every spawn.
   : > "$config/herdr-presentation-spaces"
-  verdict=$(presentation_enabled_verdict "$config" 2>"$stderr")
-  [ "$verdict" = on ] || fail "a legacy empty opt-in file must resolve on, got '$verdict'"
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "a legacy empty opt-in file must resolve on below the floor, got '$verdict'"
   [ ! -s "$stderr" ] || fail "a legacy empty opt-in file must not warn: $(cat "$stderr")"
   printf '\n \n' > "$config/herdr-presentation-spaces"
-  verdict=$(presentation_enabled_verdict "$config" 2>"$stderr")
-  [ "$verdict" = on ] || fail "a whitespace-only opt-in file must resolve on, got '$verdict'"
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "a whitespace-only opt-in file must resolve on below the floor, got '$verdict'"
   [ ! -s "$stderr" ] || fail "a whitespace-only opt-in file must not warn: $(cat "$stderr")"
   printf 'on\n' > "$config/herdr-presentation-spaces"
-  verdict=$(presentation_enabled_verdict "$config" 2>/dev/null)
-  [ "$verdict" = on ] || fail "an explicit on must resolve on, got '$verdict'"
-  pass "herdr presentation: an already-enabled home keeps the projection with no migration step"
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "an explicit on must resolve on below the floor, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "an explicit opt-in must not warn: $(cat "$stderr")"
+  pass "herdr presentation: a deliberate opt-in remains on below the floor"
 }
 
 test_presentation_explicit_off_opts_out() {
-  local dir config verdict value
+  local dir config fb verdict value
   dir="$TMP_ROOT/presentation-opt-out"; config="$dir/config"; mkdir -p "$config"
+  fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
   for value in 'off' 'off
 ' '  off  ' 'OFF' 'Off'; do
     printf '%s' "$value" > "$config/herdr-presentation-spaces"
-    verdict=$(presentation_enabled_verdict "$config" 2>/dev/null)
+    verdict=$(presentation_enabled_verdict "$config" "$fb" 2>/dev/null)
     [ "$verdict" = off ] || fail "the opt-out value '$value' must resolve off, got '$verdict'"
   done
   pass "herdr presentation: an explicit off opts the home out"
 }
 
 test_presentation_unrecognized_value_warns_and_keeps_default() {
-  local dir config verdict stderr
+  local dir config fb verdict stderr
   dir="$TMP_ROOT/presentation-unrecognized"; config="$dir/config"; mkdir -p "$config"
   stderr="$dir/unrecognized.err"
   printf 'disabled\n' > "$config/herdr-presentation-spaces"
-  verdict=$(presentation_enabled_verdict "$config" 2>"$stderr")
+  fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
   [ "$verdict" = on ] || fail "an unrecognized value must keep the default on, got '$verdict'"
   [ -s "$stderr" ] || fail "an unrecognized value must warn so a typo is visible"
-  pass "herdr presentation: an unrecognized value warns and keeps the default instead of failing a spawn"
+  fb=$(make_release_fakebin "$dir/below" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unrecognized value below the floor must follow the default, got '$verdict'"
+  pass "herdr presentation: an unrecognized value warns and follows the release-dependent default"
+}
+
+test_presentation_floor_warning_is_one_per_release() {
+  local dir config state fb first second third
+  dir="$TMP_ROOT/presentation-floor-dedupe"; config="$dir/config"; state="$dir/state"
+  mkdir -p "$config" "$state"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  first=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  second=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  [ -n "$first" ] || fail "the first below-floor spawn must warn"
+  [ -z "$second" ] || fail "a repeat spawn on the same release must not warn again: $second"
+  fb=$(make_release_fakebin "$dir/other" 16 0.7.3)
+  third=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  assert_contains "$third" '0.7.3' "a changed release must re-announce the floor"
+  pass "herdr presentation: the below-floor warning is one per home per release"
+}
+
+test_presentation_floor_warning_marker_is_atomic_and_symlink_safe() {
+  local dir config state fb i pid warnings marker outside symlink_warning
+  local pids=()
+  dir="$TMP_ROOT/presentation-floor-marker-safety"; config="$dir/config"; state="$dir/state"
+  mkdir -p "$config" "$state"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  for i in {1..20}; do
+    presentation_enabled_verdict "$config" "$fb" "$state" \
+      >"$dir/concurrent-$i.out" 2>"$dir/concurrent-$i.err" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || fail "a concurrent presentation-floor verdict failed"
+  done
+  warnings=$(awk '/^warning:/ { count++ } END { print count + 0 }' "$dir"/concurrent-*.err)
+  [ "$warnings" -eq 1 ] \
+    || fail "concurrent below-floor spawns must publish exactly one warning, got $warnings"
+
+  state="$dir/symlink-state"
+  mkdir -p "$state"
+  marker="$state/.herdr-presentation-floor-version-0-7-5--protocol-17-"
+  outside="$dir/symlink-target"
+  ln -s "$outside" "$marker"
+  symlink_warning=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  [ -z "$symlink_warning" ] \
+    || fail "an existing dangling marker symlink must be treated as already claimed: $symlink_warning"
+  [ ! -e "$outside" ] \
+    || fail "publishing the floor marker followed a dangling symlink outside the state directory"
+  pass "herdr presentation: warning marker publication is atomic and symlink-safe"
+}
+
+test_presentation_running_server_release_is_load_bearing() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-running-server-floor"; config="$dir/config"
+  mkdir -p "$config"
+  stderr="$dir/server.err"
+
+  fb=$(make_release_fakebin "$dir/old-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+    true "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" stale-session 2>"$stderr")
+  [ "$verdict" = off ] \
+    || fail "an old running server must keep a new client below the presentation floor, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "server version $BELOW_FLOOR_VERSION" \
+    "the floor warning must name the selected running server release"
+
+  fb=$(make_release_fakebin "$dir/new-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+    true "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" current-session 2>"$stderr")
+  [ "$verdict" = on ] \
+    || fail "an at-floor client and running server must project, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "an at-floor client and running server must not warn: $(cat "$stderr")"
+
+  fb=$(make_release_fakebin "$dir/old-client" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION" \
+    true "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" current-session 2>"$stderr")
+  [ "$verdict" = off ] \
+    || fail "a below-floor client must block projection despite an at-floor server, got '$verdict'"
+
+  printf 'on\n' > "$config/herdr-presentation-spaces"
+  fb=$(make_release_fakebin "$dir/opt-in" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+    true "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" stale-session 2>"$stderr")
+  [ "$verdict" = on ] || fail "an explicit opt-in must survive a below-floor running server"
+  [ ! -s "$stderr" ] || fail "an explicit opt-in below the server floor must not warn"
+  rm -f "$config/herdr-presentation-spaces"
+
+  fb=$(make_release_fakebin "$dir/unknown-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" unknown)
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" unknown-session 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unreadable selected server state must fail flat, got '$verdict'"
+  pass "herdr presentation: client and selected server floors compose conservatively"
+}
+
+release_floor_verdict() {  # <protocol> <version> -> above|below|indeterminate
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    status=0
+    fm_backend_herdr_release_floor_verdict "$1" "$2" || status=$?
+    case "$status" in
+      0) printf "above\n" ;;
+      1) printf "below\n" ;;
+      *) printf "indeterminate\n" ;;
+    esac
+  ' "$ROOT" "$1" "$2"
+}
+
+test_release_floor_verdict_matches_measured_releases_and_signal_loss() {
+  local protocol version expected got
+  while IFS=$'\t' read -r protocol version expected; do
+    [ -n "$expected" ] || continue
+    got=$(release_floor_verdict "$protocol" "$version")
+    [ "$got" = "$expected" ] \
+      || fail "protocol '$protocol' version '$version' should be $expected, got $got"
+  done <<'CASES'
+16	0.7.3	below
+16	0.7.4	below
+17	0.7.5	below
+18	0.7.5-preview.2026-07-29-44b3adb12552	below
+19	0.8.0-preview.2026-08-04-d78e3d3b5126	above
+19	0.8.0	above
+20	0.9.0	above
+CASES
+  [ "$(release_floor_verdict 19 '')" = above ] || fail "the floor protocol alone must carry an above verdict"
+  [ "$(release_floor_verdict 17 '')" = below ] || fail "a below-floor protocol alone must carry a below verdict"
+  [ "$(release_floor_verdict '' 0.8.0)" = above ] || fail "the floor version alone must carry an above verdict"
+  [ "$(release_floor_verdict '' 0.7.5)" = below ] || fail "a below-floor version alone must carry a below verdict"
+  [ "$(release_floor_verdict '' '')" = indeterminate ] || fail "losing both signals must be indeterminate"
+  [ "$(release_floor_verdict 19 0.7.5)" = above ] || fail "the protocol signal must survive a divergent version"
+  [ "$(release_floor_verdict 16 0.9.0)" = above ] || fail "the version signal must survive a divergent protocol"
+  pass "herdr presentation floor: measured releases and independent signals classify correctly"
 }
 
 test_projection_journal_is_atomic_and_uses_128_bit_token() {
@@ -4035,10 +4242,16 @@ test_create_task_refuses_when_agent_state_ambiguous
 test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
-test_presentation_defaults_on_without_config
+test_presentation_defaults_on_at_or_above_the_floor
+test_presentation_default_falls_back_below_the_floor
+test_presentation_unreadable_release_falls_back
 test_presentation_legacy_opt_in_file_still_resolves_on
 test_presentation_explicit_off_opts_out
 test_presentation_unrecognized_value_warns_and_keeps_default
+test_presentation_floor_warning_is_one_per_release
+test_presentation_floor_warning_marker_is_atomic_and_symlink_safe
+test_presentation_running_server_release_is_load_bearing
+test_release_floor_verdict_matches_measured_releases_and_signal_loss
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane

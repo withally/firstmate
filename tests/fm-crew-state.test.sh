@@ -852,6 +852,54 @@ test_runs_listing_is_read_once_per_snapshot() {
   pass "runs listing is read once per snapshot and never reused across snapshots"
 }
 
+# The pass-scoped cached listing is by construction OLDER than each later crew's
+# `axi status` read, so it must not be the read that declares an alive run dead:
+# a same-head rerun whose row lands mid-pass would otherwise surface a healthy
+# running pipeline as failed until the next pass. Only that direction pays a
+# fresh listing read; agreement still costs nothing.
+test_cached_terminal_listing_revalidates_before_overruling_alive_run() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case cached-terminal-revalidate)
+  make_repo_on_branch "$d/wt" fm/feat-rerun
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/crew-a.meta" "window=fm:fm-crew-a" "worktree=$d/wt" "kind=ship"
+  fm_write_meta "$d/state/crew-b.meta" "window=fm:fm-crew-b" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-rerun)"
+  FM_FAKE_RUNS_CALLS="$d/runs-calls"
+  : > "$FM_FAKE_RUNS_CALLS"
+  mkdir -p "$d/runs-cache"
+  FM_CREW_STATE_RUNS_CACHE_DIR="$d/runs-cache"
+  export FM_CREW_STATE_RUNS_CACHE_DIR
+
+  # Pass begins before the rerun's row lands: the listing's newest row is the
+  # previous failed run at the same head, and that IS current for this crew.
+  FM_FAKE_RUNS_LIST="  failed    fm/feat-rerun ${short}  2026-08-07 10:00"
+  out=$(run_crew_state "$d" crew-a)
+  assert_contains "$out" "state: failed" "an uncached terminal listing still outranks a stale healthy detail"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 1 ] || fail "first crew of the pass reads the listing once, got $calls"
+
+  # The rerun's row lands mid-pass. The cached copy predates this crew's own
+  # axi read, so it may not turn the running run terminal without revalidating.
+  FM_FAKE_RUNS_LIST="  running   fm/feat-rerun ${short}  2026-08-07 10:01"
+  out=$(run_crew_state "$d" crew-b)
+  assert_contains "$out" "state: working" "a healthy running rerun must never surface as failed"
+  assert_not_contains "$out" "state: failed" "a stale cached terminal row must not outrank a live run"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 2 ] || fail "the flip case revalidates with one fresh read, got $calls"
+
+  # Agreement costs nothing: the refreshed cache serves the rest of the pass.
+  out=$(run_crew_state "$d" crew-b)
+  assert_contains "$out" "state: working" "the refreshed cached listing keeps serving the pass"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 2 ] || fail "an agreeing cached listing must not re-read, got $calls"
+
+  unset FM_CREW_STATE_RUNS_CACHE_DIR
+  pass "a cached terminal row revalidates before overruling an alive run"
+}
+
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
 # routine case once more than one crew validates the same underlying repo
 # concurrently - they share ONE no-mistakes repo registration), so the helper
@@ -1503,6 +1551,7 @@ test_newest_same_branch_head_mismatch_does_not_latch_older_run
 test_pending_run_reads_working
 test_unmodeled_runs_list_status_does_not_demote_full_detail
 test_runs_listing_is_read_once_per_snapshot
+test_cached_terminal_listing_revalidates_before_overruling_alive_run
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

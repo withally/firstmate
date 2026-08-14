@@ -354,10 +354,20 @@ nm_runs_cache_file() {
   printf '%s/runs-%s' "$dir" "$key"
 }
 
-nm_runs_list() {
+nm_runs_cache_present() {
+  local cache
+  cache=$(nm_runs_cache_file) || return 1
+  [ -s "$cache" ]
+}
+
+# `fresh` bypasses the cached copy for THIS read and refreshes it, so a later
+# crew in the same pass sees the newer listing too. The reconciliation below
+# spends it only where the cache would otherwise invert the read ordering its
+# correctness depends on.
+nm_runs_list() {  # [fresh]
   local cache out tmp
   cache=$(nm_runs_cache_file) || cache=''
-  if [ -n "$cache" ] && [ -s "$cache" ]; then
+  if [ "${1:-}" != fresh ] && [ -n "$cache" ] && [ -s "$cache" ]; then
     cat "$cache"
     return 0
   fi
@@ -373,9 +383,9 @@ nm_runs_list() {
   printf '%s' "$out"
 }
 
-nm_runs_status_for_branch() {  # <branch>
+nm_runs_status_for_branch() {  # <branch> [fresh]
   local branch=$1 out row st rest br sha
-  out=$(nm_runs_list)
+  out=$(nm_runs_list "${2:-}")
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -443,6 +453,16 @@ nm_coarse_status_is_modeled() {  # <status>
   esac
 }
 
+# A coarse word that ENDS the run. Only these can turn an alive detailed verdict
+# into a terminal one, which is the single direction where the listing must be
+# strictly newer than the detailed object it overrules.
+nm_coarse_status_is_terminal() {  # <status>
+  case "$1" in
+    completed|failed|cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -483,8 +503,26 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # A disagreement means the listing's row is current and the detailed
       # object is stale; retain the current coarse verdict rather than emitting
       # a terminal result from the superseded run.
+      #
+      # That argument holds only while the listing is the LATER read. A
+      # pass-scoped cached copy is by construction OLDER than this crew's
+      # `axi status` object, so it may not be the one to declare an alive run
+      # dead: a same-head rerun whose new row had not landed when the pass began
+      # would otherwise surface a healthy running pipeline as failed for the rest
+      # of the pass. In exactly that direction - cached, terminal, overruling an
+      # alive detailed verdict - re-read the listing uncached and decide on the
+      # newer answer. Every other case (agreement, an alive coarse word, or an
+      # already-uncached read) keeps the single cached round-trip.
+      FULL_COARSE_STATUS=$(nm_full_coarse_status)
+      COARSE_FROM_CACHE=0
+      nm_runs_cache_present && COARSE_FROM_CACHE=1
       COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      if nm_coarse_status_is_modeled "$COARSE_STATUS" && [ "$(nm_full_coarse_status)" != "$COARSE_STATUS" ]; then
+      if [ "$COARSE_FROM_CACHE" = 1 ] \
+        && nm_coarse_status_is_terminal "$COARSE_STATUS" \
+        && ! nm_coarse_status_is_terminal "$FULL_COARSE_STATUS"; then
+        COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH" fresh)
+      fi
+      if nm_coarse_status_is_modeled "$COARSE_STATUS" && [ "$FULL_COARSE_STATUS" != "$COARSE_STATUS" ]; then
         RUN_SOURCE=coarse
       fi
     else

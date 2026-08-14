@@ -1002,6 +1002,11 @@ SH
   kill "$successor_pid" 2>/dev/null || true
   kill -HUP "$successor_arm" 2>/dev/null || true
   fm_test_terminate_or_fail "$successor_arm" "successor ledger arm cleanup"
+  # The arm's death does not imply its watcher's: a TERM'd watcher can linger in
+  # its cleanup under load while still holding the session lock with a fresh
+  # beacon, and the next bounded cycle's arm would then attach to it and poll
+  # until the wait bound fires instead of running its own cycle.
+  fm_test_terminate_or_fail "$successor_pid" "successor ledger watcher cleanup"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.

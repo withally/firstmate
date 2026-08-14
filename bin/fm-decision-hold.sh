@@ -31,7 +31,8 @@
 # metadata inventory is unioned idempotently. A post-teardown visual review can
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
-# source before this gate has succeeded.
+# source before this gate has succeeded. Resolved holds remain authoritative after
+# retention moves them to the archive configured by `[markdown].archive`.
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
 # It writes the captain decision and routed identities into the hold body, clears
@@ -123,6 +124,78 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+configured_archive_path() {
+  local config="$FM_HOME/.tasks.toml" archive
+  [ -f "$config" ] || return 1
+  archive=$(awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "markdown" && /^[[:space:]]*archive[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      quote = substr(value, 1, 1)
+      if (quote != "\"" && quote != sprintf("%c", 39)) {
+        invalid = 1
+        exit
+      }
+      value = substr(value, 2)
+      closing = index(value, quote)
+      if (closing == 0) {
+        invalid = 1
+        exit
+      }
+      rest = trim(substr(value, closing + 1))
+      if (rest != "" && substr(rest, 1, 1) != "#") {
+        invalid = 1
+        exit
+      }
+      print substr(value, 1, closing - 1)
+      found = 1
+      exit
+    }
+    END {
+      if (invalid) exit 2
+      if (!found) exit 1
+    }
+  ' "$config") || return $?
+  [ -n "$archive" ] || return 1
+  case "$archive" in
+    /*) printf '%s\n' "$archive" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$archive" ;;
+  esac
+}
+
+archived_task_show() {  # <id>
+  local id=$1 archive scratch normalized archive_config output rc
+  archive=$(configured_archive_path) || return 1
+  [ -f "$archive" ] || return 1
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/fm-decision-archive.XXXXXX") || return 2
+  normalized="$scratch/archived-backlog.md"
+  archive_config="$scratch/.tasks.toml"
+  if ! sed 's/^## Archived .*/## Done/' "$archive" > "$normalized"; then
+    rm -f "$normalized"
+    rmdir "$scratch" 2>/dev/null || true
+    return 2
+  fi
+  printf 'backend = "markdown"\n\n[markdown]\narchive = "unused-archive.md"\n' > "$archive_config"
+  set +e
+  output=$(cd "$scratch" && tasks-axi show "$id" --full --file "$normalized" 2>/dev/null)
+  rc=$?
+  set -e
+  rm -f "$normalized" "$archive_config"
+  rmdir "$scratch" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || return 1
+  printf '%s\n' "$output"
+}
+
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
@@ -198,20 +271,36 @@ verify_hold_resolved() {  # <hold-id>
 }
 
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
-  state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
-  kind=$(show_field "$show" kind)
-  hold_kind=$(show_field "$show" hold_kind)
-  body=$(show_field "$show" body)
-  if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
-    return 0
+  local id=$1 show='' state held kind hold_kind body live_found=0 archive_found=0
+  if show=$(task_show "$id"); then
+    live_found=1
+    state=$(show_field "$show" state)
+    held=$(show_field "$show" held)
+    kind=$(show_field "$show" kind)
+    hold_kind=$(show_field "$show" hold_kind)
+    body=$(show_field "$show" body)
+    if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
+      return 0
+    fi
+    if [ "$state" = "done" ] && [ "$kind" = captain ]; then
+      case "$body" in
+        *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
+      esac
+    fi
   fi
-  if [ "$state" = "done" ] && [ "$kind" = captain ]; then
-    case "$body" in
-      *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
-    esac
+  if show=$(archived_task_show "$id"); then
+    archive_found=1
+    state=$(show_field "$show" state)
+    kind=$(show_field "$show" kind)
+    body=$(show_field "$show" body)
+    if [ "$state" = "done" ] && [ "$kind" = captain ]; then
+      case "$body" in
+        *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
+      esac
+    fi
+  fi
+  if [ "$live_found" = 0 ] && [ "$archive_found" = 0 ]; then
+    fail "captain decision $id is absent from the live backlog and configured archive"
   fi
   fail "captain decision $id is neither actively held nor durably resolved"
 }

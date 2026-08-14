@@ -276,6 +276,85 @@ EOF
   pass "captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close"
 }
 
+test_verify_accepts_only_live_or_archived_durable_resolutions() {
+  local home live_origin live_hold live_route archived_origin archived_hold archived_route \
+    unanswered_origin unanswered_hold missing_origin
+  home=$(make_home resolution-retention)
+  cat > "$home/.tasks.toml" <<'EOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = "data/resolved-history.md"
+done_keep = 10
+EOF
+
+  live_origin=sample-live-resolution
+  live_route=sample-live-route
+  write_origin_meta "$home" "$live_origin"
+  live_hold=$(run_decisions "$home" hold "$live_origin" choice \
+    --title "Choose the live sample" --reason "captain live sample choice pending" --repo sample)
+  run_decisions "$home" complete "$live_origin" choice >/dev/null
+  tasks_in "$home" add "$live_route" "Apply the live sample choice" \
+    --kind ship --repo sample --blocked-by "$live_hold" >/dev/null
+  printf 'Use the live sample choice.\n' > "$home/live-decision.txt"
+  run_decisions "$home" resolve "$live_origin" choice \
+    --decision-file "$home/live-decision.txt" --routed-to "$live_route" >/dev/null
+  run_decisions "$home" verify "$live_origin" >/dev/null \
+    || fail "a live durable resolution did not verify"
+
+  archived_origin=sample-archived-resolution
+  archived_route=sample-archived-route
+  write_origin_meta "$home" "$archived_origin"
+  archived_hold=$(run_decisions "$home" hold "$archived_origin" choice \
+    --title "Choose the archived sample" --reason "captain archived sample choice pending" --repo sample)
+  run_decisions "$home" complete "$archived_origin" choice >/dev/null
+  tasks_in "$home" add "$archived_route" "Apply the archived sample choice" \
+    --kind ship --repo sample --blocked-by "$archived_hold" >/dev/null
+  printf 'Use the archived sample choice.\n' > "$home/archived-decision.txt"
+  run_decisions "$home" resolve "$archived_origin" choice \
+    --decision-file "$home/archived-decision.txt" --routed-to "$archived_route" >/dev/null
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not apply the configured retention fixture"
+  assert_no_grep "- [x] $archived_hold -" "$home/data/backlog.md" \
+    "configured retention left the resolved hold in the live backlog"
+  assert_grep "- [x] $archived_hold -" "$home/data/resolved-history.md" \
+    "configured retention did not use its declared archive"
+  run_decisions "$home" verify "$archived_origin" >/dev/null \
+    || fail "an archived durable resolution did not verify from the configured archive"
+  tasks_in "$home" add "$archived_hold" "Duplicate the archived sample hold" \
+    --kind captain --repo sample >/dev/null
+  tasks_in "$home" "done" "$archived_hold" >/dev/null \
+    || fail "could not build the live duplicate control"
+  run_decisions "$home" verify "$archived_origin" >/dev/null \
+    || fail "a weaker live duplicate shadowed the archived durable resolution"
+
+  unanswered_origin=sample-unanswered-resolution
+  write_origin_meta "$home" "$unanswered_origin"
+  unanswered_hold=$(run_decisions "$home" hold "$unanswered_origin" choice \
+    --title "Choose the unanswered sample" --reason "captain unanswered sample choice pending" --repo sample)
+  run_decisions "$home" complete "$unanswered_origin" choice >/dev/null
+  tasks_in "$home" "done" "$unanswered_hold" >/dev/null \
+    || fail "could not build the closed-without-resolution control"
+  if run_decisions "$home" verify "$unanswered_origin" \
+    > "$home/unanswered-verify.out" 2> "$home/unanswered-verify.err"; then
+    fail "a closed captain hold without a durable resolution verified"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/unanswered-verify.err" \
+    "closed unanswered decision lost the existing refusal"
+
+  missing_origin=sample-missing-resolution
+  write_origin_meta "$home" "$missing_origin"
+  printf 'decisions_reviewed=1\ndecision_keys=choice\n' >> "$home/state/$missing_origin.meta"
+  if run_decisions "$home" verify "$missing_origin" \
+    > "$home/missing-verify.out" 2> "$home/missing-verify.err"; then
+    fail "a never-created captain decision verified"
+  fi
+  assert_grep "captain decision $missing_origin-decision-choice is absent" "$home/missing-verify.err" \
+    "never-created decision lost the existing refusal"
+  pass "verification recognizes live and configured-archive resolutions without accepting weaker evidence"
+}
+
 test_scout_teardown_always_requires_inventory_verification() {
   local home id
   home=$(make_home unconditional-teardown)
@@ -554,6 +633,7 @@ test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
 test_structured_holds_survive_teardown_and_route_resolution
+test_verify_accepts_only_live_or_archived_durable_resolutions
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds

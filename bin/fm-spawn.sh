@@ -392,6 +392,15 @@ spawn_remote_secondmate() {
     fm_lock_release "$SPAWN_TASK_LOCK" || true
     return 3
   fi
+  # A secondmate lifecycle never issues a receipt of its own, so any receipt
+  # under this id belongs to a completed ship task whose id is being reused.
+  # Retire it under the spawn lock before this route publishes its metadata.
+  if ! rm -f -- "$STATE/$id.teardown-pr"; then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    echo "error: could not retire the prior completed-task PR receipt for $id" >&2
+    return 1
+  fi
   host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
   root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
   home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
@@ -948,6 +957,16 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+# Reusing a completed task id starts a new lifecycle, so the previous
+# lifecycle's exact-PR receipt is retired here, before ANY path in this spawn -
+# including the orca abort-cleanup record - can publish metadata under the id.
+# The per-id spawn lock excludes a concurrent post-teardown merge meanwhile.
+if [ "$RELAUNCH" -eq 0 ]; then
+  rm -f -- "$STATE/$ID.teardown-pr" || {
+    echo "error: could not retire the prior completed-task PR receipt for $ID" >&2
+    exit 1
+  }
+fi
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
@@ -2304,15 +2323,6 @@ fi
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_META_PATH="$STATE/$ID.meta"
-if [ "$RELAUNCH" -eq 0 ]; then
-  # Reusing a completed task id starts a new lifecycle. The per-id spawn lock
-  # excludes a concurrent post-teardown merge while this retires the old
-  # lifecycle's exact-PR receipt before publishing new live metadata.
-  rm -f -- "$STATE/$ID.teardown-pr" || {
-    echo "error: could not retire the prior completed-task PR receipt for $ID" >&2
-    exit 1
-  }
-fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"

@@ -317,6 +317,8 @@ fm_pr_metadata_identity_parse() {
         ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
         ;;
+      traceparent=*|control_relaunch_tx=*)
+        ;;
       *)
         [ "$seen_pr" -eq 0 ] || post_pr_invalid=1
         ;;
@@ -351,14 +353,29 @@ fm_pr_teardown_receipt_parse() {
   FM_PR_TEARDOWN_URL=$FM_PR_URL
 }
 
-fm_pr_teardown_receipt_publish() {
-  local state=$1 id=$2 url=$3 state_device destination tmp=
+# Every precondition the publish below depends on, checked without changing any
+# state, so teardown can refuse before its first destructive step instead of
+# after it.
+fm_pr_teardown_receipt_writable() {
+  local state=$1 id=$2 url=$3 tmp
+  FM_PR_TEARDOWN_STATE_DEVICE=
+  FM_PR_TEARDOWN_DESTINATION=
   fm_pr_task_id_valid "$id" || return 1
   fm_pr_url_parse "$url" || return 1
+  FM_PR_TEARDOWN_STATE_DEVICE=$(fm_pr_file_device "$state") || return 1
+  FM_PR_TEARDOWN_DESTINATION="$state/$id.teardown-pr"
+  fm_pr_regular_destination_on_device_or_absent \
+    "$FM_PR_TEARDOWN_DESTINATION" "$FM_PR_TEARDOWN_STATE_DEVICE" || return 1
+  tmp=$(mktemp "$state/.fm-pr-teardown.XXXXXX") || return 1
+  rm -f -- "$tmp"
+}
+
+fm_pr_teardown_receipt_publish() {
+  local state=$1 id=$2 url=$3 state_device destination tmp=
+  fm_pr_teardown_receipt_writable "$state" "$id" "$url" || return 1
   url=$FM_PR_URL
-  state_device=$(fm_pr_file_device "$state") || return 1
-  destination="$state/$id.teardown-pr"
-  fm_pr_regular_destination_on_device_or_absent "$destination" "$state_device" || return 1
+  state_device=$FM_PR_TEARDOWN_STATE_DEVICE
+  destination=$FM_PR_TEARDOWN_DESTINATION
   tmp=$(mktemp "$state/.fm-pr-teardown.XXXXXX") || return 1
   if ! printf 'version=1\ntask_id=%s\npr=%s\n' "$id" "$url" > "$tmp" \
     || ! chmod 0600 "$tmp" \

@@ -441,6 +441,22 @@ KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
+# A PR-bearing ship teardown owes a completion receipt, so its preconditions are
+# checked here, alongside the other metadata-only authorization checks and before
+# any cleanup runs. Only the receipt write itself is deferred to the end, once
+# the cleanup this receipt attests to has actually succeeded.
+teardown_owes_pr_receipt() {
+  [ "$FORCE" != --force ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] \
+    && [ "$MODE" != local-only ] && [ -n "$PR_URL" ]
+}
+if teardown_owes_pr_receipt; then
+  if ! fm_pr_metadata_identity_parse "$META" \
+    || [ "$FM_PR_META_URL" != "$PR_URL" ] \
+    || ! fm_pr_teardown_receipt_writable "$STATE" "$ID" "$PR_URL"; then
+    echo "error: the completed-task PR receipt for $ID could not be prepared; refusing before any cleanup" >&2
+    exit 1
+  fi
+fi
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
 PUBLIC_FOLLOWUP_STATE=$STATE
 PUBLIC_FOLLOWUP_WORK_HOME=main
@@ -2442,11 +2458,8 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-if [ "$FORCE" != --force ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] \
-  && [ "$MODE" != local-only ] && [ -n "$PR_URL" ]; then
-  if ! fm_pr_metadata_identity_parse "$META" \
-    || [ "$FM_PR_META_URL" != "$PR_URL" ] \
-    || ! fm_pr_teardown_receipt_publish "$STATE" "$ID" "$PR_URL"; then
+if teardown_owes_pr_receipt; then
+  if ! fm_pr_teardown_receipt_publish "$STATE" "$ID" "$PR_URL"; then
     echo "error: could not publish the completed-task PR receipt; preserving task metadata" >&2
     exit 1
   fi

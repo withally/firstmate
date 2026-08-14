@@ -26,6 +26,7 @@ When that key is absent the archive is the tasks-axi default derived from `[mark
 Every archived record sharing an identity is weighed, so an older weaker record cannot shadow a later durable resolution.
 An archived item verifies only when its kind, Done state, resolution marker, and routed-work record satisfy the same durable-resolution contract as a live item, which one predicate owns for live and archived records alike.
 A malformed archive declaration or an archive that cannot be inspected fails loudly as its own configuration failure and is never reported as a missing captain decision.
+An archive holding content that yields no recognizable tasks-axi item is treated the same way, so an unrecognized item grammar surfaces as a loud inspection failure instead of a silent refusal.
 `hold` consults the same live-then-archive lookup before creating a new identity, so a retained decision cannot be reopened as a fresh captain hold.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
@@ -56,7 +57,7 @@ It begins with a completed investigation and visual review whose genuine unresol
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
 The retention regression covers answered live and archived decisions, a configured non-default archive path, an archived answer shadowed by a weaker live duplicate, a closed unanswered hold, and a never-created identity.
-A further archive-authority regression covers the derived default archive, a later archived resolution behind an older markerless archived record for the same identity, a refused attempt to reopen a retained decision, and a malformed archive declaration.
+A further archive-authority regression covers the derived default archive, a later archived resolution behind an older markerless archived record for the same identity, a refused attempt to reopen a retained decision, an archive whose item grammar is unrecognized, and a malformed archive declaration.
 
 The final verification commands and their exact summarized outputs follow.
 

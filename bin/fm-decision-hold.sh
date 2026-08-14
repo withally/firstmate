@@ -210,19 +210,23 @@ configured_archive_path() {
 }
 
 ARCHIVED_SHOW=''
+ARCHIVED_ARCHIVE=''
 
 # Scans every archived record sharing <id> and keeps the strongest one, so an older
 # weaker record cannot shadow a later durable resolution. Record boundaries come
 # from the tasks-axi markdown item grammar; every field still comes from tasks-axi
-# itself, one isolated record at a time.
+# itself, one isolated record at a time. An archive that holds content but no
+# recognizable item is an unreadable archive, not an empty one.
 # 0 sets ARCHIVED_SHOW to the strongest record, 1 means the archive holds no record
 # for <id>, 2 means the archive declaration is malformed, 3 means the archive could
-# not be inspected.
+# not be inspected, 4 means its item grammar was not recognized.
 archived_task_show() {  # <id>
-  local id=$1 archive='' rc=0 scratch records count index record output resolved=0
+  local id=$1 archive='' rc=0 scratch records parsed items count content field index record output resolved=0
   ARCHIVED_SHOW=''
+  ARCHIVED_ARCHIVE=''
   archive=$(configured_archive_path) || rc=$?
   [ "$rc" -eq 0 ] || return 2
+  ARCHIVED_ARCHIVE=$archive
   [ -e "$archive" ] || return 1
   [ -r "$archive" ] || return 3
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/fm-decision-archive.XXXXXX") || return 3
@@ -233,9 +237,11 @@ archived_task_show() {  # <id>
     return 3
   fi
   rc=0
-  count=$(awk -v id="$id" -v out="$records" '
+  parsed=$(awk -v id="$id" -v out="$records" '
+    /[^[:space:]]/ { content = 1 }
     /^- \[/ {
       if (file != "") close(file)
+      items++
       line = $0
       sub(/^- \[[^]]*\][[:space:]]*/, "", line)
       split(line, parts, /[[:space:]]/)
@@ -254,15 +260,24 @@ archived_task_show() {  # <id>
       next
     }
     file != "" { print > file }
-    END { printf "%d\n", n + 0 }
+    END { printf "%d %d %d\n", items + 0, n + 0, content + 0 }
   ' "$archive") || rc=$?
   if [ "$rc" -ne 0 ]; then
     rm -rf "$scratch"
     return 3
   fi
-  case "$count" in
-    ''|*[!0-9]*) rm -rf "$scratch"; return 3 ;;
-  esac
+  read -r items count content <<EOF
+$parsed
+EOF
+  for field in "$items" "$count" "$content"; do
+    case "$field" in
+      ''|*[!0-9]*) rm -rf "$scratch"; return 3 ;;
+    esac
+  done
+  if [ "$content" -ne 0 ] && [ "$items" -eq 0 ]; then
+    rm -rf "$scratch"
+    return 4
+  fi
   index=1
   while [ "$index" -le "$count" ]; do
     record=$(printf '%s/record-%06d.md' "$records" "$index")
@@ -287,6 +302,7 @@ fail_archive_unavailable() {  # <archive-status> <hold-id>
   case "$status" in
     2) fail "the tasks-axi [markdown] archive declaration in $FM_HOME/.tasks.toml is malformed, so captain decision $id could not be verified" ;;
     3) fail "the configured tasks-axi archive could not be inspected, so captain decision $id could not be verified" ;;
+    4) fail "the configured tasks-axi archive $ARCHIVED_ARCHIVE holds content but no recognizable tasks-axi item, so captain decision $id could not be verified" ;;
   esac
 }
 

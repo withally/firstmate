@@ -361,7 +361,7 @@ EOF
 # unusable archive declaration never reads as a missing decision.
 test_archive_authority_covers_defaults_duplicates_and_reuse() {
   local home derived_origin derived_hold derived_route duplicate_origin duplicate_hold \
-    duplicate_route malformed_origin
+    duplicate_route grammar_home grammar_origin malformed_origin
   home=$(make_home resolution-archive-authority)
   cat > "$home/.tasks.toml" <<'EOF'
 backend = "markdown"
@@ -433,6 +433,21 @@ EOF
     "reopening an archived resolution lost the already-resolved refusal"
   assert_no_grep "- [ ] $duplicate_hold -" "$home/data/backlog.md" \
     "the refused hold still created a duplicate open captain item"
+
+  grammar_home=$(make_home resolution-archive-grammar)
+  grammar_origin=sample-grammar-archive
+  write_origin_meta "$grammar_home" "$grammar_origin"
+  printf 'decisions_reviewed=1\ndecision_keys=choice\n' >> "$grammar_home/state/$grammar_origin.meta"
+  printf '## Archived 2026-08-14\n* [x] %s-decision-choice - Unrecognized item grammar (repo: sample) (kind: captain)\n' \
+    "$grammar_origin" > "$grammar_home/data/done-archive.md"
+  if run_decisions "$grammar_home" verify "$grammar_origin" \
+    > "$grammar_home/grammar-verify.out" 2> "$grammar_home/grammar-verify.err"; then
+    fail "an archive whose item grammar is unrecognized verified"
+  fi
+  assert_grep "no recognizable tasks-axi item" "$grammar_home/grammar-verify.err" \
+    "an unparsable archive was not reported as an inspection failure"
+  assert_no_grep "is absent from the live backlog" "$grammar_home/grammar-verify.err" \
+    "an unparsable archive was reported as a missing captain decision"
 
   malformed_origin=sample-malformed-archive
   write_origin_meta "$home" "$malformed_origin"

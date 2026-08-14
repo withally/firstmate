@@ -505,28 +505,67 @@ pass "real Herdr lab: an opted-out spawn retains the Stage 1 Herdr command seque
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/off-teardown.out" 2> "$TMP_ROOT/off-teardown.err" \
   || fail "opted-out teardown failed: $(cat "$TMP_ROOT/off-teardown.err")"
 
-# A home that configured nothing at all must be projected: this is the default,
-# and the only difference from the opted-out spawn above is the removed file.
+# A home that configured nothing at all follows the release floor: it is
+# projected only on Herdr >= 0.8.0 (the first release carrying both upstream
+# focus fixes), and stays flat with one deduplicated warning below the floor.
+# The verdict here composes the same client and running-server evidence the
+# adapter's own gate reads, so this lab asserts whichever branch the real
+# installed release makes reachable.
+FLOOR_STATUS_JSON=$(lab status --json) \
+  || fail "could not read herdr status for the presentation floor verdict"
+FLOOR_SUPPORTED=0
+if printf '%s' "$FLOOR_STATUS_JSON" | PATH="$FAKEBIN:$PATH" HERDR_SESSION="$HERDR_LAB_SESSION" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    status=$(cat)
+    client_protocol=$(printf "%s" "$status" | jq -r ".client.protocol // empty")
+    client_version=$(printf "%s" "$status" | jq -r ".client.version // empty")
+    fm_backend_herdr_release_floor_verdict "$client_protocol" "$client_version" || exit 1
+    running=$(printf "%s" "$status" | jq -r ".server.running // empty")
+    if [ "$running" = true ]; then
+      server_protocol=$(printf "%s" "$status" | jq -r ".server.protocol // empty")
+      server_version=$(printf "%s" "$status" | jq -r ".server.version // empty")
+      fm_backend_herdr_release_floor_verdict "$server_protocol" "$server_version" || exit 1
+    fi
+  ' "$ROOT"; then
+  FLOOR_SUPPORTED=1
+fi
 rm -f "$HOME_DIR/config/herdr-presentation-spaces"
 spawn_task default-on "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/default-on.out" 2> "$TMP_ROOT/default-on.err" \
   || fail "default-on spawn failed: $(cat "$TMP_ROOT/default-on.err")"
 DEFAULT_ON_META="$HOME_DIR/state/default-on.meta"
 remember_meta_worktree "$DEFAULT_ON_META" >/dev/null
 DEFAULT_ON_JOURNAL="$HOME_DIR/state/default-on.herdr-presentation"
-[ -f "$DEFAULT_ON_JOURNAL" ] \
-  || fail "an unconfigured home did not publish a presentation journal by default"
-DEFAULT_ON_TOKEN=$(grep '^projection_id=' "$DEFAULT_ON_JOURNAL" | cut -d= -f2-)
 DEFAULT_ON_WSID=$(grep '^herdr_workspace_id=' "$DEFAULT_ON_META" | cut -d= -f2-)
-[ -n "$DEFAULT_ON_WSID" ] && [ "$DEFAULT_ON_WSID" != "$FIRSTMATE_WSID" ] \
-  || fail "an unconfigured home reused the flat firstmate workspace instead of projecting"
-DEFAULT_ON_LABEL=$(lab workspace get "$DEFAULT_ON_WSID" | jq -r '.result.workspace.label // empty')
-[ "$DEFAULT_ON_LABEL" = "└ default-on · p:$DEFAULT_ON_TOKEN" ] \
-  || fail "default-on projection used an unexpected workspace label: $DEFAULT_ON_LABEL"
-pass "real Herdr lab: a home that configured nothing is projected by default"
+if [ "$FLOOR_SUPPORTED" = 1 ]; then
+  [ -f "$DEFAULT_ON_JOURNAL" ] \
+    || fail "an unconfigured home did not publish a presentation journal by default"
+  DEFAULT_ON_TOKEN=$(grep '^projection_id=' "$DEFAULT_ON_JOURNAL" | cut -d= -f2-)
+  [ -n "$DEFAULT_ON_WSID" ] && [ "$DEFAULT_ON_WSID" != "$FIRSTMATE_WSID" ] \
+    || fail "an unconfigured home reused the flat firstmate workspace instead of projecting"
+  DEFAULT_ON_LABEL=$(lab workspace get "$DEFAULT_ON_WSID" | jq -r '.result.workspace.label // empty')
+  [ "$DEFAULT_ON_LABEL" = "└ default-on · p:$DEFAULT_ON_TOKEN" ] \
+    || fail "default-on projection used an unexpected workspace label: $DEFAULT_ON_LABEL"
+  pass "real Herdr lab: a home that configured nothing is projected by default (herdr meets the 0.8.0 floor)"
+else
+  [ ! -f "$DEFAULT_ON_JOURNAL" ] \
+    || fail "a below-floor unconfigured home still published a presentation journal"
+  [ -n "$DEFAULT_ON_WSID" ] && [ "$DEFAULT_ON_WSID" = "$FIRSTMATE_WSID" ] \
+    || fail "a below-floor unconfigured home did not land flat in the firstmate workspace"
+  grep -q "floor for presentation spaces" "$TMP_ROOT/default-on.err" \
+    || fail "a below-floor unconfigured home did not warn about the presentation floor: $(cat "$TMP_ROOT/default-on.err")"
+  ls "$HOME_DIR/state"/.herdr-presentation-floor-* >/dev/null 2>&1 \
+    || fail "the below-floor warning did not record its per-release dedupe marker"
+  pass "real Herdr lab: a home that configured nothing stays flat below the 0.8.0 floor and warns once"
+fi
 teardown_task default-on "$HOME_DIR" > "$TMP_ROOT/default-on-teardown.out" 2> "$TMP_ROOT/default-on-teardown.err" \
   || fail "default-on teardown failed: $(cat "$TMP_ROOT/default-on-teardown.err")"
-if lab workspace get "$DEFAULT_ON_WSID" >/dev/null 2>&1; then
-  fail "default-on teardown left its disposable workspace behind"
+if [ "$FLOOR_SUPPORTED" = 1 ]; then
+  if lab workspace get "$DEFAULT_ON_WSID" >/dev/null 2>&1; then
+    fail "default-on teardown left its disposable workspace behind"
+  fi
+else
+  lab workspace get "$FIRSTMATE_WSID" >/dev/null 2>&1 \
+    || fail "a below-floor flat teardown removed the durable firstmate workspace"
 fi
 # The ordering scenarios below read the whole move log cumulatively against the
 # projected workspaces that are still live, so this retired one starts them clean.

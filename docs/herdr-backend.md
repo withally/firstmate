@@ -205,7 +205,8 @@ When native state is unknown before and after submission, an explicit harness id
 The post-Enter rendered read is polled across the same retry budget rather than sampled once, because the turn takes a beat to render and a single early sample would report a real submission as unconfirmed.
 A preexisting rendered busy state never qualifies, so unrelated activity cannot confirm the new steer.
 The rendered read itself is not a second implementation: the visible-tail window and the harness-scoped busy match are the shared owners in `bin/fm-tmux-lib.sh`, and this adapter supplies only its own capture.
-On an already active or otherwise unreadable baseline, it falls back to conservative composer clearance.
+On an already active or otherwise unreadable baseline, it falls back to composer evidence with a typed-text observation requirement: the submit's own text must first be observed pending (polled before the first Enter within the retry budget, or seen on a post-Enter read), and only then does a positively classified clearance confirm.
+A clearance that never showed this submit's own text may be a stale pre-typing frame, so it reports unknown unless the independent rendered turn-start converts it.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
 Away-mode digests add a durable cross-invocation boundary around this primitive.

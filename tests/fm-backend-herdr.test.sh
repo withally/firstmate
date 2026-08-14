@@ -3208,9 +3208,9 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   local dir log resp fb out enter_count read_count
   dir="$TMP_ROOT/submit-preexisting-working-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/3.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/4.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
@@ -3218,8 +3218,28 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 2 ] || fail "preexisting-working swallowed Enter should retry Enter up to the configured count, sent $enter_count Enter(s)"
   read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 2 ] || fail "preexisting-working confirmation should fall back to composer reads, made $read_count read(s)"
+  [ "$read_count" -eq 3 ] || fail "preexisting-working confirmation should observe the typed text and then fall back to composer reads, made $read_count read(s)"
   pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message"
+}
+
+# The busy-baseline success case: a steer typed into a mid-turn pane is
+# observed pending BEFORE the first Enter, and the post-Enter clearance then
+# confirms delivery. Without the pre-Enter observation this genuinely
+# delivered message would report unknown forever (the false negative the
+# intent forbids).
+test_send_text_submit_busy_baseline_observed_clear_confirms() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-busy-observed-clear"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "a busy-baseline submit whose typed text was observed pending and then cleared must confirm, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "an observed clear after the first Enter must not provoke another Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: a busy-baseline steer confirms once its observed pending text clears"
 }
 
 test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
@@ -3230,12 +3250,15 @@ test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
   # 2: send-text is silent.
   # 3: native post-settle agent status is unavailable for this harness/model.
   printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/3.out"
-  # 4: send-keys Enter is silent.
-  # 5: the submitted turn has replaced the composer, so structural composer
+  # 4: the pre-Enter typed-text observation cannot positively read the
+  # composer (the pane is already mid-repaint), so no pending is observed.
+  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/4.out"
+  # 5: send-keys Enter is silent.
+  # 6: the submitted turn has replaced the composer, so structural composer
   # classification is unknown rather than pending or empty.
-  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/5.out"
-  # 6: an independent rendered busy read sees Pi's verified active footer.
   printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/6.out"
+  # 7: an independent rendered busy read sees Pi's verified active footer.
+  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "build the curriculum" 2 0.01 0.01 "" pi' "$ROOT" )
@@ -3255,11 +3278,12 @@ test_send_text_submit_polls_a_slow_pi_rendered_turn_start() {
   dir="$TMP_ROOT/submit-pi-slow-render"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '\xe2\x80\xba\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/3.out"
-  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/5.out"
-  # The first post-Enter rendered sample has not painted the footer yet.
+  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/4.out"
   printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/6.out"
+  # The first post-Enter rendered sample has not painted the footer yet.
+  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/7.out"
   # The second sample, inside the same retry budget, shows the started turn.
-  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/7.out"
+  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/8.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "build the curriculum" 2 0.01 0.01 "" pi' "$ROOT" )
@@ -4106,6 +4130,7 @@ test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
+test_send_text_submit_busy_baseline_observed_clear_confirms
 test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition
 test_send_text_submit_polls_a_slow_pi_rendered_turn_start
 test_send_text_submit_confirms_despite_codex_idle_tip_composer

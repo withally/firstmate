@@ -213,6 +213,53 @@ test_successful_keyed_decision_send_records_only_an_open_task_key() {
   pass "fm-send records only confirmed answers whose task+key decision is open"
 }
 
+test_resolve_key_closes_only_after_confirmed_answer_delivery() {
+  local dir fb home err log rc
+  dir="$TMP_ROOT/resolve-key"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home resolve-key); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$home/state/lane-ok.status"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok --resolve-key route 'Proceed with A' >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a confirmed answer with --resolve-key should succeed"
+  ! status_decision_is_open "$home/state/lane-ok.status" route \
+    || fail "a confirmed answer with --resolve-key left the decision open"
+  decision_delivery_is_recorded "$home/state" lane-ok route \
+    || fail "answer-time closure bypassed the delivered-decision receipt safeguard"
+
+  printf 'needs-decision [key=unanswered]: choose C or D\n' >> "$home/state/lane-ok.status"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok 'Routine nudge only' >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a routine steer should still succeed"
+  status_decision_is_open "$home/state/lane-ok.status" unanswered \
+    || fail "a routine steer without --resolve-key closed an unanswered decision"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_FAKE_TMUX_DEAD_TARGET='sess:fm-lane-ok' FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok --resolve-key unanswered 'Proceed with C' >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an unconfirmed answer delivery should fail"
+  status_decision_is_open "$home/state/lane-ok.status" unanswered \
+    || fail "an unconfirmed answer delivery closed an unanswered decision"
+  pass "fm-send closes answered decisions only after confirmed delivery and preserves receipts"
+}
+
+test_resolve_key_closes_each_named_key_and_no_others() {
+  local dir fb home err log rc
+  dir="$TMP_ROOT/resolve-multiple"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home resolve-multiple); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
+  printf 'needs-decision [key=source]: choose source\nneeds-decision: [key=rollout] choose rollout\nneeds-decision: choose timing [key=untouched]\n' \
+    > "$home/state/lane-ok.status"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok --resolve-key source --resolve-key rollout 'Use local, then stage' >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "one confirmed answer should resolve each named key"
+  ! status_decision_is_open "$home/state/lane-ok.status" source || fail "the answered source key stayed open"
+  ! status_decision_is_open "$home/state/lane-ok.status" rollout || fail "the answered rollout key stayed open"
+  status_decision_is_open "$home/state/lane-ok.status" untouched || fail "an unnamed unanswered key was closed"
+  pass "fm-send resolves every named key and leaves every unnamed key open"
+}
+
 test_exact_lane_id_send_still_works
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
@@ -221,3 +268,5 @@ test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
 test_successful_keyed_decision_send_records_only_an_open_task_key
+test_resolve_key_closes_only_after_confirmed_answer_delivery
+test_resolve_key_closes_each_named_key_and_no_others

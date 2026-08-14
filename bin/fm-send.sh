@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -36,6 +36,17 @@
 # resolves the expectation. Set FM_PENDING_REPLY_EXISTING_CORR=<id> when
 # re-sending a recovery request for an already-open expectation so a second
 # record is not created. Direct unmarked captain input never creates one.
+#
+# Answer-time closure: pass --resolve-key <key> before the answer text for each
+# open decision or blocker this send answers. Every key must currently be open
+# in this home's target-task ledger or the send refuses before delivery. After
+# confirmed delivery and any pending-reply commit, fm-send appends one matching
+# resolved event per key. Failed or unconfirmed delivery closes nothing; an
+# append failure leaves that key open and prints the exact manual close action.
+# Explicit backend targets and --key sends have no answer ledger and refuse the
+# option. This extension does not relax explicit FM_HOME target resolution or
+# replace state/.delivered-decisions receipts: a single-key answer records the
+# same receipt before its resolved event so the watcher can absorb that echo.
 #
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
@@ -82,6 +93,8 @@ fi
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-line-cap-lib.sh
+. "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -236,6 +249,35 @@ fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
 shift
 
+RESOLVE_KEYS=
+fm_send_add_resolve_key() {  # <key>
+  local key=$1
+  case "$key" in
+    ''|*[!A-Za-z0-9._-]*)
+      echo "error: --resolve-key '$key' is not a valid decision key (allowed: A-Z a-z 0-9 . _ -)" >&2
+      return 1
+      ;;
+  esac
+  case " $RESOLVE_KEYS " in
+    *" $key "*) echo "error: duplicate --resolve-key '$key'" >&2; return 1 ;;
+  esac
+  RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$key"
+}
+while :; do
+  case "${1:-}" in
+    --resolve-key)
+      [ $# -ge 2 ] || { echo "error: --resolve-key requires a key" >&2; exit 1; }
+      fm_send_add_resolve_key "$2" || exit 1
+      shift 2
+      ;;
+    --resolve-key=*)
+      fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
+      shift
+      ;;
+    *) break ;;
+  esac
+done
+
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
 fi
@@ -256,6 +298,46 @@ if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ]; then
   fi
 fi
 
+RESOLVE_STATUS_FILE=
+if [ -n "$RESOLVE_KEYS" ]; then
+  if [ -z "$TARGET_SELECTOR" ] || [ -z "$TARGET_META" ]; then
+    echo "error: --resolve-key needs a task selector resolved through this home's metadata; an explicit backend target has no decision ledger here" >&2
+    exit 1
+  fi
+  if [ "${1:-}" = "--key" ]; then
+    echo "error: --resolve-key cannot accompany --key; answering a decision requires text" >&2
+    exit 1
+  fi
+  if [ -z "$*" ]; then
+    echo "error: --resolve-key requires a nonempty answer message" >&2
+    exit 1
+  fi
+  RESOLVE_STATUS_FILE="$STATE/$TARGET_TASK_ID.status"
+  resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
+  for key in $RESOLVE_KEYS; do
+    case "$resolve_open_set" in
+      "$key"$'\t'*|*$'\n'"$key"$'\t'*) ;;
+      *)
+        echo "error: --resolve-key '$key': no open decision or blocker with that key in $RESOLVE_STATUS_FILE; nothing was sent" >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
+
+fm_send_close_resolved_keys() {  # <answer-text>
+  local answer=$1 key line
+  answer=$(printf '%s' "$answer" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
+  for key in $RESOLVE_KEYS; do
+    line="resolved [key=$key]: answered: $answer"
+    fm_cap_line_var "$line"
+    if ! printf '%s\n' "$FM_LINE_CAP_LINE" >> "$RESOLVE_STATUS_FILE"; then
+      echo "error: the answer was delivered to $T, but decision key '$key' could not be closed in $RESOLVE_STATUS_FILE. Close it manually with: echo 'resolved [key=$key]: <how it was answered>' >> $RESOLVE_STATUS_FILE - do not resend the answer." >&2
+      return 1
+    fi
+  done
+}
+
 # Resolve the target's harness from its meta (recorded by fm-spawn), used only to
 # scope the codex `$<skill>` popup-settle below. A task selector carries
 # meta; an explicit backend-target escape hatch has none, so its harness is
@@ -269,6 +351,12 @@ fi
 # error with the attempted resolution attached.
 
 if [ "${1:-}" = "--key" ]; then
+  case "$*" in
+    *--resolve-key*)
+      echo "error: --resolve-key cannot accompany --key; answering a decision requires text" >&2
+      exit 1
+      ;;
+  esac
   if [ "$TARGET_BACKEND" = remote ]; then
     if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$2" < /dev/null; then
       echo "error: key '$2' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
@@ -281,6 +369,7 @@ if [ "${1:-}" = "--key" ]; then
   fm_send_record_interrupt "$2" || exit 1
 else
   MESSAGE=$*
+  RESOLVE_ANSWER_TEXT=$MESSAGE
   if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
     # durable parent expectation before delivery. Transport success never
@@ -373,7 +462,11 @@ else
   # resolved echo; ordinary sends and unopened/malformed keys create nothing.
   if [ -n "$TARGET_TASK_ID" ]; then
     decision_record_status=0
-    decision_delivery_record "$STATE" "$TARGET_TASK_ID" "$MESSAGE" || decision_record_status=$?
+    case "$RESOLVE_KEYS" in
+      '') decision_delivery_record "$STATE" "$TARGET_TASK_ID" "$MESSAGE" || decision_record_status=$? ;;
+      *' '*) : ;;
+      *) decision_delivery_record_key "$STATE" "$TARGET_TASK_ID" "$RESOLVE_KEYS" || decision_record_status=$? ;;
+    esac
     if [ "$decision_record_status" -eq 2 ]; then
       echo "warning: text was delivered to $T, but its keyed decision receipt could not be recorded; any resolved echo will surface fail-safe" >&2
     fi
@@ -392,6 +485,9 @@ else
       fi
       exit 1
     fi
+  fi
+  if [ -n "$RESOLVE_KEYS" ]; then
+    fm_send_close_resolved_keys "$RESOLVE_ANSWER_TEXT" || exit 1
   fi
   # Submit landed with exact empty. Confirmation only proves the text was
   # accepted; the harness still needs a beat to spin up the

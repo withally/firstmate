@@ -144,13 +144,13 @@ done
 # Both halves of that judgement have one owner, bin/fm-primary-scope-lib.sh,
 # and are reused rather than re-derived here: fm_root_is_secondmate_home is the
 # marker predicate (a symlinked, empty, or malformed marker is NOT a home), and
-# the git-dir/git-common-dir comparison is how the fleet distinguishes a plain
-# checkout from a linked worktree.
+# fm_root_worktree_kind is how the fleet distinguishes a plain checkout from a
+# linked worktree.
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 
 fm_session_start_is_task_worktree() {
-  local root_real home_real git_dir git_common_dir
+  local root_real home_real
   ! fm_root_is_secondmate_home "$FM_HOME" || return 1
   root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || return 1
   home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || return 1
@@ -158,9 +158,7 @@ fm_session_start_is_task_worktree() {
   # code from a linked checkout (including tests and isolated installations).
   # A task worker is the self-home shape: its code root is also its FM_HOME.
   [ "$root_real" = "$home_real" ] || return 1
-  git_dir=$(git -C "$FM_ROOT" rev-parse --git-dir 2>/dev/null) || return 1
-  git_common_dir=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || return 1
-  [ "$git_dir" != "$git_common_dir" ]
+  [ "$(fm_root_worktree_kind "$FM_ROOT")" = linked ]
 }
 
 if fm_session_start_is_task_worktree; then

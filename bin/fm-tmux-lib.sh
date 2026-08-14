@@ -91,6 +91,18 @@ fm_busy_lines_match() {  # [harness]
   fi
   [ -n "$regex" ] && printf '%s' "$lines" | grep -qiE "$regex"
 }
+
+# fm_busy_harness_scope: reduce a caller-supplied harness name to a usable
+# busy-signature scope. Only a name registered in the signature table above
+# is a scope; any other name (a raw-launch command basename recorded in task
+# meta, or fm-harness.sh's 'unknown') is not a signature and degrades to the
+# empty string, so harness-scoped reads fall back to the harness-agnostic
+# default instead of a regex that can never match.
+fm_busy_harness_scope() {  # [harness] -> registered harness or ''
+  case "${1:-}" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi) printf '%s' "$1" ;;
+  esac
+}
 # fm_tmux_strip_ghost: thin adapter over the shared, fleet-wide ghost extractor
 # fm_composer_strip_ghost (bin/fm-composer-lib.sh). It drops de-emphasised
 # ghost/placeholder runs - dim/faint (SGR 2, claude's/codex's ghost) AND a
@@ -321,8 +333,9 @@ fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle
 }
 
 fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness=${7:-} baseline_idle='' baseline_state
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness baseline_idle='' baseline_state
   local typed_observed=0 typed_state i=0
+  harness=$(fm_busy_harness_scope "${7:-}")
   # The turn-started baseline must predate our own typing: a pane already
   # busy before the text lands can turn "busy" for reasons unrelated to our
   # Enter, so only a clean idle-to-busy transition may confirm a submit.

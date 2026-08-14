@@ -2533,22 +2533,23 @@ fm_backend_herdr_rendered_turn_started() {  # <target> <harness> <baseline> <ret
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness=${7:-} i=0 verdict baseline confirm_sleep
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness i=0 verdict baseline confirm_sleep
   local rendered_baseline=unknown rendered_after
+  harness=$(fm_busy_harness_scope "${7:-}")
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  # Only the rendered busy baseline must predate our own typing (the typed
+  # text changes what the pane renders). The native agent-state baseline is
+  # read after the settle, so a turn that starts during the settle window
+  # reads as a non-idle baseline instead of arming a false idle-to-busy
+  # conversion.
   if [ -n "$harness" ]; then
-    baseline=$(fm_backend_herdr_classify_submit_agent_status \
-      "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
-    if [ "$baseline" = unknown ]; then
-      rendered_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
-    fi
+    rendered_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
   fi
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  if [ -z "$harness" ]; then
-    baseline=$(fm_backend_herdr_classify_submit_agent_status \
-      "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
-  fi
+  baseline=$(fm_backend_herdr_classify_submit_agent_status \
+    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  [ "$baseline" = unknown ] || rendered_baseline=unknown
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   while :; do
     fm_backend_herdr_send_key "$target" Enter || true

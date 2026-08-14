@@ -145,6 +145,144 @@ test_status_symlink_is_not_followed() {
   pass "the fleet-wide decision scan does not follow status symlinks"
 }
 
+test_trailing_open_key_closes_only_when_answered() {
+  local dir state out
+  dir=$(make_case trailing-open-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: choose the favicon route [key=favicon]\n' > "$state/trailing.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a trailing opening key"
+  grep -Fx 'trailing [key=favicon] needs-decision: choose the favicon route' "$out" >/dev/null \
+    || fail "an unanswered trailing-key decision was not reported under its explicit key"
+
+  printf 'resolved [key=unrelated]: answered a different question\n' >> "$state/trailing.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after an unrelated answer"
+  grep -F 'trailing [key=favicon]' "$out" >/dev/null \
+    || fail "an unrelated keyed answer closed the trailing-key decision"
+
+  printf 'resolved: chose the geometric mark [key=favicon]\n' >> "$state/trailing.status"
+  printf 'resolved [key=favicon]: repeated in canonical form\n' >> "$state/trailing.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after resolving a trailing opening key"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "an answered trailing-key decision stayed open: $(cat "$out")"
+  fi
+  pass "a trailing opening key stays visible until its matching answer"
+}
+
+test_independent_trailing_openings_never_collide_in_default() {
+  local dir state out
+  dir=$(make_case independent-trailing-openings)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: choose the asset source [key=source]\n' > "$state/independent.status"
+  printf 'needs-decision: choose the rollout cadence [key=rollout]\n' >> "$state/independent.status"
+  printf 'resolved: unrelated legacy default answer\n' >> "$state/independent.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on independent trailing openings"
+  grep -F 'independent [key=source]' "$out" >/dev/null \
+    || fail "a bare default resolution masked the first trailing-key decision"
+  grep -F 'independent [key=rollout]' "$out" >/dev/null \
+    || fail "a bare default resolution masked the second trailing-key decision"
+  if grep -F 'independent needs-decision:' "$out" >/dev/null; then
+    fail "independent trailing-key decisions collided in the default bucket"
+  fi
+
+  printf 'resolved [key=source]: use the local asset\n' >> "$state/independent.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after answering one independent decision"
+  if grep -F 'independent [key=source]' "$out" >/dev/null; then
+    fail "the answered independent decision stayed visible"
+  fi
+  grep -F 'independent [key=rollout]' "$out" >/dev/null \
+    || fail "answering one independent decision masked the other"
+  pass "independent trailing-key decisions never collide in the default bucket"
+}
+
+test_colon_first_key_shape_opens_and_closes_by_its_key() {
+  local dir state out
+  dir=$(make_case colon-first)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: [key=parser-policy] choose the parser policy\n' > "$state/colon-first.status"
+  printf 'resolved [key=unrelated]: answered another question\n' >> "$state/colon-first.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on the colon-first shape"
+  grep -F 'colon-first [key=parser-policy] needs-decision: choose the parser policy' "$out" >/dev/null \
+    || fail "a colon-first opening did not retain its explicit key and normalized note"
+
+  printf 'resolved [key=parser-policy]: use the narrow parser policy\n' >> "$state/colon-first.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after resolving a colon-first opening"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "an answered colon-first decision stayed open: $(cat "$out")"
+  fi
+  pass "a colon-first opening stays visible under its key until matching resolution"
+}
+
+test_bracket_metadata_before_colon_preserves_the_status_verb() {
+  local dir state out
+  dir=$(make_case bracket-metadata)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision [corr=request-7] [route=parent] [key=metadata]: choose the route\n' > "$state/metadata.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on bracket metadata"
+  grep -F 'metadata [key=metadata] needs-decision: choose the route' "$out" >/dev/null \
+    || fail "bracket metadata before the colon defeated status-verb recovery"
+
+  printf 'resolved [corr=request-7] [key=metadata]: route selected\n' >> "$state/metadata.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after resolving a metadata-tagged opening"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a metadata-tagged decision stayed open after matching resolution"
+  fi
+  pass "bracket metadata before the colon does not defeat status-verb recovery"
+}
+
+test_trailing_multi_key_open_closes_each_key_independently() {
+  local dir state out
+  dir=$(make_case trailing-multi-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: choose the source and rollout [key=source] [key=rollout]\n' > "$state/multi.status"
+  printf 'resolved [key=source]: use the local asset\n' >> "$state/multi.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a partially answered multi-key decision"
+  grep -F 'multi [key=rollout] needs-decision: choose the source and rollout' "$out" >/dev/null \
+    || fail "the unanswered key from a multi-key opening did not remain visible"
+  if grep -F 'multi [key=source]' "$out" >/dev/null; then
+    fail "the answered key from a multi-key opening stayed visible"
+  fi
+
+  printf 'resolved [key=rollout]: stage the rollout\n' >> "$state/multi.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after both multi-key answers"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a fully answered multi-key opening stayed open: $(cat "$out")"
+  fi
+  pass "each trailing multi-key opening remains visible until separately answered"
+}
+
+test_malformed_opening_key_still_surfaces_the_decision() {
+  local dir state out
+  dir=$(make_case malformed-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: [key=bad key] choose A or B\n' > "$state/colonfirst.status"
+  printf 'needs-decision [key=bad key]: choose C or D\n' > "$state/prefix.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a malformed opening key"
+  grep -F 'colonfirst needs-decision: [key=bad key] choose A or B' "$out" >/dev/null \
+    || fail "a malformed colon-first key hid an unanswered decision"
+  grep -F 'prefix needs-decision: choose C or D' "$out" >/dev/null \
+    || fail "a malformed prefix key hid an unanswered decision"
+
+  printf 'resolved: picked A\n' >> "$state/colonfirst.status"
+  printf 'resolved: picked C\n' >> "$state/prefix.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after default resolutions"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a malformed-key decision stayed open after its default resolution: $(cat "$out")"
+  fi
+  pass "a malformed opening key keeps its decision visible under the default bucket"
+}
+
 test_buried_decision_still_surfaces
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
@@ -152,3 +290,9 @@ test_no_open_decisions_prints_nothing
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
 test_status_symlink_is_not_followed
+test_trailing_open_key_closes_only_when_answered
+test_independent_trailing_openings_never_collide_in_default
+test_colon_first_key_shape_opens_and_closes_by_its_key
+test_bracket_metadata_before_colon_preserves_the_status_verb
+test_trailing_multi_key_open_closes_each_key_independently
+test_malformed_opening_key_still_surfaces_the_decision

@@ -157,11 +157,19 @@ status_is_paused_or_captain_held() {  # <status-line>
 # terminal line never clears an open captain decision.
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
-# format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
+# format): the canonical OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
 #   needs-decision [key=api-shape]: <summary>
 #   resolved       [key=api-shape]: <how it was decided>
 # A resolved line may instead carry that token as its exact final note token:
 #   resolved: <how it was decided> [key=api-shape]
+# Historical opening lines may also carry one or more exact final note tokens:
+#   needs-decision: <summary> [key=api-shape] [key=rollout]
+# Each trailing key opens an independently closable record. This compatibility
+# path repairs already-written ledgers; new producers must use one canonical
+# prefix key per opening line.
+# A complete key token at the head of an opening note is also accepted as the
+# equivalent colon-first shape and removed from the reported note:
+#   needs-decision: [key=api-shape] <summary>
 # For OPENING verbs (needs-decision/blocked) and progress verbs the prefix token
 # is authoritative and key-like text elsewhere in note prose is not semantic, so
 # a question mentioning another key still opens its own decision. CLOSING verbs
@@ -170,20 +178,60 @@ status_is_paused_or_captain_held() {  # <status-line>
 # keeping the decision open.
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
-# The three parsers are pure reads of a single line; the verb parser strips any
-# key token before the colon so the leading word is recovered cleanly.
+# The parsers are pure reads of a single line. Status metadata may contain any
+# number of bracket tags before the colon, so verb parsing ends at the first tag.
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
-  v=${v%%\[key=*}
+  v=${v%%\[*}
   v=${v#"${v%%[![:space:]]*}"}
   v=${v%"${v##*[![:space:]]}"}
   printf '%s' "$v"
 }
-status_line_note() {  # <status-line> -> text after the first colon, trimmed
-  case "$1" in
-    *:*) local n=${1#*:}; printf '%s' "${n#"${n%%[![:space:]]*}"}" ;;
-    *) printf '%s' "$1" ;;
+_fm_key_before_colon() {  # <status-line>
+  case "${1%%:*}" in *\[key=*\]*) return 0 ;; *) return 1 ;; esac
+}
+_fm_key_at_note_head() {  # <status-line> -> raw slug
+  local rest
+  case "$1" in *:*) rest=${1#*:} ;; *) return 1 ;; esac
+  rest=${rest#"${rest%%[![:space:]]*}"}
+  case "$rest" in
+    \[key=*\]*) rest=${rest#\[key=}; printf '%s' "${rest%%\]*}" ;;
+    *) return 1 ;;
   esac
+}
+_fm_decision_slug_ok() {  # <slug>
+  case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
+}
+status_line_note() {  # <status-line> -> text after the first colon, trimmed
+  local n key marker verb
+  case "$1" in *:*) n=${1#*:}; n=${n#"${n%%[![:space:]]*}"} ;; *) printf '%s' "$1"; return 0 ;; esac
+  verb=$(status_line_verb "$1")
+  if ! _fm_key_before_colon "$1" && key=$(_fm_key_at_note_head "$1") \
+    && _fm_decision_slug_ok "$key"; then
+    case "$verb" in
+      needs-decision|blocked)
+        n=${n#"[key=$key]"}
+        n=${n#"${n%%[![:space:]]*}"}
+        ;;
+    esac
+  elif ! _fm_key_before_colon "$1"; then
+    case "$verb" in
+      needs-decision|blocked)
+        while :; do
+          marker=${n##* }
+          case "$marker" in
+            \[key=*\])
+              key=${marker#\[key=}; key=${key%\]}
+              _fm_decision_slug_ok "$key" || break
+              n=${n%" $marker"}
+              ;;
+            *) break ;;
+          esac
+        done
+        ;;
+    esac
+  fi
+  printf '%s' "$n"
 }
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
   local line=$1 prefix k verb
@@ -223,6 +271,39 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
       ;;
   esac
 }
+# Return the key or keys opened by one needs-decision/blocked line. A canonical
+# prefix key remains authoritative even when note prose mentions other tokens.
+# Only a contiguous run of valid exact final tokens receives historical suffix
+# semantics, so key-like text in ordinary opening prose remains non-semantic.
+# A malformed slug never hides the opening: it falls back to "default" so an
+# unanswered decision stays visible.
+_fm_opening_decision_keys() {  # <status-line>
+  local line=$1 prefix marker key keys=''
+  line=${line%"${line##*[![:space:]]}"}
+  prefix=${line%%:*}
+  case "$prefix" in
+    *\[key=*\]*) _fm_decision_key "$line" || printf 'default'; return ;;
+  esac
+  if key=$(_fm_key_at_note_head "$line") && _fm_decision_slug_ok "$key"; then
+    printf '%s' "$key"
+    return 0
+  fi
+  while :; do
+    marker=${line##* }
+    case "$marker" in
+      \[key=*\])
+        key=${marker#\[key=}; key=${key%\]}
+        case "$key" in ''|*[!A-Za-z0-9._-]*) printf 'default'; return ;; esac
+        keys="$key${keys:+
+$keys}"
+        line=${line%" $marker"}
+        line=${line%"${line##*[![:space:]]}"}
+        ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$keys" ] && printf '%s' "$keys" || printf 'default'
+}
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
 _fm_decision_drop() {  # <open-set> <key>
@@ -251,7 +332,7 @@ EOF
 # subprocess read, which exists for that function's much narrower payload-driven
 # path resolution rather than this directory-local glob.
 status_open_decisions() {  # <status-file>
-  local f=$1 line verb key note resolve held open='' stripped
+  local f=$1 line verb key keys note resolve held open='' stripped
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
@@ -259,15 +340,21 @@ status_open_decisions() {  # <status-file>
     stripped=${line//[[:space:]]/}
     [ -n "$stripped" ] || continue
     verb=$(status_line_verb "$line")
-    key=$(_fm_decision_key "$line") || continue
     case "$verb" in
       needs-decision|blocked)
         note=$(status_line_note "$line")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
-        open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
+        keys=$(_fm_opening_decision_keys "$line") || continue
+        while IFS= read -r key; do
+          [ -n "$key" ] || continue
+          open=$(_fm_decision_drop "$open" "$key")
+          [ -n "$open" ] && open="${open}"$'\n'
+          open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
+        done <<EOF
+$keys
+EOF
         ;;
       "$resolve"|"$held")
+        key=$(_fm_decision_key "$line") || continue
         open=$(_fm_decision_drop "$open" "$key")
         [ -n "$open" ] && open="${open}"$'\n'
         ;;
@@ -320,9 +407,8 @@ decision_delivery_is_recorded() {  # <state> <task> <key>
   [ -f "$path" ]
 }
 
-decision_delivery_record() {  # <state> <task> <delivered-text>
-  local state=$1 task=$2 text=$3 key path dir tmp status lines fingerprint
-  key=$(decision_key_from_text "$text") || return 1
+decision_delivery_record_key() {  # <state> <task> <key>
+  local state=$1 task=$2 key=$3 path dir tmp status lines fingerprint
   _fm_decision_identity_valid "$task" "$key" || return 1
   status="$state/$task.status"
   status_decision_is_open "$status" "$key" || return 1
@@ -340,6 +426,12 @@ decision_delivery_record() {  # <state> <task> <delivered-text>
     rm -f "$tmp" 2>/dev/null || true
     return 2
   fi
+}
+
+decision_delivery_record() {  # <state> <task> <delivered-text>
+  local state=$1 task=$2 text=$3 key
+  key=$(decision_key_from_text "$text") || return 1
+  decision_delivery_record_key "$state" "$task" "$key"
 }
 
 decision_delivery_matches_resolution() {  # <state> <task> <key> <status-file>

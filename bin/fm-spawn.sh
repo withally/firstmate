@@ -71,6 +71,9 @@
 #   selected client and running server meet the Herdr 0.8.0 floor. The local
 #   config/herdr-presentation-spaces file can say off to disable it or on to
 #   opt in below that floor; an empty file remains the historical opt-in form.
+#   That gate decides only whether a FRESH projection is created; recovery of
+#   an already-journaled projection runs whenever the journal exists, so no
+#   preference or floor change strands a previously projected workspace.
 #   A clean fresh task first writes state/<id>.herdr-presentation atomically,
 #   then creates a disposable
 #   workspace containing only the ordinary task pane. A successful clean create
@@ -1663,9 +1666,14 @@ case "$BACKEND" in
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
-    if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
+    if [ "$KIND" != secondmate ]; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
+      # An existing presentation journal names a projection that may still
+      # hold a workspace, so its recovery path runs whenever the journal
+      # exists; the presentation preference and the release floor govern only
+      # whether a FRESH projection is created (docs/herdr-backend.md
+      # "Presentation spaces").
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
@@ -1708,7 +1716,8 @@ case "$BACKEND" in
         else
           spawn_herdr_presentation_order_lock_release
         fi
-      elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+      elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] \
+        && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
         # Session lock path resolution and exact parent binding both need a
         # live named-session socket before journal publication.
         if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then

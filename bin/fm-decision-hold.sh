@@ -12,7 +12,10 @@
 #
 # A hold identity is <origin-id>-decision-<decision-key>. Origin ids and decision
 # keys must already be privacy-safe slugs. Repeating `hold` with the same identity
-# is idempotent. A different decision key creates a different backlog identity.
+# is idempotent while that hold is still live. Once the decision is closed, `hold`
+# refuses the identity even after retention moves it out of the live backlog, so a
+# new decision needs a new decision key. A different decision key creates a
+# different backlog identity.
 # All backlog mutations run in the active FM_HOME, which keeps main-home and
 # secondmate-home ownership aligned with the work that discovered the decision.
 #
@@ -31,7 +34,9 @@
 # metadata inventory is unioned idempotently. A post-teardown visual review can
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
-# source before this gate has succeeded.
+# source before this gate has succeeded. Resolved holds remain authoritative after
+# retention moves them to the archive declared by `[markdown].archive`, or to the
+# tasks-axi default archive derived from `[markdown].path` when that key is absent.
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
 # It writes the captain decision and routed identities into the hold body, clears
@@ -123,9 +128,214 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+# Reads one quoted `[markdown]` key from the active home's tasks-axi config.
+# 0 prints the declared value, 1 means the key is absent, 2 means the declaration
+# exists but is malformed.
+configured_markdown_value() {  # <key>
+  local key=$1 config="$FM_HOME/.tasks.toml" value rc=0
+  [ -f "$config" ] || return 1
+  value=$(awk -v pattern="^[[:space:]]*${key}[[:space:]]*=" '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "markdown" && $0 ~ pattern {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      quote = substr(value, 1, 1)
+      if (quote != "\"" && quote != sprintf("%c", 39)) {
+        invalid = 1
+        exit
+      }
+      value = substr(value, 2)
+      closing = index(value, quote)
+      if (closing == 0) {
+        invalid = 1
+        exit
+      }
+      rest = trim(substr(value, closing + 1))
+      if (rest != "" && substr(rest, 1, 1) != "#") {
+        invalid = 1
+        exit
+      }
+      print substr(value, 1, closing - 1)
+      found = 1
+      exit
+    }
+    END {
+      if (invalid) exit 2
+      if (!found) exit 1
+    }
+  ' "$config") || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$value" ] || return 2
+  printf '%s\n' "$value"
+}
+
+home_relative_path() {  # <path>
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$1" ;;
+  esac
+}
+
+# Resolves the file tasks-axi retention writes resolved items to. When
+# `[markdown].archive` is absent this reproduces tasks-axi's own default:
+# `done-archive.md` beside the configured backlog path, which itself defaults to
+# `backlog.md` in the home. 0 prints the path, 2 means the declaration is malformed.
+configured_archive_path() {
+  local archive='' path='' rc=0 dir
+  archive=$(configured_markdown_value archive) || rc=$?
+  case "$rc" in
+    0) home_relative_path "$archive"; return 0 ;;
+    2) return 2 ;;
+  esac
+  rc=0
+  path=$(configured_markdown_value path) || rc=$?
+  case "$rc" in
+    2) return 2 ;;
+    1) path=backlog.md ;;
+  esac
+  case "$path" in
+    */*) dir=${path%/*} ;;
+    *) dir='.' ;;
+  esac
+  case "$dir" in
+    .) home_relative_path done-archive.md ;;
+    *) home_relative_path "$dir/done-archive.md" ;;
+  esac
+}
+
+ARCHIVED_SHOW=''
+ARCHIVED_ARCHIVE=''
+
+# Scans every archived record sharing <id> and keeps the strongest one, so an older
+# weaker record cannot shadow a later durable resolution. Record boundaries come
+# from the tasks-axi markdown item grammar; every field still comes from tasks-axi
+# itself, one isolated record at a time. An archive that holds content but no
+# recognizable item is an unreadable archive, not an empty one.
+# 0 sets ARCHIVED_SHOW to the strongest record, 1 means the archive holds no record
+# for <id>, 2 means the archive declaration is malformed, 3 means the archive could
+# not be inspected, 4 means its item grammar was not recognized, either because no
+# item was found at all or because no record carrying <id> could be read back.
+archived_task_show() {  # <id>
+  local id=$1 archive='' rc=0 scratch records parsed items count content field index record output resolved=0
+  ARCHIVED_SHOW=''
+  ARCHIVED_ARCHIVE=''
+  archive=$(configured_archive_path) || rc=$?
+  [ "$rc" -eq 0 ] || return 2
+  ARCHIVED_ARCHIVE=$archive
+  [ -e "$archive" ] || return 1
+  [ -r "$archive" ] || return 3
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/fm-decision-archive.XXXXXX") || return 3
+  records="$scratch/records"
+  if ! mkdir "$records" \
+    || ! printf 'backend = "markdown"\n\n[markdown]\narchive = "unused-archive.md"\n' > "$scratch/.tasks.toml"; then
+    rm -rf "$scratch"
+    return 3
+  fi
+  rc=0
+  parsed=$(awk -v id="$id" -v out="$records" '
+    /[^[:space:]]/ { content = 1 }
+    /^- \[/ {
+      if (file != "") close(file)
+      items++
+      line = $0
+      sub(/^- \[[^]]*\][[:space:]]*/, "", line)
+      split(line, parts, /[[:space:]]/)
+      file = ""
+      if (parts[1] == id) {
+        n++
+        file = sprintf("%s/record-%06d.md", out, n)
+        printf "## Done\n" > file
+        print > file
+      }
+      next
+    }
+    /^#/ {
+      if (file != "") close(file)
+      file = ""
+      next
+    }
+    file != "" { print > file }
+    END { printf "%d %d %d\n", items + 0, n + 0, content + 0 }
+  ' "$archive") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$scratch"
+    return 3
+  fi
+  read -r items count content <<EOF
+$parsed
+EOF
+  for field in "$items" "$count" "$content"; do
+    case "$field" in
+      ''|*[!0-9]*) rm -rf "$scratch"; return 3 ;;
+    esac
+  done
+  if [ "$content" -ne 0 ] && [ "$items" -eq 0 ]; then
+    rm -rf "$scratch"
+    return 4
+  fi
+  index=1
+  while [ "$index" -le "$count" ]; do
+    record=$(printf '%s/record-%06d.md' "$records" "$index")
+    rc=0
+    output=$(cd "$scratch" && tasks-axi show "$id" --full --file "$record" 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if show_is_resolved "$output"; then
+        ARCHIVED_SHOW=$output
+        resolved=1
+      elif [ "$resolved" = 0 ]; then
+        ARCHIVED_SHOW=$output
+      fi
+    fi
+    index=$((index + 1))
+  done
+  rm -rf "$scratch"
+  if [ -z "$ARCHIVED_SHOW" ]; then
+    [ "$count" -eq 0 ] || return 4
+    return 1
+  fi
+}
+
+fail_archive_unavailable() {  # <archive-status> <hold-id>
+  local status=$1 id=$2
+  case "$status" in
+    2) fail "the tasks-axi [markdown] archive declaration in $FM_HOME/.tasks.toml is malformed, so captain decision $id could not be verified" ;;
+    3) fail "the configured tasks-axi archive could not be inspected, so captain decision $id could not be verified" ;;
+    4) fail "the configured tasks-axi archive $ARCHIVED_ARCHIVE holds content but no recognizable tasks-axi item, so captain decision $id could not be verified" ;;
+  esac
+}
+
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
+}
+
+# The single durable-resolution contract. Live and archived records are held to it
+# identically.
+show_is_resolved() {  # <show-output>
+  local output=$1
+  [ "$(show_field "$output" state)" = "done" ] || return 1
+  [ "$(show_field "$output" kind)" = captain ] || return 1
+  case "$(show_field "$output" body)" in
+    *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
+  esac
+  return 1
+}
+
+show_is_active_hold() {  # <show-output>
+  local output=$1
+  [ "$(show_field "$output" state)" = queued ] || return 1
+  [ "$(show_field "$output" held)" = yes ] || return 1
+  [ "$(show_field "$output" kind)" = captain ] || return 1
+  [ "$(show_field "$output" hold_kind)" = captain ] || return 1
 }
 
 origin_exists_here() {  # <origin-id>
@@ -184,34 +394,26 @@ verify_hold_active() {  # <hold-id>
 }
 
 verify_hold_resolved() {  # <hold-id>
-  local id=$1 show state kind body
+  local id=$1 show
   show=$(task_show "$id") || return 1
-  state=$(show_field "$show" state)
-  kind=$(show_field "$show" kind)
-  body=$(show_field "$show" body)
-  [ "$state" = "done" ] || return 1
-  [ "$kind" = captain ] || return 1
-  case "$body" in
-    *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
-  esac
-  return 1
+  show_is_resolved "$show"
 }
 
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
-  state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
-  kind=$(show_field "$show" kind)
-  hold_kind=$(show_field "$show" hold_kind)
-  body=$(show_field "$show" body)
-  if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
-    return 0
+  local id=$1 show='' rc=0 live_found=0 archive_found=0
+  if show=$(task_show "$id"); then
+    live_found=1
+    show_is_active_hold "$show" && return 0
+    show_is_resolved "$show" && return 0
   fi
-  if [ "$state" = "done" ] && [ "$kind" = captain ]; then
-    case "$body" in
-      *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
-    esac
+  archived_task_show "$id" || rc=$?
+  fail_archive_unavailable "$rc" "$id"
+  if [ "$rc" -eq 0 ]; then
+    archive_found=1
+    show_is_resolved "$ARCHIVED_SHOW" && return 0
+  fi
+  if [ "$live_found" = 0 ] && [ "$archive_found" = 0 ]; then
+    fail "captain decision $id is absent from the live backlog and configured archive"
   fi
   fail "captain decision $id is neither actively held nor durably resolved"
 }
@@ -242,7 +444,7 @@ command_id() {
 }
 
 command_hold() {
-  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body
+  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body rc
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -270,6 +472,16 @@ command_hold() {
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
   else
+    # Retention moves a closed decision out of the live backlog, so a live miss is
+    # not proof that this identity is free.
+    rc=0
+    archived_task_show "$id" || rc=$?
+    fail_archive_unavailable "$rc" "$id"
+    if [ "$rc" -eq 0 ]; then
+      show_is_resolved "$ARCHIVED_SHOW" \
+        && fail "captain decision $id is already durably resolved; use a new decision key for a new decision"
+      fail "captain decision $id is already closed in the configured archive; use a new decision key for a new decision"
+    fi
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
       repo=${repo%/}

@@ -75,6 +75,7 @@ case "${1:-}" in
     esac
     ;;
   runs)
+    if [ -n "${FM_FAKE_RUNS_CALLS:-}" ]; then printf 'call\n' >> "$FM_FAKE_RUNS_CALLS"; fi
     printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
 esac
 exit 0
@@ -170,8 +171,9 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_RUNS_CALLS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
-  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_RUNS_CALLS
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -188,6 +190,18 @@ run:
   steps[2]{step,status,findings,duration_ms}:
     intent,completed,0,0
     review,running,0,0
+EOF
+}
+
+run_pending() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: pending
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
 EOF
 }
 
@@ -682,6 +696,168 @@ test_terminal_failed() {
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
   pass "terminal failed run is authoritative"
+}
+
+# Axi status can lag behind the newest run for the same branch and code identity.
+# The newest-first runs listing is the current-run authority, so an older failed
+# detail response must not mask a newer healthy run that restarted at the same
+# commit.
+test_stale_failed_detail_does_not_mask_current_running_run() {
+  reset_fakes
+  local d short out
+  d=$(new_case stale-failed-current-running)
+  make_repo_on_branch "$d/wt" fm/feat-current
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-current.meta" "window=fm:fm-feat-current" "worktree=$d/wt" "kind=ship"
+  printf 'blocked: earlier run failed\n' > "$d/state/feat-current.status"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-current)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-current ${short}  2026-08-07 10:05
+  failed     fm/feat-current ${short}  2026-08-07 10:00
+EOF
+)"
+  out=$(run_crew_state "$d" feat-current)
+  assert_contains "$out" "state: working" "newest current run must outrank stale failed detail"
+  assert_contains "$out" "source: run-step" "current running run remains run-step sourced"
+  assert_contains "$out" "status-log superseded by active run" "stale blocked event is superseded"
+  assert_not_contains "$out" "state: failed" "healthy current run must never read failed"
+  pass "stale failed detail does not mask the current running run"
+}
+
+# Reconciliation is symmetric: a stale healthy detail object must not erase a
+# true terminal negative from the current runs-list row.
+test_current_terminal_run_outranks_stale_running_detail() {
+  reset_fakes
+  local d short out
+  d=$(new_case stale-running-current-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-terminal
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-terminal.meta" "window=fm:fm-feat-terminal" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-terminal)"
+  FM_FAKE_RUNS_LIST="  failed    fm/feat-terminal ${short}  2026-08-07 10:10"
+  out=$(run_crew_state "$d" feat-terminal)
+  assert_contains "$out" "state: failed" "current failed run must outrank stale running detail"
+  assert_contains "$out" "run failed" "current failed run preserves the true-negative detail"
+
+  FM_FAKE_RUNS_LIST="  cancelled fm/feat-terminal ${short}  2026-08-07 10:11"
+  out=$(run_crew_state "$d" feat-terminal)
+  assert_contains "$out" "state: failed" "current cancelled run remains a terminal negative"
+  assert_contains "$out" "run cancelled" "cancelled remains distinguishable from failed"
+  pass "current terminal runs outrank stale healthy detail"
+}
+
+# Once the newest same-branch row names different code, no older matching row
+# can be the current run for this worktree.
+test_newest_same_branch_head_mismatch_does_not_latch_older_run() {
+  reset_fakes
+  local d short out
+  d=$(new_case newest-head-mismatch)
+  make_repo_on_branch "$d/wt" fm/feat-reused
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-reused.meta" "window=fm:fm-feat-reused" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: current code has no pipeline run\n' > "$d/state/feat-reused.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-reused deadbee  2026-08-07 10:10
+  running    fm/feat-reused ${short}  2026-08-07 10:00
+EOF
+)"
+  arm_idle_record "$d/state" feat-reused
+  out=$(run_crew_state "$d" feat-reused)
+  assert_contains "$out" "state: working" "current status remains available after newest head mismatch"
+  assert_contains "$out" "source: status-log" "older matching run is not latched"
+  assert_not_contains "$out" "source: run-step" "superseded matching run is never attributed"
+  pass "newest same-branch code identity prevents older run latching"
+}
+
+# `pending` is a first-class run status (the runs-table default: a run row exists
+# but the daemon has not started it yet) and the runs listing prints it verbatim.
+# A just-queued run is ALIVE, so neither the detail/listing reconciliation nor
+# the coarse mapping may degrade it to `unknown` - that would drop a healthy crew
+# out of crew_is_provably_working and make it a wedge suspect.
+test_pending_run_reads_working() {
+  reset_fakes
+  local d short out
+  d=$(new_case pending-run)
+  make_repo_on_branch "$d/wt" fm/feat-pending
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pending.meta" "window=fm:fm-feat-pending" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_pending fm/feat-pending)"
+  FM_FAKE_RUNS_LIST="  pending   fm/feat-pending ${short}  2026-08-07 10:00"
+  out=$(run_crew_state "$d" feat-pending)
+  assert_contains "$out" "state: working" "a queued (pending) run is alive, not unknown"
+  assert_contains "$out" "source: run-step" "the pending run stays the authoritative source"
+  assert_not_contains "$out" "state: unknown" "a healthy queued run must never read unknown"
+  pass "pending runs read working"
+}
+
+# A status word neither mapping models must never demote the detailed object:
+# the full path's own fail-safe-alive reading keeps ownership of the verdict.
+test_unmodeled_runs_list_status_does_not_demote_full_detail() {
+  reset_fakes
+  local d short out
+  d=$(new_case unmodeled-coarse-status)
+  make_repo_on_branch "$d/wt" fm/feat-unmodeled
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-unmodeled.meta" "window=fm:fm-feat-unmodeled" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-unmodeled)"
+  FM_FAKE_RUNS_LIST="  quiescing fm/feat-unmodeled ${short}  2026-08-07 10:00"
+  out=$(run_crew_state "$d" feat-unmodeled)
+  assert_contains "$out" "state: parked" "an unmodeled listing word keeps the detailed gate verdict"
+  assert_contains "$out" "parked at review" "gate detail survives an unmodeled listing word"
+  assert_not_contains "$out" "state: unknown" "an unmodeled listing word never manufactures unknown"
+  pass "unmodeled runs-list status does not demote full detail"
+}
+
+# The listing must be the LATER of the two reads it reconciles, so every crew
+# takes its own. Sharing one listing across a fleet pass was tried and removed:
+# an earlier listing overruling a later `axi status` object misreads BOTH
+# directions - a stale terminal row calls a live same-head rerun failed, and a
+# stale alive row calls an ended run working. This pins the read as per-crew and
+# uncached, in both directions, so neither defect can return unnoticed.
+test_runs_listing_is_read_fresh_for_every_crew() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case runs-listing-fresh)
+  make_repo_on_branch "$d/wt" fm/feat-rerun
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/crew-a.meta" "window=fm:fm-crew-a" "worktree=$d/wt" "kind=ship"
+  fm_write_meta "$d/state/crew-b.meta" "window=fm:fm-crew-b" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-rerun)"
+  FM_FAKE_RUNS_CALLS="$d/runs-calls"
+  : > "$FM_FAKE_RUNS_CALLS"
+
+  # The newest row is the previous failed run at this same head, and it IS
+  # current for this crew: a stale healthy detail object does not mask it.
+  FM_FAKE_RUNS_LIST="  failed    fm/feat-rerun ${short}  2026-08-07 10:00"
+  out=$(run_crew_state "$d" crew-a)
+  assert_contains "$out" "state: failed" "the current terminal row outranks a stale healthy detail"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 1 ] || fail "the first crew reads the listing once, got $calls"
+
+  # A same-head rerun lands between the two crew reads. The second crew must see
+  # it, never a carried-over terminal row.
+  FM_FAKE_RUNS_LIST="  running   fm/feat-rerun ${short}  2026-08-07 10:01"
+  out=$(run_crew_state "$d" crew-b)
+  assert_contains "$out" "state: working" "a healthy running rerun must never surface as failed"
+  assert_not_contains "$out" "state: failed" "no crew may reuse an earlier crew's terminal row"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 2 ] || fail "every crew takes its own listing read, got $calls"
+
+  # Mirror direction: the run ends between reads, and the ended verdict must not
+  # be masked by a carried-over alive row either.
+  FM_FAKE_RUNS_LIST="  failed    fm/feat-rerun ${short}  2026-08-07 10:02"
+  out=$(run_crew_state "$d" crew-a)
+  assert_contains "$out" "state: failed" "an ended run must not keep reading working"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 3 ] || fail "every crew takes its own listing read, got $calls"
+  pass "the runs listing is read fresh for every crew, in both directions"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1329,6 +1505,12 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_stale_failed_detail_does_not_mask_current_running_run
+test_current_terminal_run_outranks_stale_running_detail
+test_newest_same_branch_head_mismatch_does_not_latch_older_run
+test_pending_run_reads_working
+test_unmodeled_runs_list_status_does_not_demote_full_detail
+test_runs_listing_is_read_fresh_for_every_crew
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

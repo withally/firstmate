@@ -810,10 +810,16 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_no_grep '`paused: {why}`' "$brief" \
       "$kind brief still instructs the default paused status"
-    assert_grep 'blocker clears WITHOUT' "$brief" \
+    assert_grep 'or the blocker clears' "$brief" \
       "$kind brief did not require durable resolution when a blocker clears"
+    assert_grep 'you must still append it yourself' "$brief" \
+      "$kind brief dropped the crew close-on-reply duty"
+    assert_grep 'is already closed is harmless' "$brief" \
+      "$kind brief did not state that duplicate same-key closure is harmless"
     assert_grep 'needs-decision [key=<slug>]: {summary of options}' "$brief" \
       "$kind brief did not teach the canonical opening-key position"
+    assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$brief" \
+      "$kind brief did not teach the canonical closing-key position"
     assert_grep 'the key belongs before the colon' "$brief" \
       "$kind brief left the opening-key position ambiguous"
   done

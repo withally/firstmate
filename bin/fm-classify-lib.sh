@@ -275,15 +275,16 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
 # prefix key remains authoritative even when note prose mentions other tokens.
 # Only a contiguous run of valid exact final tokens receives historical suffix
 # semantics, so key-like text in ordinary opening prose remains non-semantic.
+# A malformed slug never hides the opening: it falls back to "default" so an
+# unanswered decision stays visible.
 _fm_opening_decision_keys() {  # <status-line>
   local line=$1 prefix marker key keys=''
   line=${line%"${line##*[![:space:]]}"}
   prefix=${line%%:*}
   case "$prefix" in
-    *\[key=*\]*) _fm_decision_key "$line"; return ;;
+    *\[key=*\]*) _fm_decision_key "$line" || printf 'default'; return ;;
   esac
-  if key=$(_fm_key_at_note_head "$line"); then
-    _fm_decision_slug_ok "$key" || return 1
+  if key=$(_fm_key_at_note_head "$line") && _fm_decision_slug_ok "$key"; then
     printf '%s' "$key"
     return 0
   fi

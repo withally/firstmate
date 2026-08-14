@@ -327,11 +327,13 @@ fi
 
 fm_send_close_resolved_keys() {  # <answer-text>
   local answer=$1 key line
-  answer=$(printf '%s' "$answer" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
+  answer=$(printf '%s' "$answer" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' \
+    | LC_ALL=C sed -e 's/\[key=/(key=/g' -e 's/(key=\([A-Za-z0-9._-]*\)\]/(key=\1)/g')
   for key in $RESOLVE_KEYS; do
     line="resolved [key=$key]: answered: $answer"
     fm_cap_line_var "$line"
-    if ! printf '%s\n' "$FM_LINE_CAP_LINE" >> "$RESOLVE_STATUS_FILE"; then
+    if ! printf '%s\n' "$FM_LINE_CAP_LINE" >> "$RESOLVE_STATUS_FILE" \
+      || status_decision_is_open "$RESOLVE_STATUS_FILE" "$key"; then
       echo "error: the answer was delivered to $T, but decision key '$key' could not be closed in $RESOLVE_STATUS_FILE. Close it manually with: echo 'resolved [key=$key]: <how it was answered>' >> $RESOLVE_STATUS_FILE - do not resend the answer." >&2
       return 1
     fi

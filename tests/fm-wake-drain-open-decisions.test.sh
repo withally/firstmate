@@ -260,6 +260,29 @@ test_trailing_multi_key_open_closes_each_key_independently() {
   pass "each trailing multi-key opening remains visible until separately answered"
 }
 
+test_malformed_opening_key_still_surfaces_the_decision() {
+  local dir state out
+  dir=$(make_case malformed-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: [key=bad key] choose A or B\n' > "$state/colonfirst.status"
+  printf 'needs-decision [key=bad key]: choose C or D\n' > "$state/prefix.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a malformed opening key"
+  grep -F 'colonfirst needs-decision: [key=bad key] choose A or B' "$out" >/dev/null \
+    || fail "a malformed colon-first key hid an unanswered decision"
+  grep -F 'prefix needs-decision: choose C or D' "$out" >/dev/null \
+    || fail "a malformed prefix key hid an unanswered decision"
+
+  printf 'resolved: picked A\n' >> "$state/colonfirst.status"
+  printf 'resolved: picked C\n' >> "$state/prefix.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after default resolutions"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a malformed-key decision stayed open after its default resolution: $(cat "$out")"
+  fi
+  pass "a malformed opening key keeps its decision visible under the default bucket"
+}
+
 test_buried_decision_still_surfaces
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
@@ -272,3 +295,4 @@ test_independent_trailing_openings_never_collide_in_default
 test_colon_first_key_shape_opens_and_closes_by_its_key
 test_bracket_metadata_before_colon_preserves_the_status_verb
 test_trailing_multi_key_open_closes_each_key_independently
+test_malformed_opening_key_still_surfaces_the_decision

@@ -260,6 +260,24 @@ test_resolve_key_closes_each_named_key_and_no_others() {
   pass "fm-send resolves every named key and leaves every unnamed key open"
 }
 
+test_resolve_key_closes_when_the_answer_text_carries_a_key_token() {
+  local dir fb home err log rc
+  dir="$TMP_ROOT/resolve-keyed-answer"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home resolve-keyed-answer); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
+  printf 'needs-decision [key=route]: choose A or B\nneeds-decision [key=other]: choose C or D\n' \
+    > "$home/state/lane-ok.status"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-ok --resolve-key route '[key=route] Go with A' >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "an answer that already carries its key token should still succeed"
+  ! status_decision_is_open "$home/state/lane-ok.status" route \
+    || fail "an answer carrying a key token left its decision open"
+  status_decision_is_open "$home/state/lane-ok.status" other \
+    || fail "a key token embedded in the answer text closed an unnamed decision"
+  pass "fm-send closes answered decisions even when the answer text carries a key token"
+}
+
 test_exact_lane_id_send_still_works
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
@@ -270,3 +288,4 @@ test_healthy_fm_id_send_still_works
 test_successful_keyed_decision_send_records_only_an_open_task_key
 test_resolve_key_closes_only_after_confirmed_answer_delivery
 test_resolve_key_closes_each_named_key_and_no_others
+test_resolve_key_closes_when_the_answer_text_carries_a_key_token

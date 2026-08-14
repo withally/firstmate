@@ -361,7 +361,7 @@ EOF
 # unusable archive declaration never reads as a missing decision.
 test_archive_authority_covers_defaults_duplicates_and_reuse() {
   local home derived_origin derived_hold derived_route duplicate_origin duplicate_hold \
-    duplicate_route grammar_home grammar_origin malformed_origin
+    duplicate_route grammar_home grammar_origin record_home record_origin malformed_origin
   home=$(make_home resolution-archive-authority)
   cat > "$home/.tasks.toml" <<'EOF'
 backend = "markdown"
@@ -448,6 +448,32 @@ EOF
     "an unparsable archive was not reported as an inspection failure"
   assert_no_grep "is absent from the live backlog" "$grammar_home/grammar-verify.err" \
     "an unparsable archive was reported as a missing captain decision"
+
+  # The record boundary is recognizable and carries the identity, but tasks-axi
+  # cannot read the record back, so the archive is unavailable, not decision-absent.
+  record_home=$(make_home resolution-archive-record)
+  record_origin=sample-record-archive
+  write_origin_meta "$record_home" "$record_origin"
+  printf 'decisions_reviewed=1\ndecision_keys=choice\n' >> "$record_home/state/$record_origin.meta"
+  printf '## Archived 2026-08-14\n- [x] %s-decision-choice\n' \
+    "$record_origin" > "$record_home/data/done-archive.md"
+  if run_decisions "$record_home" verify "$record_origin" \
+    > "$record_home/record-verify.out" 2> "$record_home/record-verify.err"; then
+    fail "an archive record tasks-axi cannot read verified"
+  fi
+  assert_grep "no recognizable tasks-axi item" "$record_home/record-verify.err" \
+    "an unreadable archive record was not reported as an inspection failure"
+  assert_no_grep "is absent from the live backlog" "$record_home/record-verify.err" \
+    "an unreadable archive record was reported as a missing captain decision"
+  if run_decisions "$record_home" hold "$record_origin" choice \
+    --title "Choose the record sample" --reason "captain record sample choice pending" \
+    --repo sample > "$record_home/record-hold.out" 2> "$record_home/record-hold.err"; then
+    fail "an unreadable archive record let a retained identity be reopened"
+  fi
+  assert_grep "no recognizable tasks-axi item" "$record_home/record-hold.err" \
+    "reopening against an unreadable archive record was not reported as an inspection failure"
+  assert_no_grep "- [ ] $record_origin-decision-choice -" "$record_home/data/backlog.md" \
+    "the refused hold still created an open captain item from an unreadable archive"
 
   malformed_origin=sample-malformed-archive
   write_origin_meta "$home" "$malformed_origin"

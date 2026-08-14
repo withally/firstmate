@@ -222,7 +222,8 @@ ARCHIVED_ARCHIVE=''
 # recognizable item is an unreadable archive, not an empty one.
 # 0 sets ARCHIVED_SHOW to the strongest record, 1 means the archive holds no record
 # for <id>, 2 means the archive declaration is malformed, 3 means the archive could
-# not be inspected, 4 means its item grammar was not recognized.
+# not be inspected, 4 means its item grammar was not recognized, either because no
+# item was found at all or because no record carrying <id> could be read back.
 archived_task_show() {  # <id>
   local id=$1 archive='' rc=0 scratch records parsed items count content field index record output resolved=0
   ARCHIVED_SHOW=''
@@ -297,7 +298,10 @@ EOF
     index=$((index + 1))
   done
   rm -rf "$scratch"
-  [ -n "$ARCHIVED_SHOW" ] || return 1
+  if [ -z "$ARCHIVED_SHOW" ]; then
+    [ "$count" -eq 0 ] || return 4
+    return 1
+  fi
 }
 
 fail_archive_unavailable() {  # <archive-status> <hold-id>

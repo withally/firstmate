@@ -349,16 +349,45 @@ nm_runs_status_for_branch() {  # <branch>
     rest=$(trim "$rest")
     sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
-      # Same code-identity rule as axi status: skip a same-branch row whose
-      # short-sha does not match this worktree (rewritten or advanced tip).
+      # The listing is newest-first, so the first same-branch row owns current
+      # run identity even when its code identity no longer matches this worktree.
+      # Never scan backward into an older matching run in that case.
       if ! nm_coarse_head_matches_worktree "$sha"; then
-        continue
+        return 0
       fi
       printf '%s' "$st"
       return 0
     fi
   done <<< "$out"
   return 0
+}
+
+# Map the detailed axi-status object onto the coarse vocabulary emitted by the
+# newest-first runs listing.
+# This is used only to detect when axi status selected a different run than the
+# listing's current same-branch/code-identity row.
+nm_full_coarse_status() {
+  local status outcome
+  status=$(strip_quotes "$(nm_field status)")
+  outcome=$(strip_quotes "$(nm_field outcome)")
+  case "$outcome" in
+    passed|checks-passed) printf 'completed'; return ;;
+    failed)               printf 'failed'; return ;;
+    cancelled)            printf 'cancelled'; return ;;
+  esac
+  if [ -n "$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)" ] \
+    || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] \
+    || [ -n "$(nm_gate_status)" ] || nm_has_gate; then
+    printf 'running'
+    return
+  fi
+  case "$status" in
+    running|fixing|ci|"") printf 'running' ;;
+    completed)            printf 'completed' ;;
+    failed)               printf 'failed' ;;
+    cancelled)            printf 'cancelled' ;;
+    *)                     printf 'unknown' ;;
+  esac
 }
 
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
@@ -396,6 +425,15 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
     run_branch=$(strip_quotes "$(nm_field branch)")
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
       HAVE_RUN=1
+      # `axi status` can select an older run when several runs share a branch
+      # and head, so bind its detail against the later, newest-first runs read.
+      # A disagreement means the listing's row is current and the detailed
+      # object is stale; retain the current coarse verdict rather than emitting
+      # a terminal result from the superseded run.
+      COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
+      if [ -n "$COARSE_STATUS" ] && [ "$(nm_full_coarse_status)" != "$COARSE_STATUS" ]; then
+        RUN_SOURCE=coarse
+      fi
     else
       # The active-or-most-recent run is for another branch, or same branch with
       # a rewritten/diverged head (the CLI is alive and answered; only the

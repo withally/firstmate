@@ -684,6 +684,81 @@ test_terminal_failed() {
   pass "terminal failed run is authoritative"
 }
 
+# Axi status can lag behind the newest run for the same branch and code identity.
+# The newest-first runs listing is the current-run authority, so an older failed
+# detail response must not mask a newer healthy run that restarted at the same
+# commit.
+test_stale_failed_detail_does_not_mask_current_running_run() {
+  reset_fakes
+  local d short out
+  d=$(new_case stale-failed-current-running)
+  make_repo_on_branch "$d/wt" fm/feat-current
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-current.meta" "window=fm:fm-feat-current" "worktree=$d/wt" "kind=ship"
+  printf 'blocked: earlier run failed\n' > "$d/state/feat-current.status"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-current)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-current ${short}  2026-08-07 10:05
+  failed     fm/feat-current ${short}  2026-08-07 10:00
+EOF
+)"
+  out=$(run_crew_state "$d" feat-current)
+  assert_contains "$out" "state: working" "newest current run must outrank stale failed detail"
+  assert_contains "$out" "source: run-step" "current running run remains run-step sourced"
+  assert_contains "$out" "status-log superseded by active run" "stale blocked event is superseded"
+  assert_not_contains "$out" "state: failed" "healthy current run must never read failed"
+  pass "stale failed detail does not mask the current running run"
+}
+
+# Reconciliation is symmetric: a stale healthy detail object must not erase a
+# true terminal negative from the current runs-list row.
+test_current_terminal_run_outranks_stale_running_detail() {
+  reset_fakes
+  local d short out
+  d=$(new_case stale-running-current-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-terminal
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-terminal.meta" "window=fm:fm-feat-terminal" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-terminal)"
+  FM_FAKE_RUNS_LIST="  failed    fm/feat-terminal ${short}  2026-08-07 10:10"
+  out=$(run_crew_state "$d" feat-terminal)
+  assert_contains "$out" "state: failed" "current failed run must outrank stale running detail"
+  assert_contains "$out" "run failed" "current failed run preserves the true-negative detail"
+
+  FM_FAKE_RUNS_LIST="  cancelled fm/feat-terminal ${short}  2026-08-07 10:11"
+  out=$(run_crew_state "$d" feat-terminal)
+  assert_contains "$out" "state: failed" "current cancelled run remains a terminal negative"
+  assert_contains "$out" "run cancelled" "cancelled remains distinguishable from failed"
+  pass "current terminal runs outrank stale healthy detail"
+}
+
+# Once the newest same-branch row names different code, no older matching row
+# can be the current run for this worktree.
+test_newest_same_branch_head_mismatch_does_not_latch_older_run() {
+  reset_fakes
+  local d short out
+  d=$(new_case newest-head-mismatch)
+  make_repo_on_branch "$d/wt" fm/feat-reused
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-reused.meta" "window=fm:fm-feat-reused" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: current code has no pipeline run\n' > "$d/state/feat-reused.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-reused deadbee  2026-08-07 10:10
+  running    fm/feat-reused ${short}  2026-08-07 10:00
+EOF
+)"
+  arm_idle_record "$d/state" feat-reused
+  out=$(run_crew_state "$d" feat-reused)
+  assert_contains "$out" "state: working" "current status remains available after newest head mismatch"
+  assert_contains "$out" "source: status-log" "older matching run is not latched"
+  assert_not_contains "$out" "source: run-step" "superseded matching run is never attributed"
+  pass "newest same-branch code identity prevents older run latching"
+}
+
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
 # routine case once more than one crew validates the same underlying repo
 # concurrently - they share ONE no-mistakes repo registration), so the helper
@@ -1329,6 +1404,9 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_stale_failed_detail_does_not_mask_current_running_run
+test_current_terminal_run_outranks_stale_running_detail
+test_newest_same_branch_head_mismatch_does_not_latch_older_run
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

@@ -174,6 +174,19 @@ esac
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
 
+# One snapshot reads every crew's current state, and bin/fm-crew-state.sh's
+# run-listing read (`no-mistakes runs`) is repo-wide - identical for every crew
+# of the same repo. Hand that helper a staging directory scoped to THIS pass so
+# the listing is fetched once per repo instead of once per crew. It is created
+# fresh here and removed on exit, so no verdict is ever carried across
+# snapshots: each pass still observes the fleet fresh.
+FM_CREW_STATE_RUNS_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot-runs.XXXXXX" 2>/dev/null) || FM_CREW_STATE_RUNS_CACHE_DIR=""
+if [ -n "$FM_CREW_STATE_RUNS_CACHE_DIR" ]; then
+  export FM_CREW_STATE_RUNS_CACHE_DIR
+  # shellcheck disable=SC2064  # expand the path now: the trap must not depend on later state
+  trap "rm -rf '$FM_CREW_STATE_RUNS_CACHE_DIR'" EXIT INT TERM
+fi
+
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
 }

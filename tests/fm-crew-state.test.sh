@@ -75,6 +75,7 @@ case "${1:-}" in
     esac
     ;;
   runs)
+    if [ -n "${FM_FAKE_RUNS_CALLS:-}" ]; then printf 'call\n' >> "$FM_FAKE_RUNS_CALLS"; fi
     printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
 esac
 exit 0
@@ -170,8 +171,9 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_RUNS_CALLS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
-  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_RUNS_CALLS
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -188,6 +190,18 @@ run:
   steps[2]{step,status,findings,duration_ms}:
     intent,completed,0,0
     review,running,0,0
+EOF
+}
+
+run_pending() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: pending
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
 EOF
 }
 
@@ -757,6 +771,85 @@ EOF
   assert_contains "$out" "source: status-log" "older matching run is not latched"
   assert_not_contains "$out" "source: run-step" "superseded matching run is never attributed"
   pass "newest same-branch code identity prevents older run latching"
+}
+
+# `pending` is a first-class run status (the runs-table default: a run row exists
+# but the daemon has not started it yet) and the runs listing prints it verbatim.
+# A just-queued run is ALIVE, so neither the detail/listing reconciliation nor
+# the coarse mapping may degrade it to `unknown` - that would drop a healthy crew
+# out of crew_is_provably_working and make it a wedge suspect.
+test_pending_run_reads_working() {
+  reset_fakes
+  local d short out
+  d=$(new_case pending-run)
+  make_repo_on_branch "$d/wt" fm/feat-pending
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pending.meta" "window=fm:fm-feat-pending" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_pending fm/feat-pending)"
+  FM_FAKE_RUNS_LIST="  pending   fm/feat-pending ${short}  2026-08-07 10:00"
+  out=$(run_crew_state "$d" feat-pending)
+  assert_contains "$out" "state: working" "a queued (pending) run is alive, not unknown"
+  assert_contains "$out" "source: run-step" "the pending run stays the authoritative source"
+  assert_not_contains "$out" "state: unknown" "a healthy queued run must never read unknown"
+  pass "pending runs read working"
+}
+
+# A status word neither mapping models must never demote the detailed object:
+# the full path's own fail-safe-alive reading keeps ownership of the verdict.
+test_unmodeled_runs_list_status_does_not_demote_full_detail() {
+  reset_fakes
+  local d short out
+  d=$(new_case unmodeled-coarse-status)
+  make_repo_on_branch "$d/wt" fm/feat-unmodeled
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-unmodeled.meta" "window=fm:fm-feat-unmodeled" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-unmodeled)"
+  FM_FAKE_RUNS_LIST="  quiescing fm/feat-unmodeled ${short}  2026-08-07 10:00"
+  out=$(run_crew_state "$d" feat-unmodeled)
+  assert_contains "$out" "state: parked" "an unmodeled listing word keeps the detailed gate verdict"
+  assert_contains "$out" "parked at review" "gate detail survives an unmodeled listing word"
+  assert_not_contains "$out" "state: unknown" "an unmodeled listing word never manufactures unknown"
+  pass "unmodeled runs-list status does not demote full detail"
+}
+
+# The runs listing is a REPO-wide read, identical for every crew of the same
+# repo, so a fleet pass may fetch it once and reuse it - but only within that one
+# pass. With the pass-scoped cache directory the second crew reuses the first
+# crew's listing; with no directory (a later pass) every read goes to the CLI
+# again, so no verdict is ever carried across snapshots.
+test_runs_listing_is_read_once_per_snapshot() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case runs-listing-cache)
+  make_repo_on_branch "$d/wt" fm/feat-shared
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/crew-a.meta" "window=fm:fm-crew-a" "worktree=$d/wt" "kind=ship"
+  fm_write_meta "$d/state/crew-b.meta" "window=fm:fm-crew-b" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-shared)"
+  FM_FAKE_RUNS_LIST="  running   fm/feat-shared ${short}  2026-08-07 10:00"
+  FM_FAKE_RUNS_CALLS="$d/runs-calls"
+  : > "$FM_FAKE_RUNS_CALLS"
+  mkdir -p "$d/runs-cache"
+  FM_CREW_STATE_RUNS_CACHE_DIR="$d/runs-cache"
+  export FM_CREW_STATE_RUNS_CACHE_DIR
+
+  out=$(run_crew_state "$d" crew-a)
+  assert_contains "$out" "state: working" "first crew of the pass reads its run"
+  out=$(run_crew_state "$d" crew-b)
+  assert_contains "$out" "state: working" "second crew of the pass reads the same run"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 1 ] || fail "runs listing should be read once per snapshot, got $calls call(s)"
+
+  unset FM_CREW_STATE_RUNS_CACHE_DIR
+  rm -rf "$d/runs-cache"
+  out=$(run_crew_state "$d" crew-a)
+  assert_contains "$out" "state: working" "a later pass re-reads the listing"
+  calls=$(wc -l < "$FM_FAKE_RUNS_CALLS" | tr -d ' ')
+  [ "$calls" = 2 ] || fail "a pass with no cache directory must re-read the listing, got $calls call(s)"
+  pass "runs listing is read once per snapshot and never reused across snapshots"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1407,6 +1500,9 @@ test_terminal_failed
 test_stale_failed_detail_does_not_mask_current_running_run
 test_current_terminal_run_outranks_stale_running_detail
 test_newest_same_branch_head_mismatch_does_not_latch_older_run
+test_pending_run_reads_working
+test_unmodeled_runs_list_status_does_not_demote_full_detail
+test_runs_listing_is_read_once_per_snapshot
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

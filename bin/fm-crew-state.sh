@@ -334,9 +334,48 @@ nm_ci_checks_state() {
 # is a run for THIS branch active right now. Echoes the first (most recent)
 # matching row's status word (running/completed/cancelled/failed), or empty
 # when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+#
+# `no-mistakes runs` is a REPO-wide read, identical for every crew of the same
+# repo, so a caller that reads many crews in one pass would otherwise pay one
+# identical bounded CLI round-trip per crew. Such a caller (bin/fm-fleet-
+# snapshot.sh) exports FM_CREW_STATE_RUNS_CACHE_DIR pointing at a directory it
+# creates and removes for that pass alone; nothing here creates a durable cache,
+# and with the variable unset every read behaves exactly as before. The key is
+# the repo the listing belongs to (the worktree's git common dir) plus the row
+# limit, so crews of different repos never share an answer, and only non-empty
+# output is stored, so a timed-out call is retried by the next crew rather than
+# cached as "this branch has no run".
+nm_runs_cache_file() {
+  local dir=${FM_CREW_STATE_RUNS_CACHE_DIR:-} repo key
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  repo=$(cd "$WT" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd) || return 1
+  [ -n "$repo" ] || return 1
+  key=$(printf '%s|%s' "$repo" "$FM_CREW_STATE_RUNS_LIMIT" | cksum | cut -d' ' -f1)
+  printf '%s/runs-%s' "$dir" "$key"
+}
+
+nm_runs_list() {
+  local cache out tmp
+  cache=$(nm_runs_cache_file) || cache=''
+  if [ -n "$cache" ] && [ -s "$cache" ]; then
+    cat "$cache"
+    return 0
+  fi
+  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  if [ -n "$cache" ] && [ -n "$out" ]; then
+    tmp="$cache.$$"
+    if printf '%s\n' "$out" > "$tmp" 2>/dev/null; then
+      mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+      rm -f "$tmp" 2>/dev/null
+    fi
+  fi
+  printf '%s' "$out"
+}
+
 nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br sha
-  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  out=$(nm_runs_list)
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -382,11 +421,25 @@ nm_full_coarse_status() {
     return
   fi
   case "$status" in
-    running|fixing|ci|"") printf 'running' ;;
-    completed)            printf 'completed' ;;
-    failed)               printf 'failed' ;;
-    cancelled)            printf 'cancelled' ;;
-    *)                     printf 'unknown' ;;
+    completed) printf 'completed' ;;
+    failed)    printf 'failed' ;;
+    cancelled) printf 'cancelled' ;;
+    # Fail-safe-ALIVE default, matching the emitter this reconciles against: it
+    # reads any non-terminal word (running/fixing/ci/pending, empty, or a status
+    # word the CLI adds later) as an active run. A default of `unknown` here
+    # would manufacture a disagreement for a healthy run and degrade it to
+    # `unknown` - exactly the false surface this file exists to prevent.
+    *)         printf 'running' ;;
+  esac
+}
+
+# The coarse vocabulary this reconciliation can act on. A word outside it cannot
+# be compared against the detailed object or mapped to a state, so it must never
+# demote that object - the full path's own fail-safe-alive mapping keeps it.
+nm_coarse_status_is_modeled() {  # <status>
+  case "$1" in
+    pending|running|completed|failed|cancelled) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -431,7 +484,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # object is stale; retain the current coarse verdict rather than emitting
       # a terminal result from the superseded run.
       COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      if [ -n "$COARSE_STATUS" ] && [ "$(nm_full_coarse_status)" != "$COARSE_STATUS" ]; then
+      if nm_coarse_status_is_modeled "$COARSE_STATUS" && [ "$(nm_full_coarse_status)" != "$COARSE_STATUS" ]; then
         RUN_SOURCE=coarse
       fi
     else
@@ -468,6 +521,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     # surfaced through signal_reason_is_actionable regardless of this
     # coarse-vs-full distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
+      pending)   RUN_STATE=working; RUN_DETAIL="validating (queued run)" ;;
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
       failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;

@@ -28,6 +28,14 @@
 #      is an ancestor of the run head (pipeline fix commits advanced the run on
 #      the same line of history). Local work that advanced past the run head, or
 #      diverged from it, invalidates attribution.
+#      Current run IDENTITY belongs to the newest-first runs listing, never to a
+#      latched older run: the first same-branch row is the current run even when
+#      its code identity no longer matches this worktree (then no run is
+#      attributed - an older matching row is never revived). `axi status` can
+#      answer with an earlier run when several runs share a branch and head, so
+#      its detail is bound against a fresh listing read taken after it; when the
+#      two disagree the listing wins and only its coarse verdict is emitted,
+#      rather than a terminal result from the superseded object.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -74,10 +82,12 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (nm_runs_status_for_branch, below) scans. Generous enough to still find a
-# branch's own run on a busy multi-crew fleet without listing the entire
-# history every call.
+# How many of the most recent `no-mistakes runs` rows the newest-first
+# current-run read (nm_runs_status_for_branch, below) scans - both when it
+# reconciles a possibly-superseded `axi status` object and when it is the
+# fallback for a status object that cannot be attributed. Generous enough to
+# still find a branch's own run on a busy multi-crew fleet without listing the
+# entire history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 SEP=' · '
@@ -332,8 +342,10 @@ nm_ci_checks_state() {
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
 # is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+# matching row's status word (pending/running/completed/cancelled/failed), or
+# empty when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows, or
+# when that newest row's code identity does not match this worktree (that row
+# still owns current run identity, so there is nothing older to fall back to).
 #
 # The read is deliberately per-crew and uncached. A pass-scoped cache shared
 # across crews was tried and removed: it makes the listing an EARLIER read than

@@ -194,6 +194,8 @@ ok - Grok adaptive Stop real-process matrix passed with exact target cleanup and
 ```
 
 The same run proved the Claude-compatible Stop entries stay inert under `GROK_AGENT`, the legacy resume carries `GROK_TURNEND_GUARD_ACTIVE=1`, and every replacement root is removed after exact target cleanup while its control window survives.
+That inertness result did not establish that `GROK_AGENT` reaches a Grok hook process, and grok 1.0.0 demonstrated that it does not, so the marker set now includes `GROK_HOOK_EVENT`.
+`tests/fm-turnend-guard.test.sh` pins every tracked `.claude/settings.json` hook command against a Grok hook environment so this contract is deterministic rather than only an opt-in live result.
 
 The secondmate-home scope and manual-repair wake path were measured with Claude Code 2.1.207 on 2026-07-12, when a native background completion re-invoked the idle model with no human input.
 The current Stop-owned main/secondmate inclusion and child-worktree exclusion are covered deterministically by `tests/fm-claude-stop-autoarm.test.sh`.

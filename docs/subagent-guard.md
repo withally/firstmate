@@ -365,6 +365,11 @@ tests/fm-subagent-pretool-check.test.sh
 
 ## Known residual gap
 
+The other tracked Claude hook entries in `.claude/settings.json` refuse to run under Grok's Claude-compatible settings loading because Grok already covers each of those events through `.grok/hooks/` registrations and running both creates duplicate paths.
+This entry is the deliberate exception and stays unguarded: Grok is "inspected but not wired" above, so no `.grok/hooks/` registration covers the subagent-spawn event and guarding it would remove the guard from Grok rather than deduplicate it.
+The coverage it leaves is partial rather than correct because the tracked entry passes `--claude`, which suppresses the stdout decision object Grok consumes; treat this as incidental reach, not as Grok being wired.
+Wiring Grok properly still requires the matcher-token verification described above, which is what closes this exception.
+
 This change does not close the deeper harness-agnostic defect.
 Every firstmate guard's in-flight-work branch keys off `state/<id>.meta`, and only `bin/fm-spawn.sh` writes that record.
 `bin/fm-supervision-lib.sh` also recognizes an X-mode relay poll as supervision need, but unaccounted primary work still contributes nothing to that predicate.

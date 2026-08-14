@@ -55,7 +55,13 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 - OpenCode listens for `session.idle` in `.opencode/plugins/fm-primary-turnend-guard.js`, lets the watcher coordinator act first, and calls `client.session.promptAsync` once when the guard returns 2.
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
 - Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
-  The tracked Claude Stop entries are inert when `GROK_AGENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
+  The tracked Claude Stop entries are inert when `GROK_AGENT` or `GROK_HOOK_EVENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
+  Both markers are required because Grok does not inject the same variables into every process kind: grok 0.2.73 set `GROK_AGENT` for child and tool processes, while grok 1.0.0 hook processes carried `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`, `GROK_SESSION_ID`, and `GROK_WORKSPACE_ROOT` but no `GROK_AGENT`.
+  A guard keyed on `GROK_AGENT` alone therefore stopped firing on grok 1.0.0, and the resulting Claude-only auto-arm ran synchronously under Grok for the declared 28800-second timeout.
+  Do not widen this guard to `GROK_SESSION_ID`: Grok injects that into every child process, so it can survive into a Claude session that Grok launched and silently disable Claude's continuity.
+  The same marker guard covers both `Stop` entries, the `SessionStart` entry, and the two `PreToolUse` Bash entries in `.claude/settings.json` because Grok already covers those events through `.grok/hooks/` registrations.
+  `bin/fm-subagent-pretool-check.sh` is the deliberate unguarded exception because no Grok registration covers the subagent-spawn event; [`subagent-guard.md`](subagent-guard.md) "Known residual gap" owns that exception.
+  `tests/fm-turnend-guard.test.sh` executes every tracked command under Grok and Claude environments so neither the five guarded entries nor the one exception can change silently.
 
 Claude and Codex can block a Stop directly with exit status 2 and stderr.
 Both payloads carry `stop_hook_active`.

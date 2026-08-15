@@ -26,6 +26,8 @@ SESSION=pi-live-e2e
 LAB="$ROOT/.pi-live-e2e.$$"
 PROJECT="$LAB/project"
 AHOY_PROJECT="$LAB/ahoy-project"
+CALM_LIVE_PROJECT="$LAB/calm-live-project"
+CALM_LIVE_HOME="$LAB/calm-live-home"
 HOME_DIR="$LAB/fmhome"
 PI_VERSION=$(pi --version)
 # shellcheck source=/dev/null
@@ -115,6 +117,181 @@ wait_pid_dead() {
     i=$((i + 1))
   done
   return 1
+}
+
+run_calm_visibility_live_guard() {
+  local calm_session=pi-calm-live-guard
+  local owner_evidence="$CALM_LIVE_HOME/foreign-read-owner"
+  local session_file="$CALM_LIVE_HOME/calm-live-session.jsonl"
+  local pane i=0
+
+  mkdir -p "$CALM_LIVE_PROJECT/.pi/extensions/lib" "$CALM_LIVE_HOME/config"
+  git init -q "$CALM_LIVE_PROJECT"
+  cp "$ROOT/.pi/extensions/fm-calm.ts" "$CALM_LIVE_PROJECT/.pi/extensions/fm-calm.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$CALM_LIVE_PROJECT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts" "$CALM_LIVE_PROJECT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$CALM_LIVE_PROJECT/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$CALM_LIVE_PROJECT/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$CALM_LIVE_PROJECT/.pi/extensions/lib/fm-operational-input.ts"
+  : >"$CALM_LIVE_PROJECT/AGENTS.md"
+
+  cat >"$CALM_LIVE_PROJECT/foreign-provider.ts" <<'TS'
+import { writeFileSync } from "node:fs";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+const assistantMessage = (model: { api: string; provider: string; id: string }): AssistantMessage => ({
+  role: "assistant",
+  content: [],
+  api: model.api,
+  provider: model.provider,
+  model: model.id,
+  usage: {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  },
+  stopReason: "pending",
+  timestamp: Date.now(),
+});
+
+export default function (pi: ExtensionAPI): void {
+  pi.registerTool({
+    name: "read",
+    label: "Foreign read",
+    description: "Live Calm built-in ownership probe",
+    parameters: Type.Object({ path: Type.String() }),
+    async execute() {
+      writeFileSync(process.env.CALM_LIVE_OWNER_EVIDENCE!, "foreign-read-executed\n", "utf8");
+      return {
+        content: [{ type: "text", text: "FOREIGN_READ_RESULT" }],
+        details: {},
+      };
+    },
+  });
+
+  pi.registerProvider("calm-live", {
+    baseUrl: "http://127.0.0.1/unused",
+    apiKey: "test-only",
+    api: "calm-live-api",
+    models: [
+      {
+        id: "deterministic",
+        name: "Calm live visibility fixture",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 4096,
+        maxTokens: 128,
+      },
+    ],
+    streamSimple(model, context) {
+      const stream = createAssistantMessageEventStream();
+      const output = assistantMessage(model);
+      void (async () => {
+        stream.push({ type: "start", partial: output });
+        const hasToolResult = context.messages.some((message) => message.role === "toolResult");
+        const text = hasToolResult ? "CALM_LIVE_FINAL_REPLY" : "MIDTURN_LIVE_NOTE";
+        const textIndex = output.content.length;
+        output.content.push({ type: "text", text: "" });
+        stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
+        const textBlock = output.content[textIndex];
+        if (textBlock.type !== "text") throw new Error("live fixture text block drifted");
+        textBlock.text = text;
+        stream.push({ type: "text_delta", contentIndex: textIndex, delta: text, partial: output });
+        stream.push({ type: "text_end", contentIndex: textIndex, content: text, partial: output });
+
+        if (!hasToolResult) {
+          const toolCall = {
+            type: "toolCall" as const,
+            id: "calm-live-read",
+            name: "read",
+            arguments: { path: "unused.txt" },
+          };
+          const toolIndex = output.content.length;
+          output.content.push(toolCall);
+          stream.push({ type: "toolcall_start", contentIndex: toolIndex, partial: output });
+          stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: '{"path":"unused.txt"}', partial: output });
+          stream.push({ type: "toolcall_end", contentIndex: toolIndex, toolCall, partial: output });
+          output.stopReason = "toolUse";
+          stream.push({ type: "done", reason: "toolUse", message: output });
+        } else {
+          output.stopReason = "stop";
+          stream.push({ type: "done", reason: "stop", message: output });
+        }
+        stream.end();
+      })();
+      return stream;
+    },
+  });
+}
+TS
+
+  "$TMUX" -L "$SOCKET" new-session -d -s "$calm_session" -x 140 -y 42 \
+    "cd '$CALM_LIVE_PROJECT' && env FM_HOME='$CALM_LIVE_HOME' CALM_LIVE_OWNER_EVIDENCE='$owner_evidence' PI_OFFLINE=1 pi --approve --no-context-files --no-skills --no-prompt-templates --no-extensions -e ./foreign-provider.ts -e ./.pi/extensions/fm-calm.ts --model calm-live/deterministic --session '$session_file'; rc=\$?; printf '\nPI_EXIT=%s\n' \"\$rc\"; sleep 30"
+
+  while [ "$i" -lt 120 ]; do
+    pane=$("$TMUX" -L "$SOCKET" capture-pane -p -t "$calm_session" 2>/dev/null || true)
+    printf '%s\n' "$pane" | grep -Fq "(calm-live)" && break
+    sleep 0.25
+    i=$((i + 1))
+  done
+  printf '%s\n' "$pane" | grep -Fq "(calm-live)" \
+    || fail "Pi $PI_VERSION Calm live guard did not reach the composer"
+
+  "$TMUX" -L "$SOCKET" send-keys -t "$calm_session" -l "/calm"
+  "$TMUX" -L "$SOCKET" send-keys -t "$calm_session" Enter
+  i=0
+  while [ "$i" -lt 80 ]; do
+    pane=$("$TMUX" -L "$SOCKET" capture-pane -p -t "$calm_session")
+    if printf '%s\n' "$pane" | grep -Fq "read" && [ "$(cat "$CALM_LIVE_HOME/config/calm" 2>/dev/null || true)" = on ]; then
+      break
+    fi
+    sleep 0.25
+    i=$((i + 1))
+  done
+  [ "$(cat "$CALM_LIVE_HOME/config/calm" 2>/dev/null || true)" = on ] \
+    || fail "Pi $PI_VERSION Calm live guard did not activate"
+  printf '%s\n' "$pane" | grep -Fq "read" \
+    || fail "Pi $PI_VERSION Calm live guard did not warn about the foreign read owner"
+
+  "$TMUX" -L "$SOCKET" send-keys -t "$calm_session" -l "RUN_CALM_LIVE_GUARD"
+  "$TMUX" -L "$SOCKET" send-keys -t "$calm_session" Enter
+  i=0
+  while [ "$i" -lt 160 ]; do
+    pane=$("$TMUX" -L "$SOCKET" capture-pane -p -t "$calm_session")
+    printf '%s\n' "$pane" | grep -Fq "CALM_LIVE_FINAL_REPLY" && break
+    sleep 0.25
+    i=$((i + 1))
+  done
+  printf '%s\n' "$pane" | grep -Fq "CALM_LIVE_FINAL_REPLY" \
+    || fail "Pi $PI_VERSION Calm live guard did not render the genuine final reply"
+  printf '%s\n' "$pane" | grep -Fq "MIDTURN_LIVE_NOTE" \
+    && fail "Pi $PI_VERSION Calm live guard left the mid-turn working note rendered"
+  [ "$(cat "$owner_evidence" 2>/dev/null || true)" = foreign-read-executed ] \
+    || fail "Pi $PI_VERSION Calm live guard did not execute the foreign read owner"
+  grep -Fq "MIDTURN_LIVE_NOTE" "$session_file" \
+    || fail "Pi $PI_VERSION Calm live guard removed the working note from session data"
+
+  "$TMUX" -L "$SOCKET" send-keys -t "$calm_session" -l "/quit"
+  "$TMUX" -L "$SOCKET" send-keys -t "$calm_session" Enter
+  i=0
+  while [ "$i" -lt 40 ]; do
+    pane=$("$TMUX" -L "$SOCKET" capture-pane -p -t "$calm_session" 2>/dev/null || true)
+    printf '%s\n' "$pane" | grep -Fq "PI_EXIT=0" && break
+    sleep 0.25
+    i=$((i + 1))
+  done
+  printf '%s\n' "$pane" | grep -Fq "PI_EXIT=0" \
+    || fail "Pi $PI_VERSION Calm live guard did not exit cleanly"
+  "$TMUX" -L "$SOCKET" kill-session -t "$calm_session" 2>/dev/null || true
 }
 
 run_ahoy_case() {
@@ -245,6 +422,11 @@ run_native_ahoy_regressions() {
 }
 
 mkdir -p "$LAB"
+run_calm_visibility_live_guard
+if [ "${FM_PI_CALM_LIVE_ONLY:-0}" = 1 ]; then
+  printf 'ok - Pi %s live Calm guard hid persisted mid-turn text after forced redraw and preserved a foreign built-in owner\n' "$PI_VERSION"
+  exit 0
+fi
 git clone -q "$ROOT" "$PROJECT"
 run_ahoy_transcript_regressions
 run_native_ahoy_regressions
@@ -341,4 +523,4 @@ wait_for_text "PI_EXIT=0" 60 || fail "Pi did not exit cleanly"
 wait_pid_dead "$watcher_pid" || fail "watcher child survived clean Pi exit"
 wait_pid_dead "$arm_pid" || fail "arm child survived clean Pi exit"
 
-printf 'ok - Pi %s live E2E covered the Calm working ship, Ahoy first/later messages, legacy transcripts, near misses, and watcher continuity\n' "$PI_VERSION"
+printf 'ok - Pi %s live E2E covered Calm mid-turn visibility and foreign built-in ownership, the working ship, Ahoy first/later messages, legacy transcripts, near misses, and watcher continuity\n' "$PI_VERSION"

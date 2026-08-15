@@ -96,6 +96,27 @@ pi-signed
 
 ### Pi Calm transcript redraw
 
+Pi Calm's mid-turn visibility, built-in ownership, and existing forced-redraw guarantees were reverified on 2026-08-15 against the installed Pi 0.84.1 CLI and package.
+The portable fixture proved that Calm registers no wrappers during extension load, claims the seven uncontested built-ins from a Calm-on session start, preserves and warns about a foreign same-name owner, hides a built-in row constructed before wrapper registration, keeps pending and final assistant text visible, and leaves the underlying mid-turn message unchanged.
+The env-gated live guard used Pi's real extension loader, ownership registry, deterministic provider, session file, and tmux TUI to prove that a foreign `read` owner still executed, finalized mid-turn text remained serialized, and the forced redraw removed that text from the rendered transcript.
+The full broader credentialed continuity run continued past this new guard but later failed its pre-existing model-response assertion because the model replied `Watcher wake handled and acknowledged.` instead of the requested exact `HANDLED`; that unrelated result is not presented as green evidence.
+
+```sh
+pi --version
+tests/fm-calm-pi-extension.test.sh
+FM_PI_LIVE_E2E=1 FM_PI_CALM_LIVE_ONLY=1 tests/fm-pi-primary-live-e2e.test.sh
+```
+
+Observed bounded output:
+
+```text
+0.84.1
+ok - Calm registers no built-in wrappers during load, claims all 7 from a Calm-on session start, and preserves plus warns about foreign same-name tool owners on first activation
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+ok - Pi 0.84.1 live Calm guard hid persisted mid-turn text after forced redraw and preserved a foreign built-in owner
+```
+
 Pi Calm's renderer-dependent transcript guarantees were reverified on 2026-08-12 against the installed Pi 0.84.1 package and CLI in a real isolated 180 by 44 tmux TUI.
 Pi 0.84.1 called the registered watcher tool's renderer with Calm active but could leave the prior zero-height row painted until a later frame, so Calm now captures the current TUI through the documented widget factory and requests one forced redraw whenever its presentation choice takes effect.
 The portable renderer fixture proves that activating Calm requests that forced redraw, while the real TUI fixture proves the already-rendered `fm_watch_arm_pi` call and result, built-in tool rows, collapsed thinking labels, and operational wake are absent without weakening their negative assertions.

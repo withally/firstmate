@@ -6,16 +6,25 @@
 // with a disposable component factory, and setHiddenThinkingLabel().
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
-// newer Pi solely for its version. The collapsed-thinking, operational-user, and
-// transcript-redraw presentation adapters probe the exact API they patch and degrade
-// independently with a diagnostic naming the adapter and the running Pi version
+// newer Pi solely for its version. The collapsed-thinking, built-in-tool-row,
+// operational-user, transcript-replay, and transcript-redraw presentation adapters
+// probe the exact API they patch and degrade independently with a diagnostic naming
+// the adapter and the running Pi version
 // (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
 // still exposes no global renderer for arbitrary built-in or custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
+//
+// Pi has one complete ToolDefinition slot per tool name and rejects duplicate extension
+// registrations during initial load. Keep extension-load registration empty and claim
+// only uncontested built-ins from session_start or first activation, when getAllTools()
+// is reliable. The exported component adapter above keeps already-mounted and replayed
+// rows controllable without taking their execution definition. docs/calm-mode-feasibility.md
+// owns the Pi-source evidence.
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -27,6 +36,7 @@ import type {
   ExtensionContext,
   ExtensionUIContext,
   ToolDefinition,
+  ToolInfo,
   ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -37,6 +47,7 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  ToolExecutionComponent,
   VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -102,6 +113,83 @@ const extensionDir = dirname(extensionFile);
 const root = resolve(extensionDir, "../..");
 const CALM_REDRAW_CAPTURE_WIDGET_KEY = "firstmate-calm-redraw-capture";
 
+const realpathOrSelf = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+const extensionRealFile = realpathOrSelf(extensionFile);
+const CALM_BUILT_IN_TOOL_NAMES = new Set([
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+]);
+
+type ToolExecutionPresentation = {
+  imageComponents?: Component[];
+  imageSpacers?: Array<Component | undefined>;
+  toolName?: string;
+};
+type CalmBuiltInToolLayoutPatch = {
+  hidesBuiltInRows: () => boolean;
+};
+const CALM_BUILT_IN_TOOL_LAYOUT_PATCH = Symbol.for(
+  "firstmate:calm-built-in-tool-layout:pi-0.84.1",
+);
+
+// Tool rows created before Calm first claims an uncontested built-in keep the
+// ToolDefinition captured by Pi's constructor. Patch Pi's exported component render
+// seam so those mounted rows still follow Calm, while leaving their execution owner
+// untouched. Image children remain visible, matching the established wrapper boundary.
+function installCalmBuiltInToolLayout(): void {
+  const registry = globalThis as typeof globalThis & {
+    [key: symbol]: CalmBuiltInToolLayoutPatch | undefined;
+  };
+  const hidesBuiltInRows = (): boolean =>
+    calmPresentationHides("assistant-tool-call") &&
+    calmPresentationHides("tool-result");
+  const installed = registry[CALM_BUILT_IN_TOOL_LAYOUT_PATCH];
+  if (installed) {
+    installed.hidesBuiltInRows = hidesBuiltInRows;
+    return;
+  }
+  if (typeof ToolExecutionComponent !== "function") {
+    throw new Error("Firstmate Calm requires Pi ToolExecutionComponent");
+  }
+  const originalRender = ToolExecutionComponent.prototype.render;
+  if (typeof originalRender !== "function") {
+    throw new Error("Firstmate Calm requires Pi ToolExecutionComponent.render");
+  }
+  const patch: CalmBuiltInToolLayoutPatch = { hidesBuiltInRows };
+  ToolExecutionComponent.prototype.render = function (width: number): string[] {
+    const state = this as unknown as ToolExecutionPresentation;
+    if (
+      !patch.hidesBuiltInRows() ||
+      typeof state.toolName !== "string" ||
+      !CALM_BUILT_IN_TOOL_NAMES.has(state.toolName)
+    ) {
+      return originalRender.call(this, width);
+    }
+
+    const images = state.imageComponents ?? [];
+    const spacers = state.imageSpacers ?? [];
+    const lines: string[] = [];
+    for (let index = 0; index < images.length; index += 1) {
+      const spacer = spacers[index];
+      if (spacer) lines.push(...spacer.render(width));
+      lines.push(...images[index].render(width));
+    }
+    return lines;
+  };
+  registry[CALM_BUILT_IN_TOOL_LAYOUT_PATCH] = patch;
+}
+
 // Each presentation adapter probes the exact Pi API it patches. If a future Pi removes
 // that API, only the affected adapter degrades; the rest of Calm keeps working.
 function installCalmPresentationAdapter(name: string, install: () => void): void {
@@ -115,6 +203,7 @@ function installCalmPresentationAdapter(name: string, install: () => void): void
 
 export default function (pi: ExtensionAPI) {
   installCalmPresentationAdapter("collapsed-thinking", installCalmAssistantLayout);
+  installCalmPresentationAdapter("built-in-tool-row", installCalmBuiltInToolLayout);
   installCalmPresentationAdapter("operational-user-row", installCalmOperationalUserLayout);
   installCalmPresentationAdapter("transcript-replay-window", installCalmTranscriptReplayWindow);
 
@@ -224,9 +313,9 @@ export default function (pi: ExtensionAPI) {
 
   registerFirstmateSyntheticPresentation(pi);
 
-  function registerBuiltIn<TParams extends TSchema, TDetails, TState>(
+  function wrapBuiltIn<TParams extends TSchema, TDetails, TState>(
     factory: DefinitionFactory<TParams, TDetails, TState>,
-  ): void {
+  ): ToolDefinition<TParams, TDetails, TState> {
     const definitions = new Map<string, ToolDefinition<TParams, TDetails, TState>>();
     const definitionFor = (cwd: string): ToolDefinition<TParams, TDetails, TState> => {
       let definition = definitions.get(cwd);
@@ -278,7 +367,7 @@ export default function (pi: ExtensionAPI) {
       return shell;
     };
 
-    pi.registerTool({
+    return {
       ...original,
       renderShell: "self",
 
@@ -321,21 +410,92 @@ export default function (pi: ExtensionAPI) {
         refreshStandardShell(state, theme, context);
         return new Container();
       },
-    });
+    };
   }
 
-  registerBuiltIn(createReadToolDefinition);
-  registerBuiltIn(createBashToolDefinition);
-  registerBuiltIn(createEditToolDefinition);
-  registerBuiltIn(createWriteToolDefinition);
-  registerBuiltIn(createGrepToolDefinition);
-  registerBuiltIn(createFindToolDefinition);
-  registerBuiltIn(createLsToolDefinition);
+  const wrappedBuiltIns: ToolDefinition<any, any, any>[] = [
+    wrapBuiltIn(createReadToolDefinition),
+    wrapBuiltIn(createBashToolDefinition),
+    wrapBuiltIn(createEditToolDefinition),
+    wrapBuiltIn(createWriteToolDefinition),
+    wrapBuiltIn(createGrepToolDefinition),
+    wrapBuiltIn(createFindToolDefinition),
+    wrapBuiltIn(createLsToolDefinition),
+  ];
+  let builtInsRegistered = false;
+
+  function registeredTools(): ToolInfo[] | undefined {
+    try {
+      return pi.getAllTools();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`Firstmate Calm: built-in ownership check unavailable. ${reason}`);
+      return undefined;
+    }
+  }
+
+  function ownerIsForeign(owner: ToolInfo["sourceInfo"] | undefined): boolean {
+    return (
+      owner !== undefined &&
+      owner.source !== "builtin" &&
+      realpathOrSelf(owner.path) !== extensionRealFile
+    );
+  }
+
+  function activateBuiltInsIfNeeded(ui: ExtensionUIContext): void {
+    if (builtInsRegistered) return;
+    const registered = registeredTools();
+    if (registered === undefined) {
+      builtInsRegistered = true;
+      ui.notify(
+        "Firstmate Calm: built-in ownership could not be checked, so Calm left every built-in tool definition unchanged this session.",
+        "warning",
+      );
+      return;
+    }
+    const contested = wrappedBuiltIns.filter((tool) => {
+      const owner = registered.find((info) => info.name === tool.name)?.sourceInfo;
+      return ownerIsForeign(owner);
+    });
+    const contestedNames = new Set(contested.map((tool) => tool.name));
+    for (const tool of wrappedBuiltIns) {
+      if (!contestedNames.has(tool.name)) pi.registerTool(tool);
+    }
+    builtInsRegistered = true;
+    if (contested.length === 0) return;
+
+    const names = contested.map((tool) => `"${tool.name}"`).join(", ");
+    const plural = contested.length > 1;
+    ui.notify(
+      `Firstmate Calm: the ${names} built-in tool${plural ? "s are" : " is"} already provided by another extension, so Calm may not fully function for ${plural ? "them" : "it"} this session.`,
+      "warning",
+    );
+    for (const tool of contested) {
+      console.error(`Firstmate Calm: skipped claiming built-in "${tool.name}" because another extension already owns it.`);
+    }
+  }
+
+  // Report any later-observable loss rather than silently claiming that Calm controls
+  // a tool definition owned elsewhere.
+  function reportBuiltInLosses(): void {
+    if (!builtInsRegistered) return;
+    const registered = registeredTools();
+    if (!registered) return;
+    for (const tool of wrappedBuiltIns) {
+      const owner = registered.find((info) => info.name === tool.name)?.sourceInfo;
+      if (!ownerIsForeign(owner)) continue;
+      console.error(
+        `Firstmate Calm: another extension (${owner.path}) owns the built-in "${tool.name}" tool; Calm's presentation for it is unavailable this session.`,
+      );
+    }
+  }
 
   pi.on("session_start", (_event, ctx) => {
     resetCalmTranscriptOrigin();
     exportRendering = false;
     setCalmPresentation(loadCalmPreference());
+    if (calmPresentationIsActive()) activateBuiltInsIfNeeded(ctx.ui);
+    reportBuiltInLosses();
     setCalmStockExportRendering(false);
     publishPresentationState();
     agentRunActive = false;
@@ -396,6 +556,7 @@ export default function (pi: ExtensionAPI) {
       const active = !calmPresentationIsActive();
       persistCalmPreference(active);
       setCalmPresentation(active);
+      if (active) activateBuiltInsIfNeeded(ctx.ui);
       publishPresentationState();
       applyWorkingPresentation(ctx.ui, true);
       ctx.ui.setHiddenThinkingLabel(active ? "" : undefined);

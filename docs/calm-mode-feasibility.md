@@ -170,6 +170,7 @@ Compaction and retry loaders remain stock because Pi exposes no supported replac
 `.pi/extensions/lib/fm-calm-visibility.ts` owns only the allowlist-style transcript presentation policy.
 `bin/fm-operational-input.sh` owns current cross-language operational-input construction and parsing, while the thin Pi adapter lives at `.pi/extensions/lib/fm-operational-input.ts`.
 Only `genuine-user-prompt`, `genuine-agent-response`, and `working-status` are policy-visible.
+`assistant-working-note` is deliberately absent from that allowlist, so Calm hides finalized mid-turn narration while leaving pending streams and final replies visible.
 Every other audited class is policy-hidden when Pi exposes a supported presentation boundary, but semantic input is never transformed to enforce that preference.
 The home-local persistence schema is owned by [`docs/configuration.md`](configuration.md#pi-calm-preference-configcalm).
 
@@ -194,9 +195,10 @@ The test fixture enumerates every class below through the centralized policy, an
 | --- | --- | --- |
 | `genuine-user-prompt` | `UserMessageComponent` | Visible, including every tested operational near miss. |
 | `genuine-agent-response` | Assistant text in `AssistantMessageComponent` | Visible, subject only to the exact operational acknowledgement rule owned by [`calm.md`](calm.md). |
+| `assistant-working-note` | Text in an `AssistantMessageComponent` whose intrinsic stop reason is `toolUse`, or is `length` with a tool call present | Hidden from a shallow presentation copy after finality is known; pending streams, final replies, session data, model context, export, and share data remain unchanged. |
 | `assistant-thinking` | Thinking content in `AssistantMessageComponent` | Collapsed reasoning is removed from the shallow presentation copy before layout and occupies zero rows; explicit expansion renders the original reasoning. |
-| `assistant-tool-call` | `ToolExecutionComponent` | Seven built-ins and `fm_watch_arm_pi` hidden; arbitrary custom tools remain an unsupported boundary. |
-| `tool-result` | `ToolExecutionComponent` | Text results for the controlled tools hidden; arbitrary custom results remain an unsupported boundary. |
+| `assistant-tool-call` | `ToolExecutionComponent` | Seven built-in names and `fm_watch_arm_pi` hidden; the built-in row adapter also covers rows created before wrapper registration and rows whose execution definition belongs to another extension, while arbitrary custom names remain an unsupported boundary. |
+| `tool-result` | `ToolExecutionComponent` | Text results for the controlled built-in names hidden without changing execution ownership; arbitrary custom results remain an unsupported boundary. |
 | `tool-image` | Image children appended outside tool renderer slots | Unsupported boundary; remains visible. |
 | `user-bash` | `BashExecutionComponent` for `!` and `!!` | Unsupported boundary; remains visible. |
 | `skill-invocation` | `SkillInvocationMessageComponent` plus parsed user text | Unsupported boundary; remains visible. |
@@ -214,8 +216,8 @@ The test fixture enumerates every class below through the centralized policy, an
 | `unknown` | Future or unclassified transcript component | Policy-hidden, but no generic renderer exists; never claimed as covered. |
 
 The installed extension API has no supported global transcript filter, user-message renderer, assistant-message renderer, chat-container API, or generic custom-tool wrapper.
-Pi 0.81.1 through 0.84.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses three separate idempotent, API-probed exported-class adapters for assistant layout, the complete operational-user transcript row, and the transcript replay window while leaving all message data and non-Calm rendering unchanged.
-A fourth adapter, transcript-redraw, probes the documented `setWidget()` factory and forcible render instead of an exported class, and is the only one probed per session because Pi's non-TUI modes supply a no-op `setWidget()` by design.
+Pi 0.81.1 through 0.84.1 export `AssistantMessageComponent`, `InteractiveMode`, and `ToolExecutionComponent`, so Calm uses four separate idempotent, API-probed exported-class adapters for assistant layout, already-mounted built-in tool rows, the complete operational-user transcript row, and the transcript replay window while leaving all message data and non-Calm rendering unchanged.
+A fifth adapter, transcript-redraw, probes the documented `setWidget()` factory and forcible render instead of an exported class, and is the only one probed per session because Pi's non-TUI modes supply a no-op `setWidget()` by design.
 See the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports or seams is handled.
 The current dated Pi rendering evidence and refresh commands are recorded in [`docs/verification/runtime-backends.md`](verification/runtime-backends.md#pi-calm-transcript-redraw).
 General component replacement, ANSI cursor erasure, provider-context mutation, and installed-file patching remain rejected as unsupported or preservation-breaking workarounds.
@@ -242,7 +244,7 @@ grok 0.2.106 (bde89716f679)
 | Claude Code 2.1.218 | Not feasible through the inspected supported project surface. | Project hooks can observe lifecycle and tool events, while the plugin CLI packages supported components; neither inspected surface exposes a transcript-row renderer or transcript-wide redraw API. |
 | Codex CLI 0.144.6 | Not feasible through the inspected supported project surface. | The tracked hooks expose session, pre-tool, and stop handling, while the plugin and feature inventories expose no TUI tool-row renderer or transcript redraw control. |
 | OpenCode 1.17.18 | Not feasible without violating the preservation boundary. | Plugins expose events and tool execution hooks, not a built-in transcript-row renderer; same-name tool replacement changes execution rather than presentation alone. |
-| Pi (verified 0.81.1 through 0.84.1) | Partially feasible with three API-probed exported-class adapters plus the probed transcript-redraw capture. | Public APIs control working visibility, collapsed labels, known tool slots, custom entries, and expansion redraws; exported assistant and interactive-mode classes provide the collapsed-thinking, operational-user layout, and transcript replay boundaries, and the documented widget factory supplies the TUI whose forced render discards a stale frame, each gated on the exact method's presence rather than a version number, while generic user, tool, and status filtering remains unavailable. |
+| Pi (verified 0.81.1 through 0.84.1) | Partially feasible with four API-probed exported-class adapters plus the probed transcript-redraw capture. | Public APIs control working visibility, collapsed labels, known tool slots, custom entries, and expansion redraws; exported assistant, tool-execution, and interactive-mode classes provide the collapsed-thinking and working-note layout, already-mounted built-in row, operational-user layout, and transcript replay boundaries, and the documented widget factory supplies the TUI whose forced render discards a stale frame, each gated on the exact method's presence rather than a version number, while generic user, arbitrary-tool, and status filtering remains unavailable. |
 | Grok CLI 0.2.106 | Not feasible through the inspected supported project surface. | Project hooks expose lifecycle and tool interception, while the plugin CLI exposes no row-renderer contract; `--minimal` changes the whole screen mode rather than selected transcript rows. |
 
 These conclusions are deliberately limited to the named versions and supported surfaces.
@@ -253,7 +255,7 @@ Only Pi's Calm presentation implementation changed; every producer and non-Pi tr
 
 ## Regression coverage
 
-`tests/fm-calm-pi-extension.test.sh` compares wrapped and stock renderers, verifies all seven built-ins plus `fm_watch_arm_pi`, exercises redraw of already-rendered tool, thinking, current operational-user, and legacy synthetic rows, and covers every policy class.
+`tests/fm-calm-pi-extension.test.sh` compares wrapped and stock renderers, verifies all seven built-ins plus `fm_watch_arm_pi`, exercises redraw of already-rendered tool, thinking, current operational-user, and legacy synthetic rows, verifies off-state registration and foreign-owner preservation, and covers every policy class including mid-turn working notes.
 Its deterministic assistant-layout matrix covers the exact operational acknowledgement, Calm off, genuine-user collision, punctuation, prefix, suffix, Markdown, explanation, capitalization, whitespace, streaming divergence, queued operational inputs, intervening tools, interruption, and every session-start replay reason.
 It also drives Pi's real run lifecycle to prove that an operational wake steered into a still-running captain turn keeps that run's replies visible, that an operational-only run still hides the acknowledgement, and that a settled run does not carry its captain origin into the next wake.
 It drives Pi's own transcript rebuild inside an active operational run to prove that replayed rows keep per-row origin, that a previously hidden acknowledgement stays hidden while a replayed captain reply stays visible, and that the continuation of the surrounding run is unaffected.
@@ -263,7 +265,8 @@ A native deterministic `/skill:ahoy` turn produces thinking, tool-call, and tool
 The operational provider path covers Calm loaded on, loaded off, default preference, extension absent, exact watcher delivery, narrow bare-marker legacy input, persisted restart replay, a genuine captain prompt, and adjacent notifications coalesced into one intended processing turn.
 It asserts one persisted and rendered captain answer, exact user-role operational envelopes in order, no replacement custom messages, one processing result, zero operational transcript rows, and the two-row neighboring-assistant geometry for live, adjacent, and restart paths.
 Quoted current markers, ASCII-only labels, ordinary text before a marker, unrelated U+2063 placement, and image-bearing input remain visible in component and native transcript checks.
-`tests/fm-pi-primary-live-e2e.test.sh` also proves the working ship replaces the built-in `Working...` row while Calm is active on the credentialed provider path, and that it clears when the run settles, before continuing its ordinary watcher lifecycle.
+`tests/fm-pi-primary-live-e2e.test.sh` includes a deterministic real-Pi guard that proves finalized mid-turn text leaves the rendered TUI but remains in session data, and that a foreign built-in owner remains executable after Calm activates.
+Its broader credentialed path also proves the working ship replaces the built-in `Working...` row while Calm is active and clears when the run settles before continuing its ordinary watcher lifecycle.
 `tests/fm-pi-primary-types.test.sh` performs strict no-emit TypeScript checking against the installed Pi declarations when `tsc` is available.
 
 The relevant commands are:
@@ -271,6 +274,7 @@ The relevant commands are:
 ```sh
 tests/fm-calm-pi-extension.test.sh
 FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh
+FM_PI_LIVE_E2E=1 FM_PI_CALM_LIVE_ONLY=1 tests/fm-pi-primary-live-e2e.test.sh
 tests/fm-pi-primary-types.test.sh
 ```
 

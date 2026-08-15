@@ -16,9 +16,9 @@
 # secondmate homes keep the full behavior below.
 #
 # COMPOSITION, NOT DUPLICATION: this script calls fm-lock.sh, fm-bootstrap.sh,
-# and fm-wake-drain.sh as real subprocesses and prints their real output. It
+# fm-wake-drain.sh, and fm-startup-network.sh as real subprocesses and prints their real output. It
 # never re-implements their logic; all sequencing/formatting logic added here
-# stays local to this file. Those three scripts remain fully working
+# stays local to this file. Those four scripts remain fully working
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
 # install <tools> after consent, /updatefirstmate, the afk daemon, existing
 # tests) still call them directly. The one seam this script needed -
@@ -37,7 +37,7 @@
 #                       (legacy PR-check migration, secondmate convergence,
 #                       secondmate liveness, pending remote handoff retry,
 #                       X-mode artifact writes, fleet sync) also run only when
-#                       locked.
+#                       locked; network sweeps run in the deferred stage.
 #   3. wake-drain     - presents durable wakes and advances recovery handling
 #                       state, so it also only runs when locked.
 #   4. supervision    - emit the operating block for the detected harness.
@@ -47,10 +47,11 @@
 #                       state/*.meta, a line-count and per-line bounded status tail,
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
 #                       read-only, always runs.
-#   7. context digest - data/projects.md, data/secondmates.md, data/captain.md,
+#   7. network checks - harvest the deferred result without waiting.
+#   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
 #                       always safe, always runs after live fleet identity.
-#   8. closing reminder - prints the context-specific watcher next step; this
+#   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
 #
@@ -69,7 +70,7 @@
 #
 # The tradeoff this ordering accepts: a refused (read-only) session must not
 # go dark. So on refusal, bootstrap still runs (in FM_BOOTSTRAP_DETECT_ONLY=1
-# mode) for its read-only detect lines - missing tools, gh auth, the
+# mode) for its local read-only detect lines - missing tools, the
 # worktree-tangle check, the harness override, crew-dispatch validation,
 # tasks-axi and quota-axi tool checks, and tasks-axi availability - none of
 # which mutate shared state and all of which are safe to compute without
@@ -168,7 +169,7 @@ if fm_session_start_is_task_worktree; then
   exit 0
 fi
 
-SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state context next-step'
+SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
 
 stage() {
   [ -n "${STAGE_MARKER_FILE:-}" ] || return 0
@@ -454,19 +455,27 @@ if [ "$READ_ONLY" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
+  NETWORK_STAGE_LOCKED=1
+  [ "$REEMIT" -eq 0 ] || NETWORK_STAGE_LOCKED=0
+  NETWORK_LOCK_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
+  "$SCRIPT_DIR/fm-startup-network.sh" start \
+    --locked "$NETWORK_STAGE_LOCKED" --lock-pid "$NETWORK_LOCK_PID" \
+    --harvest-pid $$ >/dev/null 2>&1 || true
 fi
 
 # --- 2. bootstrap --------------------------------------------------------
 stage bootstrap
 subsection "BOOTSTRAP"
 if [ "$READ_ONLY" -eq 1 ]; then
-  BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+  BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip \
+    "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 elif [ "$REEMIT" -eq 1 ]; then
-  BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_LOCKED=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+  BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_LOCKED=1 FM_BOOTSTRAP_NETWORK=skip \
+    "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 else
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
-    "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
+    FM_BOOTSTRAP_NETWORK=skip "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
   )
 fi
 if [ -n "$BOOT_OUT" ]; then
@@ -560,8 +569,8 @@ them after this digest or bulk-read the backlog and status logs.
 
 Read a source directly only when this digest marked it ABSENT or corrupt, a
 specific full task body or older status history is needed, a capped line's
-tail matters, omitted queued work is needed, or STARTUP TRUNCATED named the
-stage that would have emitted it.
+tail matters, omitted queued work is needed, NETWORK CHECKS remains in progress,
+or STARTUP TRUNCATED named the stage that would have emitted it.
 EOF
 
 # --- 6. fleet-state digest ---------------------------------------------
@@ -645,7 +654,18 @@ if fm_pf_relay_active "$FM_HOME" \
   fi
 fi
 
-# --- 7. context digest -----------------------------------------------------
+# --- 7. deferred network result ---------------------------------------------
+stage network-checks
+section "NETWORK CHECKS"
+if [ "$READ_ONLY" -eq 1 ]; then
+  printf 'skipped (read-only session) - GitHub authentication, project clone refresh,\n'
+  printf 'secondmate liveness and convergence, and pending handoff delivery were not run.\n'
+  printf 'The session holding the fleet lock owns those checks and their mutations.\n'
+else
+  "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
+fi
+
+# --- 8. context digest -----------------------------------------------------
 stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
@@ -654,7 +674,7 @@ print_file_or_absent "$DATA/captain.md" "data/captain.md"
 print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
 
-# --- 8. closing reminder -----------------------------------------------
+# --- 9. closing reminder -----------------------------------------------
 stage next-step
 section "NEXT STEP"
 if [ "$READ_ONLY" -eq 1 ]; then

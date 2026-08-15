@@ -26,6 +26,7 @@ The record contains the verified lock owner's pid, so a clear or compaction cann
 
 The run tier blocks session initialization while the digest executes.
 `bin/fm-session-start.sh` therefore applies one whole-digest bound through `bin/fm-timeout-lib.sh`, defaulting to 120 seconds through `FM_SESSION_START_TIMEOUT`.
+External-network work is outside that blocking path and runs under the independent bounded, durable contract owned by `bin/fm-startup-network.sh`.
 If the bound is reached, output already emitted remains visible and a `STARTUP TRUNCATED` banner names the incomplete stage and every stage not reached.
 The tracked hook timeouts are 180 seconds so the digest can emit its own diagnosis before the harness stops it.
 

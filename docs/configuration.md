@@ -20,6 +20,7 @@ The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.
 Wake, watcher, away-mode, and X-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
+`bin/fm-startup-network.sh`'s header owns the deferred stage that keeps external-network calls off the digest's blocking path, including its state, delivery, timeout, and mutation-lease contracts.
 `docs/sessionstart-nudge.md` owns the native session-open adapter mechanics that run or nudge the digest command.
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
@@ -495,6 +496,8 @@ FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the 
 FM_SESSION_START_QUEUED_LIMIT=20   # ready queued backlog rows in the digest; in-flight, held, and blocked rows are never bounded, and done rows are omitted
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording
 FM_BOOTSTRAP_LOCKED=0   # internal companion for a lock-owning --reemit: keep detect-only sweeps skipped without surrendering repair ownership
+FM_BOOTSTRAP_NETWORK=all   # internal bootstrap phase split: all, skip (local only), or only (network only); unknown values fail safe to all
+FM_STARTUP_NETWORK_TIMEOUT=120   # aggregate seconds bounding the deferred network stage
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operation WILL still run.'   # banner continuation line; fm-send.sh overrides it to name the requested message specifically
 FM_POLL=15              # seconds between watcher poll cycles

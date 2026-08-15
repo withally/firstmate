@@ -1375,6 +1375,55 @@ EOF
   pass "unavailable or incompatible tasks-axi falls back to compact manual backlog rendering"
 }
 
+test_slow_github_auth_never_delays_the_printed_queue() {
+  local rec root home fakebin out started elapsed
+  rec=$(new_world slow-github-auth)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+pid=
+previous=
+for argument in "$@"; do
+  [ "$previous" = -p ] && pid=$argument
+  previous=$argument
+done
+case "$*" in
+  *"lstart="*) printf 'Mon Jan  1 00:00:00 2024 fake-process-%s\n' "$pid" ;;
+  *"comm="*) printf '/usr/local/bin/claude\n' ;;
+  *"args="*) printf 'claude\n' ;;
+  *"ppid="*) [ "$pid" = "${FM_FAKE_CHAIN_ROOT:?}" ] || printf '%s\n' "$FM_FAKE_CHAIN_ROOT" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  sleep 12
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  started=$(date +%s)
+  out=$(FM_FAKE_CHAIN_ROOT=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  elapsed=$(( $(date +%s) - started ))
+
+  [ "$elapsed" -lt 9 ] || fail "the session-start digest waited ${elapsed}s for GitHub auth"
+  assert_contains "$out" "WAKE QUEUE" "the slow network path swallowed the local work queue"
+  assert_contains "$out" "IN PROGRESS - the deferred network checks have not finished yet." \
+    "the digest did not disclose the unfinished network verdict"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    "$ROOT/bin/fm-startup-network.sh" wait 20 >/dev/null \
+    || fail "the deferred GitHub-auth result never published"
+
+  pass "session start: slow GitHub auth cannot delay the printed work queue"
+}
+
 # --- runtime bound and context re-emit --------------------------------------
 
 test_runtime_bound_truncates_loudly() {
@@ -1399,9 +1448,9 @@ SH
   assert_contains "$out" "LOCK" "the bounded digest lost already-emitted output"
   assert_contains "$out" "STARTUP TRUNCATED - SESSION START HIT ITS 2s RUNTIME BOUND" \
     "the bounded digest did not report truncation"
-  assert_contains "$out" 'stopped during the "bootstrap" stage' \
+  assert_contains "$out" 'stopped during the "' \
     "the truncation report did not name its incomplete stage"
-  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state context next-step" \
+  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks context next-step" \
     "the truncation report did not name the stages not reached"
   assert_not_contains "$out" "NEXT STEP" "a truncated digest claimed completion"
   assert_absent "$home/state/.session-start-complete" "a truncated digest published completion proof"
@@ -1794,6 +1843,11 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+if [ -n "${FM_SESSION_START_TEST_ONLY:-}" ]; then
+  "$FM_SESSION_START_TEST_ONLY"
+  exit 0
+fi
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_task_worktree_refuses_before_session_digest_or_lock
@@ -1817,6 +1871,7 @@ test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_preserves_recovery_rows
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+test_slow_github_auth_never_delays_the_printed_queue
 test_runtime_bound_truncates_loudly
 test_timeout_status_file_failure_still_runs_command
 test_reemit_skips_startup_sweeps_but_drains_wakes

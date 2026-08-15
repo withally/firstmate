@@ -8,6 +8,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | Script                   | Purpose                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------ |
 | `fm-session-start.sh`    | Compose lock, bootstrap, and wake drain into the single ordered session-start digest |
+| `fm-startup-network.sh`  | Run session-start network checks in a bounded detached worker and deliver every result inline or as a wake |
 | `fm-sessionstart-run.sh` | Run the bounded session-start digest or its completion-gated context re-emit |
 | `fm-sessionstart-nudge.sh` | Print the native session-start hook nudge when the primary has not already run the digest |
 | `fm-operational-input.sh` | Construct and parse the canonical cross-language operational-input protocol |

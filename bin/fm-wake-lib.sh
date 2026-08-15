@@ -1093,7 +1093,7 @@ fm_wake_signal_seen_path() {  # <state> <file>
 }
 
 fm_wake_status_append_self_announced() {  # <state> <status-file> <line>
-  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size
+  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size line_bytes
   marker=$(fm_wake_signal_seen_path "$state" "$file")
   if [ -e "$file" ]; then
     pre_sig=$(fm_wake_signal_sig "$file") || pre_sig=''
@@ -1104,7 +1104,9 @@ fm_wake_status_append_self_announced() {  # <state> <status-file> <line>
   pre_size=${pre_sig%%:*}
   post_size=${post_sig%%:*}
   case "$pre_size$post_size" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$post_size" -eq $((pre_size + ${#line} + 1)) ] || return 1
+  line_bytes=$(printf '%s' "$line" | LC_ALL=C wc -c 2>/dev/null | tr -d '[:space:]')
+  case "$line_bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$post_size" -eq $((pre_size + line_bytes + 1)) ] || return 1
   printf '%s' "$post_sig" > "$marker" 2>/dev/null || return 1
 }
 

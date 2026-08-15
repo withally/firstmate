@@ -123,10 +123,8 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
     print_unread_status_section "$snapshot" || rc=1
-    print_open_decisions_section || rc=1
-  elif [ "$rc" -eq 0 ]; then
-    print_open_decisions_section || rc=1
   fi
+  print_open_decisions_section || rc=1
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
     acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully") || rc=1
     [ "$rc" -ne 0 ] || status_commit_presentation_snapshot "$STATE" "$acknowledged" || rc=1

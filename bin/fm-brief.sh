@@ -17,6 +17,14 @@
 # only as far as this task's real constraints require.
 # The judgment-budget line is the per-model dial: widen it and remove recipes
 # for high-capability models, or narrow it with measured boundaries for others.
+# For a strong thinking model - an approved Fable, an approved K3, or a
+# captain-named high-effort Claude - keep the whole brief short: what good looks
+# like, what must not be broken, and what is not theirs, with no method, file
+# tour, or step list, so it is handed the goal and constraints and left to think.
+# Widening or narrowing that worker's judgment budget stays a separate dial; the
+# short recipe-free shape holds regardless, and it never rewrites the
+# worktree-isolation assertion, delivery contract, or any other safety scaffold,
+# which stay verbatim.
 # An unstated judgment budget is never neutral because every model fills it with
 # initiative.
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--content-mutation] [--herdr-lab]

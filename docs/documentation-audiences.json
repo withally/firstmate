@@ -337,6 +337,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/ci-trigger.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/dispatch-auth.md",
       "audience": "maintainer-verification"
     },

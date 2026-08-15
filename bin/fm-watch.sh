@@ -7,11 +7,18 @@
 # without consulting runtime busy state; a persistent secondmate's `working:`
 # report is excluded because the stale loop deliberately skips its idle endpoint
 # and the heartbeat backstop only rescans captain-relevant statuses, so nothing
-# else would deliver it. Bare turn-end, unknown-shape signal, and stale paths remain
-# absorb-only-when-provably-working: they are absorbed only when the crew shows
-# POSITIVE evidence it is still working (an actively-running no-mistakes step, or
-# a backend busy signal), and surfaced otherwise, so a crew that finishes (or
-# stops and waits) is never silently swallowed. A declared external-wait pause or
+# else would deliver it. On the bare turn-end and stale paths, a crew that is NOT
+# provably working (no actively-running no-mistakes step, no backend busy signal)
+# surfaces only when the captain would care: it carries a captain-relevant verb,
+# or its agent has confidently exited (the swallowed-finish guard,
+# fm_backend_agent_state dead/missing). A crew that is merely quiet with a live
+# agent - a bare turn-end between steps, or an idle pane - is absorbed: the signal
+# path lets the stale path decide, and the stale path hands it to the wedge timer,
+# which surfaces it as a possible wedge only after it stays quiet past
+# STALE_ESCALATE_SECS; so the sitting wait does not end for a live idle crew,
+# while a genuinely stuck one still escalates and a genuine finish still surfaces
+# at once. A status batch carrying an unknown or unmatched-decision line stays
+# fail-safe and surfaces. A declared external-wait pause or
 # verified captain-held is the separate idle-by-design absorb case on BOTH the
 # signal and stale paths - its own status append and the bare turn-end under it
 # are absorbed, not just re-surfaced stale hashes - silent by default with an
@@ -20,14 +27,20 @@
 # While state/.afk exists, the daemon owns the one-shot watcher lifecycle and the
 # stale-pane and heartbeat paths still queue and exit for daemon classification.
 # The signal path keeps the same conservative triage used in normal mode: routine
-# working progress, a provably-working bare turn-end, and a declared-wait
-# (paused:/captain-held) signal are absorbed, while captain-relevant, stopped,
-# unknown, undeclared-ambiguous, and secondmate events surface.
+# working progress, a provably-working bare turn-end, a declared-wait
+# (paused:/captain-held) signal, and a bare turn-end whose crew's agent is still
+# live are absorbed, while captain-relevant, exited-agent (swallowed finish),
+# unknown-status, and secondmate events surface. Away mode keeps the pre-quiet-crew
+# surface so its daemon classifies every ambiguous signal.
 # Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
-#                          has a captain-relevant verb OR a non-routine signal's
-#                          crew is neither provably working nor sitting on a
-#                          declared external wait; away mode also surfaces
+#                          has a captain-relevant verb OR a signal names a crew
+#                          whose agent has confidently exited (the swallowed-finish
+#                          guard) OR a status batch carries an unknown/unmatched
+#                          line (fail-safe); a bare turn-end whose crew is neither
+#                          provably working nor declared-waiting but whose agent is
+#                          still live is absorbed and left to the stale path; away
+#                          mode also surfaces
 #                          every persistent secondmate report immediately;
 #                          an ordinary direct report's pure working-progress
 #                          status batch, a declared-wait (paused:/captain-held)
@@ -48,9 +61,13 @@
 #                          SILENT unless FM_PAUSE_RESURFACE_SECS is explicitly
 #                          set (opt-in recheck, one wake per window per
 #                          cadence). Only when neither absorb class applies does
-#                          the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no
-#                          captain-relevant verb), both surfaced at once. The
+#                          the log's last line decide: a terminal
+#                          (captain-relevant) line surfaces at once; a
+#                          non-terminal (no captain-relevant verb) quiet crew
+#                          surfaces at once only if its agent has confidently
+#                          exited (finish), and is otherwise absorbed and handed
+#                          to the wedge timer, surfacing as a possible wedge only
+#                          after it stays quiet past STALE_ESCALATE_SECS. The
 #                          routine working-progress absorb is a signal-path rule
 #                          only and never suppresses a stale surface. A
 #                          provably-working stale past the wedge threshold is
@@ -316,6 +333,63 @@ window_label() {
   local w=$1 task
   task=$(window_to_task "$w" "$STATE")
   [ -n "$task" ] && printf 'fm-%s' "$task"
+}
+
+# crew_endpoint_finished: 0 (finished) iff the recorded endpoint's agent has
+# confidently exited - fm_backend_agent_state returns dead or missing, the only
+# two states it says license recovery. alive, ambiguous, unreadable, and
+# unverified all stay "not finished", so a crew whose agent is still there, or
+# whose backend cannot classify it, is never mistaken for a swallowed finish.
+crew_endpoint_finished() {  # <backend> <target>
+  case "$(fm_backend_agent_state "$1" "$2" 2>/dev/null)" in
+    dead|missing) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# signal_any_endpoint_finished: 0 iff at least one task named by an ambiguous
+# signal batch has a confidently-exited endpoint. This is the swallowed-finish
+# guard for the signal path's residual else: a crew whose agent left without a
+# captain-relevant terminal line must still surface, because no later event will
+# come from a gone endpoint. A crew whose agent is still live has merely gone
+# quiet between steps and is left to the stale path's wedge timer, so the sitting
+# wait does not end for a live idle crew.
+signal_any_endpoint_finished() {  # <state> <file> ...
+  local state=$1 f base id meta backend target
+  shift
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in
+      *.status) id=${base%.status} ;;
+      *.turn-ended) id=${base%.turn-ended} ;;
+      *) continue ;;
+    esac
+    meta="$state/$id.meta"
+    [ -f "$meta" ] || continue
+    backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
+    target=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+    [ -n "$backend" ] && [ -n "$target" ] || continue
+    crew_endpoint_finished "$backend" "$target" && return 0
+  done
+  return 1
+}
+
+# signal_is_bare_turn_end: 0 iff the batch is one or more turn-end markers and
+# nothing else - the crew ended a turn without appending any status line. This is
+# the frequent quiet-crew signal that produced the Grok primary's no-op turns; a
+# batch carrying any .status line is the crew saying something (a captain-relevant
+# verb, an unmatched decision echo, an unknown verb) and stays on the fail-safe
+# surface path, never absorbed by the quiet-crew rule.
+signal_is_bare_turn_end() {  # <file> ...
+  local f had=1
+  [ "$#" -gt 0 ] || return 1
+  for f in "$@"; do
+    case "$f" in
+      *.turn-ended) had=0 ;;
+      *) return 1 ;;
+    esac
+  done
+  return "$had"
 }
 
 recorded_windows() {
@@ -1072,7 +1146,32 @@ EOF
       # declared captain-wait windows. A crew that neither declared a wait nor is
       # provably working still surfaces below (the swallowed-finish guard).
       signal_absorb_reason="declared external wait"
+    elif afk_present; then
+      # Away mode: the daemon owns classification and wants every remaining
+      # ambiguous signal queued, so keep the conservative surface here rather than
+      # applying the attended-primary quiet-crew absorb below.
+      signal_actionable=1
+    elif signal_has_secondmate_report $files; then
+      # A persistent secondmate's report is its routed reply channel and must
+      # always reach firstmate, never absorbed as a quiet crew.
+      signal_actionable=1
+    elif signal_any_endpoint_finished "$STATE" $files; then
+      # Swallowed-finish guard: a crew whose agent has confidently exited without
+      # a captain-relevant terminal line still surfaces, because a gone endpoint
+      # produces no later event to catch it.
+      signal_actionable=1
+    elif signal_is_bare_turn_end $files; then
+      # A bare turn-end from a crew that is not provably working, declared no
+      # wait, and whose agent is still live means the crew merely went quiet
+      # between steps - not a captain event. Absorb here (advance markers, no
+      # turn) and let the stale path own the wedge-vs-finish decision once the
+      # pane settles, so the sitting wait does not end for a live idle crew. The
+      # heartbeat backstop still re-surfaces any captain-relevant status this
+      # absorbs by mistake.
+      signal_absorb_reason="quiet crew, agent still live"
     else
+      # Any status-carrying batch that reached here (an unknown verb, an unmatched
+      # decision echo) stays fail-safe: surface it so an anomaly is never swallowed.
       signal_actionable=1
     fi
     if [ "$signal_actionable" -eq 1 ]; then
@@ -1248,7 +1347,25 @@ EOF
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
               *)
-                surface_nonterminal_stale "$w" "$h"
+                if afk_present || crew_endpoint_finished "$(window_backend "$w")" "$w"; then
+                  # Away mode: the daemon owns classification and wants the stale
+                  # queued, so surface as before. Otherwise a genuine finish (the
+                  # agent has confidently exited without a captain-relevant
+                  # terminal line) surfaces at once.
+                  surface_nonterminal_stale "$w" "$h"
+                else
+                  # A live crew that has merely gone quiet (no running pipeline,
+                  # no declared wait, agent still there) is not a captain event
+                  # yet. Record the hash and let the wedge timer decide: it starts
+                  # the clock silently on first sight and only escalates as a
+                  # possible wedge after STALE_ESCALATE_SECS, so a crew that
+                  # resumes within the window never wakes the primary. The timer
+                  # is anchored to .stale-since and is NOT reset by clear_pause_
+                  # tracking here, so quiet accumulates across pane-hash churn and
+                  # a genuinely stuck crew still escalates on schedule.
+                  printf '%s' "$h" > "$sf"
+                  wedge_timer_check "$w" "$ssf" "non-terminal stale (quiet, agent live)" "$ewf" "$task"
+                fi
                 ;;
             esac
           else

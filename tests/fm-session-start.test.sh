@@ -1590,6 +1590,44 @@ EOF
   pass "--reemit skips startup mutation sweeps and presents queued wakes until acknowledgement"
 }
 
+# Read-once survives a compaction: the restore path AGENTS.md section 3 directs a
+# harness whose compaction fired no session-open hook (Grok) is `--reemit`, which
+# must reprint the durable context dump so the primary never re-reads
+# captain.md/learnings.md/projects.md file by file, and must carry the
+# post-compaction restore instruction in its read-once block.
+test_reemit_restores_read_once_dump_after_compaction() {
+  local rec root home fakebin reemit
+  rec=$(new_world reemit-dump)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  # Distinctive durable dump content the read-once restore must reprint.
+  printf 'captain preference: MARK-CAPTAIN-9f3\n' > "$home/data/captain.md"
+  printf 'learning: MARK-LEARNING-7c1\n' > "$home/data/learnings.md"
+  printf -- '- firstmate MARK-PROJECT-4a2\n' > "$home/data/projects.md"
+
+  # A full startup publishes the completion record so the next call is a re-emit,
+  # not a fresh startup.
+  run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >/dev/null
+  settle_startup_network "$home" "$root" >/dev/null 2>&1 || true
+  assert_present "$home/state/.session-start-complete" "full startup did not publish completion proof"
+
+  # The re-emit is what a Grok primary runs after a compaction dropped the digest.
+  reemit=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
+    env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    "$SESSION_START" --reemit)
+
+  assert_contains "$reemit" "SESSION START (CONTEXT RE-EMIT)" "--reemit did not label itself as a re-emit"
+  assert_contains "$reemit" "MARK-CAPTAIN-9f3" "--reemit did not restore data/captain.md content"
+  assert_contains "$reemit" "MARK-LEARNING-7c1" "--reemit did not restore data/learnings.md content"
+  assert_contains "$reemit" "MARK-PROJECT-4a2" "--reemit did not restore data/projects.md content"
+  assert_contains "$reemit" "restore it once with" \
+    "the read-once block omitted the post-compaction restore instruction"
+  pass "--reemit restores the read-once dump and states the post-compaction restore path (read-once survives a compaction)"
+}
+
 test_reemit_preserves_lock_holder_repair_ownership() {
   local rec root home fakebin out
   rec=$(new_world reemit-tangle)
@@ -1918,6 +1956,7 @@ test_slow_github_auth_never_delays_the_printed_queue
 test_runtime_bound_truncates_loudly
 test_timeout_status_file_failure_still_runs_command
 test_reemit_skips_startup_sweeps_but_drains_wakes
+test_reemit_restores_read_once_dump_after_compaction
 test_reemit_preserves_lock_holder_repair_ownership
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence

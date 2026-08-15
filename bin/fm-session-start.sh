@@ -571,6 +571,10 @@ Read a source directly only when this digest marked it ABSENT or corrupt, a
 specific full task body or older status history is needed, a capped line's
 tail matters, omitted queued work is needed, NETWORK CHECKS remains in progress,
 or STARTUP TRUNCATED named the stage that would have emitted it.
+
+If a later context compaction drops this digest, restore it once with
+`bin/fm-session-start.sh --reemit` and resume this trust, rather than re-reading
+these files individually.
 EOF
 
 # --- 6. fleet-state digest ---------------------------------------------

@@ -485,7 +485,9 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 ## 11. Crewmate briefs
 
 `bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
-For ship and scout tasks, fill all four generated task parts proportionately and state the judgment budget; secondmate charters retain their `{TASK}` placeholder.
+For ship and scout tasks, fill each of the four generated task parts only as far as this task's real constraints require, never to a fixed length, and always state the judgment budget; secondmate charters retain their `{TASK}` placeholder.
+When the worker is a strong thinking model - an approved Fable, an approved K3, or a captain-named high-effort Claude - keep the brief short: what good looks like, what must not be broken, and what is not theirs, with no method, file tour, or step list, so it is handed the goal and constraints and left to think.
+That brevity is the judgment-budget dial only; the worktree-isolation assertion, delivery contract, and every other safety scaffold below stay verbatim.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 For the next matched brief-shape calibration pair, follow [`docs/verification/brief-shape-ab.md`](docs/verification/brief-shape-ab.md) until its stop condition closes the A/B.
 

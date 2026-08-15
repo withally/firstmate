@@ -270,6 +270,36 @@ test_task_shape_distinguishes_constraints_from_choices() {
   pass "fm-brief.sh: ship and scout tasks distinguish constraints from delegated judgement"
 }
 
+# A strong thinking model is briefed short - goal and constraints, no method,
+# file tour, or step list - and that loosening must never strip a safety
+# scaffold. The guidance firstmate reads at scaffold time is the script's --help,
+# so assert it names the loosened worker classes and the recipe-free shape while
+# still holding the isolation assertion and delivery contract verbatim, then
+# confirm a real generated ship brief keeps both safety scaffolds.
+test_strong_thinking_model_brief_is_short_without_loosening_safety() {
+  local help help_flat home brief
+  help=$("$ROOT/bin/fm-brief.sh" --help)
+  # Line wrapping in the header is not the contract; the semantic guidance is.
+  help_flat=$(printf '%s' "$help" | tr '\n' ' ' | tr -s ' ')
+  assert_contains "$help_flat" "with no method, file tour, or step list" \
+    "fm-brief.sh --help did not carry the strong-thinking-model short-brief loosening"
+  assert_contains "$help_flat" "an approved Fable, an approved K3, or a captain-named high-effort Claude" \
+    "fm-brief.sh --help did not name the strong-thinking-model classes that get the short brief"
+  assert_contains "$help_flat" "any other safety scaffold, which stay verbatim" \
+    "fm-brief.sh --help let the short-brief loosening reach the safety scaffold"
+
+  home="$TMP_ROOT/strong-model-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-strong-model some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/brief-strong-model/brief.md"
+  assert_present "$brief" "strong-model ship brief was not scaffolded"
+  assert_grep "**Verify isolation before anything else.**" "$brief" \
+    "short-brief loosening dropped the worktree-isolation assertion from a generated ship brief"
+  assert_grep "Delivery contract: mode=no-mistakes" "$brief" \
+    "short-brief loosening dropped the delivery contract from a generated ship brief"
+  pass "fm-brief.sh: strong-thinking-model briefs loosen the shape while safety scaffolds stay verbatim"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -870,6 +900,7 @@ test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_task_shape_distinguishes_constraints_from_choices
+test_strong_thinking_model_brief_is_short_without_loosening_safety
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply

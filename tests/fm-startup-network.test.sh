@@ -400,6 +400,35 @@ EOF
   pass "fm-startup-network: start atomically reserves the generation harvest observes"
 }
 
+# A reemit session start runs unlocked, and an unlocked rerun is probe-only: it
+# cannot re-derive sweep findings. So a finished report nobody has printed yet
+# must survive the reemit's `start` and reach that session's harvest, not be
+# overwritten by a fresh probe-only generation while its wake still points at it.
+test_reemit_start_preserves_an_undelivered_finished_report() {
+  local rec home root log report runs
+  rec=$(new_world reemit-preserve)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  printf '%s\n' $$ > "$home/state/.lock"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_OUT='SECONDMATE_LIVENESS: respawn failed' \
+    run_stage "$home" "$root" start --locked 1 --harvest-pid 999999999
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the sweep worker never published"
+  wait_for_startup_network_wake "$home" \
+    || fail "no wake was queued for the undelivered result"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" run_stage "$home" "$root" start --locked 0 --harvest-pid $$
+  report=$(run_stage "$home" "$root" harvest --pid $$)
+  assert_contains "$report" "SECONDMATE_LIVENESS: respawn failed" \
+    "the reemit start clobbered the undelivered sweep report: $report"
+  [ -f "$home/state/.startup-network.delivered" ] \
+    || fail "harvest did not acknowledge the preserved result"
+  runs=$(grep -c 'network=only' "$log" || true)
+  [ "$runs" -eq 1 ] || fail "the reemit start launched a probe rerun over an undelivered result ($runs runs): $(cat "$log")"
+  pass "fm-startup-network: a reemit start delivers an undelivered finished report instead of clobbering it"
+}
+
 test_new_lock_owner_does_not_reuse_the_previous_owners_worker() {
   local rec home root log generation_one generation_two next_owner
   rec=$(new_world owner-handoff)
@@ -479,6 +508,7 @@ for test_case in \
   test_an_abandoned_run_reads_as_needing_a_rerun \
   test_start_is_single_flight \
   test_start_reserves_its_generation_before_returning \
+  test_reemit_start_preserves_an_undelivered_finished_report \
   test_new_lock_owner_does_not_reuse_the_previous_owners_worker \
   test_lock_takeover_stays_read_only_while_a_sweep_holds_the_lease
 do

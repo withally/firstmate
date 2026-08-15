@@ -37,7 +37,10 @@
 # Usage: fm-startup-network.sh start --locked <0|1> --lock-pid <pid> --harvest-pid <pid>
 #          Launch the detached worker and return immediately. Single-flight: a
 #          worker already running for the same lock owner is left alone. A new
-#          owner gets a distinct generation. --locked 1 asks
+#          owner gets a distinct generation. An unlocked start over a finished
+#          result that has not been delivered yet claims that result for its own
+#          harvest instead of reserving a probe-only generation that would
+#          overwrite the sweep report. --locked 1 asks
 #          for the mutating sweeps as well as the read-only probe; --locked 0
 #          asks for the probe only. --harvest-pid names the session-start process
 #          that will try to print the result inline, so the worker can tell
@@ -53,6 +56,10 @@
 #        fm-startup-network.sh harvest --pid <pid>
 #          Print the digest's NETWORK CHECKS section and release the inline-print
 #          claim. Called by bin/fm-session-start.sh, not by hand.
+#        fm-startup-network.sh deliver --generation <generation>
+#          Internal: the detached delivery watch that `start` hands an
+#          undelivered finished result to; it settles the claim and the wake
+#          exactly as the worker's own settlement loop would have.
 #        fm-startup-network.sh report
 #          Print the current state and report without changing anything.
 #        fm-startup-network.sh wait [<seconds>]
@@ -233,6 +240,29 @@ cmd_start() {  # <locked> <harvest-pid> <expected-lock-pid>
     publish_lock_release
     return 0
   fi
+  case "$(status_get state)" in
+    done|timeout|failed)
+      if [ "$locked" != 1 ] && [ ! -f "$DELIVERED_FILE" ] \
+        && [ "$(status_get report_published)" = 1 ]; then
+        # A finished result nobody has printed yet. An unlocked start cannot
+        # improve on it - a probe-only rerun would overwrite the report and
+        # cannot re-derive sweep findings - so claim the existing generation
+        # for this session's harvest and hand the delivery watch to a detached
+        # deliverer, which reaps the claim and queues the wake if this
+        # claimant also dies before printing.
+        generation=$(status_get generation)
+        printf '%s\t%s\n' "$generation" "$harvest_pid" > "$CLAIM_FILE" 2>/dev/null || true
+        publish_lock_release
+        local monitor_was_on=0
+        case $- in *m*) monitor_was_on=1 ;; esac
+        set -m 2>/dev/null || true
+        nohup "$SCRIPT_DIR/fm-startup-network.sh" deliver --generation "$generation" \
+          >/dev/null 2>&1 </dev/null &
+        [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
+        return 0
+      fi
+      ;;
+  esac
 
   generation="$(now).$$.$harvest_pid"
   started=$(now)
@@ -316,6 +346,14 @@ lock_unchanged() {  # <expected-pid>
   [ "$current" = "$expected" ]
 }
 
+# One queued `check: startup-network` wake already points at the current report,
+# whatever generation queued it, so a second appender would only duplicate the
+# nudge. Every appender is racing toward the same durable pointer, which makes
+# skipping on an existing entry safe for all of them.
+wake_already_queued() {
+  fm_wake_queued_keys check 2>/dev/null | grep -Fxq startup-network
+}
+
 await_delivery() {  # <generation> <state>
   local generation=$1 state=$2 limit waited=0 claim_record claim_generation claim_pid claim_live
   limit=$(( $(delivery_budget) * 10 ))
@@ -344,7 +382,7 @@ EOF
       [ "$claim_live" -eq 1 ] || rm -f "$CLAIM_FILE" 2>/dev/null || true
     fi
     if [ "$claim_live" -eq 0 ]; then
-      fm_wake_append check startup-network \
+      wake_already_queued || fm_wake_append check startup-network \
         "check: startup-network: deferred startup network checks finished ($state); read them with $FM_ROOT/bin/fm-startup-network.sh report" \
         || true
       publish_lock_release
@@ -359,10 +397,28 @@ EOF
     publish_lock_release
     return 0
   fi
-  fm_wake_append check startup-network \
+  wake_already_queued || fm_wake_append check startup-network \
     "check: startup-network: deferred startup network checks finished ($state); read them with $FM_ROOT/bin/fm-startup-network.sh report" \
     || true
   publish_lock_release
+}
+
+# The delivery watch for a finished result whose claim was taken over by a later
+# unlocked start. Reuses the worker's own settlement loop, so a claimant that
+# dies before printing still gets its claim reaped and the wake queued.
+cmd_deliver() {  # <generation>
+  local generation=$1 state
+  [ -n "$generation" ] || return 1
+  publish_lock_acquire
+  if [ "$(status_get generation)" != "$generation" ] || [ -f "$DELIVERED_FILE" ]; then
+    publish_lock_release
+    return 0
+  fi
+  state=$(status_get state)
+  publish_lock_release
+  case "$state" in
+    done|timeout|failed) await_delivery "$generation" "$state" ;;
+  esac
 }
 
 publish() {  # <generation> <state> <phases> <locked> <started> <rc> <output-file>
@@ -599,6 +655,7 @@ case "$MODE" in
   start) cmd_start "$LOCKED" "${HARVEST_PID:-0}" "$LOCK_PID" ;;
   run) cmd_run "$LOCKED" "$LOCK_PID" "$GENERATION" ;;
   harvest) cmd_harvest "${HARVEST_PID:-}" ;;
+  deliver) cmd_deliver "$GENERATION" ;;
   report) print_state ;;
   wait) cmd_wait "${1:-120}" || exit $? ;;
   -h|--help) usage ;;

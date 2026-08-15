@@ -526,6 +526,107 @@ publish_healthy_watcher_identity "$PARENT/state" "$PARENT" "$ROOT/bin/fm-watch.s
   || fail "remote endpoint delivery observation did not execute on its own host"
 pass "remote spawn launches on the remote-local backend and records a host-qualified route"
 
+# Lifecycle input must cross the same registered remote-home transport while
+# staying on fm-control's closed semantic plane. An interrupt is a named key,
+# never marked conversational text that the secondmate could reason about.
+remote_control_text_before=$(grep -c '^pane send-text' "$HERDR_LOG" || true)
+REMOTE_INTERRUPT=$(remote_env "$ROOT/bin/fm-control.sh" ios interrupt)
+assert_contains "$REMOTE_INTERRUPT" 'interrupt-delivered ios' \
+  "remote fm-control did not confirm the interrupt postcondition"
+remote_control_text_after=$(grep -c '^pane send-text' "$HERDR_LOG" || true)
+[ "$remote_control_text_before" -eq "$remote_control_text_after" ] \
+  || fail "remote interrupt crossed the conversational text plane"
+grep -E '^pane send-keys .* escape ' "$HERDR_LOG" >/dev/null \
+  || fail "remote interrupt did not deliver the harness-owned lifecycle key"
+pass "remote interrupt uses fm-control over the existing remote-home route"
+
+REMOTE_EXIT=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 \
+  remote_env "$ROOT/bin/fm-control.sh" ios exit)
+assert_contains "$REMOTE_EXIT" 'stopped ios' \
+  "remote fm-control did not verify the stopped-agent postcondition"
+assert_grep 'pane send-text w1:p3 /quit --session fm-remote' "$HERDR_LOG" \
+  "remote exit did not submit the harness-owned lifecycle command"
+assert_no_grep '[fm-from-firstmate] /quit' "$HERDR_LOG" \
+  "remote exit was delivered as marked conversational chat"
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = dead ] \
+  || fail "remote exit reported success while the endpoint still had an agent"
+pass "remote exit uses fm-control and verifies the agent stopped"
+
+cp "$PARENT/state/ios.meta" "$TMP_ROOT/parent-ios-before-control-relaunch.meta"
+REMOTE_RELAUNCH=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 FM_CONTROL_LAUNCH_WAIT=2 \
+  remote_env "$ROOT/bin/fm-control.sh" ios relaunch)
+assert_contains "$REMOTE_RELAUNCH" 'relaunched ios harness=codex' \
+  "remote fm-control did not confirm the replacement agent"
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
+  || fail "remote relaunch reported success while no replacement agent was alive"
+cmp -s "$TMP_ROOT/parent-ios-before-control-relaunch.meta" "$PARENT/state/ios.meta" \
+  || fail "same-profile remote relaunch changed the parent-owned route record"
+assert_no_grep '[fm-from-firstmate] /quit' "$HERDR_LOG" \
+  "remote relaunch delivered its stop phase as marked conversational chat"
+pass "remote relaunch preserves the route and verifies the replacement agent"
+
+REMOTE_SWITCH=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 FM_CONTROL_LAUNCH_WAIT=2 \
+  remote_env "$ROOT/bin/fm-control.sh" ios relaunch \
+    --harness pi --model remote-model --effort high)
+assert_contains "$REMOTE_SWITCH" 'relaunched ios harness=pi' \
+  "remote profile switch did not confirm the replacement harness"
+assert_grep 'harness=pi' "$PARENT/state/ios.meta" \
+  "remote profile switch left the parent record on the retired harness"
+assert_grep 'model=remote-model' "$PARENT/state/ios.meta" \
+  "remote profile switch did not publish its model to the parent record"
+assert_grep 'effort=high' "$PARENT/state/ios.meta" \
+  "remote profile switch did not publish its effort to the parent record"
+assert_grep 'harness=pi' "$REMOTE_HOME/state/parent-route/ios.meta" \
+  "remote profile switch did not publish its host-local harness"
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
+  || fail "remote profile switch reported success without a live replacement"
+pass "remote relaunch publishes the verified profile on both hosts"
+
+REMOTE_RESTORE=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 FM_CONTROL_LAUNCH_WAIT=2 \
+  remote_env "$ROOT/bin/fm-control.sh" ios relaunch)
+assert_contains "$REMOTE_RESTORE" 'relaunched ios harness=codex' \
+  "default remote relaunch did not re-resolve the primary's secondmate pin"
+assert_grep 'harness=codex' "$PARENT/state/ios.meta" \
+  "default remote relaunch did not restore the configured parent profile"
+assert_grep 'harness=codex' "$REMOTE_HOME/state/parent-route/ios.meta" \
+  "default remote relaunch did not restore the configured host-local profile"
+pass "remote relaunch re-resolves the primary secondmate profile"
+
+ssh_before_control_unknown=$(cat "$SSH_COUNT")
+set +e
+FM_FAKE_SSH_MODE=ambiguous remote_env "$ROOT/bin/fm-control.sh" ios interrupt \
+  > "$TMP_ROOT/control-unknown.out" 2>&1
+control_unknown_rc=$?
+set -e
+[ "$control_unknown_rc" -ne 0 ] \
+  || fail "unknown remote interrupt completion reported success"
+assert_grep 'completion for task ios on remote-mac is unknown; do not retry' \
+  "$TMP_ROOT/control-unknown.out" \
+  "unknown remote control completion did not require host-local reconciliation"
+ssh_after_control_unknown=$(cat "$SSH_COUNT")
+[ "$ssh_after_control_unknown" -eq $((ssh_before_control_unknown + 1)) ] \
+  || fail "unknown remote interrupt completion was retried"
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
+  || fail "ambiguous interrupt completion stopped the remote agent"
+pass "unknown remote control completion fails closed without transport retry"
+
+pending_before_failed_send=$(find "$PARENT/state/pending-replies" -type f 2>/dev/null | wc -l | tr -d ' ')
+touch "$TMP_ROOT/herdr-send-fail"
+set +e
+remote_env "$ROOT/bin/fm-send.sh" fm-ios 'this instruction must not report success' \
+  > "$TMP_ROOT/remote-send-failed.out" 2>&1
+remote_send_failed_rc=$?
+set -e
+rm -f "$TMP_ROOT/herdr-send-fail"
+[ "$remote_send_failed_rc" -ne 0 ] \
+  || fail "remote send reported success after the host-local submit failed"
+assert_grep 'text not sent' "$TMP_ROOT/remote-send-failed.out" \
+  "remote send failure did not report that delivery failed"
+pending_after_failed_send=$(find "$PARENT/state/pending-replies" -type f 2>/dev/null | wc -l | tr -d ' ')
+[ "$pending_before_failed_send" -eq "$pending_after_failed_send" ] \
+  || fail "known failed remote send retained a false pending-reply expectation"
+pass "remote send succeeds only after host-local submit confirmation"
+
 remote_route_meta="$REMOTE_HOME/state/parent-route/ios.meta"
 cp "$remote_route_meta" "$TMP_ROOT/remote-ios-before-default-session.meta"
 legacy_pane=$(sed -n 's/^herdr_pane_id=//p' "$remote_route_meta")

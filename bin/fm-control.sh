@@ -68,8 +68,11 @@
 # are all refused - a lifecycle command delivered to the wrong endpoint is far
 # worse than a loud refusal.
 #
-# A remotely placed secondmate is refused by name: its agent runs on another
-# host, so no postcondition this plane verifies could be read for it here.
+# A remotely placed secondmate uses the same exact-id verbs through its
+# registered fm-on route. The remote host runs this same control plane against
+# its host-local endpoint record, so interrupt, exit, and relaunch keep their
+# normal postconditions without becoming marked chat. SSH exit 255 is unknown
+# completion and is never retried automatically.
 #
 # Fail-closed boundaries:
 #   - An unverified harness, or a harness whose control mechanics are unknown,
@@ -268,17 +271,79 @@ if [ ! -f "$META" ]; then
   die "no task '$ID' in $STATE (fm-control resolves an exact task id only)"
 fi
 
-# A remotely placed secondmate records its endpoint on ANOTHER host, so every
-# postcondition this plane verifies - the agent-state classification, the busy
-# verdict, the endpoint's existence - would be read here for an endpoint that
-# does not live here. Endpoint validation already refuses such a record, since
-# `window=remote:<id>` can never match a local backend's required shape, so
-# nothing can be delivered to a wrong endpoint either way. What that refusal
-# cannot say is WHY, and "malformed metadata" is the wrong thing to tell an
-# operator about a correctly configured remote route. Name the placement
-# instead, using the same `remote_host` signal bin/fm-send.sh routes on.
+# A remotely placed secondmate keeps the same semantic control plane: this
+# command crosses the existing registered fm-on route, then the remote host
+# executes fm-control against its own endpoint record and verifies the same
+# postcondition there. The parent never converts lifecycle input into marked
+# chat, guesses at a local endpoint, or retries an unknown SSH completion.
 if [ -n "$(fm_meta_get "$META" remote_host)" ]; then
-  die "task $ID is a remotely placed secondmate on $(fm_meta_get "$META" remote_host); its agent runs outside this home, so no lifecycle action here could verify that it interrupted, stopped, or came back. Drive its lifecycle on that host, and reconcile it through the secondmate recovery path rather than this plane"
+  REMOTE_HOST=$(fm_meta_get "$META" remote_host)
+  REMOTE_CONTROL_ARGS=("$ID" "$VERB")
+  if [ "$VERB" = relaunch ]; then
+    # The primary home's secondmate pin is authoritative but intentionally not
+    # inherited into the remote home. Carry its three raw tokens to the remote
+    # invocation, where the ordinary resolve_relaunch_profile procedure remains
+    # the single owner of precedence, validation, resets, and defaults.
+    remote_config_harness=$("$SCRIPT_DIR/fm-harness.sh" secondmate 2>/dev/null || true)
+    remote_config_model=$("$SCRIPT_DIR/fm-harness.sh" secondmate-model 2>/dev/null || true)
+    remote_config_effort=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort 2>/dev/null || true)
+    REMOTE_CONTROL_ARGS+=(--primary-config-harness "$remote_config_harness" \
+      --primary-config-model "$remote_config_model" \
+      --primary-config-effort "$remote_config_effort")
+    [ "$HARNESS_SET" = 0 ] || REMOTE_CONTROL_ARGS+=(--harness "$NEW_HARNESS")
+    [ "$MODEL_SET" = 0 ] || REMOTE_CONTROL_ARGS+=(--model "$NEW_MODEL")
+    [ "$EFFORT_SET" = 0 ] || REMOTE_CONTROL_ARGS+=(--effort "$NEW_EFFORT")
+    [ "$NOTE_SET" = 0 ] || REMOTE_CONTROL_ARGS+=(--note "$NOTE")
+  fi
+  remote_rc=0
+  remote_out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh control \
+    "${REMOTE_CONTROL_ARGS[@]}" < /dev/null 2>&1) || remote_rc=$?
+  if [ "$remote_rc" -eq 0 ]; then
+    if [ "$VERB" = relaunch ]; then
+      remote_result_backend=$(printf '%s\n' "$remote_out" | sed -n 's/^backend=//p' | tail -1)
+      remote_result_target=$(printf '%s\n' "$remote_out" | sed -n 's/^target=//p' | tail -1)
+      remote_result_harness=$(printf '%s\n' "$remote_out" | sed -n 's/^harness=//p' | tail -1)
+      remote_result_model=$(printf '%s\n' "$remote_out" | sed -n 's/^model=//p' | tail -1)
+      remote_result_effort=$(printf '%s\n' "$remote_out" | sed -n 's/^effort=//p' | tail -1)
+      if [ "$remote_result_backend" != "$(fm_meta_get "$META" remote_backend)" ] \
+         || [ "$remote_result_target" != "$(fm_meta_get "$META" remote_target)" ] \
+         || [ -z "$remote_result_harness" ] \
+         || ! fm_control_harness_supported "$remote_result_harness" \
+         || [ -z "$remote_result_model" ] || [ -z "$remote_result_effort" ]; then
+        [ -z "$remote_out" ] || printf '%s\n' "$remote_out" >&2
+        die "remote relaunch of task $ID completed, but its verified route/profile result did not match the parent record; do not retry until both hosts are reconciled"
+      fi
+      [ "$remote_result_model" != default ] || remote_result_model=
+      [ "$remote_result_effort" != default ] || remote_result_effort=
+      remote_meta_tmp="$META.remote-control.$$"
+      if awk -v harness="$remote_result_harness" -v model="$remote_result_model" \
+          -v effort="$remote_result_effort" '
+        BEGIN { seen_harness=0; seen_model=0; seen_effort=0 }
+        /^harness=/ { if (!seen_harness++) print "harness=" harness; next }
+        /^model=/ { if (!seen_model++) print "model=" model; next }
+        /^effort=/ { if (!seen_effort++) print "effort=" effort; next }
+        { print }
+        END {
+          if (!seen_harness) print "harness=" harness
+          if (!seen_model) print "model=" model
+          if (!seen_effort) print "effort=" effort
+        }
+      ' "$META" > "$remote_meta_tmp" && mv -f -- "$remote_meta_tmp" "$META"; then
+        :
+      else
+        rm -f -- "$remote_meta_tmp" 2>/dev/null || true
+        [ -z "$remote_out" ] || printf '%s\n' "$remote_out" >&2
+        die "remote relaunch of task $ID completed, but its parent profile record could not be updated; do not retry until both hosts are reconciled"
+      fi
+    fi
+    [ -z "$remote_out" ] || printf '%s\n' "$remote_out"
+    exit 0
+  fi
+  [ -z "$remote_out" ] || printf '%s\n' "$remote_out" >&2
+  if [ "$remote_rc" -eq 255 ]; then
+    die "remote $VERB completion for task $ID on $REMOTE_HOST is unknown; do not retry until the endpoint is reconciled on that host"
+  fi
+  die "remote $VERB for task $ID on $REMOTE_HOST failed"
 fi
 
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
@@ -593,9 +658,15 @@ resolve_relaunch_profile() {
     # and scouts deliberately do NOT resolve config here: their harness comes
     # from firstmate's own dispatch-profile judgment at intake, and silently
     # re-resolving it would bypass that consultation.
-    CONFIG_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" secondmate 2>/dev/null || true)
-    CONFIG_MODEL=$("$SCRIPT_DIR/fm-harness.sh" secondmate-model 2>/dev/null || true)
-    CONFIG_EFFORT=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort 2>/dev/null || true)
+    if [ "${FM_CONTROL_SECONDMATE_CONFIG_RESOLVED:-0}" = 1 ]; then
+      CONFIG_HARNESS=${FM_CONTROL_SECONDMATE_CONFIG_HARNESS:-}
+      CONFIG_MODEL=${FM_CONTROL_SECONDMATE_CONFIG_MODEL:-}
+      CONFIG_EFFORT=${FM_CONTROL_SECONDMATE_CONFIG_EFFORT:-}
+    else
+      CONFIG_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" secondmate 2>/dev/null || true)
+      CONFIG_MODEL=$("$SCRIPT_DIR/fm-harness.sh" secondmate-model 2>/dev/null || true)
+      CONFIG_EFFORT=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort 2>/dev/null || true)
+    fi
     case "$CONFIG_EFFORT" in
       ''|low|medium|high|xhigh|max) ;;
       *)

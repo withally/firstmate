@@ -158,6 +158,19 @@ A process-event source performs a non-destructive, cursor-anchored delta read, v
 The source log is never truncated or consumed.
 A shortened or changed prefix stops the relay and surfaces a continuity failure instead of silently resetting the cursor.
 
+Drive the remote second-mate agent's lifecycle through the normal exact-id control plane:
+
+```sh
+FM_HOME=<primary-home> bin/fm-control.sh <id> interrupt
+FM_HOME=<primary-home> bin/fm-control.sh <id> exit
+FM_HOME=<primary-home> bin/fm-control.sh <id> relaunch
+```
+
+The parent uses the existing registered `fm-on` route, and the remote host executes `fm-control.sh` against its host-local endpoint record.
+Interrupt remains a named lifecycle key, exit remains an unmarked harness command with a verified stopped-agent postcondition, and relaunch keeps the same endpoint and home while publishing the verified replacement profile on both hosts.
+No lifecycle verb is sent through the marked conversational data plane.
+An SSH exit status of 255 leaves completion unknown and is never retried automatically.
+
 An SSH exit status of 255 always means transport failure or unknown remote completion.
 The transport never retries automatically.
 Semantic callers preserve the route or pending request and require same-host reconciliation rather than resending an operation that may already have happened.

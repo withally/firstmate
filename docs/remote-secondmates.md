@@ -169,7 +169,6 @@ FM_HOME=<primary-home> bin/fm-control.sh <id> relaunch
 The parent uses the existing registered `fm-on` route, and the remote host executes `fm-control.sh` against its host-local endpoint record.
 Interrupt remains a named lifecycle key, exit remains an unmarked harness command with a verified stopped-agent postcondition, and relaunch keeps the same endpoint and home while publishing the verified replacement profile on both hosts.
 No lifecycle verb is sent through the marked conversational data plane.
-An SSH exit status of 255 leaves completion unknown and is never retried automatically.
 
 An SSH exit status of 255 always means transport failure or unknown remote completion.
 The transport never retries automatically.

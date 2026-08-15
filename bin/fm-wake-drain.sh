@@ -45,6 +45,23 @@ assert_watcher_liveness() {
   "$SCRIPT_DIR/fm-guard.sh" || true
 }
 
+print_unread_status_section() {  # <presentation-snapshot>
+  local snapshot=$1 unread task line shown=0
+  unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
+  [ -n "$unread" ] || return 0
+  while IFS=$(printf '\t') read -r task line; do
+    [ -n "$task" ] && [ -n "$line" ] || continue
+    if [ "$shown" -eq 0 ]; then
+      printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' \
+        || return 1
+    fi
+    printf '%s %s\n' "$task" "$line" || return 1
+    shown=$((shown + 1))
+  done <<EOF
+$unread
+EOF
+}
+
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions (via its scan_open_decisions
@@ -90,6 +107,30 @@ EOF
   if [ "$omitted" -gt 0 ]; then
     printf 'OPEN DECISIONS: %d more omitted (byte cap)\n' "$omitted"
   fi
+}
+
+print_status_presentation() {  # [<deduped-raw-rows>]
+  local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot manifest fully='' acknowledged rc=0
+  fm_lock_acquire_wait "$lock" || return 1
+  snapshot=$(status_presentation_snapshot "$STATE") || rc=1
+  if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
+    fm_wake_print_annotations "$rows" "$snapshot" || rc=1
+    if [ "$rc" -eq 0 ]; then
+      manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
+      fully=$(printf '%s\n' "$manifest" | awk -F '\t' \
+        '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
+    fi
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
+    print_unread_status_section "$snapshot" || rc=1
+  fi
+  print_open_decisions_section || rc=1
+  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
+    acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully") || rc=1
+    [ "$rc" -ne 0 ] || status_commit_presentation_snapshot "$STATE" "$acknowledged" || rc=1
+  fi
+  fm_lock_release "$lock"
+  return "$rc"
 }
 
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
@@ -163,7 +204,7 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  (print_open_decisions_section) || true
+  (print_status_presentation) || true
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' \
       "${RECOVERY_MARKER_TOKEN##*:}" >&2
@@ -216,7 +257,6 @@ DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
-(fm_wake_print_annotations "$RAW_ROWS") || true
-(print_open_decisions_section) || true
+(print_status_presentation "$RAW_ROWS") || true
 assert_watcher_liveness
 exit 0

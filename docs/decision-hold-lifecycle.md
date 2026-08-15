@@ -34,6 +34,9 @@ The `resolve` subcommand requires a decision file and at least one existing depe
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
+The `decline` subcommand records the same bounded decision block with `(none)` routed identities and closes only an active hold with no dependent work.
+The `repair` subcommand records that block on a decision already closed outside this owner, preserves its Done state, and requires surviving captain-hold provenance.
+Both commands reject a missing or empty decision file, and neither can replace work still blocked by the hold.
 
 ## Structured read surfaces
 
@@ -51,6 +54,7 @@ Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Archived durable-resolution verification date: 2026-08-14.
+Decline and repair verification date: 2026-08-15.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -74,6 +78,8 @@ ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - a captain decline closes with a bounded record and no dummy follow-up
+ok - decline and repair cannot replace authorized work or invent a decision
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization preserves strict roles and resolves every blocker compatibly

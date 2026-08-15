@@ -1076,6 +1076,40 @@ fm_wake_print_deduped() {
   ' "$file"
 }
 
+# Guarded append for bookkeeping lines this home has already presented.
+# The seen marker advances only when it covered every pre-existing byte and no
+# other writer interleaved with this append. Every uncertainty leaves the new
+# line for the ordinary watcher, so a later foreign append cannot be swallowed.
+fm_wake_signal_sig() {  # <file>
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    stat -f '%z:%Fm' "$1" 2>/dev/null
+  else
+    stat -c '%s:%Y' "$1" 2>/dev/null
+  fi
+}
+
+fm_wake_signal_seen_path() {  # <state> <file>
+  printf '%s/.seen-%s' "$1" "$(basename "$2" | tr '.' '_')"
+}
+
+fm_wake_status_append_self_announced() {  # <state> <status-file> <line>
+  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size line_bytes
+  marker=$(fm_wake_signal_seen_path "$state" "$file")
+  if [ -e "$file" ]; then
+    pre_sig=$(fm_wake_signal_sig "$file") || pre_sig=''
+  fi
+  printf '%s\n' "$line" >> "$file" || return 2
+  [ -n "$pre_sig" ] && [ "$(cat "$marker" 2>/dev/null)" = "$pre_sig" ] || return 1
+  post_sig=$(fm_wake_signal_sig "$file") || return 1
+  pre_size=${pre_sig%%:*}
+  post_size=${post_sig%%:*}
+  case "$pre_size$post_size" in ''|*[!0-9]*) return 1 ;; esac
+  line_bytes=$(printf '%s' "$line" | LC_ALL=C wc -c 2>/dev/null | tr -d '[:space:]')
+  case "$line_bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$post_size" -eq $((pre_size + line_bytes + 1)) ] || return 1
+  printf '%s' "$post_sig" > "$marker" 2>/dev/null || return 1
+}
+
 # Map one structurally valid signal key to its home-local status filename.
 # Queue payload text is intentionally ignored: it is display data, not a path
 # authority. The caller still verifies the resulting regular file immediately
@@ -1120,55 +1154,9 @@ $rows
 EOF
 }
 
-FM_WAKE_EVENT_LINE=
-FM_WAKE_EVENT_TRUNCATED=false
-fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap>
-  local path=$1 tail_bytes=$2 result size chunk record line_number
-  FM_WAKE_EVENT_LINE=
-  FM_WAKE_EVENT_TRUNCATED=false
-  result=$(perl -MFcntl=:DEFAULT -e '
-    my ($path, $limit) = @ARGV;
-    sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
-    my @stat = stat $file or exit 1;
-    exit 1 unless -f _;
-    my $size = $stat[7];
-    exit 1 unless $size =~ /\A\d+\z/;
-    my $start = $size > $limit ? $size - $limit : 0;
-    seek($file, $start, 0) or exit 1;
-    printf "%s\t", $size or exit 1;
-    my $remaining = $size - $start;
-    while ($remaining > 0) {
-      my $read = read($file, my $buffer, $remaining);
-      exit 1 unless defined $read;
-      last unless $read;
-      print $buffer or exit 1;
-      $remaining -= $read;
-    }
-  ' "$path" "$tail_bytes" 2>/dev/null) || return 1
-  size=${result%%$'\t'*}
-  chunk=${result#*$'\t'}
-  case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  [ -n "$chunk" ] || return 1
-  record=$(printf '%s' "$chunk" | LC_ALL=C awk '
-    /[^[:space:]]/ { line = $0; line_number = NR }
-    END { if (line_number) printf "%d\t%s", line_number, line }
-  ') || return 1
-  [ -n "$record" ] || return 1
-  line_number=${record%%	*}
-  FM_WAKE_EVENT_LINE=${record#*	}
-  FM_WAKE_EVENT_LINE=$(printf '%s' "$FM_WAKE_EVENT_LINE" | LC_ALL=C tr '\t\r' '  ')
-  if [ "$size" -gt "$tail_bytes" ] && [ "$line_number" -eq 1 ]; then
-    FM_WAKE_EVENT_TRUNCATED=true
-  fi
-}
-
-# Print supplemental drain-time context only after the caller has committed the
-# raw queue consumption and released the append lock. The limits are constants,
-# so status-file volume cannot turn a drain into an unbounded context read.
-fm_wake_print_annotations() {  # <deduped-raw-rows>
-  local rows=$1 manifest status_key mode path prefix line suffix keep bytes
-  local output='' used=0 omitted=0 read_omitted=0 annotation_marker marker_reserve=192
-  local tail_bytes=8192 item_bytes=2048 global_bytes=8192 read_cap=8 reads=0
+fm_wake_print_annotations() {  # <deduped-raw-rows> <presentation-snapshot>
+  local rows=$1 snapshot=$2 manifest status_key mode path prefix line task endpoint
+  local snapshot_task snapshot_endpoint _snapshot_ident lines last
   local LC_ALL=C
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
@@ -1197,46 +1185,34 @@ fm_wake_print_annotations() {  # <deduped-raw-rows>
 
   while IFS=$(printf '\t') read -r status_key mode; do
     [ -n "$status_key" ] || continue
-    if [ "$reads" -ge "$read_cap" ]; then
-      read_omitted=$((read_omitted + 1))
-      continue
-    fi
-    reads=$((reads + 1))
     path="$STATE/$status_key"
-    fm_wake_latest_event "$path" "$tail_bytes" || continue
-    prefix="wake annotation: latest wake-EVENT observed at drain, not current state"
-    if [ "$mode" = historical ]; then
-      prefix="$prefix; historical / not necessarily the triggering event"
-    fi
-    line="$prefix: $status_key: $FM_WAKE_EVENT_LINE"
-    suffix=''
-    [ "$FM_WAKE_EVENT_TRUNCATED" = false ] || suffix=' [truncated]'
-    line="$line$suffix"
-    if [ $(( ${#line} + 1 )) -gt "$item_bytes" ]; then
-      suffix=' [truncated]'
-      keep=$((item_bytes - ${#suffix} - 1))
-      line="${line:0:$keep}$suffix"
-    fi
-    bytes=$(( ${#line} + 1 ))
-    if [ $((used + bytes + marker_reserve)) -gt "$global_bytes" ]; then
-      omitted=$((omitted + 1))
-      continue
-    fi
-    output="$output$line
-"
-    used=$((used + bytes))
+    task=${status_key%.status}
+    endpoint=
+    while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint _snapshot_ident; do
+      if [ "$snapshot_task" = "$task" ]; then endpoint=$snapshot_endpoint; break; fi
+    done <<EOF
+$snapshot
+EOF
+    [ -n "$endpoint" ] || continue
+    # A status file can disappear or be replaced after the presentation
+    # snapshot. Skip only that stale annotation; the later identity-bound
+    # cursor commit will fail closed instead of acknowledging the snapshot.
+    lines=$(status_new_lines_since_cursor "$path" "$endpoint") || continue
+    [ -n "$lines" ] || continue
+    last=$(printf '%s\n' "$lines" | tail -1)
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      prefix="wake annotation: unread wake-EVENT since last drain, not current state"
+      [ "$line" = "$last" ] \
+        && prefix="wake annotation: latest wake-EVENT observed at drain, not current state"
+      [ "$mode" != historical ] \
+        || prefix="$prefix; historical / not necessarily the triggering event"
+      printf '%s: %s: %s\n' "$prefix" "$status_key" \
+        "$(printf '%s' "$line" | LC_ALL=C tr '\t\r' '  ')" || return 1
+    done <<EOF
+$lines
+EOF
   done <<EOF
 $manifest
 EOF
-
-  printf '%s' "$output"
-  if [ "$omitted" -gt 0 ]; then
-    annotation_marker="wake annotation: $omitted annotations omitted (global enrichment byte cap)"
-    printf '%s\n' "$annotation_marker"
-  fi
-  if [ "$read_omitted" -gt 0 ]; then
-    annotation_marker="wake annotation: $read_omitted annotations omitted (enrichment read cap)"
-    printf '%s\n' "$annotation_marker"
-  fi
-  return 0
 }

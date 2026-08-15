@@ -8,7 +8,8 @@
 # routes dependent work. This script supplies deterministic identities, creates
 # and verifies structured tasks-axi captain holds, records completion attestation
 # in the originating task's metadata, and closes a hold only after a durable
-# decision record has been linked to existing dependent work.
+# decision record has been linked to routed work or to an explicit no-work
+# captain answer.
 #
 # A hold identity is <origin-id>-decision-<decision-key>. Origin ids and decision
 # keys must already be privacy-safe slugs. Repeating `hold` with the same identity
@@ -27,6 +28,8 @@
 #   fm-decision-hold.sh verify <origin-id>
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
+#   fm-decision-hold.sh decline <origin-id> <decision-key> --decision-file <path>
+#   fm-decision-hold.sh repair <origin-id> <decision-key> --decision-file <path>
 #
 # `complete` is the shared investigation and visual-review completion gate.
 # `--none` is an explicit semantic attestation that the just-reviewed surface has
@@ -42,6 +45,10 @@
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
+# `decline` records a no-follow-up answer and closes only an active hold with no
+# remaining dependent work. `repair` records the same bounded answer on a hold
+# already closed outside this owner, and refuses any identity without surviving
+# captain-hold provenance or any hold that is still open.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,6 +113,21 @@ sha256_text() {  # <text>
   else
     fail "shasum or sha256sum is required"
   fi
+}
+
+ROUTED_NONE='(none)'
+DECISION_TEXT=''
+DECISION_DIGEST=''
+
+load_decision() {  # <path>
+  local path=$1
+  [ -n "$path" ] || fail "--decision-file is required"
+  [ -f "$path" ] || fail "decision file does not exist: $path"
+  DECISION_TEXT=$(cat "$path")
+  [ -n "$DECISION_TEXT" ] || fail "decision file must not be empty"
+  [ "$(printf '%s' "$DECISION_TEXT" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+    || fail "decision file exceeds 8192 bytes"
+  DECISION_DIGEST=$(sha256_text "$DECISION_TEXT")
 }
 
 hold_id() {  # <origin-id> <decision-key>
@@ -380,6 +402,46 @@ origin_open_decisions() {  # <origin-id>
   printf '%s' "$open"
 }
 
+resolution_body() {  # <mode> <routed-csv> [routed-task-id...]
+  local mode=$1 routed_csv=$2 body dep
+  shift 2
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n\nRouted work:' \
+    "$DECISION_DIGEST" "$routed_csv" "$mode" "$DECISION_TEXT")
+  body="${body}"$'\n'
+  if [ "$#" -eq 0 ]; then
+    body="${body}${ROUTED_NONE}"$'\n'
+  else
+    for dep in "$@"; do body="${body}- ${dep}"$'\n'; done
+  fi
+  printf '%s' "$body"
+}
+
+normalized_blocked_by() {  # <show-output>
+  local blocked
+  blocked=$(show_field "$1" blocked_by | tr -d '[:space:]')
+  blocked=${blocked#\"}
+  blocked=${blocked%\"}
+  printf '%s' "$blocked"
+}
+
+tasks_blocked_by() {  # <hold-id>
+  local id=$1 rows row candidate show found=''
+  rows=$(tasks_axi list --fields blocked_by) \
+    || fail "could not read backlog work while checking what $id still blocks"
+  while IFS= read -r row; do
+    case "$row" in *"$id"*) ;; *) continue ;; esac
+    candidate=${row%%,*}; candidate=${candidate// /}
+    case "$candidate" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    [ "$candidate" != "$id" ] || continue
+    show=$(task_show "$candidate") || continue
+    list_has_key "$(normalized_blocked_by "$show")" "$id" || continue
+    found="${found}${found:+ }$candidate"
+  done <<EOF
+$rows
+EOF
+  printf '%s' "$found"
+}
+
 verify_hold_active() {  # <hold-id>
   local id=$1 show state held kind hold_kind
   show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
@@ -500,7 +562,7 @@ command_hold() {
 }
 
 command_complete() {
-  local origin=${1:-} meta previous='' supplied='' keys='' key status_file open raw_open key_seen=0 has_meta=0
+  local origin=${1:-} meta previous='' supplied='' keys='' key status_file open raw_open key_seen=0 has_meta=0 transfer_rc
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   shift
@@ -560,7 +622,10 @@ EOF
     while IFS=$'\t' read -r key _verb _summary; do
       [ -n "$key" ] || continue
       list_has_key "$keys" "$key" || continue
-      printf 'captain-held [key=%s]: tracked by %s\n' "$key" "$(hold_id "$origin" "$key")" >> "$status_file"
+      transfer_rc=0
+      fm_wake_status_append_self_announced "$STATE" "$status_file" \
+        "captain-held [key=$key]: tracked by $(hold_id "$origin" "$key")" || transfer_rc=$?
+      [ "$transfer_rc" -ne 2 ] || fail "cannot append the captain-held transfer for $origin/$key"
       key_seen=1
     done <<EOF
 $raw_open
@@ -601,7 +666,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -614,22 +679,16 @@ command_resolve() {
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
-  [ -n "$decision_file" ] || fail "--decision-file is required"
-  [ -f "$decision_file" ] || fail "decision file does not exist: $decision_file"
-  decision=$(cat "$decision_file")
-  [ -n "$decision" ] || fail "decision file must not be empty"
-  [ "$(printf '%s' "$decision" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
-    || fail "decision file exceeds 8192 bytes"
-  [ -n "$routed" ] || fail "at least one --routed-to task is required"
+  load_decision "$decision_file"
+  [ -n "$routed" ] || fail "at least one --routed-to task is required; use decline when the captain's answer routes no work"
   routed=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
   routed_csv=$(printf '%s\n' "$routed" | tr ' ' ',')
-  decision_digest=$(sha256_text "$decision")
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
   if verify_hold_resolved "$id"; then
     hold_show=$(task_show "$id")
     hold_body=$(show_field "$hold_show" body)
-    verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
+    verify_resolution_identity "$id" "$hold_body" "$DECISION_DIGEST" "$routed_csv"
     printf 'resolved: %s\n' "$id"
     return 0
   fi
@@ -638,7 +697,7 @@ command_resolve() {
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
-      verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
+      verify_resolution_identity "$id" "$hold_body" "$DECISION_DIGEST" "$routed_csv"
       resolution_recorded=1
       ;;
   esac
@@ -649,9 +708,7 @@ command_resolve() {
     [ "$state" != "done" ] || [ "$resolution_recorded" = 1 ] \
       || fail "routed task $dep is already done"
     # tasks-axi quotes multi-entry blocked_by as "a,b,c"; strip so edge ids match.
-    blocked=$(show_field "$show" blocked_by | tr -d '[:space:]')
-    blocked=${blocked#\"}
-    blocked=${blocked%\"}
+    blocked=$(normalized_blocked_by "$show")
     case ",$blocked," in
       *",$id,"*) : ;;
       *)
@@ -663,17 +720,13 @@ command_resolve() {
     esac
   done
 
-  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:\n' "$decision_digest" "$routed_csv" "$decision")
-  for dep in $routed; do
-    body="${body}- ${dep}"$'\n'
-  done
+  # shellcheck disable=SC2086 # routed is a validated slug list.
+  body=$(resolution_body routed "$routed_csv" $routed)
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep disappeared before routing"
-    blocked=$(show_field "$show" blocked_by | tr -d '[:space:]')
-    blocked=${blocked#\"}
-    blocked=${blocked%\"}
+    blocked=$(normalized_blocked_by "$show")
     case ",$blocked," in
       *",$id,"*)
         tasks_axi unblock "$dep" --by "$id" >/dev/null \
@@ -686,12 +739,91 @@ command_resolve() {
   printf 'resolved: %s -> %s\n' "$id" "$routed"
 }
 
+parse_decision_only_flags() {  # <args...>
+  local decision_file=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --decision-file) shift; decision_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  printf '%s' "$decision_file"
+}
+
+command_decline() {
+  local origin=${1:-} key=${2:-} decision_file id body show state dependents
+  [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+  shift 2
+  decision_file=$(parse_decision_only_flags "$@") || exit 2
+  validate_slug origin-id "$origin"
+  validate_slug decision-key "$key"
+  load_decision "$decision_file"
+  require_tasks_axi
+  id=$(hold_id "$origin" "$key")
+  if verify_hold_resolved "$id"; then
+    show=$(task_show "$id")
+    verify_resolution_identity "$id" "$(show_field "$show" body)" "$DECISION_DIGEST" "$ROUTED_NONE"
+    printf 'declined: %s\n' "$id"
+    return 0
+  fi
+  show=$(task_show "$id") || fail "captain hold $id is absent from the live backlog"
+  state=$(show_field "$show" state)
+  [ "$state" != "done" ] \
+    || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
+  verify_hold_active "$id"
+  dependents=$(tasks_blocked_by "$id")
+  [ -z "$dependents" ] \
+    || fail "captain hold $id still blocks routed work ($dependents); use resolve to record that work"
+  body=$(resolution_body declined "$ROUTED_NONE")
+  tasks_axi update "$id" --body "$body" >/dev/null \
+    || fail "could not record the captain decision on $id"
+  tasks_axi "done" "$id" >/dev/null || fail "could not close declined captain hold $id"
+  verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
+  printf 'declined: %s\n' "$id"
+}
+
+command_repair() {
+  local origin=${1:-} key=${2:-} decision_file id body show state kind hold_kind
+  [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+  shift 2
+  decision_file=$(parse_decision_only_flags "$@") || exit 2
+  validate_slug origin-id "$origin"
+  validate_slug decision-key "$key"
+  load_decision "$decision_file"
+  require_tasks_axi
+  id=$(hold_id "$origin" "$key")
+  show=$(task_show "$id") || fail "captain decision $id is absent from the live backlog"
+  kind=$(show_field "$show" kind)
+  hold_kind=$(show_field "$show" hold_kind)
+  [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
+  [ "$hold_kind" = captain ] \
+    || fail "backlog item $id was never held for the captain; repair records only a bounded captain hold"
+  state=$(show_field "$show" state)
+  if [ "$state" = "done" ] && show_is_resolved "$show"; then
+    verify_resolution_identity "$id" "$(show_field "$show" body)" "$DECISION_DIGEST" "$ROUTED_NONE"
+    printf 'repaired: %s\n' "$id"
+    return 0
+  fi
+  [ "$state" = "done" ] \
+    || fail "captain hold $id is still open (state=$state); use resolve or decline to close it"
+  body=$(resolution_body repaired "$ROUTED_NONE")
+  tasks_axi update "$id" --body "$body" >/dev/null \
+    || fail "could not record the captain decision on $id"
+  show=$(task_show "$id") || fail "captain decision $id disappeared while recording the repair"
+  [ "$(show_field "$show" state)" = "done" ] || fail "repairing $id reopened a closed captain decision"
+  show_is_resolved "$show" || fail "captain hold $id did not retain its durable resolution record"
+  printf 'repaired: %s\n' "$id"
+}
+
 case "${1:-}" in
   id) shift; command_id "$@" ;;
   hold) shift; command_hold "$@" ;;
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
   resolve) shift; command_resolve "$@" ;;
+  decline) shift; command_decline "$@" ;;
+  repair) shift; command_repair "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

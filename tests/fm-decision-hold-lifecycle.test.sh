@@ -771,6 +771,78 @@ test_resolve_matches_quoted_blocked_by_edges() {
   pass "resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id"
 }
 
+test_decline_records_no_work_without_inventing_follow_up() {
+  local home origin hold show
+  home=$(make_home decline-no-work)
+  origin=sample-decline-review
+  tasks_in "$home" add "$origin" "Decline review" --kind scout --repo sample --start >/dev/null
+  write_origin_meta "$home" "$origin"
+  printf 'done: review complete\n' > "$home/state/$origin.status"
+  hold=$(run_decisions "$home" hold "$origin" rollout \
+    --title "Choose rollout" --reason "captain rollout choice pending" --repo sample)
+  run_decisions "$home" complete "$origin" rollout >/dev/null
+  printf 'No. Do not create follow-up work.\n' > "$home/decision.txt"
+
+  run_decisions "$home" decline "$origin" rollout --decision-file "$home/decision.txt" >/dev/null \
+    || fail "decline could not close an answered no-work hold"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "decline did not close the hold"
+  assert_contains "$show" "Resolution mode: declined" "decline did not record its bounded mode"
+  assert_contains "$show" "Routed identities: (none)" "decline invented routed work"
+  run_decisions "$home" verify "$origin" >/dev/null \
+    || fail "declined decision did not satisfy the durable completion gate"
+  pass "a captain decline closes with a bounded record and no dummy follow-up"
+}
+
+test_decline_and_repair_refuse_unauthorized_closure() {
+  local home origin hold repaired show
+  home=$(make_home decline-repair-guards)
+  origin=sample-guard-review
+  tasks_in "$home" add "$origin" "Guard review" --kind scout --repo sample --start >/dev/null
+  write_origin_meta "$home" "$origin"
+  printf 'done: review complete\n' > "$home/state/$origin.status"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose route" --reason "captain route pending" --repo sample)
+  tasks_in "$home" add routed-work "Authorized routed work" --kind ship --repo sample >/dev/null
+  tasks_in "$home" block routed-work --by "$hold" >/dev/null
+  printf 'Use the authorized route.\n' > "$home/decision.txt"
+
+  if run_decisions "$home" decline "$origin" route --decision-file "$home/decision.txt" \
+    > "$home/decline.out" 2> "$home/decline.err"; then
+    fail "decline closed a decision that still authorizes routed work"
+  fi
+  assert_grep "still blocks routed work" "$home/decline.err" \
+    "decline did not name the routed-work guard"
+  if run_decisions "$home" repair "$origin" route --decision-file "$home/decision.txt" \
+    > "$home/repair.out" 2> "$home/repair.err"; then
+    fail "repair closed a still-open captain hold"
+  fi
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "refused decline or repair closed the authorized hold"
+  assert_contains "$show" "held: yes" "refused decline or repair released the authorized hold"
+
+  tasks_in "$home" add "$origin-decision-never-held" "Never held" --kind captain --repo sample >/dev/null
+  tasks_in "$home" "done" "$origin-decision-never-held" >/dev/null
+  if run_decisions "$home" repair "$origin" never-held --decision-file "$home/decision.txt" \
+    > "$home/invented.out" 2> "$home/invented.err"; then
+    fail "repair invented a captain resolution on a never-held item"
+  fi
+  assert_grep "never held for the captain" "$home/invented.err" \
+    "repair did not enforce surviving hold provenance"
+
+  repaired=$(run_decisions "$home" hold "$origin" previously-closed \
+    --title "Previously closed choice" --reason "captain answer pending" --repo sample)
+  tasks_in "$home" "done" "$repaired" >/dev/null
+  printf 'No follow-up was authorized.\n' > "$home/repaired-decision.txt"
+  run_decisions "$home" repair "$origin" previously-closed \
+    --decision-file "$home/repaired-decision.txt" >/dev/null \
+    || fail "repair could not record the answer on an out-of-band closed hold"
+  show=$(tasks_in "$home" show "$repaired" --full)
+  assert_contains "$show" "Resolution mode: repaired" \
+    "repair did not persist its bounded resolution mode"
+  pass "decline and repair cannot replace authorized work or invent a decision"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -783,3 +855,5 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
+test_decline_records_no_work_without_inventing_follow_up
+test_decline_and_repair_refuse_unauthorized_closure

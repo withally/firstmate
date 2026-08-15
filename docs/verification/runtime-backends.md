@@ -94,6 +94,38 @@ pi-signed
 0.82.0
 ```
 
+### Window identity under non-default tmux config
+
+`fm_backend_tmux_create_task`'s window-identity robustness was verified on 2026-08-15 with tmux 3.6a on macOS against a real server reconfigured with `base-index 1`, `automatic-rename on`, and `allow-rename on`, each on a private socket.
+
+```sh
+tmux set-option -g base-index 1; tmux set-option -g automatic-rename on; tmux set-option -g allow-rename on
+tmux new-session -d -s s
+wid=$(tmux new-window -dP -F '#{window_id}' -t "s:" -n "fm-nd")   # append form + stable id
+tmux set-window-option -t "$wid" automatic-rename off
+tmux set-window-option -t "$wid" allow-rename off
+# a control window (no pinning) and the pinned window both receive the shell
+# prompt hook's window-rename escape: ESC k <title> ESC backslash
+```
+
+Observed output:
+
+```text
+first-window-index=1
+created-window-id=@2 name=fm-nd
+auto-rename=off allow-rename=off
+control-name-after-escape=escaped-ctrl
+fixed-name-after-escape=fm-nd
+```
+
+The append form (`-t "s:"`) creates the window without colliding under `base-index 1` and returns a stable `@id`.
+`new-window -n` silences `automatic-rename` on its own in this version, but `allow-rename` stays active unless explicitly disabled: the escape renamed the unpinned control window while the pinned window kept its `fm-<id>` name, so name-based worktree targeting in `fm-spawn.sh` cannot fall back to the active client's window.
+Run the live guard after any tmux upgrade and before trusting this record:
+
+```sh
+tests/fm-backend-tmux-smoke.test.sh
+```
+
 ### Pi Calm transcript redraw
 
 Pi Calm's mid-turn visibility, built-in ownership, and existing forced-redraw guarantees were reverified on 2026-08-15 against the installed Pi 0.84.1 CLI and package.

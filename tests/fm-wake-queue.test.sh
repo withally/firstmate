@@ -361,7 +361,8 @@ SH
     fail "complete unread delivery still emitted an omission or truncation marker"
   fi
   perl_reads=$(wc -l < "$fake_perl_log" | tr -d ' ')
-  [ "$perl_reads" -eq 9 ] || fail "complete enrichment read $perl_reads status files instead of nine"
+  [ "$perl_reads" -eq 18 ] \
+    || fail "complete annotation and unread-surface passes read $perl_reads status files instead of eighteen"
   if grep -E ': (empty|missing|malformed|unreadable)\.status:' "$out" >/dev/null; then
     fail "missing, unreadable, malformed, or empty status file produced an annotation"
   fi

@@ -822,7 +822,7 @@ test_decline_and_repair_refuse_unauthorized_closure() {
   assert_contains "$show" "held: yes" "refused decline or repair released the authorized hold"
 
   tasks_in "$home" add "$origin-decision-never-held" "Never held" --kind captain --repo sample >/dev/null
-  tasks_in "$home" done "$origin-decision-never-held" >/dev/null
+  tasks_in "$home" "done" "$origin-decision-never-held" >/dev/null
   if run_decisions "$home" repair "$origin" never-held --decision-file "$home/decision.txt" \
     > "$home/invented.out" 2> "$home/invented.err"; then
     fail "repair invented a captain resolution on a never-held item"
@@ -832,7 +832,7 @@ test_decline_and_repair_refuse_unauthorized_closure() {
 
   repaired=$(run_decisions "$home" hold "$origin" previously-closed \
     --title "Previously closed choice" --reason "captain answer pending" --repo sample)
-  tasks_in "$home" done "$repaired" >/dev/null
+  tasks_in "$home" "done" "$repaired" >/dev/null
   printf 'No follow-up was authorized.\n' > "$home/repaired-decision.txt"
   run_decisions "$home" repair "$origin" previously-closed \
     --decision-file "$home/repaired-decision.txt" >/dev/null \

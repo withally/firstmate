@@ -1156,7 +1156,7 @@ EOF
 
 fm_wake_print_annotations() {  # <deduped-raw-rows> <presentation-snapshot>
   local rows=$1 snapshot=$2 manifest status_key mode path prefix line task endpoint
-  local snapshot_task snapshot_endpoint snapshot_ident lines last
+  local snapshot_task snapshot_endpoint _snapshot_ident lines last
   local LC_ALL=C
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
@@ -1188,13 +1188,16 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> <presentation-snapshot>
     path="$STATE/$status_key"
     task=${status_key%.status}
     endpoint=
-    while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint snapshot_ident; do
+    while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint _snapshot_ident; do
       if [ "$snapshot_task" = "$task" ]; then endpoint=$snapshot_endpoint; break; fi
     done <<EOF
 $snapshot
 EOF
     [ -n "$endpoint" ] || continue
-    lines=$(status_new_lines_since_cursor "$path" "$endpoint") || return 1
+    # A status file can disappear or be replaced after the presentation
+    # snapshot. Skip only that stale annotation; the later identity-bound
+    # cursor commit will fail closed instead of acknowledging the snapshot.
+    lines=$(status_new_lines_since_cursor "$path" "$endpoint") || continue
     [ -n "$lines" ] || continue
     last=$(printf '%s\n' "$lines" | tail -1)
     while IFS= read -r line || [ -n "$line" ]; do

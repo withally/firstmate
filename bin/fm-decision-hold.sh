@@ -769,7 +769,7 @@ command_decline() {
   fi
   show=$(task_show "$id") || fail "captain hold $id is absent from the live backlog"
   state=$(show_field "$show" state)
-  [ "$state" != done ] \
+  [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
   verify_hold_active "$id"
   dependents=$(tasks_blocked_by "$id")
@@ -778,7 +778,7 @@ command_decline() {
   body=$(resolution_body declined "$ROUTED_NONE")
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"
-  tasks_axi done "$id" >/dev/null || fail "could not close declined captain hold $id"
+  tasks_axi "done" "$id" >/dev/null || fail "could not close declined captain hold $id"
   verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
   printf 'declined: %s\n' "$id"
 }
@@ -800,18 +800,18 @@ command_repair() {
   [ "$hold_kind" = captain ] \
     || fail "backlog item $id was never held for the captain; repair records only a bounded captain hold"
   state=$(show_field "$show" state)
-  if [ "$state" = done ] && show_is_resolved "$show"; then
+  if [ "$state" = "done" ] && show_is_resolved "$show"; then
     verify_resolution_identity "$id" "$(show_field "$show" body)" "$DECISION_DIGEST" "$ROUTED_NONE"
     printf 'repaired: %s\n' "$id"
     return 0
   fi
-  [ "$state" = done ] \
+  [ "$state" = "done" ] \
     || fail "captain hold $id is still open (state=$state); use resolve or decline to close it"
   body=$(resolution_body repaired "$ROUTED_NONE")
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"
   show=$(task_show "$id") || fail "captain decision $id disappeared while recording the repair"
-  [ "$(show_field "$show" state)" = done ] || fail "repairing $id reopened a closed captain decision"
+  [ "$(show_field "$show" state)" = "done" ] || fail "repairing $id reopened a closed captain decision"
   show_is_resolved "$show" || fail "captain hold $id did not retain its durable resolution record"
   printf 'repaired: %s\n' "$id"
 }

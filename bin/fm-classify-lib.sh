@@ -328,9 +328,8 @@ EOF
 # The scan_open_decisions wrapper below enumerates a whole directory rather than
 # a single caller-chosen path, so a status file that is itself a symlink (e.g.
 # escaping the state directory) is rejected outright with a plain [ -L ] check
-# before any read - a cheap builtin, unlike fm_wake_latest_event's O_NOFOLLOW
-# subprocess read, which exists for that function's much narrower payload-driven
-# path resolution rather than this directory-local glob.
+# before any read - a cheap builtin, while the presentation reader separately
+# uses O_NOFOLLOW for its narrower payload-driven path resolution.
 status_open_decisions() {  # <status-file>
   local f=$1 line verb key keys note resolve held open='' stripped
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
@@ -625,6 +624,209 @@ $open
 EOF
   done
   return 0
+}
+
+# --- durable status presentation cursor ------------------------------------
+#
+# The status log is append-only, but a wake can be coalesced after several
+# appends. A latest-line annotation therefore cannot prove that every earlier
+# informational line was shown. These helpers snapshot each regular status
+# file at a byte endpoint, read from its last fully presented endpoint, and
+# atomically advance one fleet manifest only after the caller prints the whole
+# captured surface. A changed file identity or missing manifest row restarts at
+# byte zero; malformed cursor state fails closed without advancing anything.
+
+_fm_status_file_ident() {  # <file> -> "dev:inode"
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    LC_ALL=C stat -f '%d:%i' "$1" 2>/dev/null
+  else
+    LC_ALL=C stat -c '%d:%i' "$1" 2>/dev/null
+  fi
+}
+
+_fm_status_file_size() {  # <file>
+  LC_ALL=C wc -c < "$1" 2>/dev/null
+}
+
+_fm_status_read_span() {  # <file> <start-offset> <byte-length>
+  perl -MFcntl=:DEFAULT -e '
+    my ($path, $start, $length) = @ARGV;
+    sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
+    sysseek($file, $start, 0) == $start or exit 1;
+    while ($length > 0) {
+      my $want = $length > 65536 ? 65536 : $length;
+      my $read = sysread($file, my $chunk, $want);
+      defined($read) && $read > 0 or exit 1;
+      print $chunk or exit 1;
+      $length -= $read;
+    }
+  ' "$1" "$2" "$3"
+}
+
+status_presentation_snapshot() {  # <state>
+  local state=$1 f task size ident
+  for f in "$state"/*.status; do
+    [ -e "$f" ] || continue
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
+    task=$(basename "$f"); task=${task%.status}
+    size=$(_fm_status_file_size "$f") || return 1
+    size=${size//[[:space:]]/}
+    ident=$(_fm_status_file_ident "$f") || return 1
+    case "$size" in ''|*[!0-9]*) return 1 ;; esac
+    [ -n "$ident" ] || return 1
+    printf '%s\t%s\t%s\n' "$task" "$size" "$ident" || return 1
+  done
+}
+
+status_presentation_cursor_offset() {  # <status-file>
+  local f=$1 state task manifest data row_task ident offset extra cur_ident size found=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  state=${f%/*}
+  task=${f##*/}; task=${task%.status}
+  manifest="$state/.status-presentation-cursor"
+  offset=0
+  ident=$(_fm_status_file_ident "$f") || return 1
+  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
+    data=$(LC_ALL=C command cat "$manifest" 2>/dev/null) || return 1
+    while IFS=$(printf '\t') read -r row_task cur_ident size extra; do
+      [ -n "$row_task" ] || continue
+      [ -z "$extra" ] && [ -n "$cur_ident" ] || return 1
+      case "$size" in ''|*[!0-9]*) return 1 ;; esac
+      if [ "$row_task" = "$task" ]; then
+        [ "$found" -eq 0 ] || return 1
+        found=1
+        ident=$cur_ident
+        offset=$size
+      fi
+    done <<EOF
+$data
+EOF
+  fi
+  cur_ident=$(_fm_status_file_ident "$f") || return 1
+  size=$(_fm_status_file_size "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$size:$offset" in *[!0-9:]*) return 1 ;; esac
+  if [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$size" ]; then offset=0; fi
+  printf '%s' "$offset"
+}
+
+status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
+  local f=$1 endpoint=${2:-} offset size chunk line rc=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  offset=$(status_presentation_cursor_offset "$f") || return 1
+  size=$(_fm_status_file_size "$f") || return 1
+  size=${size//[[:space:]]/}
+  if [ -n "$endpoint" ]; then
+    case "$endpoint" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$endpoint" -le "$size" ] || return 1
+    size=$endpoint
+  fi
+  [ "$offset" -lt "$size" ] || return 0
+  chunk="${f}.unread.$$"
+  _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk" 2>/dev/null \
+    || { rm -f "$chunk"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *[![:space:]]*) printf '%s\n' "$line" || { rc=1; break; } ;; esac
+  done < "$chunk"
+  rm -f "$chunk"
+  return "$rc"
+}
+
+status_line_is_unread_surface() {  # <status-line>
+  local line=$1 verb key
+  verb=$(status_line_verb "$line")
+  [ "$verb" = note ] && return 0
+  [ "$verb" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ] || return 1
+  key=$(_fm_decision_key "$line") || return 1
+  case "$key" in pending-reply-*) return 0 ;; esac
+  return 1
+}
+
+scan_unread_surface_snapshot() {  # <state> <snapshot>
+  local state=$1 snapshot=$2 task endpoint ident lines line
+  while IFS=$(printf '\t') read -r task endpoint ident; do
+    [ -n "$task" ] || continue
+    lines=$(status_new_lines_since_cursor "$state/$task.status" "$endpoint") || return 1
+    while IFS= read -r line; do
+      [ -n "$line" ] && status_line_is_unread_surface "$line" \
+        && printf '%s\t%s\n' "$task" "$line"
+    done <<EOF
+$lines
+EOF
+  done <<EOF
+$snapshot
+EOF
+}
+
+status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
+  local state=$1 snapshot=$2 fully=${3:-} task endpoint ident offset lines line safe
+  while IFS=$(printf '\t') read -r task endpoint ident; do
+    [ -n "$task" ] || continue
+    safe=false
+    case "
+$fully
+" in *$'\n'"$task"$'\n'*) safe=true ;; esac
+    if [ "$safe" = false ]; then
+      offset=$(status_presentation_cursor_offset "$state/$task.status") || return 1
+      lines=$(status_new_lines_since_cursor "$state/$task.status" "$endpoint") || return 1
+      while IFS= read -r line || [ -n "$line" ]; do
+        if status_line_is_unread_surface "$line"; then safe=true; break; fi
+      done <<EOF
+$lines
+EOF
+      [ "$safe" = true ] || endpoint=$offset
+    fi
+    printf '%s\t%s\t%s\n' "$task" "$endpoint" "$ident" || return 1
+  done <<EOF
+$snapshot
+EOF
+}
+
+status_commit_presentation_snapshot() {  # <state> <acknowledged-snapshot>
+  local state=$1 snapshot=$2 task endpoint ident f current size tmp
+  tmp="$state/.status-presentation-cursor.tmp.$$"
+  : > "$tmp" || return 1
+  while IFS=$(printf '\t') read -r task endpoint ident; do
+    [ -n "$task" ] || continue
+    f="$state/$task.status"
+    current=$(_fm_status_file_ident "$f") || { rm -f "$tmp"; return 1; }
+    size=$(_fm_status_file_size "$f") || { rm -f "$tmp"; return 1; }
+    size=${size//[[:space:]]/}
+    [ "$current" = "$ident" ] && [ "$endpoint" -le "$size" ] \
+      || { rm -f "$tmp"; return 1; }
+    printf '%s\t%s\t%s\n' "$task" "$ident" "$endpoint" >> "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+  done <<EOF
+$snapshot
+EOF
+  mv -f "$tmp" "$state/.status-presentation-cursor" || { rm -f "$tmp"; return 1; }
+}
+
+status_retire_presentation_task() {  # <state> <task-id>
+  local state=$1 task=$2 lock manifest tmp row_task ident offset extra rc=0
+  lock="$state/.status-presentation-lock"
+  manifest="$state/.status-presentation-cursor"
+  tmp="$manifest.tmp.$$"
+  fm_lock_acquire_wait "$lock" || return 1
+  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || rc=1
+    if [ "$rc" -eq 0 ]; then
+      : > "$tmp" || rc=1
+      while IFS=$(printf '\t') read -r row_task ident offset extra; do
+        [ -n "$row_task" ] || continue
+        [ -z "$extra" ] && [ -n "$ident" ] || { rc=1; break; }
+        case "$offset" in ''|*[!0-9]*) rc=1; break ;; esac
+        [ "$row_task" = "$task" ] \
+          || printf '%s\t%s\t%s\n' "$row_task" "$ident" "$offset" >> "$tmp" || { rc=1; break; }
+      done < "$manifest"
+      [ "$rc" -ne 0 ] || mv -f "$tmp" "$manifest" || rc=1
+      [ "$rc" -eq 0 ] || rm -f "$tmp"
+    fi
+  fi
+  [ "$rc" -ne 0 ] || rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" || rc=1
+  fm_lock_release "$lock"
+  return "$rc"
 }
 
 # Fold material routed-work phases in the same keyed event stream.

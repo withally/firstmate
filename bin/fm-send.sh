@@ -96,6 +96,8 @@ fi
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
@@ -329,14 +331,16 @@ if [ -n "$RESOLVE_KEYS" ]; then
 fi
 
 fm_send_close_resolved_keys() {  # <answer-text>
-  local answer=$1 key line
+  local answer=$1 key line append_rc
   answer=$(printf '%s' "$answer" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' \
     | LC_ALL=C sed -e 's/\[key=/(key=/g' -e 's/(key=\([A-Za-z0-9._-]*\)\]/(key=\1)/g')
   for key in $RESOLVE_KEYS; do
     line="resolved [key=$key]: answered: $answer"
     fm_cap_line_var "$line"
-    if ! printf '%s\n' "$FM_LINE_CAP_LINE" >> "$RESOLVE_STATUS_FILE" \
-      || status_decision_is_open "$RESOLVE_STATUS_FILE" "$key"; then
+    append_rc=0
+    fm_wake_status_append_self_announced "$STATE" "$RESOLVE_STATUS_FILE" "$FM_LINE_CAP_LINE" \
+      || append_rc=$?
+    if [ "$append_rc" -eq 2 ] || status_decision_is_open "$RESOLVE_STATUS_FILE" "$key"; then
       echo "error: the answer was delivered to $T, but decision key '$key' could not be closed in $RESOLVE_STATUS_FILE. Close it manually with: echo 'resolved [key=$key]: <how it was answered>' >> $RESOLVE_STATUS_FILE - do not resend the answer." >&2
       return 1
     fi

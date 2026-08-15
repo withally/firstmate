@@ -86,6 +86,81 @@ test_no_open_decisions_prints_nothing() {
   pass "no open decisions across the fleet prints nothing"
 }
 
+test_unread_informational_lines_surface_once() {
+  local dir state out
+  dir=$(make_case unread-informational)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'working: initial work\n' > "$state/task-note.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "initial unread-status drain failed"
+  printf 'note: captain answer that must not be buried\n' >> "$state/task-note.status"
+  printf 'note: later routine append\n' >> "$state/task-note.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "unread-status drain failed"
+  grep -F 'task-note note: captain answer that must not be buried' "$out" >/dev/null \
+    || fail "an earlier unread note disappeared behind a later append: $(cat "$out")"
+  grep -F 'task-note note: later routine append' "$out" >/dev/null \
+    || fail "the latest unread note was not presented: $(cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "second unread-status drain failed"
+  if grep -F 'captain answer that must not be buried' "$out" >/dev/null; then
+    fail "an already-presented informational line replayed: $(cat "$out")"
+  fi
+  pass "every unread informational line surfaces exactly once"
+}
+
+test_buried_pending_reply_resolution_surfaces_and_closes() {
+  local dir state out key
+  dir=$(make_case buried-pending-reply)
+  state="$dir/state"
+  out="$dir/drain.out"
+  key=pending-reply-abcdef0123456789
+  printf 'blocked [key=%s]: pending-reply-missed: task=mate pending-reply-id=abcdef0123456789 request=ship it\n' \
+    "$key" > "$state/mate.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "pending-reply opening drain failed"
+  printf 'resolved [key=%s]: pending-reply-resolved: task=mate pending-reply-id=abcdef0123456789 via=status\n' \
+    "$key" >> "$state/mate.status"
+  printf 'note: unrelated later append\n' >> "$state/mate.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "pending-reply resolution drain failed"
+  grep -F 'pending-reply-resolved: task=mate pending-reply-id=abcdef0123456789 via=status' "$out" >/dev/null \
+    || fail "a pending-reply resolution disappeared behind a later append: $(cat "$out")"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "the presented pending-reply resolution did not close its bounded decision: $(cat "$out")"
+  fi
+  pass "a buried pending-reply resolution surfaces and closes its exact decision"
+}
+
+test_presentation_cursor_stops_at_captured_endpoint() {
+  local dir state out snapshot acknowledged
+  dir=$(make_case presentation-race)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'note: initial presented line\n' > "$state/race.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "cursor priming drain failed"
+  printf 'note: included in snapshot\n' >> "$state/race.status"
+
+  snapshot=$(STATE="$state" bash -c '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-classify-lib.sh"; status_presentation_snapshot "$STATE"' _ "$ROOT") \
+    || fail "presentation snapshot failed"
+  printf 'note: appended after snapshot\n' >> "$state/race.status"
+  acknowledged=$(STATE="$state" SNAPSHOT="$snapshot" bash -c \
+    '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-classify-lib.sh"; status_acknowledge_presented_snapshot "$STATE" "$SNAPSHOT"' _ "$ROOT") \
+    || fail "presentation acknowledgement failed"
+  STATE="$state" SNAPSHOT="$acknowledged" bash -c \
+    '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-classify-lib.sh"; status_commit_presentation_snapshot "$STATE" "$SNAPSHOT"' _ "$ROOT" \
+    || fail "presentation cursor commit failed"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "post-snapshot drain failed"
+  grep -F 'race note: appended after snapshot' "$out" >/dev/null \
+    || fail "a post-snapshot append was swallowed by cursor advancement: $(cat "$out")"
+  if grep -F 'race note: included in snapshot' "$out" >/dev/null; then
+    fail "the committed captured span replayed on the next drain: $(cat "$out")"
+  fi
+  pass "the presentation cursor advances only through its captured endpoint"
+}
+
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake() {
   local dir state out
   dir=$(make_case fleet-wide)
@@ -287,6 +362,9 @@ test_buried_decision_still_surfaces
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
 test_no_open_decisions_prints_nothing
+test_unread_informational_lines_surface_once
+test_buried_pending_reply_resolution_surfaces_and_closes
+test_presentation_cursor_stops_at_captured_endpoint
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
 test_status_symlink_is_not_followed

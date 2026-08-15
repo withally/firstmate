@@ -248,11 +248,15 @@ test_successful_keyed_decision_send_records_only_an_open_task_key() {
 }
 
 test_resolve_key_closes_only_after_confirmed_answer_delivery() {
-  local dir fb home err log rc
+  local dir fb home err log rc status seen sig current
   dir="$TMP_ROOT/resolve-key"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); home=$(setup_home resolve-key); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
   fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
-  printf 'needs-decision [key=route]: choose A or B\n' > "$home/state/lane-ok.status"
+  status="$home/state/lane-ok.status"
+  seen="$home/state/.seen-lane-ok_status"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$status"
+  if [ "$(uname -s)" = Darwin ]; then sig=$(stat -f '%z:%Fm' "$status"); else sig=$(stat -c '%s:%Y' "$status"); fi
+  printf '%s' "$sig" > "$seen"
 
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
     "$SEND" fm-lane-ok --resolve-key route 'Proceed with A' >/dev/null 2>"$err"; rc=$?
@@ -261,8 +265,15 @@ test_resolve_key_closes_only_after_confirmed_answer_delivery() {
     || fail "a confirmed answer with --resolve-key left the decision open"
   decision_delivery_is_recorded "$home/state" lane-ok route \
     || fail "answer-time closure bypassed the delivered-decision receipt safeguard"
+  if [ "$(uname -s)" = Darwin ]; then current=$(stat -f '%z:%Fm' "$status"); else current=$(stat -c '%s:%Y' "$status"); fi
+  [ "$(cat "$seen")" = "$current" ] \
+    || fail "the self-announced answer close did not advance through its exact append"
+  printf 'working: later worker append\n' >> "$status"
+  if [ "$(uname -s)" = Darwin ]; then current=$(stat -f '%z:%Fm' "$status"); else current=$(stat -c '%s:%Y' "$status"); fi
+  [ "$(cat "$seen")" != "$current" ] \
+    || fail "a later worker line after the self-announced close was swallowed"
 
-  printf 'needs-decision [key=unanswered]: choose C or D\n' >> "$home/state/lane-ok.status"
+  printf 'needs-decision [key=unanswered]: choose C or D\n' >> "$status"
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
     "$SEND" fm-lane-ok 'Routine nudge only' >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "a routine steer should still succeed"

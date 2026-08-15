@@ -392,6 +392,27 @@ signal_is_bare_turn_end() {  # <file> ...
   return "$had"
 }
 
+# signal_turn_ends_all_windowed: 0 iff every turn-end marker in the batch names a
+# task with a readable endpoint window (a .meta carrying a target). The
+# quiet-crew absorb hands the batch to the stale path's wedge timer, but that
+# timer only tracks recorded windows; a turn-end whose meta is already gone (a
+# late marker firing during teardown) would be absorbed with no later event to
+# re-surface it. Such an orphan must stay on the fail-safe surface path instead,
+# so absorb only when the stale path can actually own the crew afterward.
+signal_turn_ends_all_windowed() {  # <state> <file> ...
+  local state=$1 f base id meta w
+  shift
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in *.turn-ended) id=${base%.turn-ended} ;; *) continue ;; esac
+    meta="$state/$id.meta"
+    [ -f "$meta" ] || return 1
+    w=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+    [ -n "$w" ] || return 1
+  done
+  return 0
+}
+
 recorded_windows() {
   local meta w seen=
   for meta in "$STATE"/*.meta; do
@@ -1160,7 +1181,7 @@ EOF
       # a captain-relevant terminal line still surfaces, because a gone endpoint
       # produces no later event to catch it.
       signal_actionable=1
-    elif signal_is_bare_turn_end $files; then
+    elif signal_is_bare_turn_end $files && signal_turn_ends_all_windowed "$STATE" $files; then
       # A bare turn-end from a crew that is not provably working, declared no
       # wait, and whose agent is still live means the crew merely went quiet
       # between steps - not a captain event. Absorb here (advance markers, no

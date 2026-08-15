@@ -962,11 +962,13 @@ signal_is_routine_working_progress() {  # <file> ...
 }
 
 # 0 when a signal batch contains a status report from a persistent secondmate.
-# Only the away-mode watcher consults this, to force immediate delivery ahead of
-# the provably-working check: neither the ordinary stale path nor the
-# captain-relevant heartbeat scan is a complete backstop for a sparse secondmate
-# report, and in away mode the watcher does not own those backstops at all. The
-# always-on watcher keeps its existing provably-working path for these reports.
+# Both watchers consult this to force immediate delivery of a secondmate report:
+# away mode calls it ahead of the provably-working check (its daemon owns no
+# stale or heartbeat backstop at all), and the attended primary calls it just
+# before the quiet-crew absorb so a secondmate's routed reply channel is never
+# swallowed as a crew that merely went quiet. Neither the ordinary stale path nor
+# the captain-relevant heartbeat scan is a complete backstop for a sparse
+# secondmate report.
 signal_has_secondmate_report() {  # <file> ...
   local f
   for f in "$@"; do

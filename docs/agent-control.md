@@ -83,9 +83,10 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - Targeting is exact.
   Only a bare task id with a `state/<id>.meta` record in this home is accepted, and that record must pass the shared endpoint-identity validation.
   A legacy `fm-<id>` window label, an explicit `session:window` endpoint, and a record whose `endpoint_task_id` names another task are all refused.
-- A remotely placed secondmate is refused by name.
-  Its agent runs on another host, so none of the postconditions this plane verifies could be read for it here; local endpoint validation would refuse the record regardless, because `window=remote:<id>` can never match a local backend's required shape.
-  Drive that lifecycle on its own host and reconcile it through the secondmate recovery path.
+- A remotely placed secondmate keeps the same exact-id control interface through its registered whole-home route.
+  The parent delegates the semantic verb through `fm-on`, and the remote host runs this same control plane against its host-local endpoint record before returning the postcondition.
+  Lifecycle input never passes through `fm-send` or receives the from-firstmate marker.
+  SSH exit 255 is unknown completion, fails closed without retry, and requires reconciliation on that host before another lifecycle action.
 - An unverified harness is refused rather than guessed at.
 - An implicit relaunch from a prefixed raw-command basename is refused before the agent or durable state is touched because its original launch command cannot be reconstructed.
 - An adapter that is not verified for this task's kind is refused **before** the running agent is stopped, not after.
@@ -117,3 +118,4 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.
+- `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` - the registered remote-home transport, host-local interrupt/exit/relaunch postconditions, profile publication on both hosts, marked-chat exclusion, and unknown-completion refusal.

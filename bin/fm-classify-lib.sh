@@ -33,9 +33,11 @@ FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. In ordinary active-session mode, an ordinary direct report's
 # status-only batch whose every latest event is `working:` is routine progress and
-# is absorbed without a runtime busy proof; a persistent secondmate's `working:`
-# report keeps its existing delivery because the stale and heartbeat backstops do
-# not cover it. Other lines without these verbs are ambiguous signals: the
+# is absorbed without a runtime busy proof; a persistent secondmate's routine
+# `working:` phase report is likewise absorbed (signal_secondmate_routine_working),
+# but a secondmate line that carries a correlated marked-request answer (a
+# pending-reply corr token) still reaches firstmate because the stale and heartbeat
+# backstops do not cover it. Other lines without these verbs are ambiguous signals: the
 # watcher absorbs them only with positive provably-working evidence, while the
 # daemon uses its away-mode classification. FM_CAPTAIN_RE overrides the whole set
 # when a home needs a custom verb vocabulary; absent, this default applies.
@@ -944,8 +946,10 @@ status_file_kind() {  # <status-file>
 # healthy by design), while the heartbeat backstop only rescans captain-relevant
 # statuses. A secondmate `working [key=...]` line is also its documented sparse
 # material phase report and a valid correlated answer to a marked request
-# (bin/fm-brief.sh's charter contract, bin/fm-pending-reply-lib.sh), so it keeps
-# the conservative provably-working path that used to deliver it.
+# (bin/fm-brief.sh's charter contract, bin/fm-pending-reply-lib.sh). The attended
+# watcher handles the secondmate case with the corr-token-aware
+# signal_secondmate_routine_working (below) instead, which absorbs a routine
+# secondmate phase report while still surfacing a correlated answer.
 # The watcher uses this before consulting semantic busy state in both normal and
 # away modes.
 signal_is_routine_working_progress() {  # <file> ...
@@ -976,6 +980,42 @@ signal_has_secondmate_report() {  # <file> ...
     [ "$(status_file_kind "$f")" = secondmate ] && return 0
   done
   return 1
+}
+
+# 0 (all-good/absorb) when a signal batch is routine working progress that may
+# INCLUDE a persistent secondmate report the parent need not act on: every file is
+# a `.status` whose latest event's leading verb is `working`, and no latest line
+# carries a pending-reply correlation token (corr=<16hex>). This is the secondmate
+# counterpart to signal_is_routine_working_progress, which deliberately rejects any
+# secondmate file. A secondmate's sparse `working:` phase report has no delayed
+# backstop - the stale loop skips an idle secondmate endpoint by design and the
+# heartbeat rescan only revisits captain-relevant statuses - so absorbing one used
+# to risk swallowing it, and the watcher forced a supervision turn for every
+# secondmate signal. The ONE secondmate line the parent must still see is a
+# correlated answer to a marked request, and such an answer ALWAYS embeds the
+# corr token (bin/fm-pending-reply-lib.sh's fm_pending_reply_line_resolves matches
+# only lines carrying it, including a document pointer). Classifying on that token -
+# the LINE, not the file - keeps the routed reply channel intact while absorbing an
+# ordinary phase report; a captain-relevant verb never reaches here because
+# signal_reason_is_actionable surfaces it first. Callers apply this only for a batch
+# signal_has_secondmate_report matched, and only after the provably-working and
+# declared-wait paths, so a batch with no secondmate keeps its ordinary
+# routine-working absorb. FM_PENDING_REPLY_CORR_RE (owned by the pending-reply lib)
+# overrides the token shape; absent, the default matches the lib's own constant.
+signal_secondmate_routine_working() {  # <file> ...
+  # Assign the token pattern on its own line: an inline ${VAR:-default} default
+  # cannot hold the `{16}` quantifier (its `}` would close the expansion early).
+  local f last seen="" corr_re=${FM_PENDING_REPLY_CORR_RE:-}
+  [ -n "$corr_re" ] || corr_re='corr=[A-Fa-f0-9]{16}'
+  for f in "$@"; do
+    case "$f" in *.status) ;; *) return 1 ;; esac
+    [ -e "$f" ] || return 1
+    last=$(last_status_line "$f")
+    [ "$(status_line_verb "$last")" = working ] || return 1
+    printf '%s' "$last" | grep -qE "$corr_re" && return 1
+    seen=1
+  done
+  [ -n "$seen" ]
 }
 
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,

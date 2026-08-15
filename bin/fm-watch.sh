@@ -1173,9 +1173,21 @@ EOF
       # applying the attended-primary quiet-crew absorb below.
       signal_actionable=1
     elif signal_has_secondmate_report $files; then
-      # A persistent secondmate's report is its routed reply channel and must
-      # always reach firstmate, never absorbed as a quiet crew.
-      signal_actionable=1
+      # A persistent secondmate's report is its routed reply channel. Its sparse
+      # phase reports have no delayed backstop (the stale loop skips an idle
+      # secondmate endpoint and the heartbeat rescan only revisits captain-relevant
+      # statuses), so ANY secondmate signal used to force a supervision turn. But a
+      # routine `working:` phase report is not work the parent must act on; only a
+      # correlated answer to a marked request is, and such an answer always carries
+      # the pending-reply corr token. Absorb a proven-routine secondmate-inclusive
+      # working batch (every latest event `working:`, no corr token) and surface
+      # everything else - correlated answers, and any non-working secondmate line.
+      # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
+      if signal_secondmate_routine_working $files; then
+        signal_absorb_reason="routine secondmate progress"
+      else
+        signal_actionable=1
+      fi
     elif signal_any_endpoint_finished "$STATE" $files; then
       # Swallowed-finish guard: a crew whose agent has confidently exited without
       # a captain-relevant terminal line still surfaces, because a gone endpoint

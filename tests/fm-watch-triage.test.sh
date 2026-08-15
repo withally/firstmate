@@ -193,6 +193,39 @@ test_signal_is_routine_working_progress_classifier() {
   pass "signal_is_routine_working_progress: only nonempty all-working ordinary-task status batches are routine"
 }
 
+test_signal_secondmate_routine_working_classifier() {
+  local dir state corr
+  dir=$(make_case classify-secondmate-routine); state="$dir/state"
+  # A real pending-reply correlation token shape (corr=<16 hex>); a routine phase
+  # report never carries one, a correlated marked-request answer always does.
+  corr='corr=0123456789abcdef'
+  printf 'working [key=audit]: still working through the material\n' > "$state/mate.status"
+  printf 'working: building the widget\n' > "$state/b.status"
+  printf 'working [key=audit]: reposted on the parent channel %s\n' "$corr" > "$state/answer.status"
+  printf 'resolved [key=audit]: closed\n' > "$state/resolved.status"
+  # All-working, no correlation token -> absorbable, standalone and in a mixed batch.
+  signal_secondmate_routine_working "$state/mate.status" \
+    || fail "a routine secondmate working report was not classified as absorbable"
+  signal_secondmate_routine_working "$state/b.status" "$state/mate.status" \
+    || fail "a mixed ordinary+secondmate all-working batch was not classified as absorbable"
+  # A correlated answer (corr token) must never be absorbed, alone or riding a batch.
+  ! signal_secondmate_routine_working "$state/answer.status" \
+    || fail "a correlated marked-request answer was classified as absorbable"
+  ! signal_secondmate_routine_working "$state/mate.status" "$state/answer.status" \
+    || fail "a batch carrying a correlated answer was classified as absorbable"
+  # Only a `working:` phase report qualifies; other verbs stay on the surface path.
+  ! signal_secondmate_routine_working "$state/resolved.status" \
+    || fail "a non-working secondmate line was classified as absorbable"
+  # A turn-end marker, a missing file, and an empty batch are never absorbable here.
+  ! signal_secondmate_routine_working "$state/mate.status" "$state/mate.turn-ended" \
+    || fail "a batch containing a turn-end was classified as absorbable"
+  ! signal_secondmate_routine_working "$state/missing.status" \
+    || fail "a missing status file was classified as absorbable"
+  ! signal_secondmate_routine_working \
+    || fail "an empty signal batch was classified as absorbable"
+  pass "signal_secondmate_routine_working: all-working no-corr batches absorb; corr answers and non-working lines surface"
+}
+
 test_delivered_decision_echo_classifier() {
   local dir state marker
   dir=$(make_case classify-delivered-decision); state="$dir/state"
@@ -731,30 +764,61 @@ test_working_note_unknown_runtime_absorbed() {
   pass "routine working progress is absorbed with unknown runtime busy state (no reason, queue, or model wake)"
 }
 
-# The counterpart boundary: a persistent secondmate's working: line is its
-# documented sparse material phase report and a valid correlated answer to a
-# marked request, and nothing else would ever deliver it - the stale loop skips an
-# idle secondmate endpoint by design, and the heartbeat rescan only looks at
-# captain-relevant statuses. So routine absorb must not apply to it, even with the
-# same unknown runtime busy state that absorbs an ordinary task's progress above.
-test_secondmate_working_note_surfaced() {
-  local dir state fakebin out drain_out status_file pid
-  dir=$(make_case secondmate-working-report); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"
+# The waste this closes: a persistent secondmate's ROUTINE working: phase report
+# (no correlated marked-request answer) is not work the parent must act on, so the
+# attended watcher absorbs it - no exit, no queue - instead of ending the sitting
+# wait and spending a full supervision turn. This holds even with the same unknown
+# runtime busy state that absorbs an ordinary task's progress, and even though
+# signal_is_routine_working_progress deliberately excludes a secondmate.
+test_secondmate_routine_working_absorbed() {
+  local dir state fakebin out status_file pid i
+  dir=$(make_case secondmate-routine-working); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
   status_file="$state/mate.status"
   printf 'kind=secondmate\n' > "$state/mate.meta"
-  printf 'working [key=audit]: findings in data/audit.md corr=req-7\n' > "$status_file"
+  printf 'working [key=audit]: still working through the material\n' > "$status_file"
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not surface a secondmate working: report"
-  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the surfaced secondmate signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the secondmate report failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
-    || fail "secondmate working: report was not queued"
-  [ -s "$state/.seen-mate_status" ] || fail "surfaced secondmate report did not advance its .seen-* suppressor"
+  i=0
+  while [ "$i" -lt 40 ] && [ ! -s "$state/.seen-mate_status" ]; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null || { reap "$pid"; fail "watcher exited for a routine secondmate working report (should absorb): $(cat "$out")"; }
+  [ -s "$state/.seen-mate_status" ] || { reap "$pid"; fail "absorbed secondmate working report did not advance its .seen-* suppressor"; }
+  [ ! -s "$out" ] || { reap "$pid"; fail "routine secondmate working report printed a watcher reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "routine secondmate working report enqueued a durable wake"; }
+  reap "$pid"
   unset FM_FAKE_CREW_STATE
-  pass "a secondmate working: report is still delivered when its secondmate is not provably working (the negative control for the absorb case above)"
+  pass "outside away mode a routine secondmate working: phase report is absorbed (the sitting wait holds, no supervision turn)"
+}
+
+# The counterpart boundary: a secondmate line that IS a correlated answer to a
+# marked request carries the pending-reply corr token, and nothing else would ever
+# deliver it - the stale loop skips an idle secondmate endpoint by design, and the
+# heartbeat rescan only looks at captain-relevant statuses. So it must surface even
+# with the same unknown runtime busy state that absorbs the routine report above.
+test_secondmate_correlated_answer_surfaced() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case secondmate-correlated-answer); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  status_file="$state/mate.status"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  # A real pending-reply corr token (corr=<16 hex>) marks the routed answer.
+  printf 'working [key=audit]: reposted findings on the parent channel corr=0123456789abcdef\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no verified semantic busy source'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a secondmate correlated answer"
+  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the surfaced secondmate signal"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the secondmate answer failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
+    || fail "secondmate correlated answer was not queued"
+  [ -s "$state/.seen-mate_status" ] || fail "surfaced secondmate answer did not advance its .seen-* suppressor"
+  unset FM_FAKE_CREW_STATE
+  pass "a secondmate line carrying a marked-request corr token surfaces even when the secondmate is not provably working"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
@@ -2732,6 +2796,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
 
 test_signal_reason_is_actionable_classifier
 test_signal_is_routine_working_progress_classifier
+test_signal_secondmate_routine_working_classifier
 test_delivered_decision_echo_classifier
 test_signal_terminal_duplicate_classifier
 test_stale_is_terminal_classifier
@@ -2750,7 +2815,8 @@ test_turn_ended_live_quiet_absorbed
 test_declared_paused_signal_absorbed
 test_captain_held_signal_absorbed
 test_working_note_unknown_runtime_absorbed
-test_secondmate_working_note_surfaced
+test_secondmate_routine_working_absorbed
+test_secondmate_correlated_answer_surfaced
 test_actionable_and_mixed_signals_surfaced
 test_decision_delivery_echo_absorbed_unmatched_and_bundled_surface
 test_terminal_signal_already_delivered_absorbed_new_terminal_surfaces

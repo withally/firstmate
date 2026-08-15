@@ -1276,7 +1276,9 @@ SH
   printf 'done: terminal edge was missed\n' > "$home/state/missed.status"
   : > "$home/state/missed.turn-ended"
   old=$(( $(date +%s) - 120 ))
-  touch -t "$(date -r "$old" +%Y%m%d%H%M.%S)" \
+  local stamp
+  stamp=$(date -r "$old" +%Y%m%d%H%M.%S 2>/dev/null) || stamp=$(date -d "@$old" +%Y%m%d%H%M.%S)
+  touch -t "$stamp" \
     "$home/state/missed.meta" "$home/state/missed.status" "$home/state/missed.turn-ended"
 
   out=$(FM_INACTIVE_RECONCILE_SECS=60 FM_INACTIVE_RECONCILE_BUDGET_SECS=3 \

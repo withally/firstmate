@@ -94,6 +94,14 @@
 #          X-mode artifacts, project clones, or repair instructions.
 #          Unset/0 (the default) runs every sweep exactly as before - this flag
 #          is purely additive.
+#          Set FM_BOOTSTRAP_NETWORK to split startup into local and network
+#          phases: skip runs local work only, only runs network work only, and
+#          all (the default, including unknown values) preserves the complete
+#          standalone behavior. bin/fm-startup-network.sh owns the deferred,
+#          bounded invocation and durable result delivery.
+#          FM_BOOTSTRAP_NETWORK_LOCK_PID binds a deferred mutating pass to the
+#          fleet-lock owner that requested it; every network sweep rechecks that
+#          binding and fails closed if ownership changed.
 #          Set FM_BOOTSTRAP_LOCKED=1 alongside detect-only when this session
 #          owns the lock and skips sweeps only because startup completed them.
 #          That caller retains checkout-repair ownership while every mutating
@@ -129,6 +137,32 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+
+case "${FM_BOOTSTRAP_NETWORK:-all}" in
+  skip|only) FM_BOOTSTRAP_NETWORK_PHASE=${FM_BOOTSTRAP_NETWORK:-all} ;;
+  *) FM_BOOTSTRAP_NETWORK_PHASE=all ;;
+esac
+
+local_phase() { [ "$FM_BOOTSTRAP_NETWORK_PHASE" != only ]; }
+network_phase() { [ "$FM_BOOTSTRAP_NETWORK_PHASE" != skip ]; }
+
+network_mutation_authorized() {
+  local expected=${FM_BOOTSTRAP_NETWORK_LOCK_PID:-} current
+  [ -n "$expected" ] || return 0
+  case "$expected" in *[!0-9]*) return 1 ;; esac
+  [ -f "$STATE/.lock" ] && [ ! -L "$STATE/.lock" ] || return 1
+  current=$(cat "$STATE/.lock" 2>/dev/null) || return 1
+  [ "$current" = "$expected" ]
+}
+
+network_sweep_authorized() {
+  local label=$1
+  if network_mutation_authorized; then
+    return 0
+  fi
+  echo "NETWORK_CHECKS: fleet lock ownership changed before $label, so this stale worker skipped that sweep"
+  return 1
+}
 
 fleet_sync_origin_backed_project_count() {
   local count proj
@@ -574,6 +608,9 @@ secondmate_liveness_sweep() {
           cause="remote endpoint $agent_state on its configured host"
           if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
             SECONDMATE_RESPAWNED_IDS="$SECONDMATE_RESPAWNED_IDS $id"
+            if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] || ! local_phase; then
+              echo "BOOTSTRAP_INFO: remote secondmate $id relaunched after $cause (host=$remote_host)"
+            fi
           else
             echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed after $cause: $(first_line "$out")"
           fi
@@ -610,7 +647,7 @@ secondmate_liveness_sweep() {
         fi
         if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
           SECONDMATE_RESPAWNED_IDS="$SECONDMATE_RESPAWNED_IDS $id"
-          if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ]; then
+          if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] || ! local_phase; then
             echo "BOOTSTRAP_INFO: secondmate $id relaunched after $cause (backend=$backend)"
           fi
         else
@@ -1012,69 +1049,73 @@ fi
 # identity-matched watcher, holds its lock, and neutralizes legacy PR checks
 # before any tool detection or later bootstrap mutation can leave old artifacts
 # runnable. Detect-only sessions never touch state.
-if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
+if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
   startup_memory_budget_setup
 fi
 
-if [ "$BACKEND_VALID" -eq 0 ]; then
-  echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
-fi
-for t in $BACKEND_TOOLS; do
-  fm_backend_required_tool_available "$BACKEND" "$t" \
-    || missing_tool_diagnostic "$t"
-done
-for t in $COMMON_TOOLS; do
-  command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
-done
-# The treehouse lease-support upgrade check is only relevant when the resolved
-# backend actually requires treehouse (every backend except orca, which owns its
-# own worktrees); an orca home must not be told to upgrade a provider it never uses.
-if fm_backend_list_contains "$TOOLS" treehouse \
-  && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
-  echo "MISSING: treehouse (install: $(install_cmd treehouse))"
-fi
-if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
-  echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
-fi
-if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
-  echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
-fi
-if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
-  echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
-fi
-if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
-  echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
-fi
-gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
-# Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
-# default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
-# primary only; detached-HEAD worktrees and secondmate homes never trip it.
-tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" 2>/dev/null || true)
-if [ -n "$tangle_branch" ]; then
-  tangle_default=$(fm_default_branch "$FM_ROOT" 2>/dev/null || echo main)
-  if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && [ "${FM_BOOTSTRAP_LOCKED:-0}" != 1 ]; then
-    echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
-  else
-    echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
+detect_local_tools() {
+  if [ "$BACKEND_VALID" -eq 0 ]; then
+    echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
   fi
-fi
-crew=
-[ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
-if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] && [ -n "$crew" ] && [ "$crew" != "default" ]; then
-  echo "BOOTSTRAP_INFO: crew harness override active: $crew"
-fi
-crew_dispatch_validate
-if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
-  && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
-  echo "BOOTSTRAP_INFO: tasks-axi available"
-fi
+  for t in $BACKEND_TOOLS; do
+    fm_backend_required_tool_available "$BACKEND" "$t" || missing_tool_diagnostic "$t"
+  done
+  for t in $COMMON_TOOLS; do
+    command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
+  done
+  if fm_backend_list_contains "$TOOLS" treehouse \
+    && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
+    echo "MISSING: treehouse (install: $(install_cmd treehouse))"
+  fi
+  if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
+    echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+  fi
+  if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
+    echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
+  fi
+  if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
+    echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
+  fi
+  if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
+    echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
+  fi
+}
+
+detect_local_config() {
+  tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" 2>/dev/null || true)
+  if [ -n "$tangle_branch" ]; then
+    tangle_default=$(fm_default_branch "$FM_ROOT" 2>/dev/null || echo main)
+    if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && [ "${FM_BOOTSTRAP_LOCKED:-0}" != 1 ]; then
+      echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
+    else
+      echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
+    fi
+  fi
+  crew=
+  [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
+  if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] && [ -n "$crew" ] && [ "$crew" != "default" ]; then
+    echo "BOOTSTRAP_INFO: crew harness override active: $crew"
+  fi
+  crew_dispatch_validate
+  if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
+    && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
+    echo "BOOTSTRAP_INFO: tasks-axi available"
+  fi
+}
+
+local_phase && detect_local_tools
+network_phase && { gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"; }
+local_phase && detect_local_config
+
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
-  secondmate_liveness_sweep
-  secondmate_sync
-  secondmate_handoff_resume
-  x_mode_setup
-  fleet_sync
+  if network_phase; then
+    if network_sweep_authorized 'dead-secondmate relaunch'; then secondmate_liveness_sweep; fi
+    if network_sweep_authorized 'secondmate convergence'; then secondmate_sync; fi
+    if network_sweep_authorized 'pending handoff delivery'; then secondmate_handoff_resume; fi
+  fi
+  local_phase && x_mode_setup
+  if network_phase && network_sweep_authorized 'project clone refresh'; then fleet_sync; fi
 fi
-secondmate_handoff_detect
+local_phase && secondmate_handoff_detect
 exit 0

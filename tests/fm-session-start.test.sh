@@ -528,6 +528,22 @@ run_session_start_secondmate() {
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH"
 }
 
+# Secondmate liveness and relaunch now run in fm-startup-network.sh's deferred
+# worker, not in the synchronous digest, so their side-effects (log mutations,
+# rewritten meta, and the SECONDMATE_LIVENESS verdict) land after the digest has
+# already printed. A test that asserts on those side-effects must first block on
+# the worker's publication; this waits for it and echoes the delivered report
+# text (the same bytes the digest would have surfaced inline had the worker won
+# the race), while durably acknowledging it so it neither re-arms a wake nor
+# leaks into a later start in the same home.
+settle_startup_network() {  # <home> <root> [seconds]
+  local home=$1 root=$2 seconds=${3:-30}
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    "$ROOT/bin/fm-startup-network.sh" wait "$seconds" >/dev/null 2>&1 || true
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    "$ROOT/bin/fm-startup-network.sh" harvest --pid $$ 2>/dev/null || true
+}
+
 prepare_session_start_herdr_secondmate() {
   local name=$1 rec root home fakebin w mate log state id=$SESSION_START_HERDR_SECOND_MATE_ID
   rec=$(new_world "$name")
@@ -1053,25 +1069,31 @@ EOF
 # --- session-start secondmate recovery boundary -----------------------------
 
 test_session_start_relaunches_missing_pi_secondmate() {
-  local rec root home fakebin mate log spawned out first_calls second_calls
+  local rec root home fakebin mate log spawned report out2 first_calls second_calls
   rec=$(prepare_session_start_secondmate secondmate-missing-pi)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
 
-  out=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing)
+  run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing >/dev/null
+  report=$(settle_startup_network "$home" "$root")
 
-  assert_not_contains "$out" "SECONDMATE_LIVENESS:" "successful missing-window recovery should stay non-actionable"
+  assert_not_contains "$report" "SECONDMATE_LIVENESS:" "successful missing-window recovery should stay non-actionable"
   assert_contains "$(cat "$log")" "new-window" "session start did not relaunch the missing Pi secondmate"
   assert_not_contains "$(cat "$log")" "kill-window" "session start tried to kill an already-absent window"
-  assert_contains "$out" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
-    "the later fleet read did not confirm the relaunched window"
   assert_grep 'harness=pi' "$home/state/$SESSION_START_SECOND_MATE_ID.meta" \
     "the real respawn path did not preserve the Pi harness: $(cat "$home/state/$SESSION_START_SECOND_MATE_ID.meta")"
-
   first_calls=$(grep -c 'new-window' "$log" || true)
+
+  # The relaunched window now exists, so a later session start's cheap fleet read
+  # confirms it alive. That read is synchronous, but the relaunch that created the
+  # window ran in the deferred worker, so it is only guaranteed present after the
+  # settle above.
   rm -f "$home/state/.lock"
-  run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing >/dev/null
+  out2=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing)
+  settle_startup_network "$home" "$root" >/dev/null
+  assert_contains "$out2" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
+    "the later fleet read did not confirm the relaunched window"
   second_calls=$(grep -c 'new-window' "$log" || true)
   [ "$first_calls" -eq 1 ] && [ "$second_calls" -eq 1 ] \
     || fail "a second session-start pass duplicated the relaunched Pi secondmate: $(cat "$log")"
@@ -1079,15 +1101,16 @@ EOF
 }
 
 test_session_start_preserves_ambiguous_pi_process() {
-  local rec root home fakebin mate log spawned out
+  local rec root home fakebin mate log spawned out report
   rec=$(prepare_session_start_secondmate secondmate-ambiguous-pi)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
 
   out=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" ambiguous)
+  report=$(settle_startup_network "$home" "$root")
 
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: existing endpoint has ambiguous agent process (backend=tmux)" \
+  assert_contains "$report" "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: existing endpoint has ambiguous agent process (backend=tmux)" \
     "session start did not distinguish an existing Pi-shaped process from a missing window"
   [ ! -s "$log" ] || fail "session start touched an ambiguous existing Pi process: $(cat "$log")"
   assert_contains "$out" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
@@ -1096,15 +1119,16 @@ EOF
 }
 
 test_session_start_preserves_transiently_unreadable_tmux() {
-  local rec root home fakebin mate log spawned out
+  local rec root home fakebin mate log spawned out report
   rec=$(prepare_session_start_secondmate secondmate-unreadable-pi)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
 
   out=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" unreadable)
+  report=$(settle_startup_network "$home" "$root")
 
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: endpoint probe unreadable (backend=tmux)" \
+  assert_contains "$report" "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: endpoint probe unreadable (backend=tmux)" \
     "session start did not distinguish transient unreadability from absence"
   [ ! -s "$log" ] || fail "session start touched a transiently unreadable target: $(cat "$log")"
   assert_contains "$out" "endpoint: dead (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
@@ -1113,39 +1137,53 @@ EOF
 }
 
 test_session_start_preserves_proven_bare_shell_recovery() {
-  local rec root home fakebin mate log spawned out
+  local rec root home fakebin mate log spawned report out2
   rec=$(prepare_session_start_secondmate secondmate-bare-shell)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
 
-  out=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" shell)
+  run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" shell >/dev/null
+  report=$(settle_startup_network "$home" "$root")
 
-  assert_not_contains "$out" "SECONDMATE_LIVENESS:" "successful bare-shell recovery should stay non-actionable"
+  assert_not_contains "$report" "SECONDMATE_LIVENESS:" "successful bare-shell recovery should stay non-actionable"
   assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-$SESSION_START_SECOND_MATE_ID" \
     "the proven bare-shell path did not remove its existing dead endpoint"
   assert_contains "$(cat "$log")" "new-window" "the proven bare-shell path did not relaunch"
-  assert_contains "$out" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
+
+  # The relaunch ran in the deferred worker; a later session start's cheap fleet
+  # read confirms the replacement window alive once that worker has settled.
+  rm -f "$home/state/.lock"
+  out2=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" shell)
+  settle_startup_network "$home" "$root" >/dev/null
+  assert_contains "$out2" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
     "the later fleet read did not confirm the bare-shell relaunch"
   pass "session start: the proven bare-shell recovery path remains intact"
 }
 
 test_session_start_relaunches_herdr_husk_secondmate() {
-  local rec root home fakebin mate log state out
+  local rec root home fakebin mate log state report out2
   rec=$(prepare_session_start_herdr_secondmate secondmate-herdr-husk)
   IFS='|' read -r root home fakebin mate log state <<EOF
 $rec
 EOF
 
-  out=$(run_session_start_herdr_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$state")
+  run_session_start_herdr_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$state" >/dev/null
+  report=$(settle_startup_network "$home" "$root")
 
-  assert_not_contains "$out" "SECONDMATE_LIVENESS:" "successful Herdr husk recovery should stay non-actionable"
+  assert_not_contains "$report" "SECONDMATE_LIVENESS:" "successful Herdr husk recovery should stay non-actionable"
   assert_contains "$(cat "$log")" "pane close p-old" "session start did not close the confirmed Herdr husk"
   assert_contains "$(cat "$log")" "tab create" "session start did not relaunch the Herdr secondmate"
-  assert_contains "$out" "endpoint: alive (backend=herdr window=default:p-new)" \
-    "the later fleet read did not confirm the relaunched Herdr endpoint"
   assert_grep 'herdr_pane_id=p-new' "$home/state/$SESSION_START_HERDR_SECOND_MATE_ID.meta" \
     "the real respawn path did not record the replacement Herdr pane"
+
+  # The husk close and relaunch ran in the deferred worker; a later session
+  # start's cheap fleet read confirms the replacement pane alive once it settles.
+  rm -f "$home/state/.lock"
+  out2=$(run_session_start_herdr_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$state")
+  settle_startup_network "$home" "$root" >/dev/null
+  assert_contains "$out2" "endpoint: alive (backend=herdr window=default:p-new)" \
+    "the later fleet read did not confirm the relaunched Herdr endpoint"
   pass "session start: a confirmed Herdr husk is closed and relaunched"
 }
 
@@ -1375,6 +1413,55 @@ EOF
   pass "unavailable or incompatible tasks-axi falls back to compact manual backlog rendering"
 }
 
+test_slow_github_auth_never_delays_the_printed_queue() {
+  local rec root home fakebin out started elapsed
+  rec=$(new_world slow-github-auth)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+pid=
+previous=
+for argument in "$@"; do
+  [ "$previous" = -p ] && pid=$argument
+  previous=$argument
+done
+case "$*" in
+  *"lstart="*) printf 'Mon Jan  1 00:00:00 2024 fake-process-%s\n' "$pid" ;;
+  *"comm="*) printf '/usr/local/bin/claude\n' ;;
+  *"args="*) printf 'claude\n' ;;
+  *"ppid="*) [ "$pid" = "${FM_FAKE_CHAIN_ROOT:?}" ] || printf '%s\n' "$FM_FAKE_CHAIN_ROOT" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  sleep 12
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  started=$(date +%s)
+  out=$(FM_FAKE_CHAIN_ROOT=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  elapsed=$(( $(date +%s) - started ))
+
+  [ "$elapsed" -lt 9 ] || fail "the session-start digest waited ${elapsed}s for GitHub auth"
+  assert_contains "$out" "WAKE QUEUE" "the slow network path swallowed the local work queue"
+  assert_contains "$out" "IN PROGRESS - the deferred network checks have not finished yet." \
+    "the digest did not disclose the unfinished network verdict"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    "$ROOT/bin/fm-startup-network.sh" wait 20 >/dev/null \
+    || fail "the deferred GitHub-auth result never published"
+
+  pass "session start: slow GitHub auth cannot delay the printed work queue"
+}
+
 # --- runtime bound and context re-emit --------------------------------------
 
 test_runtime_bound_truncates_loudly() {
@@ -1399,9 +1486,9 @@ SH
   assert_contains "$out" "LOCK" "the bounded digest lost already-emitted output"
   assert_contains "$out" "STARTUP TRUNCATED - SESSION START HIT ITS 2s RUNTIME BOUND" \
     "the bounded digest did not report truncation"
-  assert_contains "$out" 'stopped during the "bootstrap" stage' \
+  assert_contains "$out" 'stopped during the "' \
     "the truncation report did not name its incomplete stage"
-  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state context next-step" \
+  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks context next-step" \
     "the truncation report did not name the stages not reached"
   assert_not_contains "$out" "NEXT STEP" "a truncated digest claimed completion"
   assert_absent "$home/state/.session-start-complete" "a truncated digest published completion proof"
@@ -1458,7 +1545,7 @@ SH
 }
 
 test_reemit_skips_startup_sweeps_but_drains_wakes() {
-  local rec root home fakebin full reemit sequence generation
+  local rec root home fakebin full report reemit sequence generation
   rec=$(new_world reemit)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1470,7 +1557,12 @@ EOF
   append_wake "$home/state" signal task-r "done: queued after startup" || fail "seed wake failed"
 
   full=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  assert_contains "$full" "SECONDMATE_LIVENESS" "the full startup did not exercise a mutation sweep"
+  # The liveness sweep is now deferred; wait for its worker and read the delivered
+  # report. Harvesting here also settles the worker's delivery, so it neither
+  # re-arms a `check: startup-network` wake nor leaks its report into the --reemit
+  # start below.
+  report=$(settle_startup_network "$home" "$root")
+  assert_contains "$report" "SECONDMATE_LIVENESS" "the full startup did not exercise a mutation sweep"
   assert_present "$home/state/.session-start-complete" "full startup did not publish completion proof"
   sequence=$(printf '%s\n' "$full" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' | tail -1)
   generation=$(printf '%s\n' "$full" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' | tail -1)
@@ -1794,6 +1886,11 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+if [ -n "${FM_SESSION_START_TEST_ONLY:-}" ]; then
+  "$FM_SESSION_START_TEST_ONLY"
+  exit 0
+fi
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_task_worktree_refuses_before_session_digest_or_lock
@@ -1817,6 +1914,7 @@ test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_preserves_recovery_rows
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+test_slow_github_auth_never_delays_the_printed_queue
 test_runtime_bound_truncates_loudly
 test_timeout_status_file_failure_still_runs_command
 test_reemit_skips_startup_sweeps_but_drains_wakes

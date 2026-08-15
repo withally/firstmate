@@ -862,6 +862,42 @@ test_routine_bootstrap_contract_runs_under_system_bash() {
   pass "bootstrap routine contract runs under system /bin/bash"
 }
 
+test_network_phase_partitions_local_and_remote_work() {
+  local case_dir fakebin all_out local_out network_out
+  case_dir="$TMP_ROOT/network-phase"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/node"
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  all_out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    FM_BOOTSTRAP_DETECT_ONLY=1 "$ROOT/bin/fm-bootstrap.sh")
+  local_out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-bootstrap.sh")
+  network_out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=only "$ROOT/bin/fm-bootstrap.sh")
+
+  assert_contains "$all_out" "MISSING: node (install:" "the complete run lost its local diagnostic"
+  assert_contains "$all_out" "NEEDS_GH_AUTH" "the complete run lost its network diagnostic"
+  assert_contains "$local_out" "MISSING: node (install:" "the local phase lost its local diagnostic"
+  assert_not_contains "$local_out" "NEEDS_GH_AUTH" "the local phase still waited on GitHub auth"
+  assert_contains "$network_out" "NEEDS_GH_AUTH" "the network phase lost GitHub auth"
+  assert_not_contains "$network_out" "MISSING: node" "the network phase repeated local detection"
+
+  pass "bootstrap: local and network phases partition session-start work"
+}
+
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   local case_dir fakebin out expect
   case_dir="$TMP_ROOT/dispatch-active"
@@ -934,6 +970,11 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+if [ -n "${FM_BOOTSTRAP_TEST_ONLY:-}" ]; then
+  "$FM_BOOTSTRAP_TEST_ONLY"
+  exit 0
+fi
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
@@ -955,5 +996,6 @@ test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
+test_network_phase_partitions_local_and_remote_work
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation

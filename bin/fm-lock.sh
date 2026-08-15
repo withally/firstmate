@@ -54,7 +54,33 @@ release_claim_lock() {
 }
 trap release_claim_lock EXIT
 trap 'exit 1' HUP INT TERM
-fm_lock_acquire_wait "$CLAIM_LOCK"
+
+# A repeated call by the current owner is a read-only verification and must not
+# wait behind its own deferred startup sweep. A different live owner still wins
+# before any acquisition attempt.
+if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
+  old=$(cat "$LOCK" 2>/dev/null || true)
+  if [ "$old" = "$me" ]; then
+    echo "lock acquired: harness pid $me"
+    exit 0
+  fi
+  if fm_harness_pid_alive "$old"; then
+    echo "error: another live firstmate session holds the lock (pid $old); operate read-only until resolved" >&2
+    exit 1
+  fi
+fi
+
+# The deferred network worker holds this acquisition lease throughout its
+# bounded mutating pass. A takeover stays read-only instead of blocking session
+# start behind the old worker or racing the same sweeps concurrently.
+if ! fm_lock_try_acquire "$CLAIM_LOCK"; then
+  sweep_pid=$(sed -n 's/^pid=//p' "$STATE/.startup-network.status" 2>/dev/null | tail -1)
+  if [ -n "${FM_LOCK_HELD_PID:-}" ] && [ "$FM_LOCK_HELD_PID" = "$sweep_pid" ]; then
+    echo "error: the prior session's bounded startup sweep is finishing; operate read-only until it releases the fleet lock" >&2
+    exit 1
+  fi
+  fm_lock_acquire_wait "$CLAIM_LOCK"
+fi
 CLAIM_LOCK_HELD=1
 
 if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then

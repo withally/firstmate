@@ -316,6 +316,61 @@ test_process_event_gets_first_refusal_before_rearm_resurface() {
   pass "watch-arm: process-event delivery gets first refusal before recovery resurfacing"
 }
 
+# On Grok the monitor path is a tracked background arm whose EXIT becomes a
+# synthetic primary turn. A benign wake the watcher absorbs must therefore keep
+# the watcher blocking so the attached arm never exits - a fix that absorbed the
+# wake inside the watcher but still let the arm exit would still burn a turn.
+# This drives a real arm + real watcher end to end: a declared external-wait
+# signal (the exact shape of the 2026-08-15 burn) must leave BOTH processes
+# alive, while a genuine captain-relevant status still exits both.
+test_attached_arm_stays_live_through_a_declared_wait_absorb() {
+  local dir state fakebin out armout i
+  dir=$(make_case declared-wait-no-arm-exit)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; armout="$dir/arm.out"
+  printf 'kind=ship\n' > "$state/demo.meta"
+  # The crew is NOT provably working, so a paused: signal can only be absorbed via
+  # the declared-external-wait rule, not the provably-working path.
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  start_seed_watcher "$state" "$fakebin" "$out"
+  start_attached_arm "$state" "$fakebin" "$armout" 1
+
+  # A declared external-wait pause plus the same turn's turn-end.
+  printf 'paused: awaiting the upstream release\n' > "$state/demo.status"
+  : > "$state/demo.turn-ended"
+
+  # Wait until the watcher has provably processed the signal (its .seen-* marker
+  # advanced past the pre-existing signature) so the assertion is not racing the
+  # poll rather than relying on a fixed sleep.
+  i=0
+  while [ "$i" -lt 300 ]; do
+    [ -s "$state/.seen-demo_status" ] && break
+    is_live_non_zombie "$SEED_PID" || break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$state/.seen-demo_status" ] || fail "watcher never processed the declared-wait signal: $(cat "$out")"
+
+  # The benign declared wait must NOT surface: the watcher keeps blocking and the
+  # arm stays attached. Neither may have exited (the arm's exit is the turn).
+  is_live_non_zombie "$SEED_PID" \
+    || fail "watcher exited for a declared-wait signal (should absorb and keep blocking): $(cat "$out")"
+  is_live_non_zombie "$ARM_PID" \
+    || fail "attached arm exited on a declared-wait no-op, which on Grok becomes a synthetic primary turn: $(cat "$armout")"
+  [ ! -s "$state/.wake-queue" ] || fail "a declared-wait signal enqueued a durable wake"
+  [ ! -s "$out" ] || fail "the watcher printed a wake reason for a declared-wait signal: $(cat "$out")"
+  ! grep -q '^signal:' "$armout" || fail "the arm reported a signal wake for a declared wait: $(cat "$armout")"
+
+  # Positive control: a genuine captain-relevant status now DOES exit both,
+  # proving the absorb is selective, not a permanently deaf arm.
+  printf 'done: fixture finished\n' > "$state/demo.status"
+  wait_for_exit "$SEED_PID" 120 || fail "watcher did not surface a captain-relevant status after the absorb: $(cat "$out")"
+  wait_for_exit "$ARM_PID" 120 || fail "arm did not exit for a genuine wake after the absorb: $(cat "$armout")"
+  grep -q '^signal:' "$armout" || fail "arm did not report the genuine signal wake after the absorb: $(cat "$armout")"
+  unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+  pass "watch-arm: a declared-wait absorb keeps the real attached arm alive (no synthetic turn); a genuine wake still exits it"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -323,3 +378,4 @@ test_attached_arm_resolves_a_lost_ledger_append_from_the_close_receipt
 test_attached_arm_rejects_a_close_receipt_from_another_identity
 test_rearm_resurfaces_decision_without_new_queue_row
 test_process_event_gets_first_refusal_before_rearm_resurface
+test_attached_arm_stays_live_through_a_declared_wait_absorb

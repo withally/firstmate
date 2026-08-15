@@ -11,22 +11,27 @@
 # absorb-only-when-provably-working: they are absorbed only when the crew shows
 # POSITIVE evidence it is still working (an actively-running no-mistakes step, or
 # a backend busy signal), and surfaced otherwise, so a crew that finishes (or
-# stops and waits) is never silently swallowed. A declared external-wait pause is
-# the separate idle absorb case, silent by default with an opt-in
-# FM_PAUSE_RESURFACE_SECS recheck cadence,
-# although its initial ambiguous status signal still surfaces in normal mode.
+# stops and waits) is never silently swallowed. A declared external-wait pause or
+# verified captain-held is the separate idle-by-design absorb case on BOTH the
+# signal and stale paths - its own status append and the bare turn-end under it
+# are absorbed, not just re-surfaced stale hashes - silent by default with an
+# opt-in FM_PAUSE_RESURFACE_SECS recheck cadence, so a declared captain-wait
+# window raises no monitoring alert.
 # While state/.afk exists, the daemon owns the one-shot watcher lifecycle and the
 # stale-pane and heartbeat paths still queue and exit for daemon classification.
 # The signal path keeps the same conservative triage used in normal mode: routine
-# working progress and a provably-working bare turn-end are absorbed, while
-# captain-relevant, stopped, unknown, ambiguous, and secondmate events surface.
+# working progress, a provably-working bare turn-end, and a declared-wait
+# (paused:/captain-held) signal are absorbed, while captain-relevant, stopped,
+# unknown, undeclared-ambiguous, and secondmate events surface.
 # Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
 #                          has a captain-relevant verb OR a non-routine signal's
-#                          crew is not provably working; away mode also surfaces
+#                          crew is neither provably working nor sitting on a
+#                          declared external wait; away mode also surfaces
 #                          every persistent secondmate report immediately;
 #                          an ordinary direct report's pure working-progress
-#                          status batch, a task+key resolved echo with a confirmed
+#                          status batch, a declared-wait (paused:/captain-held)
+#                          batch, a task+key resolved echo with a confirmed
 #                          delivery receipt, and a byte-identical already-surfaced
 #                          terminal batch are absorbed in both modes
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
@@ -48,8 +53,14 @@
 #                          captain-relevant verb), both surfaced at once. The
 #                          routine working-progress absorb is a signal-path rule
 #                          only and never suppresses a stale surface. A
-#                          provably-working stale past the
-#                          wedge threshold also surfaces, with an "escalation N"
+#                          provably-working stale past the wedge threshold is
+#                          re-verified against the authoritative current run
+#                          state: a run fm-crew-state.sh still reports as actively
+#                          working legitimately sits on a static pane (e.g. a long
+#                          CI wait) and keeps absorbing silently, never forcing a
+#                          no-op turn, while a run that has reached a gate,
+#                          finished, failed, or gone unreadable is no longer
+#                          provably working and surfaces with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
@@ -336,13 +347,28 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
+# escalates once STALE_ESCALATE_SECS have elapsed. Shared by both places a hash
+# can be absorbed this way: the plain non-terminal path, and the
+# stale_is_terminal-overridden path (a captain-relevant status-log line that an
+# active run/busy pane outranked), plus the busy-turn-over-age path.
+#
+# When a <reverify-task> is passed (only the provably-working absorb sites do),
+# the escalation is gated on ONE authoritative re-read of that crew's current
+# state: an actively-running no-mistakes step legitimately sits on a static pane
+# for the whole of a long CI or validation wait, and forcing a possible-wedge
+# supervision turn every STALE_ESCALATE_SECS while the run is provably still
+# working is exactly the no-op burn this guard exists to stop. A run
+# fm-crew-state.sh still reports as working (via an active run-step) is not a
+# wedge, so reset the absorb window and stay silent; a run that has reached a
+# gate, finished, failed, or gone unreadable is no longer provably working and
+# escalates unchanged, so a genuinely wedged pane and a quietly-finished run both
+# still surface. The re-read is bounded to once per STALE_ESCALATE_SECS per
+# window (only at the escalation boundary, then the timer resets), not every
+# poll. The busy-turn-over-age site passes NO reverify-task: a busy pane's only
+# liveness evidence is its footer, the very signal that bound exists to
+# distrust, so it must still escalate on time alone.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> [<reverify-task>]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 reverify_task=${5:-} since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -352,6 +378,12 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        if [ -n "$reverify_task" ] && crew_is_provably_working "$reverify_task"; then
+          date +%s > "$since_file"
+          rm -f "$escalation_file"
+          triage_log "absorbed $label, re-verified provably working (not a wedge), timer reset: $win"
+          return
+        fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
         reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
@@ -1028,7 +1060,19 @@ EOF
       signal_actionable=1
     elif signal_is_routine_working_progress $files; then
       :
-    elif ! signal_crew_provably_working $files; then
+    elif signal_crew_provably_working $files; then
+      :
+    elif signal_all_declared_wait $files; then
+      # A declared external-wait pause or verified captain-held is idle by
+      # design, so the pause line's own append and the bare turn-end that
+      # follows it are already-handled "still waiting" facts, absorbed instead
+      # of forcing a supervision turn. This brings the signal path in line with
+      # the stale path (which already absorbs a declared wait via
+      # pause_state_class) and honors the captain preference against alerts on
+      # declared captain-wait windows. A crew that neither declared a wait nor is
+      # provably working still surfaces below (the swallowed-finish guard).
+      signal_absorb_reason="declared external wait"
+    else
       signal_actionable=1
     fi
     if [ "$signal_actionable" -eq 1 ]; then
@@ -1171,7 +1215,7 @@ EOF
             # wedge timer is running for it) - keep treating it that way
             # without re-reading the crew state every poll, and without
             # letting the still-captain-relevant log line re-surface it.
-            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf"
+            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" "$task"
           fi
           # else: already surfaced as genuinely terminal on a prior poll of
           # this same hash - nothing left to do (matches the original,
@@ -1214,12 +1258,12 @@ EOF
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$w"
                          printf '%s' "$h" > "$sf"
-                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf"
+                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$task"
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf"
+              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task"
             fi
           fi
         fi

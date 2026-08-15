@@ -1052,6 +1052,37 @@ signal_crew_provably_working() {  # <file> ...
   return 0
 }
 
+# 0 (benign/absorb) if EVERY task referenced by an ambiguous "signal:" wake has
+# DECLARED an external wait - its current last status line is a paused: or a
+# verified captain-held declaration; 1 otherwise, including an empty or
+# unresolvable batch. A declared wait is the crew's own idle-by-design statement,
+# so the pause line's own append and the bare turn-end that follows it are
+# already-handled "still waiting" facts, not a swallowed finish: absorbing them
+# is what keeps a declared captain-wait window from raising a monitoring alert
+# (the codified captain preference). Callers apply this AFTER
+# signal_crew_provably_working, so an active run already outranked the
+# declaration - exactly pause_state_class's precedence on the stale path, mirrored
+# here so the signal path and the stale path agree. A pure status-line read (no
+# fm-crew-state.sh call): the not-provably-working verdict was already
+# established, and a crew that neither declared a wait nor is provably working
+# still surfaces, preserving the swallowed-finish guard.
+signal_all_declared_wait() {  # <file> ...
+  local f statusf last seen=""
+  for f in "$@"; do
+    case "$f" in
+      *.status)     statusf=$f ;;
+      *.turn-ended) statusf=${f%.turn-ended}.status ;;
+      *)            return 1 ;;
+    esac
+    case " $seen " in *" $statusf "*) continue ;; esac
+    seen="$seen $statusf"
+    last=$(last_status_line "$statusf")
+    status_is_paused_or_captain_held "$last" || return 1
+  done
+  [ -n "$seen" ] || return 1
+  return 0
+}
+
 # 0 (terminal/actionable) if a stale window's last status line is
 # captain-relevant; 1 otherwise, including the no-status case. A 1 only means
 # "non-terminal"; the always-on watcher then applies crew_is_provably_working,

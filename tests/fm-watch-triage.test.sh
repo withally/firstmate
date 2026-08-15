@@ -596,26 +596,58 @@ test_secondmate_report_absorbed_when_provably_working() {
   pass "outside away mode a secondmate report from a provably-working secondmate stays on the conservative absorb path"
 }
 
-# --- an ambiguous signal whose crew is NOT provably working SURFACES ---------
-# This is the swallowed-finish fix: a crew that finished (or stopped and waits)
-# reports its final turn-end with no captain-relevant status and no running
-# pipeline, so the wake must surface instead of being absorbed.
-
-test_turn_ended_not_working_surfaced() {
+# --- an ambiguous turn-end whose crew's AGENT HAS EXITED still surfaces -------
+# The swallowed-finish guard, re-keyed to the genuine finish signal: a crew whose
+# agent has confidently exited (fm_backend_agent_state missing/dead) without a
+# captain-relevant terminal line produces no later event to catch it, so its bare
+# turn-end must surface at once.
+test_turn_ended_exited_agent_surfaced() {
   local dir state fakebin out drain_out pid
-  dir=$(make_case turn-ended-stopped); state="$dir/state"; fakebin="$dir/fakebin"
+  dir=$(make_case turn-ended-exited); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   : > "$state/task.turn-ended"
-  # No running pipeline, no busy pane: the crew has stopped (e.g. it finished via
-  # an interactive menu and wrote no done: status). Default unknown verdict.
+  # A recorded endpoint whose window is absent from the (fake) tmux inventory ->
+  # agent_state missing -> a confirmed exit. FM_FAKE_TMUX_WINDOW is deliberately
+  # left unset so list-windows returns nothing.
+  printf 'backend=tmux\nwindow=test:fm-task\nkind=ship\n' > "$state/task.meta"
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not surface a turn-end whose crew is not provably working"
-  grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "watcher did not print the surfaced turn-end signal"
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a turn-end whose agent has exited"
+  grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "watcher did not print the surfaced exited-agent turn-end signal"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/task.turn-ended" >/dev/null || fail "surfaced turn-end was not queued"
-  pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
+  unset FM_FAKE_CREW_STATE
+  pass "a bare turn-end whose crew's agent has confidently exited is surfaced (the swallowed-finish guard)"
+}
+
+# --- an ambiguous turn-end whose AGENT IS STILL LIVE is absorbed --------------
+# "Don't think unless the captain would care": a crew that is not provably
+# working, declared no wait, wrote no captain-relevant line, and whose agent is
+# still there has merely gone quiet between steps. The attended primary absorbs
+# it (no exit, no queue) and leaves the wedge-vs-finish decision to the stale
+# path, so the sitting wait does not end for a live idle crew.
+test_turn_ended_live_quiet_absorbed() {
+  local dir state fakebin out pid
+  dir=$(make_case turn-ended-live-quiet); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  : > "$state/task.turn-ended"
+  printf 'backend=tmux\nwindow=test:fm-task\nkind=ship\n' > "$state/task.meta"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  # FM_FAKE_TMUX_WINDOW present -> the recorded window is in the inventory ->
+  # agent_state is not missing/dead -> not a finish, so the quiet crew is absorbed.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="test:fm-task" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited for a live crew's quiet turn-end (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "live quiet turn-end printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "live quiet turn-end enqueued a durable wake record"
+  [ -e "$state/.last-watcher-beat" ] || fail "watcher beacon was not touched while absorbing a live quiet turn-end"
+  unset FM_FAKE_CREW_STATE
+  reap "$pid"
+  pass "a bare turn-end whose crew is not provably working but whose agent is still live is absorbed (the attended quiet-crew rule)"
 }
 
 # --- a declared external wait absorbs its own signal, even when NOT working ----
@@ -1031,47 +1063,93 @@ test_nonterminal_stale_provably_working_reverified_before_escalation() {
   pass "provably-working non-terminal stale is absorbed, re-verified working past the threshold instead of burning a turn, and escalates only once no longer provably working"
 }
 
-# --- non-terminal stale, crew NOT provably working: surfaced immediately ------
-# The key requirement: a crew with no running pipeline that has gone quiet (and is
-# not busy) has stopped - it may be done via interactive menus, waiting, or wedged.
-# It must surface at once, never wait out the wedge timer, so these users (a
-# non-no-mistakes crew, or any crew with no running pipeline) are never left hanging.
+# --- non-terminal stale, crew NOT provably working -----------------------------
+# A crew with no running pipeline that has gone quiet is classified by whether its
+# agent has exited: a confirmed exit (agent_state dead/missing) is a swallowed
+# finish and surfaces at once, while a crew whose agent is still live has merely
+# gone quiet and is handed to the wedge timer (the next test), so the sitting wait
+# does not end for a live idle crew but a genuine finish or wedge still lands.
 
-test_nonterminal_stale_not_working_surfaced() {
+test_nonterminal_stale_exited_agent_surfaced() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid started elapsed
-  dir=$(make_case nonterminal-stale-stopped); state="$dir/state"; fakebin="$dir/fakebin"
+  dir=$(make_case nonterminal-stale-exited); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-stopped"
   printf 'idle prompt, finished' > "$capture_file"
-  printf 'window=%s\nkind=ship\n' "$window" > "$state/stopped.meta"
+  printf 'backend=tmux\nwindow=%s\nkind=ship\n' "$window" > "$state/stopped.meta"
   # Non-terminal status (the crew never wrote a captain-relevant verb), .seen-*
   # primed so the signal scan does not pre-empt the stale path.
   printf 'working: implementing\n' > "$state/stopped.status"
   sig=$(seen_sig "$state/stopped.status"); printf '%s' "$sig" > "$state/.seen-stopped_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "idle prompt, finished")
-  # No running pipeline; the pane is idle. NOT provably working.
+  # No running pipeline; the pane is idle. NOT provably working, and the recorded
+  # window is absent from the (fake) tmux inventory -> agent_state missing -> a
+  # confirmed exit. FM_FAKE_TMUX_WINDOW is left unset so the crew reads as exited.
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
 
-  # This is the counterexample after a routine working signal was absorbed: begin
-  # with no pane-history seed and prove the existing stable-pane contract still
-  # surfaces the stopped worker after three observations (two poll intervals after
-  # the first observation), without waiting for the wedge threshold.
+  # An exited agent that wrote no done: line is a genuine swallowed finish and
+  # must surface at once, never left to wait out the wedge timer. FM_STALE_ESCALATE
+  # _SECS=999 means any exit here is the immediate surface path, never a wedge.
   started=$(date +%s)
-  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not surface a not-provably-working non-terminal stale at once"
+  wait_for_exit "$pid" 200 || fail "watcher did not surface a non-terminal stale whose agent has exited"
   elapsed=$(( $(date +%s) - started ))
-  [ "$elapsed" -le 4 ] || fail "stopped worker exceeded the three-observation stale bound (${elapsed}s at FM_POLL=1)"
+  [ "$elapsed" -lt 999 ] || fail "exited worker did not surface well before the wedge threshold (${elapsed}s)"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the immediate stale wake"
-  grep -F "possible wedge" "$out" >/dev/null && fail "an immediate stopped-crew stale was mislabeled a wedge"
+  grep -F "possible wedge" "$out" >/dev/null && fail "an immediate exited-crew stale was mislabeled a wedge"
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor was not advanced on surface"
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer should not be set when surfacing immediately"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the immediate stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
-  pass "a worker left on working: is surfaced within the three-observation stale bound (never left to wait out the wedge timer)"
+  pass "a non-terminal stale whose agent has confidently exited is surfaced at once (the swallowed-finish guard)"
+}
+
+# --- non-terminal stale, crew quiet but AGENT STILL LIVE: absorbed, then wedged
+# The attended-primary quiet-crew rule on the stale path: a crew that is not
+# provably working, declared no wait, and whose agent is still there has merely
+# gone quiet. It is absorbed on first sight (no immediate wake, wedge clock
+# started) and surfaces only as a possible wedge once it stays quiet past
+# STALE_ESCALATE_SECS - the same timer the provably-working class already uses -
+# so stuck detection survives while the sitting wait does not end for a crew
+# that is simply between steps.
+test_nonterminal_stale_live_quiet_absorbed_then_wedged() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case nonterminal-stale-live-quiet); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-quiet"
+  printf 'idle prompt, between steps' > "$capture_file"
+  printf 'backend=tmux\nwindow=%s\nkind=ship\n' "$window" > "$state/quiet.meta"
+  printf 'working: implementing\n' > "$state/quiet.status"
+  sig=$(seen_sig "$state/quiet.status"); printf '%s' "$sig" > "$state/.seen-quiet_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt, between steps")
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  # FM_FAKE_TMUX_WINDOW present -> the recorded window is in the inventory ->
+  # agent_state is not missing/dead -> not a finish. STALE_ESCALATE_SECS=2 so the
+  # wedge escalation is reachable inside the test.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=2 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  # First observation of the stable-stale pane is absorbed as a quiet live crew:
+  # the wedge clock (.stale-since) is started rather than an immediate surface.
+  # (An immediate surface_nonterminal_stale would instead clear .stale-since and
+  # print a plain "stale:" line with no possible-wedge marker.)
+  wait_numeric_file "$state/.stale-since-$key" 150 || fail "wedge clock was not started for a live quiet stale crew"
+  # After STALE_ESCALATE_SECS the same-hash wedge timer escalates it as a possible
+  # wedge (stuck detection preserved). The possible-wedge marker proves it went
+  # through the wedge timer, not an immediate no-op surface.
+  wait_for_exit "$pid" 200 || fail "a live quiet stale crew never wedge-escalated past STALE_ESCALATE_SECS"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the wedge escalation did not carry the possible-wedge reason: $(cat "$out")"
+  grep -F "$window" "$out" >/dev/null || fail "the wedge escalation did not name the window"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the wedge escalation was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a quiet stale crew with a live agent is absorbed then wedge-escalates past STALE_ESCALATE_SECS (never an immediate no-op turn)"
 }
 
 # --- non-terminal stale, crew DECLARED a pause: absorbed, re-surfaced on a long
@@ -2667,7 +2745,8 @@ test_signal_all_declared_wait_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_secondmate_report_absorbed_when_provably_working
-test_turn_ended_not_working_surfaced
+test_turn_ended_exited_agent_surfaced
+test_turn_ended_live_quiet_absorbed
 test_declared_paused_signal_absorbed
 test_captain_held_signal_absorbed
 test_working_note_unknown_runtime_absorbed
@@ -2686,7 +2765,8 @@ test_busy_pane_changing_hash_escalates_past_turn_age_bound
 test_busy_pane_turn_end_touch_resets_age
 test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
 test_busy_pane_default_turn_age_bound_is_3600s
-test_nonterminal_stale_not_working_surfaced
+test_nonterminal_stale_exited_agent_surfaced
+test_nonterminal_stale_live_quiet_absorbed_then_wedged
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_and_captain_held_bounded_regardless_of_agent_liveness
 test_captain_held_live_agent_absorbed_across_hash_churn

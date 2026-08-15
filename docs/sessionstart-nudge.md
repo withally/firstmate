@@ -61,6 +61,13 @@ The watcher-arm and turn-end plugins run later on `session.idle`, and the guard 
 Grok's guaranteed-loading alternative is a global token-guarded hook like the pattern used by `bin/fm-spawn.sh`.
 That alternative expands trust and writes outside this repository, so Firstmate never installs it or grants folder trust automatically.
 
+## Compaction restore
+
+A run-tier harness (Claude, Codex exec) re-emits the digest automatically when its session-open hook fires with a `clear` or `compact` source, so the read-once dump returns to context and the primary never re-reads `data/captain.md`, `data/learnings.md`, or the other startup sources file by file.
+Grok has no such path: its in-session auto-compaction (the common case) fires no session-open hook at all, and its `SessionStart` event reports `source=new` with stdout discarded from model context, so a compaction cannot be intercepted to push a re-emit.
+The Grok primary therefore restores context the same way the read-once contract in `AGENTS.md` section 3 directs any harness whose compaction dropped the digest: run `bin/fm-session-start.sh --reemit` once and resume read-once trust.
+`--reemit` re-verifies lock ownership, skips the already-completed mutating bootstrap sweeps, presents the durable wake queue, and reprints the fleet state and the five context files, so one bounded command replaces the ad-hoc repeated re-reads that a compaction otherwise provokes.
+
 ## Regression coverage
 
 `tests/fm-sessionstart-nudge.test.sh` proves exact nudge output, gate and scope silence, full-run routing, completion-gated clear and compaction re-emission, and resume delegation.

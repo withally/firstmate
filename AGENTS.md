@@ -140,6 +140,7 @@ Tracked native session-open adapters either run or nudge this command according 
 
 Read the complete digest once and trust it as this turn's startup and recovery input.
 Do not separately re-read the context, backlog, metadata, or bulk status inputs it just printed unless a source was reported absent or corrupt, older history is specifically needed, or a targeted workflow must inspect before writing.
+When a context compaction has dropped that digest from context, restore it once with `bin/fm-session-start.sh --reemit` and resume this trust, rather than re-reading `data/captain.md`, `data/learnings.md`, or the other startup sources file by file; a run-tier adapter re-emits on its own, while a harness whose compaction fires no session-open hook (Grok) depends on this instruction (`docs/sessionstart-nudge.md`).
 An `ABSENT` captain, shared-captain, secondmate, or learnings file means the firstmate repo's built-in defaults, no shared captain preferences, no registered secondmates, or no captured learnings; rebuild an absent or stale project registry from the clones before dispatch.
 
 If the session lock cannot be acquired and verified, report its exact diagnostic and remain read-only; another active session is only one possible cause.

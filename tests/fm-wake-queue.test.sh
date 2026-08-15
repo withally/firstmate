@@ -115,10 +115,13 @@ test_stale_enqueue_before_suppressor() {
   pass "stale wake is queued before suppressor state is advanced"
 }
 
-# Absorb-only-when-provably-working adds a new actionable wake: a non-terminal stale
-# whose crew is NOT provably working is surfaced immediately. That new path must keep
-# the queue-safety invariant - enqueue the stale wake BEFORE advancing the .stale-*
-# suppressor - so a watcher killed between the two never swallows the surfaced finish.
+# The swallowed-finish guard adds an actionable wake: a non-terminal stale whose
+# crew is NOT provably working and whose agent has confidently exited
+# (fm_backend_agent_state missing/dead) is surfaced immediately. That surface path
+# must keep the queue-safety invariant - enqueue the stale wake BEFORE advancing
+# the .stale-* suppressor - so a watcher killed between the two never swallows the
+# surfaced finish. (A quiet crew whose agent is still live is instead absorbed and
+# handed to the wedge timer; that path is covered in fm-watch-triage.)
 test_not_working_stale_enqueue_before_suppressor() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig
   dir=$(make_case stale-stopped)
@@ -129,7 +132,7 @@ test_not_working_stale_enqueue_before_suppressor() {
   capture_file="$dir/pane.txt"
   window="test:fm-stopped"
   printf 'idle prompt, finished' > "$capture_file"
-  printf 'window=%s\nkind=ship\n' "$window" > "$state/stopped.meta"
+  printf 'backend=tmux\nwindow=%s\nkind=ship\n' "$window" > "$state/stopped.meta"
   # Non-terminal status (no captain-relevant verb); prime .seen-* so the per-poll
   # signal scan does not pre-empt the stale path.
   printf 'working: implementing\n' > "$state/stopped.status"
@@ -140,18 +143,21 @@ test_not_working_stale_enqueue_before_suppressor() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   # NOT provably working: no running pipeline, idle pane. (make_case installed the
-  # fake fm-crew-state.sh the watcher reads via FM_CREW_STATE_BIN.)
+  # fake fm-crew-state.sh the watcher reads via FM_CREW_STATE_BIN.) FM_FAKE_TMUX_WINDOW
+  # is left unset so the recorded window is absent from the (fake) tmux inventory ->
+  # agent_state missing -> a confirmed exit -> the swallowed-finish surface, which
+  # FM_STALE_ESCALATE_SECS=999 proves is immediate and never the wedge timer.
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
-  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
-  wait_for_exit "$!" 40 || fail "watcher did not surface a not-provably-working stale"
+  wait_for_exit "$!" 40 || fail "watcher did not surface a not-provably-working exited-agent stale"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the immediate stale wake"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after the immediate stale wake failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor was not advanced after the enqueue"
   unset FM_FAKE_CREW_STATE
-  pass "a not-provably-working stale wake is queued before its suppressor is advanced"
+  pass "a not-provably-working exited-agent stale wake is queued before its suppressor is advanced"
 }
 
 test_check_output_is_queued() {

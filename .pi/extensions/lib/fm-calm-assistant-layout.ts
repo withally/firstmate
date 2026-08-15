@@ -2,8 +2,8 @@
 // installCalmAssistantLayout() probes that exact method and throws if it is missing;
 // fm-calm.ts catches that and skips only this adapter with a diagnostic instead of
 // blocking Calm or Pi.
-// The adapter owns both collapsed-thinking layout and the presentation-only exact
-// operational acknowledgement rule.
+// The adapter owns collapsed-thinking layout, mid-turn working-note layout, and the
+// presentation-only exact operational acknowledgement rule.
 // Acknowledgement origin is scoped to one agent run rather than to the most recent user
 // row: a run counts as operational only while every Firstmate input it carries is
 // canonically operational, so a wake steered into a still-running captain turn keeps that
@@ -39,13 +39,35 @@ type CalmAssistantLayoutPatch = {
   runOriginRecorded: boolean;
   hidesOperationalAcknowledgement: () => boolean;
   hidesThinking: () => boolean;
+  hidesWorkingNote: () => boolean;
 };
+
+function isMidTurnAssistantMessage(message: AssistantMessage): boolean {
+  if (message.stopReason === "toolUse") return true;
+  return (
+    message.stopReason === "length" &&
+    message.content.some((block) => block.type === "toolCall")
+  );
+}
+
+function isProtectedOperationalToolReply(
+  message: AssistantMessage,
+  isOperational: boolean,
+): boolean {
+  if (!isOperational || !message.content.some((block) => block.type === "toolCall")) {
+    return false;
+  }
+  const text = message.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("");
+  return text === "Captain, shipshape.";
+}
 
 // The symbol changes only when the patch shape changes, so a compatible upgrade cannot
 // double-patch a live process and an incompatible one cannot keep a stale closure
 // installed under the same key.
 const CALM_ASSISTANT_LAYOUT_PATCH = Symbol.for(
-  "firstmate:calm-assistant-layout:operational-ack-v2",
+  "firstmate:calm-assistant-layout:operational-ack-working-note-v3",
 );
 const FIRSTMATE_NO_ACTION_ACKNOWLEDGEMENT = "Captain, shipshape.";
 
@@ -136,10 +158,12 @@ export function installCalmAssistantLayout(): void {
   const hidesThinking = (): boolean => calmPresentationHides("assistant-thinking");
   const hidesOperationalAcknowledgement = (): boolean =>
     calmPresentationHides("synthetic-assistant");
+  const hidesWorkingNote = (): boolean => calmPresentationHides("assistant-working-note");
   const installed = registry()[CALM_ASSISTANT_LAYOUT_PATCH];
   if (installed) {
     installed.hidesThinking = hidesThinking;
     installed.hidesOperationalAcknowledgement = hidesOperationalAcknowledgement;
+    installed.hidesWorkingNote = hidesWorkingNote;
     return;
   }
 
@@ -152,6 +176,7 @@ export function installCalmAssistantLayout(): void {
     runOriginRecorded: false,
     hidesOperationalAcknowledgement,
     hidesThinking,
+    hidesWorkingNote,
   };
   const AssistantMessageComponent = PiCodingAgent.AssistantMessageComponent;
   if (typeof AssistantMessageComponent !== "function") {
@@ -178,16 +203,22 @@ export function installCalmAssistantLayout(): void {
       state.hiddenThinkingLabel === "" &&
       state.hideThinkingBlock &&
       patch.hidesThinking();
+    const hideWorkingNote =
+      patch.hidesWorkingNote() &&
+      isMidTurnAssistantMessage(message) &&
+      !isProtectedOperationalToolReply(message, isOperational);
     const acknowledgementPresentation = withoutOperationalAcknowledgement(
       message,
       isOperational,
       patch.hidesOperationalAcknowledgement(),
     );
-    const presentationMessage = hideThinking
+    const presentationMessage = hideThinking || hideWorkingNote
       ? {
           ...acknowledgementPresentation,
           content: acknowledgementPresentation.content.filter(
-            (block) => block.type !== "thinking",
+            (block) =>
+              !(hideThinking && block.type === "thinking") &&
+              !(hideWorkingNote && block.type === "text"),
           ),
         }
       : acknowledgementPresentation;

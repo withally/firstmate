@@ -805,6 +805,12 @@ EOF
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp row_task ident offset extra rc=0
+  # A retired task whose whole state directory is already gone (e.g. a secondmate
+  # home removed earlier in teardown) has no status file, cursor, or manifest left
+  # to retire. Skip the lock: an owner cannot be minted under a missing directory,
+  # and fm_lock_acquire_wait would otherwise spin building an unbounded .steal
+  # chain. This matches the pre-cursor `rm -f` that silently no-oped here.
+  [ -d "$state" ] || return 0
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"

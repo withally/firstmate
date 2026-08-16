@@ -653,7 +653,7 @@ for status in "$STATE"/*.status; do
   ORPHAN_STATUS_FOUND=$((ORPHAN_STATUS_FOUND + 1))
 done
 if [ "$ORPHAN_STATUS_FOUND" -gt 0 ]; then
-  printf '%s archived status log(s) omitted; OPEN DECISIONS above retains unresolved blockers and choices; read %s/*.status only when older history is needed.\n' \
+  printf '%s archived status log(s) omitted; durable status logs retain unresolved blockers and choices; read %s/*.status only when a targeted decision or older history is needed.\n' \
     "$ORPHAN_STATUS_FOUND" "$STATE"
 else
   printf '(none)\n'

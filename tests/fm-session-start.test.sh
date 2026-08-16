@@ -714,6 +714,7 @@ EOF
   mkdir -p "$home/other-secondmate/state"
   fm_write_secondmate_meta "$home/state/sm-x.meta" "$home/other-secondmate" "firstmate:fm-sm-x" alpha
   append_wake "$home/state" signal sm-x "done: surfaced before refusal" || fail "seed wake failed"
+  printf 'needs-decision: archived choice\n' > "$home/state/archive-only.status"
   git -C "$root" checkout -q -B fm/read-only-tangle
 
   sleep 300 &
@@ -732,6 +733,8 @@ EOF
   assert_contains "$out" "skipped (read-only session)" "wake-queue section did not report itself skipped"
   assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "read-only guard did not surface watcher-liveness alarm"
   assert_contains "$out" "queued wakes pending - left untouched because this session lacks verified fleet-lock ownership" "read-only guard did not leave queued wakes untouched without verified lock ownership"
+  assert_contains "$out" "durable status logs retain unresolved blockers and choices" "read-only archived-status summary did not name its actual durable source"
+  assert_not_contains "$out" "OPEN DECISIONS above retains" "read-only archived-status summary claimed a skipped OPEN DECISIONS section ran"
   assert_contains "$out" "TANGLE: primary checkout on feature branch 'fm/read-only-tangle'" "read-only bootstrap did not surface the tangle diagnostic"
   assert_contains "$out" "read-only session must leave restore work" "read-only tangle diagnostic did not explain restore ownership"
   assert_contains "$out" "Stay read-only: do not arm" "read-only next step did not block direct watcher repair"

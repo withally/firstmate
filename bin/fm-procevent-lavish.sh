@@ -8,6 +8,12 @@
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
 #
+# arm accepts only a durable Firstmate-owned artifact under
+#   $FM_HOME/data/<review-id>/.lavish/<name>.html
+# and refuses temporary, scratch, and out-of-home paths before registration.
+# source-id and retire retain legacy-path support so an unsafe old registration
+# can still be identified and removed without authorizing a new one.
+#
 # classify   Print the lifecycle state a handler should act on: feedback, ended,
 #            waiting, missing, or unknown.
 # terminal   Exit 0 when the captured result means this Lavish source will never
@@ -45,9 +51,14 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() {
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
+  exit 2
+}
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -69,10 +80,9 @@ cmd_source_id() {
 cmd_arm() {
   local artifact=${1-} id real
   [ -n "$artifact" ] || usage
+  real=$(fm_lavish_require_durable_artifact "$artifact") || exit 1
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
-  id=$(cmd_source_id "$artifact") || exit 1
-  real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
-    || die "cannot resolve the artifact path: $artifact"
+  id=$(cmd_source_id "$real") || exit 1
   # The plain blocking form: no --timeout-ms, so completion is a server event.
   "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- lavish-axi poll "$real" || exit 1
   printf 'armed: %s\n' "$id"

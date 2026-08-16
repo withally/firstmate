@@ -18,6 +18,8 @@ set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP_ROOT=$(fm_test_tmproot fm-procevent-tests)
+DURABLE_TEST_ROOT=$(mktemp -d "$ROOT/.fm-procevent-lavish.XXXXXX") \
+  || fail "could not create the durable Lavish test home"
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 
 BLOCKER="$TMP_ROOT/blocker.sh"
@@ -57,6 +59,7 @@ procevent_teardown() {
     seen+="$home"$'\n'
     FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true
   done
+  rm -rf -- "$DURABLE_TEST_ROOT"
   fm_test_cleanup
 }
 trap procevent_teardown EXIT
@@ -444,7 +447,7 @@ pass "failed terminal retirement is fail-closed and idempotently recoverable"
 # adapter already knew the session had ended. Driven through the adapter's own
 # arm command against a stand-in for the published poll shape, so registration,
 # the runner, capture, publication, and retirement all run for real.
-HLT="$TMP_ROOT/hlt"; new_home "$HLT"
+HLT="$DURABLE_TEST_ROOT/hlt"; new_home "$HLT"
 LAVISH_BIN=$(fm_fakebin "$TMP_ROOT/lavish-stub")
 LAVISH_POLL_COUNT="$TMP_ROOT/lavish-poll-count"
 export LAVISH_POLL_COUNT
@@ -463,7 +466,8 @@ else
 fi
 SH
 chmod +x "$LAVISH_BIN/lavish-axi"
-REVIEW_ART="$TMP_ROOT/review.html"
+REVIEW_ART="$HLT/data/review/.lavish/review.html"
+mkdir -p "$(dirname "$REVIEW_ART")"
 printf '<h1>review</h1>\n' > "$REVIEW_ART"
 lavish_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
 PE_TRACKED+=("$HLT|$lavish_id")

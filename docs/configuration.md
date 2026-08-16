@@ -25,6 +25,20 @@ Wake, watcher, away-mode, and X-specific state mechanics remain with their named
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Durable Lavish reviews
+
+A Firstmate-owned Lavish review has one stable artifact path under `data/<review-id>/.lavish/<name>.html` in the effective `FM_HOME`.
+Temporary paths, `claude-501` scratch paths, project or crewmate worktree paths outside that tree, and symlinks resolving outside it are not review identities and are refused before a browser launch or poll registration.
+
+`bin/fm-lavish.sh open <artifact.html>` is the only supported browser-opening path.
+Its first successful call opens the review and records the canonical artifact identity beside the file.
+Later calls for that same artifact invoke Lavish with `--no-open`, while ordinary file edits rely on Lavish live reload and invoke no browser command at all.
+Every revision therefore replaces the contents of the same HTML file rather than creating a new path, session, or tab.
+
+`bin/fm-procevent-lavish.sh arm <artifact.html>` applies the same durable-path boundary before registering feedback polling.
+Its existing `source-id` and `retire` commands remain able to identify and retire a legacy disposable registration without authorizing a new one.
+The `lavish-review` skill owns the agent procedure, while both scripts' headers and `--help` output own exact command syntax and mechanics.
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.

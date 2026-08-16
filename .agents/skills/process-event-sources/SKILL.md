@@ -22,6 +22,7 @@ Firstmate registers a source, keeps working, and is woken when that process comp
 ## Arming a source
 
 Use the adapter, not the generic runner, for a real source.
+Load `lavish-review` before opening or arming a Lavish artifact so the review already has its required durable identity.
 For a Lavish review artifact:
 
 ```sh

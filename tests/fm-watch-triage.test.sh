@@ -1430,6 +1430,58 @@ test_declared_pause_and_captain_held_bounded_regardless_of_agent_liveness() {
   pass "declared-pause and captain-held panes use the bounded pause cadence whether the agent is dead or live"
 }
 
+# The live 2026-08-16 Grok-primary wake loop combined three signals that the
+# ordinary stopped-pane fixture did not: the crew had declared paused:, the
+# backend authoritatively reported its agent dead after /exit, but a stale
+# harness busy event still made the pane classifier say busy. The declared wait
+# plus dead endpoint is authoritative over that stale busy residue. Repeated
+# over-age observations must therefore remain silent and erase the old wedge
+# bookkeeping instead of reaching possible-wedge/demand-deep-inspection wakes.
+test_paused_dead_endpoint_ignores_stale_busy_marker_across_repeated_observations() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid round gen
+  dir=$(make_case paused-dead-stale-busy); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held-dead"
+  printf 'bare shell after agent exit\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=claude\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'paused: captain parked until 10:00; agent stopped; not a wedge\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "bare shell after agent exit")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" held)
+  printf 'busy_gen=%s\n' "$gen" >> "$state/held.meta"
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" held busy \
+    --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  set_mtime $(( $(date +%s) - 500 )) "$state/held.meta"
+
+  round=1
+  while [ "$round" -le 6 ]; do
+    printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+    printf '%s\n' "$round" > "$state/.wedge-escalations-$key"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (claude-hook)' \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    if ! wait_live "$pid" 20; then
+      reap "$pid"
+      fail "paused dead endpoint woke from stale busy residue on round $round: $(cat "$out")"
+    fi
+    [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "paused dead endpoint enqueued a wake on round $round"; }
+    [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "paused dead endpoint retained its wedge timer on round $round"; }
+    [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "paused dead endpoint retained its wedge counter on round $round"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge paused-dead watcher stop round $round"
+    round=$((round + 1))
+  done
+  [ ! -s "$out" ] || fail "paused dead endpoint printed a wake across repeated observations: $(cat "$out")"
+  pass "paused dead endpoints ignore stale busy residue across repeated over-age observations"
+}
+
 # A captain-held transfer with a LIVE agent and a parked validation gate (the
 # pilo/idel windows from the 2026-08 incident) must absorb on first sight AND
 # across pane-hash churn: a sibling pane changing the shared workspace layout
@@ -2835,6 +2887,7 @@ test_nonterminal_stale_exited_agent_surfaced
 test_nonterminal_stale_live_quiet_absorbed_then_wedged
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_and_captain_held_bounded_regardless_of_agent_liveness
+test_paused_dead_endpoint_ignores_stale_busy_marker_across_repeated_observations
 test_captain_held_live_agent_absorbed_across_hash_churn
 test_terminal_stale_already_delivered_absorbed_new_terminal_surfaces
 test_paused_captain_wait_never_resurfaces_by_default

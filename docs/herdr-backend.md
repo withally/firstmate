@@ -295,7 +295,8 @@ For Herdr, target existence, native state, capture, composer state, and verified
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 Claude uses the terminal-backed `bin/fm-afk-launch.sh start` path because Claude's native background jobs have been observed being reaped across later turn boundaries.
-Grok's native background-job lifetime remains unverified, so its existing `start-native` path remains available without a durability claim.
+Grok uses the same terminal-backed path because an older overlapping Grok session can issue a delayed native start after the captain returns.
+For both harnesses, `start-native` refuses before writing away state.
 Pi has no native background mechanism.
 For a terminal-backed launch, `bin/fm-afk-launch.sh` creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
 It never splits the captain's active tab and never uses shell `&`.

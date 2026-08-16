@@ -6,8 +6,8 @@
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
 # terminal it is already in. Claude's native background jobs are not durable
-# enough for away mode, so Claude uses this launcher's tracked terminal path.
-# Grok retains the native path because its long-lived behavior is unverified.
+# enough for away mode, and overlapping Grok sessions can issue delayed native
+# starts after return, so both use this launcher's tracked terminal path.
 # A harness with NO native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
@@ -30,7 +30,7 @@
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
-#                              Refuses Claude, whose native jobs are reaped.
+#                              Refuses Claude and Grok before writing state.
 #   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
 #                              cleanup flushes WHILE state/.afk is still present,
 #                              wait for it, close the recorded terminal by exact
@@ -100,9 +100,17 @@ fm_afk_launch_capability_gate() {  # <captain-backend> <terminal|native>
   harness=${FM_AFK_PRIMARY_HARNESS_OVERRIDE:-$("$FM_AFK_LAUNCH_DIR/fm-harness.sh")}
   version=${FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE:-$FM_AFK_DIGEST_SAFETY_VERSION}
   case "$version" in ''|*[!0-9]*) version=0 ;; esac
-  if [ "$launch_mode" = native ] && [ "$harness" = claude ]; then
-    fm_afk_launch_log "refusing native away-mode launch: Claude native background jobs are not durable for away mode; use bin/fm-afk-launch.sh start"
-    return 1
+  if [ "$launch_mode" = native ]; then
+    case "$harness" in
+      claude)
+        fm_afk_launch_log "refusing native away-mode launch: Claude native background jobs are not durable for away mode; use bin/fm-afk-launch.sh start"
+        return 1
+        ;;
+      grok)
+        fm_afk_launch_log "refusing native away-mode launch: Grok native away-mode launch is unsafe across overlapping sessions; use bin/fm-afk-launch.sh start"
+        return 1
+        ;;
+    esac
   fi
   case "$harness:$backend" in
     pi:herdr|pi-signed:herdr)

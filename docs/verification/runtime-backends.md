@@ -594,7 +594,7 @@ Both runs used `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh`; the background-tas
 The terminal-backed recovery used `bin/fm-afk-launch.sh start` and the daemon logged `target_source=FM_SUPERVISOR_TARGET; backend_source=FM_SUPERVISOR_BACKEND`, proving it supervised the captain pane rather than its own terminal.
 Claude therefore uses the terminal-backed path, and `tests/fm-afk-launch.test.sh` proves the native entry refuses Claude before writing away state.
 This task did not reproduce the timed Claude reap on demand.
-Grok's native background-job lifetime remains unverified and its existing path is unchanged.
+Grok also uses the terminal-backed path because an older overlapping Grok session can issue a delayed native start after the captain returns; `tests/fm-afk-launch.test.sh` proves the native entry refuses Grok before writing away state, that a delayed native call after return leaves `state/.afk` absent, and that the recorded exact Herdr and tmux daemon terminals are cleaned up on stop.
 
 The Pi/Herdr return and injection path was originally verified on Herdr 0.7.3 and Pi 0.80.7:
 

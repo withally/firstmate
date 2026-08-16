@@ -144,7 +144,7 @@ Shared captain preferences that apply across secondmate domains live only in the
 
 ## Operational learnings (data/learnings.md)
 
-Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
+Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and represented after the captain-preference files in the bounded session-start context digest.
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: inspect the current file first, then rewrite or prune stale entries instead of appending forever.
 There is no shared learnings file by captain decision.
 
@@ -492,7 +492,8 @@ FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmat
 FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops and test isolation (docs/zellij-backend.md)
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
 FM_SESSION_START_TIMEOUT=120   # whole-digest runtime bound in seconds for session-start hooks
-FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
+FM_SESSION_START_STATUS_TAIL=1   # latest state/*.status wake-event lines printed per live task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
+FM_SESSION_START_CONTEXT_LINES=12   # line-capped prefix printed for each stable context file; omitted suffixes carry exact counts, paths, and content identities
 FM_SESSION_START_QUEUED_LIMIT=20   # ready queued backlog rows in the digest; in-flight, held, and blocked rows are never bounded, and done rows are omitted
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording
 FM_BOOTSTRAP_LOCKED=0   # internal companion for a lock-owning --reemit: keep detect-only sweeps skipped without surrendering repair ownership

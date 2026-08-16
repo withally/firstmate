@@ -1156,8 +1156,11 @@ EOF
 
 fm_wake_print_annotations() {  # <deduped-raw-rows> <presentation-snapshot>
   local rows=$1 snapshot=$2 manifest status_key mode path prefix line task endpoint
-  local snapshot_task snapshot_endpoint _snapshot_ident lines last
+  local snapshot_task snapshot_endpoint _snapshot_ident lines last total omitted
+  local annotation_limit=${FM_WAKE_ANNOTATION_LIMIT:-0}
   local LC_ALL=C
+
+  case "$annotation_limit" in ''|*[!0-9]*) annotation_limit=0 ;; esac
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
     {
@@ -1199,6 +1202,15 @@ EOF
     # cursor commit will fail closed instead of acknowledging the snapshot.
     lines=$(status_new_lines_since_cursor "$path" "$endpoint") || continue
     [ -n "$lines" ] || continue
+    if [ "$annotation_limit" -gt 0 ]; then
+      total=$(printf '%s\n' "$lines" | awk 'NF { count++ } END { print count + 0 }')
+      if [ "$total" -gt "$annotation_limit" ]; then
+        omitted=$((total - annotation_limit))
+        lines=$(printf '%s\n' "$lines" | tail -n "$annotation_limit")
+        printf 'wake annotation: %s earlier unread wake-EVENT annotation line(s) omitted; durable raw-wake presentation and OPEN DECISIONS remain intact.\n' \
+          "$omitted" || return 1
+      fi
+    fi
     last=$(printf '%s\n' "$lines" | tail -1)
     while IFS= read -r line || [ -n "$line" ]; do
       [ -n "$line" ] || continue

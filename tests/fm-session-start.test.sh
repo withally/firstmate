@@ -11,8 +11,8 @@
 #   - output section ordering: diagnostics/banners lead, bulk file dumps follow
 #   - context-aware next-step guidance for read-only, AFK, X mode, and normal
 #     watcher ownership
-#   - status-tail bounding, default and FM_SESSION_START_STATUS_TAIL override
-#   - orphan status logs whose task meta has already disappeared
+#   - latest-event status tails by default and FM_SESSION_START_STATUS_TAIL override
+#   - archived status-log accounting without repeated body reads
 #   - per-task endpoint-liveness lines for a live and a dead recorded target,
 #     tmux and herdr both
 #   - composition: the script invokes the real fm-lock.sh/fm-bootstrap.sh/
@@ -668,6 +668,33 @@ EOF
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
 
+test_context_digest_bounds_repeated_file_bodies_with_exact_pointers() {
+  local rec root home fakebin out i
+  rec=$(new_world bounded-context)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  i=1
+  while [ "$i" -le 14 ]; do
+    printf 'captain preference %02d\n' "$i" >> "$home/data/captain.md"
+    i=$((i + 1))
+  done
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "captain preference 01" "bounded context omitted its leading content"
+  assert_contains "$out" "captain preference 12" "bounded context stopped before its default allowance"
+  assert_not_contains "$out" "captain preference 13" "bounded context printed content past its default allowance"
+  assert_not_contains "$out" "captain preference 14" "bounded context printed content past its default allowance"
+  assert_contains "$out" "2 more line(s) omitted; full file: $home/data/captain.md; content sha256:" \
+    "bounded context did not disclose the exact remainder, full path, and content identity"
+
+  pass "context bodies are bounded with exact remainder, path, and content identity"
+}
+
 # --- lock refusal: read-only path --------------------------------------------
 
 test_lock_refusal_read_only_path() {
@@ -687,6 +714,7 @@ EOF
   mkdir -p "$home/other-secondmate/state"
   fm_write_secondmate_meta "$home/state/sm-x.meta" "$home/other-secondmate" "firstmate:fm-sm-x" alpha
   append_wake "$home/state" signal sm-x "done: surfaced before refusal" || fail "seed wake failed"
+  printf 'needs-decision: archived choice\n' > "$home/state/archive-only.status"
   git -C "$root" checkout -q -B fm/read-only-tangle
 
   sleep 300 &
@@ -705,6 +733,8 @@ EOF
   assert_contains "$out" "skipped (read-only session)" "wake-queue section did not report itself skipped"
   assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "read-only guard did not surface watcher-liveness alarm"
   assert_contains "$out" "queued wakes pending - left untouched because this session lacks verified fleet-lock ownership" "read-only guard did not leave queued wakes untouched without verified lock ownership"
+  assert_contains "$out" "durable status logs retain unresolved blockers and choices" "read-only archived-status summary did not name its actual durable source"
+  assert_not_contains "$out" "OPEN DECISIONS above retains" "read-only archived-status summary claimed a skipped OPEN DECISIONS section ran"
   assert_contains "$out" "TANGLE: primary checkout on feature branch 'fm/read-only-tangle'" "read-only bootstrap did not surface the tangle diagnostic"
   assert_contains "$out" "read-only session must leave restore work" "read-only tangle diagnostic did not explain restore ownership"
   assert_contains "$out" "Stay read-only: do not arm" "read-only next step did not block direct watcher repair"
@@ -992,10 +1022,10 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "working: step 7" "default status tail missing the most recent line"
-  assert_contains "$out" "working: step 3" "default status tail (5 lines) missing an expected recent line"
-  assert_not_contains "$out" "working: step 1" "default status tail (5 lines) leaked an older line"
+  assert_not_contains "$out" "working: step 6" "default status tail printed history before the latest event"
+  assert_not_contains "$out" "working: step 1" "default status tail leaked older history"
   assert_contains "$out" "$home/state/task-a.status" "digest did not print the full status log path for a deeper read"
-  assert_contains "$out" "a bounded tail of every state/*.status" "read-once contract does not distinguish bounded status tails"
+  assert_contains "$out" "the latest bounded status event for each live" "read-once contract does not distinguish latest live-task status events"
 
   out=$(FM_SESSION_START_STATUS_TAIL=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "working: step 7" "FM_SESSION_START_STATUS_TAIL=2 tail missing the most recent line"
@@ -1022,7 +1052,7 @@ EOF
     printf '\nworking: short line kept whole\n'
   } > "$home/state/task-cap.status"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(FM_SESSION_START_STATUS_TAIL=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "$lede" "the cap discarded the status lede"
   assert_contains "$out" " [truncated]" "an over-long status line was not marked"
   assert_contains "$out" "working: short line kept whole" "the cap mangled a short status line"
@@ -1036,7 +1066,7 @@ EOF
   pass "status tail lines are capped and remain recoverable from the full log path"
 }
 
-test_orphan_status_logs_are_printed() {
+test_orphan_status_logs_are_summarized() {
   local rec root home fakebin out matched_count orphan_count
   rec=$(new_world orphan-status)
   IFS='|' read -r root home fakebin <<EOF
@@ -1052,18 +1082,18 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "Orphan status logs (state/*.status without matching .meta)" "digest did not label orphan status logs"
-  assert_contains "$out" "--- task-orphan ---" "digest did not print the orphan status id"
-  assert_contains "$out" "orphan: step 6" "orphan status tail missing the newest line"
-  assert_not_contains "$out" "orphan: step 1" "orphan status tail was not bounded"
-  assert_contains "$out" "$home/state/task-orphan.status" "orphan status tail did not print the full log path"
+  assert_contains "$out" "Archived status logs (state/*.status without matching .meta)" "digest did not label archived status logs"
+  assert_contains "$out" "1 archived status log(s) omitted" "digest did not account for omitted archived status logs"
+  assert_contains "$out" "$home/state/*.status" "digest did not print the targeted archived-history path"
+  assert_not_contains "$out" "orphan: step 6" "digest re-read an archived status body"
+  assert_not_contains "$out" "orphan: step 1" "digest re-read an archived status body"
 
   matched_count=$(printf '%s\n' "$out" | grep -F -c 'matched: surfaced once')
   orphan_count=$(printf '%s\n' "$out" | grep -F -c 'orphan: step 6')
   [ "$matched_count" -eq 1 ] || fail "matched status log was printed $matched_count times: $out"
-  [ "$orphan_count" -eq 1 ] || fail "orphan status log was printed $orphan_count times: $out"
+  [ "$orphan_count" -eq 0 ] || fail "archived status body was printed $orphan_count times: $out"
 
-  pass "orphan status logs are printed once with bounded tails"
+  pass "archived status logs are counted without re-reading their bodies"
 }
 
 # --- session-start secondmate recovery boundary -----------------------------
@@ -1255,6 +1285,34 @@ EOF
   assert_contains "$out" "wake annotation: latest wake-EVENT observed at drain, not current state: task-z.status: needs-decision: pick a library" "fm-session-start.sh did not preserve the drain's separate annotation line"
 
   pass "fm-session-start.sh composes the real fm-lock.sh, fm-bootstrap.sh, and fm-wake-drain.sh output verbatim"
+}
+
+test_session_start_bounds_wake_annotations_without_hiding_the_queue() {
+  local rec root home fakebin out raw
+  rec=$(new_world bounded-wake-annotations)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  printf '%s\n' \
+    'working: annotation one' \
+    'working: annotation two' \
+    'done: annotation three' > "$home/state/task-a.status"
+  append_wake "$home/state" signal task-a.status "done: raw queue payload"
+  raw=$(printf 'signal\ttask-a.status\tdone: raw queue payload')
+
+  out=$(FM_SESSION_START_STATUS_TAIL=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "$raw" "session start hid the durable raw wake while bounding annotations"
+  assert_contains "$out" "done: annotation three" "session start omitted the latest wake annotation"
+  assert_contains "$out" "2 earlier unread wake-EVENT annotation line(s) omitted" \
+    "session start did not disclose bounded wake annotations"
+  assert_not_contains "$out" "working: annotation one" "session start printed an older wake annotation"
+  assert_not_contains "$out" "working: annotation two" "session start printed an older wake annotation"
+
+  pass "session start bounds historical annotations without changing durable raw-wake presentation"
 }
 
 test_locked_startup_reconciles_before_wake_presentation() {
@@ -1626,20 +1684,23 @@ EOF
 }
 
 # Read-once survives a compaction: the restore path AGENTS.md section 3 directs a
-# harness whose compaction fired no session-open hook (Grok) is `--reemit`, which
-# must reprint the durable context dump so the primary never re-reads
-# captain.md/learnings.md/projects.md file by file, and must carry the
-# post-compaction restore instruction in its read-once block.
-test_reemit_restores_read_once_dump_after_compaction() {
-  local rec root home fakebin reemit
+# harness whose compaction fired no session-open hook (Grok) to `--reemit`, which
+# must restore the same bounded startup/recovery view and its targeted-read rule.
+test_reemit_restores_bounded_read_once_view_after_compaction() {
+  local rec root home fakebin reemit i
   rec=$(new_world reemit-dump)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  # Distinctive durable dump content the read-once restore must reprint.
   printf 'captain preference: MARK-CAPTAIN-9f3\n' > "$home/data/captain.md"
+  i=2
+  while [ "$i" -le 13 ]; do
+    printf 'captain preference filler %02d\n' "$i" >> "$home/data/captain.md"
+    i=$((i + 1))
+  done
+  printf 'captain preference: MARK-CAPTAIN-OMITTED\n' >> "$home/data/captain.md"
   printf 'learning: MARK-LEARNING-7c1\n' > "$home/data/learnings.md"
   printf -- '- firstmate MARK-PROJECT-4a2\n' > "$home/data/projects.md"
 
@@ -1656,11 +1717,14 @@ EOF
 
   assert_contains "$reemit" "SESSION START (CONTEXT RE-EMIT)" "--reemit did not label itself as a re-emit"
   assert_contains "$reemit" "MARK-CAPTAIN-9f3" "--reemit did not restore data/captain.md content"
+  assert_not_contains "$reemit" "MARK-CAPTAIN-OMITTED" "--reemit expanded a context file past the startup bound"
+  assert_contains "$reemit" "2 more line(s) omitted; full file: $home/data/captain.md; content sha256:" \
+    "--reemit did not restore the bounded context pointer"
   assert_contains "$reemit" "MARK-LEARNING-7c1" "--reemit did not restore data/learnings.md content"
   assert_contains "$reemit" "MARK-PROJECT-4a2" "--reemit did not restore data/projects.md content"
   assert_contains "$reemit" "restore it once with" \
     "the read-once block omitted the post-compaction restore instruction"
-  pass "--reemit restores the read-once dump and states the post-compaction restore path (read-once survives a compaction)"
+  pass "--reemit restores the bounded read-once view and targeted post-compaction path"
 }
 
 test_reemit_preserves_lock_holder_repair_ownership() {
@@ -1965,6 +2029,7 @@ if [ -n "${FM_SESSION_START_TEST_ONLY:-}" ]; then
 fi
 
 test_context_digest_absent_empty_present
+test_context_digest_bounds_repeated_file_bodies_with_exact_pointers
 test_lock_refusal_read_only_path
 test_task_worktree_refuses_before_session_digest_or_lock
 test_lock_write_failure_read_only_path
@@ -1979,10 +2044,11 @@ test_session_start_preserves_proven_bare_shell_recovery
 test_session_start_relaunches_herdr_husk_secondmate
 test_status_tail_bounding
 test_status_tail_line_cap
-test_orphan_status_logs_are_printed
+test_orphan_status_logs_are_summarized
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
+test_session_start_bounds_wake_annotations_without_hiding_the_queue
 test_locked_startup_reconciles_before_wake_presentation
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_preserves_recovery_rows
@@ -1992,7 +2058,7 @@ test_slow_github_auth_never_delays_the_printed_queue
 test_runtime_bound_truncates_loudly
 test_timeout_status_file_failure_still_runs_command
 test_reemit_skips_startup_sweeps_but_drains_wakes
-test_reemit_restores_read_once_dump_after_compaction
+test_reemit_restores_bounded_read_once_view_after_compaction
 test_reemit_preserves_lock_holder_repair_ownership
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence

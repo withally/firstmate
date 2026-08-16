@@ -4,12 +4,12 @@
 # Collapses AGENTS.md sections 3 (bootstrap) and 5 (recovery) into ONE script
 # producing ONE ordered digest, so a session starts in one or two turns
 # instead of the six-plus separate reads the old docs required: run
-# fm-bootstrap.sh, then separately read data/projects.md, data/secondmates.md,
+# fm-bootstrap.sh, then separately inspect data/projects.md, data/secondmates.md,
 # data/captain.md, data/captain-shared.md, data/learnings.md, then run
 # fm-lock.sh, fm-wake-drain.sh, then read data/backlog.md, every state/*.meta,
 # and every state/*.status.
-# Every one of those reads is UNCONDITIONAL at every session start, so they
-# belong in a script, not in N agent turns.
+# Startup now prints must-trust live facts plus bounded representations of stable
+# context, so repeated historical and curated bodies move to targeted reads.
 # A linked disposable task worktree is not a Firstmate session: before any
 # stage runs, the script identifies that worker plainly and exits without
 # acquiring the lock or emitting fleet state. The primary checkout and marked
@@ -46,13 +46,14 @@
 #   5. read-once      - state the contract governing all digest sources before
 #                       any bulk data.
 #   6. fleet digest   - a recovery-focused data/backlog.md listing, every
-#                       state/*.meta, a line-count and per-line bounded status tail,
-#                       state/.afk, and a cheap per-task endpoint-liveness read:
+#                       state/*.meta, the latest per-line-capped active status event,
+#                       an archived-status count, state/.afk, and a cheap per-task endpoint-liveness read:
 #                       read-only, always runs.
 #   7. network checks - harvest the deferred result without waiting.
-#   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs after live fleet identity.
+#   8. context digest - a bounded prefix of data/projects.md, data/secondmates.md,
+#                       data/captain.md, data/captain-shared.md, and data/learnings.md,
+#                       with exact omission counts, paths, and content identities:
+#                       read-only, always safe, always runs after live fleet identity.
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
@@ -96,8 +97,16 @@
 # Full bodies are targeted follow-up only: `tasks-axi show <id> --full` when
 # compatible tasks-axi is available, or `data/backlog.md` when the file body is
 # truly needed.
-# Status-tail lines are additionally capped by bin/fm-line-cap-lib.sh, while
-# the full status-log path remains beside every tail for targeted recovery.
+# Session-start asks fm-wake-drain.sh for only the latest historical annotation
+# per signaled status file; the durable raw-wake presentation and folded OPEN
+# DECISIONS are unchanged, and the omitted annotation count is explicit.
+# Active-task status tails default to one line and are capped by
+# bin/fm-line-cap-lib.sh, while the full status-log path remains beside each tail.
+# Status files without live metadata are counted without re-reading their bodies;
+# folded OPEN DECISIONS preserves unresolved choices and blockers from those logs.
+# Each stable context file prints at most FM_SESSION_START_CONTEXT_LINES lines
+# (default 12), also line-capped, and identifies an omitted suffix by exact line
+# count, full path, and content digest for a targeted read when relevant.
 #
 # The whole digest is bounded by FM_SESSION_START_TIMEOUT (default 120s).
 # When the bound is hit, the parent names the incomplete stage and all stages
@@ -110,8 +119,8 @@
 #   an agent skip the rest of the digest.
 #
 #   --reemit re-verifies lock ownership, reruns detect-only bootstrap, drains
-#   queued wakes, and reprints the digest without repeating startup's mutating
-#   bootstrap sweeps or stale Herdr projection cleanup.
+#   queued wakes, and reprints the same bounded startup/recovery digest without
+#   repeating startup's mutating bootstrap sweeps or stale Herdr projection cleanup.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -234,8 +243,10 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
-STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
-case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
+STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-1}
+case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=1 ;; esac
+CONTEXT_LINES=${FM_SESSION_START_CONTEXT_LINES:-12}
+case "$CONTEXT_LINES" in ''|*[!0-9]*|0) CONTEXT_LINES=12 ;; esac
 QUEUED_LIMIT=${FM_SESSION_START_QUEUED_LIMIT:-20}
 case "$QUEUED_LIMIT" in ''|*[!0-9]*|0) QUEUED_LIMIT=20 ;; esac
 BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
@@ -246,18 +257,28 @@ SUBRULE='-----------------------------------------------------------------------
 section() { printf '\n%s\n%s\n%s\n' "$RULE" "$1" "$RULE"; }
 subsection() { printf '\n%s\n%s\n' "$1" "$SUBRULE"; }
 
-# print_file_or_absent <path> <label>: full contents under a labeled
-# subsection, or an explicit ABSENT marker. Absence is semantically
+# print_file_bounded_or_absent <path> <label>: a bounded, line-capped prefix
+# under a labeled subsection, or an explicit ABSENT marker. Absence is semantically
 # meaningful for every one of these files (captain.md absent = firstmate
 # repo built-in defaults, projects.md absent = rebuild from clones, etc. -
-# AGENTS.md section 3) and must never be confused with an empty-but-present
-# file, so the two cases print differently.
-print_file_or_absent() {
-  local path=$1 label=$2
+# AGENTS.md section 3) and must never be confused with an empty-but-present file.
+# An omitted suffix is identified by its exact line count, full path, and digest
+# so the primary can target the source when this turn actually needs it.
+print_file_bounded_or_absent() {
+  local path=$1 label=$2 line total omitted digest
   subsection "$label"
   if [ -f "$path" ]; then
     if [ -s "$path" ]; then
-      cat "$path"
+      while IFS= read -r line || [ -n "$line" ]; do
+        fm_cap_line "$line"
+      done < <(head -n "$CONTEXT_LINES" "$path")
+      total=$(awk 'END { print NR + 0 }' "$path")
+      if [ "$total" -gt "$CONTEXT_LINES" ]; then
+        omitted=$((total - CONTEXT_LINES))
+        digest=$(hash_file "$path" 2>/dev/null || printf unavailable)
+        printf '(%s more line(s) omitted; full file: %s; content %s)\n' \
+          "$omitted" "$path" "$digest"
+      fi
     else
       printf '(present, empty)\n'
     fi
@@ -510,7 +531,7 @@ else
   if [ -n "$INACTIVE_OUT" ]; then
     printf 'inactive outcome reconciliation: %s\n' "$INACTIVE_OUT"
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  DRAIN_OUT=$(FM_WAKE_ANNOTATION_LIMIT=1 "$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   else
@@ -568,16 +589,17 @@ fi
 stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
-Everything below is represented for this session start: every state/*.meta, a
-compact data/backlog.md listing, a bounded tail of every state/*.status, and
-the five context files - data/projects.md, data/secondmates.md,
-data/captain.md, data/captain-shared.md, data/learnings.md. Do not re-read
-them after this digest or bulk-read the backlog and status logs.
+Everything this turn must trust is represented below: every live state/*.meta,
+a compact data/backlog.md listing, the latest bounded status event for each live
+task, archived-status counts, AFK state, endpoint liveness, and bounded prefixes
+of data/projects.md, data/secondmates.md, data/captain.md,
+data/captain-shared.md, and data/learnings.md.
 
 Read a source directly only when this digest marked it ABSENT or corrupt, a
-specific full task body or older status history is needed, a capped line's
-tail matters, omitted queued work is needed, NETWORK CHECKS remains in progress,
-or STARTUP TRUNCATED named the stage that would have emitted it.
+specific full task body or older status history is needed, a capped line's tail
+matters, this turn needs context beyond a file's disclosed bounded prefix,
+omitted queued work is needed, NETWORK CHECKS remains in progress, or STARTUP
+TRUNCATED named the stage that would have emitted it.
 
 If a later context compaction drops this digest, restore it once with
 `bin/fm-session-start.sh --reemit` and resume this trust, rather than re-reading
@@ -622,17 +644,20 @@ for meta in "$STATE"/*.meta; do
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
 
-subsection "Orphan status logs (state/*.status without matching .meta)"
+subsection "Archived status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0
 for status in "$STATE"/*.status; do
   [ -f "$status" ] || continue
   id=$(basename "$status" .status)
   [ -f "$STATE/$id.meta" ] && continue
-  ORPHAN_STATUS_FOUND=1
-  printf '\n--- %s ---\n' "$id"
-  print_status_tail "$status"
+  ORPHAN_STATUS_FOUND=$((ORPHAN_STATUS_FOUND + 1))
 done
-[ "$ORPHAN_STATUS_FOUND" -eq 1 ] || printf '(none)\n'
+if [ "$ORPHAN_STATUS_FOUND" -gt 0 ]; then
+  printf '%s archived status log(s) omitted; durable status logs retain unresolved blockers and choices; read %s/*.status only when a targeted decision or older history is needed.\n' \
+    "$ORPHAN_STATUS_FOUND" "$STATE"
+else
+  printf '(none)\n'
+fi
 
 subsection "AFK"
 if [ -e "$STATE/.afk" ]; then
@@ -679,11 +704,11 @@ fi
 # --- 8. context digest -----------------------------------------------------
 stage context
 section "CONTEXT"
-print_file_or_absent "$DATA/projects.md" "data/projects.md"
-print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
-print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+print_file_bounded_or_absent "$DATA/projects.md" "data/projects.md"
+print_file_bounded_or_absent "$DATA/secondmates.md" "data/secondmates.md"
+print_file_bounded_or_absent "$DATA/captain.md" "data/captain.md"
+print_file_bounded_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
+print_file_bounded_or_absent "$DATA/learnings.md" "data/learnings.md"
 
 # --- 9. closing reminder -----------------------------------------------
 stage next-step
@@ -717,8 +742,8 @@ This script never starts supervision itself.
 EOF
 fi
 cat <<'EOF'
-The digest above is complete. The READ-ONCE CONTRACT near its top governs any
-targeted follow-up reads.
+The bounded digest above is complete. The READ-ONCE CONTRACT near its top
+governs any targeted follow-up reads.
 EOF
 
 if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then

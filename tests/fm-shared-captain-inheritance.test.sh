@@ -385,8 +385,8 @@ EOF
   assert_contains "$out" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)" \
     "session-start digest should label the shared captain file unmistakably"
   assert_contains "$out" "shared from primary" "session-start digest should render the shared file"
-  assert_contains "$out" "data/captain-shared.md, data/learnings.md" \
-    "read-once reminder should include captain-shared.md"
+  assert_contains "$out" "data/captain-shared.md, and data/learnings.md" \
+    "read-once contract should include captain-shared.md"
   pass "session-start digest renders data/captain-shared.md with the shared read-only label"
 }
 

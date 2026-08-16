@@ -565,8 +565,10 @@ clear_pause_tracking() {  # <window>
 # regardless of agent liveness (the away-mode daemon's classify_stale applies the
 # same rule): a live agent idling at its prompt behind a declared captain wait is
 # the expected shape, and surfacing it once per pane-hash churn produced the
-# 2026-08 forced no-op stale wakes. Only an authoritatively working crew (an
-# active run-step or a busy pane, via crew_absorb_class) outranks the declaration.
+# 2026-08 forced no-op stale wakes. An authoritatively working crew (an active
+# run-step or a busy pane, via crew_absorb_class) normally outranks the
+# declaration. A backend-confirmed dead/missing agent is the exception: it proves
+# a leftover harness busy event is stale, so the declared wait remains paused.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class
   key=${win//:/_}
@@ -577,6 +579,11 @@ pause_state_class() {  # <window> <task>
   if ! status_is_paused_or_captain_held "$last"; then
     rm -f "$recheck_file"
     crew_absorb_class "$task"
+    return
+  fi
+  if crew_endpoint_finished "$(window_backend "$win")" "$win"; then
+    date +%s > "$recheck_file"
+    printf 'paused'
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
@@ -1434,31 +1441,41 @@ EOF
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
         # unless a genuinely busy pane has gone too long with no completed turn -
         # then route it through the same wedge timer instead of erasing it.
-        if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+        if ! afk_present && status_is_paused_or_captain_held "$last" \
+          && [ "$(pause_state_class "$w" "$task")" = paused ]; then
+          handle_paused_stale "$w" "$task" "$h"
         else
-          rm -f "$ssf" "$ewf"
-        fi
-        if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
-          clear_pause_tracking "$w"
+          if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
+            wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+          else
+            rm -f "$ssf" "$ewf"
+          fi
+          if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
+            clear_pause_tracking "$w"
+          fi
         fi
       fi
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
-      if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+      if ! afk_present && status_is_paused_or_captain_held "$last" \
+        && [ "$(pause_state_class "$w" "$task")" = paused ]; then
+        handle_paused_stale "$w" "$task" "$h"
       else
-        rm -f "$ssf" "$ewf"
-      fi
-      task=$(window_to_task "$w" "$STATE")
-      if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
-        case "$(pause_state_class "$w" "$task")" in
-          paused) handle_paused_stale "$w" "$task" "$h" ;;
-          *)      clear_pause_tracking "$w" ;;
-        esac
-      else
-        [ -e "$pf" ] && clear_pause_tracking "$w"
+        if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
+          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+        else
+          rm -f "$ssf" "$ewf"
+        fi
+        task=$(window_to_task "$w" "$STATE")
+        if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
+          case "$(pause_state_class "$w" "$task")" in
+            paused) handle_paused_stale "$w" "$task" "$h" ;;
+            *)      clear_pause_tracking "$w" ;;
+          esac
+        else
+          [ -e "$pf" ] && clear_pause_tracking "$w"
+        fi
       fi
     fi
   done < <(recorded_windows)

@@ -66,7 +66,7 @@ That alternative expands trust and writes outside this repository, so Firstmate 
 A run-tier harness (Claude, Codex exec) re-emits the digest automatically when its session-open hook fires with a `clear` or `compact` source, so the read-once dump returns to context and the primary never re-reads `data/captain.md`, `data/learnings.md`, or the other startup sources file by file.
 Grok has no such path: its in-session auto-compaction (the common case) fires no session-open hook at all, and its `SessionStart` event reports `source=new` with stdout discarded from model context, so a compaction cannot be intercepted to push a re-emit.
 The Grok primary therefore restores context the same way the read-once contract in `AGENTS.md` section 3 directs any harness whose compaction dropped the digest: run `bin/fm-session-start.sh --reemit` once and resume read-once trust.
-`--reemit` re-verifies lock ownership, skips the already-completed mutating bootstrap sweeps, presents the durable wake queue, and reprints the fleet state and the five context files, so one bounded command replaces the ad-hoc repeated re-reads that a compaction otherwise provokes.
+`--reemit` re-verifies lock ownership, skips the already-completed mutating bootstrap sweeps, presents the durable wake queue, and reprints the same bounded startup/recovery view - the fleet state and bounded prefixes of the five context files - so one bounded command replaces the ad-hoc repeated re-reads that a compaction otherwise provokes.
 
 ## Regression coverage
 

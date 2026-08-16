@@ -176,7 +176,7 @@ unit_dead_daemon_restart_preserves_inflight() {
 }
 
 unit_native_capability_gate() {
-  local unsafe safe claude grok plain out rc
+  local unsafe safe claude grok delayed plain out rc
   unsafe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-unsafe.XXXXXX")
   out=$(FM_HOME="$unsafe" FM_STATE_OVERRIDE="$unsafe/state" FM_SUPERVISOR_BACKEND=herdr \
     FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
@@ -211,12 +211,32 @@ unit_native_capability_gate() {
   fi
 
   grok=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-grok.XXXXXX")
-  if FM_HOME="$grok" FM_STATE_OVERRIDE="$grok/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok "$LAUNCH" start-native >/dev/null 2>&1 \
-    && [ -e "$grok/state/.afk" ]; then
-    pass "capability gate: unverified Grok native behavior is unchanged"
+  out=$(FM_HOME="$grok" FM_STATE_OVERRIDE="$grok/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok "$LAUNCH" start-native 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ] \
+    && printf '%s\n' "$out" | grep -F 'Grok native away-mode launch is unsafe across overlapping sessions; use bin/fm-afk-launch.sh start' >/dev/null \
+    && [ ! -e "$grok/state/.afk" ] \
+    && [ ! -e "$grok/state/.afk-daemon-terminal" ]; then
+    pass "capability gate: Grok native entry refuses before lifecycle state"
   else
-    fail "capability gate: Grok native entry was refused without evidence"
+    fail "capability gate: Grok native entry was not refused cleanly ($out)"
+  fi
+
+  delayed=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-grok-delayed.XXXXXX")
+  mkdir -p "$delayed/state"
+  date '+%s' > "$delayed/state/.afk"
+  printf 'none\t-\tnative\n' > "$delayed/state/.afk-daemon-terminal"
+  FM_HOME="$delayed" FM_STATE_OVERRIDE="$delayed/state" "$LAUNCH" stop >/dev/null 2>&1
+  out=$(FM_HOME="$delayed" FM_STATE_OVERRIDE="$delayed/state" FM_SUPERVISOR_BACKEND=herdr \
+    FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok "$LAUNCH" start-native 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ] \
+    && [ ! -e "$delayed/state/.afk" ] \
+    && [ ! -e "$delayed/state/.afk-daemon-terminal" ]; then
+    pass "capability gate: delayed Grok native call after return cannot recreate away state"
+  else
+    fail "capability gate: delayed Grok native call recreated away state ($out)"
   fi
 
   # The gate only needs the RESOLVED backend. A plain terminal (no tmux, no
@@ -224,7 +244,7 @@ unit_native_capability_gate() {
   # printed tmux fallback; the ambiguity gate must not start refusing it.
   plain=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-plain.XXXXXX")
   out=$(env -u FM_SUPERVISOR_BACKEND -u FM_SUPERVISOR_TARGET -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
-    FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
+    FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi \
     "$LAUNCH" start-native 2>&1)
   rc=$?
   if [ "$rc" -eq 0 ] && [ -e "$plain/state/.afk" ]; then
@@ -232,7 +252,7 @@ unit_native_capability_gate() {
   else
     fail "capability gate: native entry now refuses an unresolved backend it used to accept ($out)"
   fi
-  rm -rf "$unsafe" "$safe" "$claude" "$grok" "$plain"
+  rm -rf "$unsafe" "$safe" "$claude" "$grok" "$delayed" "$plain"
 }
 
 # ---------------------------------------------------------------------------
@@ -576,7 +596,7 @@ unit_native_lifecycle() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi \
     "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
@@ -830,7 +850,7 @@ unit_refresh_validates_record() {
   printf '%s' "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid-identity" )
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
-    FM_SUPERVISOR_BACKEND=tmux FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok bash -c '
+    FM_SUPERVISOR_BACKEND=tmux FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi bash -c '
       . "$1"
       ! fm_afk_launch_start && ! fm_afk_launch_start_native
     ' _ "$LAUNCH" && [ ! -e "$st/state/.afk" ]; then
@@ -848,7 +868,7 @@ unit_clear_failure_aborts_entry() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear-fail.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok bash -c '
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi bash -c '
     . "$1"
     fm_afk_launch_reconcile() { return 0; }
     fm_afk_clear_stale_artifacts() { return 1; }
@@ -901,7 +921,7 @@ unit_flag_write_failure_aborts() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-flag-fail.XXXXXX")
   mkdir -p "$st/state"
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok bash -c '
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi bash -c '
     . "$1"
     fm_afk_launch_flag_write() { return 1; }
     ! fm_afk_launch_start_native
@@ -951,7 +971,8 @@ e2e_herdr() {
   ws_before=$(fm_backend_herdr_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
+    FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
+    FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
     "$LAUNCH" start >/dev/null 2>&1
 
   during=$(fm_backend_herdr_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
@@ -961,7 +982,7 @@ e2e_herdr() {
 
   if [ "$before" = "$during" ]; then pass "herdr e2e: captain tab pane count unchanged after start (no split)"; else fail "herdr e2e: captain tab pane count changed ($before -> $during)"; fi
   if [ "$ws_during" -gt "$ws_before" ]; then pass "herdr e2e: daemon launched in a separate non-visible workspace"; else fail "herdr e2e: no separate daemon workspace created"; fi
-  if [ -n "$dtab" ] && [ "$dtab" != "$cap_tab" ]; then pass "herdr e2e: daemon pane is NOT in the captain's tab"; else fail "herdr e2e: daemon pane shares the captain tab ($dtab)"; fi
+  if [ -n "$dtab" ] && [ "$dtab" != "$cap_tab" ]; then pass "herdr e2e: Grok daemon pane is NOT in the captain's tab"; else fail "herdr e2e: Grok daemon pane shares the captain tab ($dtab)"; fi
   case "$dtgt" in "$SESSION":*) pass "herdr e2e: daemon terminal scoped to the lab session" ;; *) fail "herdr e2e: daemon terminal not in the lab session ($dtgt)" ;; esac
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
@@ -991,14 +1012,15 @@ e2e_tmux() {
   before=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
+    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
+    FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
     "$LAUNCH" start >/dev/null 2>&1
 
   during=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
   rec=$(cut -f2 "$home_tmp/state/.afk-daemon-terminal" 2>/dev/null || true)
   TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
   if [ "$before" = "$during" ]; then pass "tmux e2e: captain window pane count unchanged after start (no split-window)"; else fail "tmux e2e: captain window pane count changed ($before -> $during)"; fi
-  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: daemon launched in a separate detached session"; else fail "tmux e2e: no separate daemon session ($rec)"; fi
+  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: Grok daemon launched in a separate detached session"; else fail "tmux e2e: no separate Grok daemon session ($rec)"; fi
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
     FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux "$LAUNCH" stop >/dev/null 2>&1

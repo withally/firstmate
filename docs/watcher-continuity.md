@@ -34,8 +34,10 @@ An unconfirmed delivery leaves that generation pending, so the successor resurfa
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.
 The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher or auto-arm claim is present.
-For every supported arm path, a successor that observes an accepted down stretch emits `check: rearm-resurface` through the ordinary durable handling path before settling into its live wait.
-That recovery presentation includes all unacknowledged queue rows and the folded `OPEN DECISIONS` set, so a still-open decision reappears even when recovery itself has no new queue row.
+For every supported arm path, a successor that observes an accepted down stretch keeps the recovery generation pending while it scans for durable work.
+It emits `check: rearm-resurface` through the ordinary durable handling path only when the queue has an unacknowledged row or the folded `OPEN DECISIONS` set is nonempty.
+A recovery episode with neither stays inside the same live watcher wait, so Grok's tracked arm does not complete merely to report that there is nothing to handle.
+A still-open decision therefore reappears even when recovery itself has no new queue row, while a later actionable wake carries the pending generation into its ordinary handling turn.
 The queue row format remains the existing five-column record.
 A row that does not parse as that record is quarantined beside the queue as retained evidence rather than presented or deleted, so a generation whose rows were all malformed still finalizes through its empty-queue acknowledgement.
 During upgrade, the first presentation of a markerless nonempty queue adopts those rows into a fresh recovery generation, presents them at least once, and retains them until the generation-bound acknowledgement succeeds.
@@ -65,6 +67,7 @@ An acknowledged episode does not freeze the generation, because the next downtim
 
 `bin/fm-watch-arm.sh` never returns a clean empty success while supervision is still needed.
 An actionable child output returns that reason normally.
+A child that observes an empty recovery episode keeps blocking, so the same Grok-tracked arm remains alive without a completion prompt or lifecycle close row.
 A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, silently relaunches after a matching PID-identity-bound clean-close receipt, or resolves the close against the watcher's bounded terminal-delivery ledger.
 An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 Before releasing its singleton lock after printing an actionable reason, the watcher records that reason with its PID and process identity in `state/.watch-deliveries.log`.
@@ -87,7 +90,8 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, blocks prompt delivery to prove the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 It also covers the Pi away-mode hand-off in the Ownership section, while `FM_AFK_PI_DUAL_SUPERVISION_E2E=1 tests/fm-afk-pi-dual-supervision-e2e.test.sh` exercises that contract with a real Pi primary and away supervisor.
-`tests/fm-watch-arm.test.sh` covers the real delayed-downtime sequence through `rearm-resurface`, no watcher at native Grok Stop, close-publication-safe acknowledgement, and a live next arm, plus self-healing moved-generation acknowledgement with sequence-bounded consumption and the exact re-drain remedy.
+`tests/fm-watch-arm.test.sh` covers a real delayed empty-recovery stretch that leaves the tracked arm and watcher live, a later actionable wake, close-publication-safe acknowledgement, and a live next arm, plus decision-only `rearm-resurface` and self-healing moved-generation acknowledgement with sequence-bounded consumption and the exact re-drain remedy.
+`FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` proves the empty recovery stretch creates neither a Grok `task_completed` prompt nor a primary turn, then proves a later actionable reason still completes the tracked task and spends the retained handling turn.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, the silent all-absorbed clean-close re-arm with an unchanged actionable successor close, an attached arm continuing across an observed actionable close, the crashed receiptless cycle that still fails loudly, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
@@ -99,6 +103,6 @@ It also covers the Pi away-mode hand-off in the Ownership section, while `FM_AFK
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.
-Claude depends on the Stop `asyncRewake` rewake, Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
+Claude depends on the Stop `asyncRewake` rewake, Grok retains native background-completion notifications for actionable or failed tracked arms, and Codex retains bounded foreground checkpoints.
 
 [`verification/supervision.md`](verification/supervision.md#watcher-continuity) records the current five-harness live evidence, the 2026-07-24 Stop-owned Claude auto-arm results, and exact opt-in commands.

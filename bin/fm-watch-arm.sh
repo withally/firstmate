@@ -36,7 +36,9 @@
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
 # returns the FAILED line. On started it waits the child and propagates the wake
-# reason; on attached it stays live across identity-matched successors. A cycle
+# reason; on attached it stays live across identity-matched successors, and the
+# tracked arm also stays live across an empty recovery episode. Only a recovery
+# episode with a durable row or open decision returns a typed reason. A cycle
 # that ends with no reason line and no healthy successor is resolved first
 # against the watcher's identity-bound clean-close receipt, then against its
 # identity-bound delivery record, then against its identity-bound actionable

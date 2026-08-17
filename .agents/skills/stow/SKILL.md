@@ -1,6 +1,6 @@
 ---
 name: stow
-description: Sweep the current session for uncaptured durable knowledge and file it to disk before a context reset. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
+description: Sweep the current session for uncaptured durable knowledge, file it to disk, and persist important open work records this session knows are missing or stale before a context reset. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
 user-invocable: true
 metadata:
   internal: true
@@ -10,7 +10,7 @@ metadata:
 
 # stow
 
-Sweep this session for durable knowledge that exists only in conversation, then leave the next session with a compact current operating map rather than an accumulating journal.
+Sweep this session for durable knowledge and important open-work record state that exist only in conversation, then leave the next session with a compact current operating map rather than an accumulating journal.
 This skill writes only through the existing Firstmate ownership and write boundaries.
 
 ## Required startup-memory pass
@@ -66,6 +66,19 @@ Never describe the session as reset-safe while the memory total is over budget o
    The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected by AGENTS.md, or deletion of a stale entry.
    Do not invent another graduation path.
 
+## Session-known open-record inventory
+
+Build a bounded inventory of important open work records that this session already knows are missing or stale.
+Use only evidence already held in the current session context.
+Do not enumerate the backlog, holds, status records, repositories, pull requests, secondmate homes, or external systems to discover more work, and inspect a named record only as needed to update it through its existing owner.
+
+File important work that was never recorded and correct records the session knows are stale.
+Judge which existing record owner governs each change, then follow that owner's inspect-and-write path without bypassing its validation or state machine.
+If the needed correction belongs to another home or requires a judgment this session cannot make, leave the record unchanged and durably route or raise the question through the existing owner instead of guessing or crossing a secondmate boundary.
+
+This inventory is session-scoped persistence, never fleet-wide reconciliation.
+It says nothing about records the session did not already name and must not be expanded or reported as a reconciliation of durable records against repository, forge, or fleet reality.
+
 ## Completion receipt
 
 Report the outcome in plain captain-facing language with all of these facts:
@@ -73,9 +86,12 @@ Report the outcome in plain captain-facing language with all of these facts:
 - effective startup-memory budget and total estimated tokens before and after;
 - one or more actions for each of `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`: `unchanged`, `added`, `rewritten`, `pruned`, or `routed`;
 - each durable finding filed outside memory and its authoritative owner;
+- each session-known open record filed or corrected, plus each record left unchanged and the durable question or exception it awaits;
 - every unresolved exception, including a primary-owned shared-file constraint in a secondmate home;
-- whether the session is safe to reset, only when all durable findings are captured and the post-pass result is within budget with no exception.
+- whether the session is safe to reset, only when all durable findings are captured, every item in the session-known open-record inventory is filed, corrected, or durably surfaced with its reason, and the post-pass result is within budget with no exception.
 
+State what reset-safe means in the same sentence as the claim: nothing this session knew has been lost.
+State that this is not a reconciliation and does not claim the home's durable records are otherwise correct.
 Do not hide an over-budget result behind a reset-safe claim.
 
 ## Scope exclusion: no skill storage

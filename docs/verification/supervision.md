@@ -309,6 +309,19 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
 | Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
 
+Grok 1.0.4 also verified same-turn consumption of an auto-backgrounded wake drain on 2026-08-17.
+The returned tool result retained the real wake row and `WAKE_ACK_REQUIRED` instruction, while the stored chat contained zero `synthetic_reason: task_completed` user prompts.
+
+```sh
+FM_GROK_DRAIN_LIVE_E2E=1 tests/fm-grok-drain-consumption-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - grok 1.0.4 (d846eb93d94d) [stable] consumed the auto-backgrounded drain in-turn with output and acknowledgement intact and zero task_completed prompts
+```
+
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
 
 Pi same-process session-transition ownership was verified on 2026-07-27 against the tracked extension with a faithful in-process factory rebind (module cache retained, real arm children):

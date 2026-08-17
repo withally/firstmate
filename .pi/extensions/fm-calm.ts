@@ -311,6 +311,21 @@ export default function (pi: ExtensionAPI) {
     forcePresentationRedraw();
   };
 
+  // Keep one repaint callback for every on-screen built-in row Calm presents.
+  // Pi's exporter uses throwaway row state while stock rendering is active, so those
+  // rows are excluded. The session boundary rebuilds the transcript and clears the
+  // corresponding row-local state.
+  const calmToolRowRepaints = new Map<object, () => void>();
+  const rememberCalmToolRow = (state: object, invalidate: unknown): void => {
+    if (exportRendering || typeof invalidate !== "function") return;
+    calmToolRowRepaints.set(state, invalidate as () => void);
+  };
+  const repaintCalmPresentation = (ui: ExtensionUIContext): void => {
+    for (const invalidate of calmToolRowRepaints.values()) invalidate();
+    ui.setStatus("firstmate-calm", undefined);
+    forcePresentationRedraw();
+  };
+
   registerFirstmateSyntheticPresentation(pi);
 
   function wrapBuiltIn<TParams extends TSchema, TDetails, TState>(
@@ -380,6 +395,7 @@ export default function (pi: ExtensionAPI) {
         theme: RenderTheme<TParams, TDetails, TState>,
         context: RenderContext<TParams, TDetails, TState>,
       ) {
+        rememberCalmToolRow(context.state as object, context.invalidate);
         if (exportRendering) return originalRenderCall(args, theme, context);
         if (calmPresentationHides("assistant-tool-call")) return new Container();
         if (originalSelfShell) return originalRenderCall(args, theme, context);
@@ -398,6 +414,7 @@ export default function (pi: ExtensionAPI) {
         theme: RenderTheme<TParams, TDetails, TState>,
         context: RenderContext<TParams, TDetails, TState>,
       ) {
+        rememberCalmToolRow(context.state as object, context.invalidate);
         if (exportRendering) return originalRenderResult(result, options, theme, context);
         if (calmPresentationHides("tool-result")) return new Container();
         if (originalSelfShell) return originalRenderResult(result, options, theme, context);
@@ -492,6 +509,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     resetCalmTranscriptOrigin();
+    calmToolRowRepaints.clear();
     exportRendering = false;
     setCalmPresentation(loadCalmPreference());
     if (calmPresentationIsActive()) activateBuiltInsIfNeeded(ctx.ui);
@@ -526,7 +544,12 @@ export default function (pi: ExtensionAPI) {
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
-        rebuildTranscriptRows(ctx.ui);
+        // Repaint only Calm's row-local presentation after Pi's stock exporter has
+        // finished. A whole-transcript tool-expansion cycle emits consecutive status
+        // rows that coalesce over Pi's "Session exported to:" confirmation. The
+        // status redraw and forced render restore the fork's other Calm-owned rows
+        // without appending transcript content or weakening its stale-frame guard.
+        repaintCalmPresentation(ctx.ui);
       }, 0);
     });
   });

@@ -27,6 +27,7 @@ The session-start nudge remains on its existing non-displayed custom-message pat
 
 Calm changes presentation only, including when another extension owns a Pi built-in tool name.
 Tool execution ownership, input delivery, ordering, model context, session storage, diagnostics, and `/export` and `/share` operation remain unchanged.
+After stock export rendering, Calm restores its presentation without replacing Pi's visible `Session exported to: <path>` confirmation.
 Every hidden Firstmate input remains available to the model and in serialized session data and exported artifacts.
 Legacy operational custom messages remain in session data and Pi's sidebar tree, although the main HTML transcript may omit them.
 Toggling Calm off restores ordinary rendering, and `Ctrl+O` expansion state is preserved.

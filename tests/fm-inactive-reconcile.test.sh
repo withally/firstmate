@@ -121,8 +121,8 @@ test_nonterminal_and_held_work_never_reports() {
   pass "nonterminal, captain-held, and persistent-secondmate work remains untouched"
 }
 
-test_stale_generation_cannot_close_or_consume() {
-  local err sequence generation rc=0
+test_stale_generation_closes_receipt_and_consumes_by_sequence() {
+  local err sequence generation remedy_sequence remedy_generation
   make_world stale-generation
   write_child child 'failed: terminal'
   FM_FAKE_CREW_STATE=failed run_reconcile --startup
@@ -132,15 +132,28 @@ test_stale_generation_cannot_close_or_consume() {
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
 
   FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" "$DRAIN" \
-    --ack-through "$sequence" --recovery-generation stale-generation >/dev/null 2>&1 || rc=$?
-  [ "$rc" -ne 0 ] || fail "stale generation acknowledgement unexpectedly succeeded"
-  [ "$(outcome_count pending)" = 1 ] || fail "stale generation closed the terminal receipt"
-  [ -s "$HOME_DIR/state/.wake-queue" ] || fail "stale generation consumed the terminal wake"
+    --ack-through "$sequence" --recovery-generation stale-generation \
+    >/dev/null 2> "$WORLD/stale-ack.err" \
+    || fail "stale generation acknowledgement did not degrade safely"
+  [ "$(outcome_count presented)" = 1 ] \
+    || fail "stale generation did not durably close the terminal receipt before consumption"
+  [ ! -s "$HOME_DIR/state/.wake-queue" ] \
+    || fail "stale generation did not consume the receipt-backed terminal wake by sequence"
+  [ "$(cat "$HOME_DIR/state/.watcher-down")" = "pending:handling:$generation" ] \
+    || fail "stale generation retired or replaced the outstanding recovery episode"
+  assert_grep 're-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command' \
+    "$WORLD/stale-ack.err" "stale generation did not print the exact remedy"
 
   FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" "$DRAIN" \
-    --ack-through "$sequence" --recovery-generation "$generation" \
-    || fail "original generation could not acknowledge retained work"
-  pass "stale recovery generations change neither receipt nor wake"
+    >/dev/null 2> "$WORLD/remedy-drain.err" || fail "stale-generation remedy re-drain failed"
+  remedy_sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation .*/\1/p' "$WORLD/remedy-drain.err")
+  remedy_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$WORLD/remedy-drain.err")
+  [ "$remedy_generation" = "$generation" ] \
+    || fail "remedy re-drain did not retain the outstanding recovery generation"
+  FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" "$DRAIN" \
+    --ack-through "$remedy_sequence" --recovery-generation "$remedy_generation" \
+    || fail "remedy acknowledgement could not retire the outstanding episode"
+  pass "stale recovery generation closes receipts, consumes by sequence, and preserves the episode"
 }
 
 test_missing_receipt_cannot_be_acknowledged_away() {
@@ -162,8 +175,8 @@ test_missing_receipt_cannot_be_acknowledged_away() {
   pass "a missing receipt fails acknowledgement closed and preserves its wake"
 }
 
-test_generation_change_after_receipt_keeps_wake_recoverable() {
-  local err sequence generation real_mv rc=0
+test_generation_change_after_receipt_consumes_wake_and_preserves_episode() {
+  local err sequence generation real_mv remedy_sequence remedy_generation
   make_world acknowledgement-race
   write_child child 'done: terminal'
   FM_FAKE_CREW_STATE='done' run_reconcile --startup
@@ -186,16 +199,27 @@ SH
 
   PATH="$FAKEBIN:$PATH" FM_TEST_REAL_MV="$real_mv" FM_TEST_STATE="$HOME_DIR/state" \
     FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" "$DRAIN" \
-    --ack-through "$sequence" --recovery-generation "$generation" >/dev/null 2>&1 || rc=$?
-  [ "$rc" -ne 0 ] || fail "generation-changing acknowledgement unexpectedly succeeded"
-  [ "$(outcome_count presented)" = 1 ] || fail "receipt was not durable before generation revalidation"
-  [ -s "$HOME_DIR/state/.wake-queue" ] || fail "generation change lost the still-uncommitted wake"
+    --ack-through "$sequence" --recovery-generation "$generation" \
+    >/dev/null 2> "$WORLD/raced-ack.err" \
+    || fail "generation-changing acknowledgement did not degrade safely"
+  [ "$(outcome_count presented)" = 1 ] || fail "receipt was not durable before row consumption"
+  [ ! -s "$HOME_DIR/state/.wake-queue" ] \
+    || fail "generation change left its receipt-backed handled wake queued"
+  [ "$(cat "$HOME_DIR/state/.watcher-down")" = 'pending:handling:replacement-generation' ] \
+    || fail "generation-changing acknowledgement retired the replacement episode"
+  assert_grep 're-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command' \
+    "$WORLD/raced-ack.err" "generation-changing acknowledgement omitted the exact remedy"
 
   PATH="${PATH#"$FAKEBIN:"}" FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" "$DRAIN" \
-    --ack-through "$sequence" --recovery-generation replacement-generation \
-    || fail "replacement generation could not finish the idempotent acknowledgement"
-  [ ! -s "$HOME_DIR/state/.wake-queue" ] || fail "replacement generation left the handled wake queued"
-  pass "generation change after receipt commit leaves a recoverable queued wake"
+    >/dev/null 2> "$WORLD/raced-remedy.err" || fail "replacement generation could not be re-drained"
+  remedy_sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation .*/\1/p' "$WORLD/raced-remedy.err")
+  remedy_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$WORLD/raced-remedy.err")
+  [ "$remedy_generation" = replacement-generation ] \
+    || fail "remedy re-drain did not present the replacement generation"
+  FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" "$DRAIN" \
+    --ack-through "$remedy_sequence" --recovery-generation "$remedy_generation" \
+    || fail "replacement generation could not finish the acknowledgement"
+  pass "generation change after receipt closure consumes the wake and preserves the newer episode"
 }
 
 bind_secondmate() { # <local|remote>
@@ -362,9 +386,9 @@ SH
 
 test_main_receipt_closes_only_with_handled_generation
 test_nonterminal_and_held_work_never_reports
-test_stale_generation_cannot_close_or_consume
+test_stale_generation_closes_receipt_and_consumes_by_sequence
 test_missing_receipt_cannot_be_acknowledged_away
-test_generation_change_after_receipt_keeps_wake_recoverable
+test_generation_change_after_receipt_consumes_wake_and_preserves_episode
 test_secondmate_parent_report_is_append_first_and_idempotent
 test_bounded_scan_resumes_after_stalled_state_read
 test_watcher_poll_surfaces_missed_terminal_outcome

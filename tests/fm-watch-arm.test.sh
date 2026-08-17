@@ -77,6 +77,16 @@ ack_wakes() {  # <state>
     --recovery-generation "$generation"
 }
 
+# Print "<sequence>\t<generation>" from the acknowledgement command a drain
+# printed, so a case can replay that exact pair later.
+drain_ack_pair() {  # <drain-stderr>
+  local err=$1 sequence generation
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  printf '%s\t%s\n' "$sequence" "$generation"
+}
+
 start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
   local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} i
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
@@ -371,6 +381,152 @@ test_attached_arm_stays_live_through_a_declared_wait_absorb() {
   pass "watch-arm: a declared-wait absorb keeps the real attached arm alive (no synthetic turn); a genuine wake still exits it"
 }
 
+# Drive the reproduced Grok-facing sequence with real watcher and guard
+# processes: delayed downtime, rearm-resurface, blind Stop, close publication,
+# acknowledgement, then a live next arm.
+test_delayed_rearm_stop_acknowledgement_sequence_self_heals() {
+  local dir home state fakebin pair sequence generation stop_out stop_status=0
+  dir=$(make_case delayed-rearm-stop-acknowledgement)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+  git init -q "$home"
+  : > "$home/AGENTS.md"
+  ln -s "$ROOT/bin" "$home/bin"
+  printf 'window=test:demo\nkind=ship\nharness=grok\n' > "$state/demo.meta"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/rearm.out"
+  is_live_non_zombie "$ARM_PID" || fail "delayed-recovery watcher did not stay live after start"
+  grep -q '^watcher: started ' "$dir/rearm.out" \
+    || fail "delayed-recovery fixture did not start a real watcher"
+
+  # Publish after the first beat and initial recovery check, matching the
+  # reproduced five-second shape while using this suite's one-second poll.
+  sleep 0.5
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_recovery_transition "$2" publish downtime' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down" \
+    || fail "delayed downtime publication failed"
+  wait_for_exit "$ARM_PID" 120 || fail "delayed downtime did not close the watcher arm"
+  grep -Fx 'check: rearm-resurface' "$dir/rearm.out" >/dev/null \
+    || fail "delayed downtime did not produce rearm-resurface: $(cat "$dir/rearm.out")"
+  [ ! -e "$state/.watch.lock" ] \
+    || fail "rearm-resurface left a watcher holding the lock before Stop"
+
+  sleep 1
+  stop_out=$(printf '%s' '{"sessionId":"timed","stopHookActive":false}' | \
+    PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=0 GROK_WORKSPACE_ROOT="$home" \
+    "$home/bin/fm-turnend-guard-grok.sh" 2>&1) || stop_status=$?
+  [ "$stop_status" -eq 2 ] \
+    || fail "no-watcher native Stop did not return its bounded continuation status: $stop_out"
+  printf '%s\n' "$stop_out" | grep -F 'TURN WOULD END BLIND' >/dev/null \
+    || fail "no-watcher native Stop omitted the blind-turn diagnostic: $stop_out"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
+    || fail "rearm-resurface recovery drain failed"
+  pair=$(drain_ack_pair "$dir/drain.err") \
+    || fail "drain did not print a generation-bound acknowledgement command"
+  sequence=${pair%%$'\t'*}
+  generation=${pair##*$'\t'}
+  [ "$sequence" = 0 ] || fail "empty-row rearm-resurface recovery printed a nonzero acknowledgement"
+
+  # Drive the normal close-publication primitive after the command was printed.
+  # Its pending generation must survive, making that exact command usable.
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_recovery_transition "$2" publish downtime' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down" \
+    || fail "close downtime publication failed"
+  [ "$(cat "$state/.watcher-down")" = "pending:downtime:$generation" ] \
+    || fail "close publication replaced the printed acknowledgement generation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
+    --recovery-generation "$generation" 2> "$dir/ack.err" \
+    || fail "the printed acknowledgement did not survive close publication: $(cat "$dir/ack.err")"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    acked:*) ;;
+    *) fail "the surviving acknowledgement did not retire the recovery episode" ;;
+  esac
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/next-arm.out"
+  is_live_non_zombie "$ARM_PID" \
+    || fail "the watcher armed after acknowledgement died inside its first cycle"
+  ! grep -F 'check: rearm-resurface' "$dir/next-arm.out" >/dev/null \
+    || fail "the watcher armed after acknowledgement re-announced retired recovery"
+  printf 'blocked: a later wake the live watcher must still surface\n' > "$state/later.status"
+  wait_for_exit "$ARM_PID" 120 || fail "the live watcher did not surface a later wake"
+  grep -q '^signal:' "$dir/next-arm.out" \
+    || fail "the watcher never reached real supervision work: $(cat "$dir/next-arm.out")"
+  pass "watch-arm: delayed rearm, blind Stop, close publication, acknowledgement, and next arm self-heal"
+}
+
+# Replay an acknowledgement from a retired episode against a newer real
+# watcher cycle, then follow the printed remedy through final retirement.
+test_moved_generation_acknowledgement_is_self_healing() {
+  local dir home state fakebin pair first_sequence first_generation second_generation
+  dir=$(make_case moved-generation-acknowledgement)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/first-arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "moved-generation fixture watcher did not stay live"
+  printf 'done: first handled wake\n' > "$state/first.status"
+  wait_for_exit "$ARM_PID" 120 || fail "fixture watcher did not deliver its first wake"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/first-drain.out" \
+    2> "$dir/first-drain.err" || fail "first drain did not present the durable wake"
+  pair=$(drain_ack_pair "$dir/first-drain.err") \
+    || fail "first drain did not print a generation-bound acknowledgement command"
+  first_sequence=${pair%%$'\t'*}
+  first_generation=${pair##*$'\t'}
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$first_sequence" \
+    --recovery-generation "$first_generation" \
+    || fail "the first handled wake could not be acknowledged"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/second-arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "second fixture watcher did not stay live"
+  printf 'done: second wake in a newer recovery episode\n' > "$state/second.status"
+  wait_for_exit "$ARM_PID" 120 || fail "second fixture watcher did not deliver its wake"
+  second_generation=$(sed -n 's/^pending:downtime:\(.*\)$/\1/p' "$state/.watcher-down")
+  [ -n "$second_generation" ] || fail "a wake after acknowledgement did not open a recovery episode"
+  [ "$second_generation" != "$first_generation" ] \
+    || fail "an acknowledged episode kept its generation instead of opening a new one"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$first_sequence" \
+    --recovery-generation "$first_generation" 2> "$dir/stale-ack.err" \
+    || fail "a replayed old acknowledgement was rejected instead of degrading safely"
+  grep -F 're-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command' "$dir/stale-ack.err" >/dev/null \
+    || fail "the moved generation did not print the exact remedy: $(cat "$dir/stale-ack.err")"
+  grep "$(printf '\tsignal\tsecond.status\t')" "$state/.wake-queue" >/dev/null \
+    || fail "the old exact acknowledgement consumed a wake above its sequence"
+  [ "$(cat "$state/.watcher-down")" = "pending:downtime:$second_generation" ] \
+    || fail "the old exact acknowledgement retired the newer recovery episode"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through 999 \
+    --recovery-generation "$first_generation" 2> "$dir/stale-consume.err" \
+    || fail "a moved-generation acknowledgement refused sequence-bound consumption"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "a moved-generation acknowledgement left handled rows queued"
+  [ "$(cat "$state/.watcher-down")" = "pending:downtime:$second_generation" ] \
+    || fail "row consumption under a stale generation retired the pending episode"
+  grep -F 're-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command' "$dir/stale-consume.err" >/dev/null \
+    || fail "sequence-bound consumption omitted the exact remedy"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/redrain.out" \
+    2> "$dir/redrain.err" || fail "the remedy re-drain did not run"
+  pair=$(drain_ack_pair "$dir/redrain.err") \
+    || fail "the remedy re-drain did not print the newer acknowledgement command"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "${pair%%$'\t'*}" \
+    --recovery-generation "${pair##*$'\t'}" \
+    || fail "the newer recovery episode could not be acknowledged"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    acked:*) ;;
+    *) fail "following the printed remedy did not retire the newer recovery episode" ;;
+  esac
+  pass "watch-arm: moved generation consumes by sequence and names its self-healing remedy"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -379,3 +535,5 @@ test_attached_arm_rejects_a_close_receipt_from_another_identity
 test_rearm_resurfaces_decision_without_new_queue_row
 test_process_event_gets_first_refusal_before_rearm_resurface
 test_attached_arm_stays_live_through_a_declared_wait_absorb
+test_delayed_rearm_stop_acknowledgement_sequence_self_heals
+test_moved_generation_acknowledgement_is_self_healing

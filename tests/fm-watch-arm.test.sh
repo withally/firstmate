@@ -381,12 +381,55 @@ test_attached_arm_stays_live_through_a_declared_wait_absorb() {
   pass "watch-arm: a declared-wait absorb keeps the real attached arm alive (no synthetic turn); a genuine wake still exits it"
 }
 
-# Drive the reproduced Grok-facing sequence with real watcher and guard
-# processes: delayed downtime, rearm-resurface, blind Stop, close publication,
-# acknowledgement, then a live next arm.
-test_delayed_rearm_stop_acknowledgement_sequence_self_heals() {
-  local dir home state fakebin pair sequence generation stop_out stop_status=0
-  dir=$(make_case delayed-rearm-stop-acknowledgement)
+# A recovery marker can be the only residue of a benign watcher rotation.
+# Grok turns every tracked arm completion into a primary-model turn, so an empty
+# recovery resurface must keep the same arm blocking across several real watcher
+# polls while a later typed wake must still complete it.
+test_quiet_recovery_keeps_arm_live_until_an_actionable_wake() {
+  local dir home state fakebin
+  dir=$(make_case quiet-recovery-no-arm-exit)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "quiet-recovery arm did not stay live after start"
+
+  # Publish after the initial recovery check so this is a live recovery cycle,
+  # not merely startup with a pre-existing marker.
+  sleep 0.5
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_recovery_transition "$2" publish downtime' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down" \
+    || fail "quiet recovery publication failed"
+
+  # Three poll budgets are the quiet stretch. The tracked arm itself must not
+  # complete, print a recovery reason, or publish a cycle-close row.
+  sleep 3
+  is_live_non_zombie "$ARM_PID" \
+    || fail "quiet rearm-resurface completed the tracked arm: $(cat "$dir/arm.out")"
+  grep -Fx 'check: rearm-resurface' "$dir/arm.out" >/dev/null \
+    && fail "quiet recovery leaked an actionable reason into arm output"
+  [ ! -s "$state/.watch-cycle-exits.log" ] \
+    || fail "quiet recovery published an arm-completion lifecycle row: $(cat "$state/.watch-cycle-exits.log")"
+
+  # Positive control: the same live waiter must still deliver genuine work.
+  printf 'done: actionable after quiet recovery\n' > "$state/demo.status"
+  wait_for_exit "$ARM_PID" 120 \
+    || fail "quiet-recovery arm did not complete for a genuine wake: $(cat "$dir/arm.out")"
+  grep -q '^signal:' "$dir/arm.out" \
+    || fail "quiet-recovery arm did not report the genuine wake: $(cat "$dir/arm.out")"
+  grep -q 'reason=actionable-signal' "$state/.watch-cycle-exits.log" \
+    || fail "genuine wake after quiet recovery was not classified in the lifecycle ledger"
+  pass "watch-arm: quiet recovery spends no arm completion while a later genuine wake still completes"
+}
+
+# Drive the recovery contract through a quiet delayed downtime, the next real
+# actionable wake, generation-stable acknowledgement, and a live successor arm.
+test_delayed_rearm_actionable_acknowledgement_sequence_self_heals() {
+  local dir home state fakebin pair sequence generation
+  dir=$(make_case delayed-rearm-actionable-acknowledgement)
   home="$dir/home"
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -394,7 +437,6 @@ test_delayed_rearm_stop_acknowledgement_sequence_self_heals() {
   git init -q "$home"
   : > "$home/AGENTS.md"
   ln -s "$ROOT/bin" "$home/bin"
-  printf 'window=test:demo\nkind=ship\nharness=grok\n' > "$state/demo.meta"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/rearm.out"
   is_live_non_zombie "$ARM_PID" || fail "delayed-recovery watcher did not stay live after start"
@@ -408,29 +450,27 @@ test_delayed_rearm_stop_acknowledgement_sequence_self_heals() {
     '. "$1"; fm_recovery_transition "$2" publish downtime' _ \
     "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down" \
     || fail "delayed downtime publication failed"
-  wait_for_exit "$ARM_PID" 120 || fail "delayed downtime did not close the watcher arm"
-  grep -Fx 'check: rearm-resurface' "$dir/rearm.out" >/dev/null \
-    || fail "delayed downtime did not produce rearm-resurface: $(cat "$dir/rearm.out")"
-  [ ! -e "$state/.watch.lock" ] \
-    || fail "rearm-resurface left a watcher holding the lock before Stop"
+  sleep 3
+  is_live_non_zombie "$ARM_PID" \
+    || fail "delayed quiet recovery completed the watcher arm: $(cat "$dir/rearm.out")"
+  [ -e "$state/.watch.lock" ] \
+    || fail "delayed quiet recovery dropped the live watcher lock"
+  ! grep -Fx 'check: rearm-resurface' "$dir/rearm.out" >/dev/null \
+    || fail "delayed quiet recovery surfaced a no-work reason"
 
-  sleep 1
-  stop_out=$(printf '%s' '{"sessionId":"timed","stopHookActive":false}' | \
-    PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
-    FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=0 GROK_WORKSPACE_ROOT="$home" \
-    "$home/bin/fm-turnend-guard-grok.sh" 2>&1) || stop_status=$?
-  [ "$stop_status" -eq 2 ] \
-    || fail "no-watcher native Stop did not return its bounded continuation status: $stop_out"
-  printf '%s\n' "$stop_out" | grep -F 'TURN WOULD END BLIND' >/dev/null \
-    || fail "no-watcher native Stop omitted the blind-turn diagnostic: $stop_out"
+  printf 'done: recovery now has actionable work\n' > "$state/demo.status"
+  wait_for_exit "$ARM_PID" 120 \
+    || fail "delayed recovery did not deliver the later actionable wake"
+  grep -q '^signal:' "$dir/rearm.out" \
+    || fail "delayed recovery lost the later actionable reason: $(cat "$dir/rearm.out")"
 
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
-    || fail "rearm-resurface recovery drain failed"
+    || fail "actionable recovery drain failed"
   pair=$(drain_ack_pair "$dir/drain.err") \
     || fail "drain did not print a generation-bound acknowledgement command"
   sequence=${pair%%$'\t'*}
   generation=${pair##*$'\t'}
-  [ "$sequence" = 0 ] || fail "empty-row rearm-resurface recovery printed a nonzero acknowledgement"
+  [ "$sequence" -gt 0 ] || fail "actionable recovery omitted its durable wake sequence"
 
   # Drive the normal close-publication primitive after the command was printed.
   # Its pending generation must survive, making that exact command usable.
@@ -457,7 +497,7 @@ test_delayed_rearm_stop_acknowledgement_sequence_self_heals() {
   wait_for_exit "$ARM_PID" 120 || fail "the live watcher did not surface a later wake"
   grep -q '^signal:' "$dir/next-arm.out" \
     || fail "the watcher never reached real supervision work: $(cat "$dir/next-arm.out")"
-  pass "watch-arm: delayed rearm, blind Stop, close publication, acknowledgement, and next arm self-heal"
+  pass "watch-arm: delayed quiet recovery, actionable delivery, acknowledgement, and next arm self-heal"
 }
 
 # Replay an acknowledgement from a retired episode against a newer real
@@ -535,5 +575,6 @@ test_attached_arm_rejects_a_close_receipt_from_another_identity
 test_rearm_resurfaces_decision_without_new_queue_row
 test_process_event_gets_first_refusal_before_rearm_resurface
 test_attached_arm_stays_live_through_a_declared_wait_absorb
-test_delayed_rearm_stop_acknowledgement_sequence_self_heals
+test_quiet_recovery_keeps_arm_live_until_an_actionable_wake
+test_delayed_rearm_actionable_acknowledgement_sequence_self_heals
 test_moved_generation_acknowledgement_is_self_healing

@@ -3,8 +3,8 @@
 # lifecycle, end to end, over one shared state root and a shimmed tmux:
 #
 #   routine status -> absorbed by the fork's conservative AFK triage
-#   terminal status written while the watcher is DOWN -> recovery resurfaces,
-#   then the terminal is caught on the next watcher cycle
+#   terminal status written while the watcher is DOWN -> empty recovery stays
+#   inside the waiter and the terminal is caught in that same watcher cycle
 #   drain queued records -> exactly ONE captain-relevant digest is buffered
 #   housekeeping catch-all scan -> NO duplicate digest
 #   buffered digest flushes to the supervisor pane as exactly ONE submission
@@ -86,28 +86,17 @@ test_routine_then_terminal_after_restart() {
   [ ! -s "$state/.wake-queue" ] || fail "absorbed routine signal was queued for the daemon"
 
   # Simulate an interrupted watcher stretch, then land an actionable event while
-  # it is down. Recovery must surface first even though it did not originate from
-  # a newly observed status row.
+  # it is down. Empty recovery must stay inside the same waiter, whose ordinary
+  # signal scan then surfaces the terminal row without a no-work handoff.
   kill "$WATCHER_PID" 2>/dev/null || true
   wait "$WATCHER_PID" 2>/dev/null || true
 
   printf 'done: PR https://example.test/pr/900\n' >> "$status_file"
   : > "$out"
-  run_watcher_once "$state" "$fakebin" "$out" || fail "restarted watcher did not exit for recovery"
-  grep -F 'check: rearm-resurface' "$out" >/dev/null \
-    || fail "watcher downtime did not surface recovery before normal polling"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$drain_err" \
-    || fail "drain after recovery wake failed"
-  FM_STATE_OVERRIDE="$state" handle_wake 'check: rearm-resurface' "$state"
-  ack_handled_wakes "$state" "$drain_err" || fail "recovery wake acknowledgement failed"
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
-    || fail "recovery wake was not routed exactly once by the AFK daemon"
-  : > "$state/.subsuper-escalations"
-
-  # Once recovery handling is acknowledged, the next cycle catches the terminal
-  # status that landed during the down stretch.
-  : > "$out"
-  run_watcher_once "$state" "$fakebin" "$out" || fail "successor watcher did not exit for the terminal signal"
+  run_watcher_once "$state" "$fakebin" "$out" \
+    || fail "restarted watcher did not exit for the terminal signal"
+  ! grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "empty downtime recovery produced a separate daemon handoff"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "terminal signal written while watcher down was not caught on restart"
 
   # Drain and route the terminal: exactly ONE digest is buffered.

@@ -99,6 +99,9 @@
 #                          and has not been surfaced yet; reported once per
 #                          captured generation, never again while that record
 #                          stays queued and never once it is acknowledged
+#   check: rearm-resurface  an accepted recovery episode has an unacknowledged
+#                          queue row or open decision; an empty episode remains
+#                          pending inside the same live watcher without printing
 #   check: rejected unauthenticated state checks: <paths>
 #                          unsafe state checks were refused without execution
 #   check: rejected unauthenticated PR poll retirement receipts: <paths>
@@ -982,6 +985,7 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
 fi
 
 resurface_after_downtime() {
+  local open
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
     if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
       echo "watcher: recovery state could not be consumed safely" >&2
@@ -989,6 +993,16 @@ resurface_after_downtime() {
     fi
     [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
   fi
+  # `check: rearm-resurface` used to close every recovery watcher even when the
+  # durable queue and folded decision set were both empty. On Grok that no-work
+  # arm exit creates a task_completed primary turn before Firstmate can classify
+  # it. Keep the existing recovery generation pending and let this same watcher
+  # continue its ordinary scans; a later durable wake will carry the generation
+  # to the handling turn. An open decision remains actionable even with no queue
+  # row, preserving decision-only recovery.
+  [ -s "$FM_WAKE_QUEUE" ] && wake "check: rearm-resurface"
+  open=$(scan_open_decisions "$STATE") || wake "check: rearm-resurface"
+  [ -n "$open" ] || return 0
   wake "check: rearm-resurface"
 }
 

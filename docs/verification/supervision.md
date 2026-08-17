@@ -203,7 +203,7 @@ Session-lock ownership in `bin/fm-session-lock-lib.sh` is decided against a sess
 Harness identity is read from the executable path and `argv[0]` as well as the command basename, because Claude Code's native installer names the per-session executable by its version (`.../share/claude/versions/2.1.220`): `ps -o comm=` reports that path on macOS and the bare version string on Linux, and neither basename names a harness.
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
 `tests/fm-watch-arm.test.sh` runs real watcher and arm cycles against durable on-disk state to verify that a delivered reason survives until post-handling acknowledgement and stops replaying after acknowledgement, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
-The same suite also covers decision-only recovery that resurfaces the folded open-decision set without inventing a queue row, process-event delivery taking first refusal ahead of the generic `check: rearm-resurface`, the real delayed-downtime path through blind native Grok Stop and a live next arm, and non-fatal moved-generation acknowledgement with sequence-bounded consumption.
+The same suite also covers decision-only recovery that resurfaces the folded open-decision set without inventing a queue row, process-event delivery taking first refusal ahead of the generic `check: rearm-resurface`, a real delayed empty-recovery stretch that retains the live arm until later actionable work, and non-fatal moved-generation acknowledgement with sequence-bounded consumption.
 `tests/fm-wake-queue.test.sh` owns the durable-queue half: interrupted presentation replaying exactly once, a moved recovery generation consuming only sequence-bound handled work while preserving the newer episode, current-format upgrade adoption, and malformed-row quarantine that still finalizes through an empty-queue acknowledgement.
 `tests/fm-inactive-reconcile.test.sh` proves inactive-outcome receipts still close before their rows are consumed, missing receipts still fail closed without row loss, and a generation move during receipt closure preserves the replacement episode for the printed remedy.
 `tests/fm-watch-triage.test.sh` proves the successor re-presents an unacknowledged process-event result and then stays live once handling is acknowledged.
@@ -307,7 +307,19 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | Codex | `FM_CODEX_LIVE_E2E=1 tests/fm-codex-continuity-live-e2e.test.sh` | The one-second foreground checkpoint returned without switching to the arm wrapper. |
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
 | Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
-| Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
+| Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Empty delayed recovery produced no task completion and no primary turn; a later actionable close still completed natively and recorded `reason=actionable-signal`. |
+
+Grok 1.0.4 repeated the continuity path on 2026-08-17 with the real interactive TUI, tracked background task, isolated home, and stored chat history.
+
+```sh
+FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - grok 1.0.4 (d846eb93d94d) live E2E kept quiet recovery completion-free and turn-free while preserving actionable completion
+```
 
 Grok 1.0.4 also verified same-turn consumption of an auto-backgrounded wake drain on 2026-08-17.
 The returned tool result retained the real wake row and `WAKE_ACK_REQUIRED` instruction, while the stored chat contained zero `synthetic_reason: task_completed` user prompts.

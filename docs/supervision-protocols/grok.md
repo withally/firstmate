@@ -19,11 +19,14 @@ When this session owns supervision and away mode is not active:
 7. After a successful start or attach status, end the turn.
    The background arm remains the live wait until it returns an actionable wake or failure.
 8. Waiting is silent.
+   An empty recovery episode and an identity-matched successor rotation remain inside that same tracked arm and create no completion prompt or primary turn.
+   `check: rearm-resurface` completes the arm only when an unacknowledged queue row or open decision requires handling.
 9. Never use shell `&` for firstmate supervision.
 10. Never bundle the arm onto another command.
     A shell `&`, a truncating pipe, or bundling is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`) whenever this project's Grok hooks are trusted.
 
 Grok injects a synthetic user message with `synthetic_reason: task_completed` when the background arm completes.
+Quiet recovery and successor continuity do not complete it.
 When you see a background-task-completed system reminder for the arm:
 1. Run `bin/fm-wake-drain.sh` first.
 2. Optionally fetch arm output with `get_command_or_subagent_output(<task_id>)` for the reason line.

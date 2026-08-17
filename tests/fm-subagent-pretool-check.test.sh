@@ -41,6 +41,11 @@ PLAN_ONLY_TOOLS='TaskCreate TaskUpdate'
 # assumed.
 PLAN_ONLY_NEAR_MISSES='TaskCreateAgent TaskCreateWorktree TaskUpdateAgent RemoteTaskCreate Task TaskCreator'
 
+# Grok's exact observe-only waiter must remain available so an
+# auto-backgrounded command can be consumed before its initiating turn ends.
+GROK_OUTPUT_TOOL='get_command_or_subagent_output'
+GROK_OUTPUT_NEAR_MISSES='get_command_or_subagent_output_agent get_command_or_subagent_outputs get_subagent_output command_or_subagent_output'
+
 run_tool() {
   local tool=$1 rc=0
   shift
@@ -110,6 +115,15 @@ test_guard_allows_ordinary_and_observe_only_tools() {
     expect_allow "observe-or-stop tool" "$tool"
   done
   pass "the guard leaves ordinary tools and observe-or-stop operations alone"
+}
+
+test_guard_allows_exact_grok_output_waiter_only() {
+  local tool
+  expect_allow "exact Grok output waiter" "$GROK_OUTPUT_TOOL"
+  for tool in $GROK_OUTPUT_NEAR_MISSES; do
+    expect_deny "Grok output waiter near miss" "$tool"
+  done
+  pass "the guard releases only Grok's exact observe-only output waiter"
 }
 
 test_guard_allows_session_local_todo_tools() {
@@ -279,6 +293,7 @@ test_missing_jq_stdin_transport_fails_open() {
 test_guard_denies_every_currently_known_delegation_tool
 test_guard_denies_hypothetical_future_tools
 test_guard_allows_ordinary_and_observe_only_tools
+test_guard_allows_exact_grok_output_waiter_only
 test_guard_allows_session_local_todo_tools
 test_plan_only_exclusion_is_exact_name
 test_guard_never_classifies_mcp_tools

@@ -2,6 +2,9 @@ Mode: Grok background-notify supervision.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
+   If Grok automatically moves that drain to the background, do not end the same initiating turn.
+   Immediately call `get_command_or_subagent_output(<task_id>, timeout_ms=30000)` for that exact drain task and wait for it to complete.
+   Treat the returned output as the drain's real output: handle every emitted wake and preserve its `WAKE_ACK_REQUIRED` instruction.
    After handling all emitted wakes and reconciling open decisions, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
 2. Source `__FM_X_MODE_ENV__` first when X mode is active.
 3. First cycle: arm with Grok's tracked background tool, as its own call:

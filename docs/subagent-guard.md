@@ -51,8 +51,9 @@ Three exclusions keep the shape test from producing false positives.
 
 - A name beginning `mcp__` is never classified.
   An MCP server chooses its own tool names, a task or agent noun there is common, and it has no bearing on fleet dispatch.
-- `OBSERVE_ONLY_TOOLS`: the exact names `taskoutput`, `taskstop`, `taskget`, `tasklist`, `cronlist`, `bashoutput`, and `killshell` are allowed.
+- `OBSERVE_ONLY_TOOLS`: the exact names `taskoutput`, `taskstop`, `taskget`, `tasklist`, `cronlist`, `bashoutput`, `killshell`, and `getcommandorsubagentoutput` are allowed.
   These observe or stop work that already exists rather than creating it, and denying them at this layer could strand already-running work with no way to inspect or end it.
+  `getcommandorsubagentoutput` is Grok's observe-only fetch for an already-running command or subagent (see `docs/supervision-protocols/grok.md`); allowing exactly this normalized name lets the Grok primary consume an auto-backgrounded `bin/fm-wake-drain.sh` in its initiating turn while genuine delegation-shaped names and near misses stay denied.
   A Claude primary's optional local deny list may still remove them from the schema.
   The shipped guard stays narrower on purpose so it can never be the reason a runaway task cannot be stopped.
 - `PLAN_ONLY_TOOLS`: the exact names `taskcreate` and `taskupdate` are allowed.

@@ -1,10 +1,29 @@
 name: CI
 
+# A no-mistakes PR arrives as a rapid push + open + amend/force-push (and
+# sometimes an automated close/reopen) sequence, and GitHub intermittently
+# creates zero workflow runs for the pull_request `opened` and `reopened`
+# events in that flow - the drop hits every pull_request-triggered workflow
+# equally, so only the git push that raises `synchronize` fires reliably.
+# Trigger CI on the working-branch push too so every head is validated by that
+# reliable push webhook, independent of opened/reopened delivery. The `main`
+# push trigger keeps validating every landed commit.
+# See docs/verification/ci-trigger.md.
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'fm/**'
   pull_request:
     branches: [main]
+
+# Collapse the push run and the pull_request run for the same feature-branch
+# head into one run (no double-run), and supersede an in-flight feature-branch
+# run when a newer commit is pushed. `main` pushes get a unique per-commit group
+# so every landed commit is still validated on its own, exactly as before.
+concurrency:
+  group: "ci-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && github.sha || github.head_ref || github.ref_name }}"
+  cancel-in-progress: true
 
 permissions:
   contents: read

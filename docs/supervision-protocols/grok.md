@@ -14,7 +14,9 @@ When this session owns supervision and away mode is not active:
 
 4. Trust only the arm's one-line status.
 5. `watcher: started ...` or `watcher: attached ...` means a live cycle exists.
-   On attach, the background task follows verified identity-matched successors instead of exiting when the first cycle ends.
+   `watcher: attached ...` is recovery when no identity-matched tracked arm owner is known for the live watcher; it is not permission to stack another waiter.
+   On attach, that recovery owner follows verified identity-matched successors instead of exiting when the first cycle ends.
+   `watcher: owner verified ... (duplicate returned)` means another identity-matched tracked arm already owns this home's wait, so this duplicate is finished and must not drain, re-arm, or invent work.
 6. Failure or missing cycle only: `watcher: FAILED ...` means supervision is down; fix and re-arm.
 7. After a successful start or attach status, end the turn.
    The background arm remains the live wait until it returns an actionable wake or failure.
@@ -24,6 +26,7 @@ When this session owns supervision and away mode is not active:
 9. Never use shell `&` for firstmate supervision.
 10. Never bundle the arm onto another command.
     A shell `&`, a truncating pipe, or bundling is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`) whenever this project's Grok hooks are trusted.
+11. Never intentionally start another arm while an identity-matched tracked arm is known live.
 
 Grok injects a synthetic user message with `synthetic_reason: task_completed` when the background arm completes.
 Quiet recovery and successor continuity do not complete it.
@@ -31,10 +34,11 @@ When you see a background-task-completed system reminder for the arm:
 1. Run `bin/fm-wake-drain.sh` first.
 2. Optionally fetch arm output with `get_command_or_subagent_output(<task_id>)` for the reason line.
 3. Handle `signal`, `stale`, `check`, or `heartbeat` using the harness-neutral contract in `AGENTS.md`.
-4. Ordinary wake: re-arm the next cycle with the same background `bin/fm-watch-arm.sh` call if work remains in flight or X mode still needs polling.
+4. Ordinary actionable close: say “the watcher delivered work; restoring the next cycle,” then re-arm with the same background `bin/fm-watch-arm.sh` call if work remains in flight or X mode still needs polling.
+   Reserve “supervision dropped” for `watcher: FAILED`, an unexplained close, or a guard finding with no typed actionable predecessor.
 5. Do not invent a wake from an attach-status line alone.
    Drain the queue and act only on real wake records, the drain's `OPEN DECISIONS` entries, or a real watcher reason line.
-   Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
+   Re-arm attaches only when a healthy watcher has no known identity-matched tracked arm owner, then follows its verified successor chain.
    See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close contract.
 
 The primary project Stop hook runs `bin/fm-turnend-guard-grok.sh` as a backstop, not the normal wake path.

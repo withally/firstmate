@@ -28,6 +28,8 @@
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
+#   watcher: owner verified pid=<N> (duplicate returned) - a separate identity-matched arm owns
+#                                                          this home's tracked wait
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
@@ -46,8 +48,8 @@
 # delivery reports that wake and exits 0; an actionable receipt proves the cycle
 # delivered its wake on its own stdout and silently continues with a new cycle;
 # only a cycle that proves none of them is the typed nonzero failure. On FAILED
-# it exits non-zero so the failure is loud. A live cycle already present means re-arm attaches - do not
-# start a second watcher.
+# it exits non-zero so the failure is loud. A live cycle with no verified arm
+# owner means recovery attaches; a duplicate behind a verified owner returns.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -88,9 +90,122 @@ CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
+ARM_OWNER_RECORD="$STATE/.watch-arm-owner"
+ARM_OWNER_LOCK="$STATE/.watch-arm-owner.lock"
 ARM_PID=${BASHPID:-$$}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
+
+# The owner record chooses exactly one harness-tracked waiter for this home.
+# Its lock is held only while reading or replacing the record; the long-lived
+# ownership proof is the recorded pid plus its process identity and FM_HOME.
+# A crashed owner therefore leaves only stale evidence that the next arm can
+# replace, while a duplicate can prove a live owner and return immediately.
+ARM_OWNER_PID=
+ARM_OWNER_IDENTITY=
+ARM_OWNER_HOME=
+ARM_OWNER_OWNED=0
+
+arm_owner_read() {
+  local line key value
+  ARM_OWNER_PID=
+  ARM_OWNER_IDENTITY=
+  ARM_OWNER_HOME=
+  [ -f "$ARM_OWNER_RECORD" ] || return 0
+  while IFS= read -r line; do
+    key=${line%%=*}
+    [ "$key" != "$line" ] || continue
+    value=${line#*=}
+    case "$key" in
+      pid) ARM_OWNER_PID=$value ;;
+      identity) ARM_OWNER_IDENTITY=$value ;;
+      home) ARM_OWNER_HOME=$value ;;
+    esac
+  done < "$ARM_OWNER_RECORD"
+}
+
+arm_owner_lock_acquire() {
+  local i=0
+  while ! fm_lock_try_acquire "$ARM_OWNER_LOCK"; do
+    [ "$i" -lt 100 ] || return 1
+    sleep 0.02
+    i=$((i + 1))
+  done
+}
+
+arm_owner_write_current() {
+  local identity tmp
+  identity=$(fm_pid_identity "$ARM_PID") || return 1
+  identity=$(printf '%s' "$identity" | tr '\r\n' '  ')
+  tmp=$(mktemp "$STATE/.watch-arm-owner.tmp.XXXXXX") || return 1
+  if ! printf 'pid=%s\nidentity=%s\nhome=%s\n' "$ARM_PID" "$identity" "$FM_HOME" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f "$tmp" "$ARM_OWNER_RECORD"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  ARM_OWNER_PID=$ARM_PID
+  ARM_OWNER_IDENTITY=$identity
+  ARM_OWNER_HOME=$FM_HOME
+  ARM_OWNER_OWNED=1
+}
+
+arm_owner_claim() {
+  local current_identity
+  if ! arm_owner_lock_acquire; then
+    echo "watcher: FAILED - arm owner state could not be serialized"
+    return 1
+  fi
+  arm_owner_read
+  if [ "$ARM_OWNER_PID" = "$ARM_PID" ] && [ "$ARM_OWNER_HOME" = "$FM_HOME" ]; then
+    if ! arm_owner_write_current; then
+      fm_lock_release "$ARM_OWNER_LOCK"
+      echo "watcher: FAILED - arm owner identity could not be published"
+      return 1
+    fi
+    fm_lock_release "$ARM_OWNER_LOCK"
+    return 0
+  fi
+  if fm_pid_alive "$ARM_OWNER_PID" && [ -n "$ARM_OWNER_IDENTITY" ]; then
+    current_identity=$(fm_pid_identity "$ARM_OWNER_PID" 2>/dev/null || true)
+    current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
+    if [ -n "$current_identity" ] && [ "$current_identity" = "$ARM_OWNER_IDENTITY" ]; then
+      if [ "$ARM_OWNER_HOME" != "$FM_HOME" ]; then
+        fm_lock_release "$ARM_OWNER_LOCK"
+        echo "watcher: FAILED - live arm owner belongs to another home"
+        return 1
+      fi
+      fm_lock_release "$ARM_OWNER_LOCK"
+      echo "watcher: owner verified pid=$ARM_OWNER_PID (duplicate returned)"
+      return 10
+    fi
+  fi
+  if ! arm_owner_write_current; then
+    fm_lock_release "$ARM_OWNER_LOCK"
+    echo "watcher: FAILED - arm owner identity could not be published"
+    return 1
+  fi
+  fm_lock_release "$ARM_OWNER_LOCK"
+  return 0
+}
+
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+arm_owner_release() {
+  local current_identity
+  [ "$ARM_OWNER_OWNED" -eq 1 ] || return 0
+  arm_owner_lock_acquire || return 0
+  arm_owner_read
+  current_identity=$(fm_pid_identity "$ARM_PID" 2>/dev/null || true)
+  current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
+  if [ "$ARM_OWNER_PID" = "$ARM_PID" ] \
+    && [ -n "$current_identity" ] \
+    && [ "$ARM_OWNER_IDENTITY" = "$current_identity" ] \
+    && [ "$ARM_OWNER_HOME" = "$FM_HOME" ]; then
+    rm -f "$ARM_OWNER_RECORD" 2>/dev/null || true
+  fi
+  fm_lock_release "$ARM_OWNER_LOCK"
+  ARM_OWNER_OWNED=0
+}
 
 # The lifecycle ledger is diagnostic evidence, not a supervision dependency.
 # Writes are bounded and best-effort so an observability failure cannot stall an
@@ -474,6 +589,14 @@ if [ "$mode" = handling-delivered ]; then
     && fm_recovery_marker_begin_handling "$STATE/.watcher-down" "$handling_generation"
   exit $?
 fi
+
+arm_owner_status=0
+arm_owner_claim || arm_owner_status=$?
+case "$arm_owner_status" in
+  0) trap 'arm_owner_release' EXIT ;;
+  10) exit 0 ;;
+  *) exit "$arm_owner_status" ;;
+esac
 
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.

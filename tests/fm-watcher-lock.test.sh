@@ -654,15 +654,16 @@ test_arm_all_absorbed_clean_close_rearms_without_failure() {
   pass "all-absorbed clean close silently re-arms and the successor's actionable close stays unchanged"
 }
 
-test_attached_arm_reports_actionable_close_without_false_failure() {
-  local dir state fakebin owner_out attached_out owner_arm attached_arm watcher_pid owner_status attached_status i
-  dir=$(make_case attached-observes-actionable-close)
+test_duplicate_arm_returns_to_owner_and_preserves_one_actionable_completion() {
+  local dir state fakebin owner_out duplicate_out successor_out owner_arm duplicate_arm successor_arm watcher_pid successor_pid owner_status duplicate_status sequence generation signal_count i
+  dir=$(make_case duplicate-arm-single-owner-actionable)
   state="$dir/state"
   fakebin="$dir/fakebin"
   owner_out="$dir/owner.out"
-  attached_out="$dir/attached.out"
+  duplicate_out="$dir/duplicate.out"
+  successor_out="$dir/successor.out"
   mark_pr_check_migration_complete "$state"
-  printf 'project=test\nwindow=test:fm-attached-actionable\nkind=ship\nharness=claude\nbackend=tmux\n' > "$state/task.meta"
+  printf 'project=test\nwindow=test:fm-single-owner-actionable\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
   printf 'working: routine progress\n' > "$state/task.status"
 
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
@@ -674,32 +675,121 @@ test_attached_arm_reports_actionable_close_without_false_failure() {
     i=$((i + 1))
   done
   watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$watcher_pid" "$owner_out" || fail "owner arm did not start before attached-actionable check"
+  grep -qF "watcher: started pid=$watcher_pid" "$owner_out" || fail "owner arm did not start before duplicate-arm check"
 
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$attached_out" &
-  attached_arm=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF "watcher: attached pid=$watcher_pid" "$attached_out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -qF "watcher: attached pid=$watcher_pid" "$attached_out" || fail "second arm did not attach to the owner cycle"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$duplicate_out" &
+  duplicate_arm=$!
+  duplicate_status=0
+  wait_for_exit "$duplicate_arm" 20 || duplicate_status=$?
+  [ "$duplicate_status" -eq 0 ] || fail "duplicate arm did not return promptly after verifying owner (status $duplicate_status): $(cat "$duplicate_out")"
+  grep -qF "watcher: owner verified pid=$owner_arm (duplicate returned)" "$duplicate_out" \
+    || fail "duplicate arm did not report the identity-verified owner: $(cat "$duplicate_out")"
+  ! grep -Eq '^(signal:|stale:|check:|heartbeat)' "$duplicate_out" \
+    || fail "duplicate arm invented actionable work before the owner cycle completed"
 
   printf 'done: first actionable close\n' > "$state/task.status"
   owner_status=0
   wait_for_exit "$owner_arm" 80 || owner_status=$?
   [ "$owner_status" -eq 0 ] || fail "owner actionable arm exited $owner_status"
   grep -q '^signal:' "$owner_out" || fail "owner arm lost the actionable close reason"
+  [ ! -e "$state/.watch-arm-owner" ] || fail "completed owner left a live ownership record behind"
+  signal_count=$(cat "$owner_out" "$duplicate_out" | grep -c '^signal:' || true)
+  [ "$signal_count" -eq 1 ] || fail "one watcher lifecycle produced $signal_count actionable arm completions"
 
-  attached_status=0
-  wait_for_exit "$attached_arm" 80 || attached_status=$?
-  [ "$attached_status" -eq 0 ] || fail "attached arm exited $attached_status after its watcher delivered an actionable wake"
-  ! grep -qF 'watcher: FAILED' "$attached_out" || fail "attached arm emitted the false reasonless-dead failure"
-  grep -q '^signal:' "$attached_out" || fail "attached arm did not report the identity-bound delivered wake"
-  grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
-    || fail "attached arm did not record the upstream delivered-wake classification"
-  pass "an attached arm reports its watcher's identity-bound delivered wake without a false failure"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
+    || fail "single-owner actionable drain failed"
+  signal_count=$(grep -c "$(printf '\tsignal\t')" "$dir/drain.out" || true)
+  [ "$signal_count" -eq 1 ] || fail "single-owner cycle produced $signal_count durable signal rows"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "single-owner drain omitted its acknowledgement boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "single-owner actionable acknowledgement failed"
+  [ ! -s "$state/.wake-queue" ] || fail "single-owner acknowledgement left the actionable row queued"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$successor_out" &
+  successor_arm=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$successor_out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  successor_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$successor_pid" "$successor_out" \
+    || fail "successor arm did not establish the next watcher cycle"
+  [ "$successor_pid" != "$watcher_pid" ] || fail "successor arm reused the completed watcher cycle"
+  fm_test_terminate_or_fail "$successor_arm" "single-owner successor arm cleanup"
+  pass "duplicate arm returns to one owner; one signal, one completion, one drain/ack, and one successor remain"
+}
+
+test_duplicate_arm_does_not_silence_owner_cycle_death() {
+  local dir state fakebin owner_out duplicate_out owner_arm duplicate_arm watcher_pid owner_status duplicate_status i
+  dir=$(make_case duplicate-arm-owner-death)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  owner_out="$dir/owner.out"
+  duplicate_out="$dir/duplicate.out"
+  mark_pr_check_migration_complete "$state"
+  printf 'project=test\nwindow=test:fm-single-owner-death\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
+  printf 'working: routine progress\n' > "$state/task.status"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
+  owner_arm=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$owner_out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$watcher_pid" "$owner_out" || fail "owner arm did not start before owner-death check"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$duplicate_out" &
+  duplicate_arm=$!
+  duplicate_status=0
+  wait_for_exit "$duplicate_arm" 20 || duplicate_status=$?
+  [ "$duplicate_status" -eq 0 ] || fail "owner-death duplicate did not return promptly (status $duplicate_status): $(cat "$duplicate_out")"
+  grep -qF "watcher: owner verified pid=$owner_arm (duplicate returned)" "$duplicate_out" \
+    || fail "owner-death duplicate did not verify the live owner"
+
+  kill -KILL "$watcher_pid" 2>/dev/null || fail "could not kill the owned watcher cycle"
+  owner_status=0
+  wait_for_exit "$owner_arm" 80 || owner_status=$?
+  [ "$owner_status" -ne 0 ] && [ "$owner_status" -ne 124 ] \
+    || fail "owned watcher death was not a loud nonzero completion (status $owner_status)"
+  grep -q '^watcher: FAILED' "$owner_out" \
+    || fail "owned watcher death omitted the typed FAILED result: $(cat "$owner_out")"
+  [ ! -e "$state/.watch-arm-owner" ] || fail "failed owner cycle left a live ownership record behind"
+  ! grep -Eq '^(signal:|stale:|check:|heartbeat)' "$duplicate_out" \
+    || fail "duplicate ownership check absorbed or invented work during owner death"
+  pass "a verified duplicate returns, while an unexplained owned watcher death stays loud"
+}
+
+test_arm_owner_rejects_a_reused_pid_identity() {
+  local dir state fakebin armout armpid watcher_pid i
+  dir=$(make_case arm-owner-reused-pid)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mark_pr_check_migration_complete "$state"
+  printf 'pid=%s\nidentity=%s\nhome=%s\n' "$$" 'not-this-process' "$ROOT" > "$state/.watch-arm-owner"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$watcher_pid" "$armout" \
+    || fail "a reused owner pid was accepted without its recorded identity: $(cat "$armout")"
+  ! grep -qF "watcher: owner verified pid=$$" "$armout" \
+    || fail "a live reused pid was mistaken for the identity-bound arm owner"
+  fm_test_terminate_or_fail "$armpid" "reused owner-pid arm cleanup"
+  pass "arm ownership rejects a live pid whose recorded process identity does not match"
 }
 
 test_arm_attaches_and_waits_for_live_fresh_watcher() {
@@ -1250,7 +1340,9 @@ test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_arm_all_absorbed_clean_close_rearms_without_failure
-test_attached_arm_reports_actionable_close_without_false_failure
+test_duplicate_arm_returns_to_owner_and_preserves_one_actionable_completion
+test_duplicate_arm_does_not_silence_owner_cycle_death
+test_arm_owner_rejects_a_reused_pid_identity
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals

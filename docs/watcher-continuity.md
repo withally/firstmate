@@ -66,10 +66,14 @@ An acknowledged episode does not freeze the generation, because the next downtim
 ## Arm-layer cycle contract
 
 `bin/fm-watch-arm.sh` never returns a clean empty success while supervision is still needed.
+One identity-bound owner record at `state/.watch-arm-owner` names the harness-tracked arm waiter for the home.
+A duplicate invocation verifies that live owner under the short owner-record lock, reports `watcher: owner verified ... (duplicate returned)`, and returns promptly without following the same watcher cycle.
+A stale or PID-reused owner record cannot satisfy the process-identity check and is replaced by the next arm.
 An actionable child output returns that reason normally.
 A child that observes an empty recovery episode keeps blocking, so the same Grok-tracked arm remains alive without a completion prompt or lifecycle close row.
 A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, silently relaunches after a matching PID-identity-bound clean-close receipt, or resolves the close against the watcher's bounded terminal-delivery ledger.
-An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
+An arm attaches only as recovery when a healthy watcher has no identity-matched tracked arm owner.
+That recovery owner follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 Before releasing its singleton lock after printing an actionable reason, the watcher records that reason with its PID and process identity in `state/.watch-deliveries.log`.
 A matching PID and identity lets an attached arm report the delivered reason and exit zero even after its durable wake was handled and acknowledged, while an unrelated queue producer or a recycled PID cannot satisfy the match.
 That ledger append is best-effort and gives up silently under lock contention, so a cycle with no matching record falls back to the watcher's PID-identity-bound `kind=actionable` close receipt, which proves the cycle printed and delivered its wake on its own stdout.
@@ -92,7 +96,8 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 It also covers the Pi away-mode hand-off in the Ownership section, while `FM_AFK_PI_DUAL_SUPERVISION_E2E=1 tests/fm-afk-pi-dual-supervision-e2e.test.sh` exercises that contract with a real Pi primary and away supervisor.
 `tests/fm-watch-arm.test.sh` covers a real delayed empty-recovery stretch that leaves the tracked arm and watcher live, a later actionable wake, close-publication-safe acknowledgement, and a live next arm, plus decision-only `rearm-resurface` and self-healing moved-generation acknowledgement with sequence-bounded consumption and the exact re-drain remedy.
 `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` proves the empty recovery stretch creates neither a Grok `task_completed` prompt nor a primary turn, then proves a later actionable reason still completes the tracked task and spends the retained handling turn.
-`tests/fm-watcher-lock.test.sh` covers verified-successor attach, the silent all-absorbed clean-close re-arm with an unchanged actionable successor close, an attached arm continuing across an observed actionable close, the crashed receiptless cycle that still fails loudly, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+`tests/fm-watcher-lock.test.sh` covers duplicate owner verification with one actionable completion, one drain/ack, and one successor, plus the independent receiptless owner-cycle death that stays loud and the live PID whose mismatched identity is rejected.
+It also covers verified-successor recovery attach, the silent all-absorbed clean-close re-arm with an unchanged actionable successor close, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.

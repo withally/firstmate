@@ -107,10 +107,11 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 
 ## Timeouts
 
-| Job | timeout-minutes | Rationale |
-|---|---:|---|
-| portable parallel 1/2 | 10 | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | 15 | Each balanced shard is estimated at about six minutes, leaving better than 2x hang-tripwire margin. |
-| Herdr | 40 | The real-Herdr lane keeps its dedicated timeout. |
+| Lane | Bound | Rationale |
+|---|---|---|
+| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
+| portable serial 1-4 | job `timeout-minutes: 15` | Each balanced shard is estimated at about six minutes, leaving better than 2x hang-tripwire margin. |
+| Herdr | family-run step `timeout-minutes: 15`; job `timeout-minutes: 40` backstop | Five green fork runs on 2026-08-17 finished the family in 376,869-406,739 ms, so the step bound leaves over 2.2x the observed maximum and reserves 25 minutes for cleanup and timing artifacts. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
+`.github/workflows/ci.yml` owns the exact numbers.

@@ -1009,16 +1009,46 @@ resurface_after_downtime() {
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
   touch "$STATE/.last-watcher-beat"
   handling_wait=0
-  while [ "$handling_wait" -lt 600 ]; do
+  handling_wait_attempts=${FM_WATCH_HANDLING_WAIT_ATTEMPTS:-600}
+  case "$handling_wait_attempts" in
+    ''|*[!0-9]*|0) handling_wait_attempts=600 ;;
+  esac
+  handling_owner_live() {
+    local record=${FM_WATCH_HANDLING_OWNER_RECORD:-} key value owner_pid='' owner_identity='' owner_home='' current_identity
+    [ -n "$record" ] && [ -f "$record" ] && [ ! -L "$record" ] || return 1
+    while IFS='=' read -r key value; do
+      case "$key" in
+        pid) owner_pid=$value ;;
+        identity) owner_identity=$value ;;
+        home) owner_home=$value ;;
+      esac
+    done < "$record"
+    [ "$owner_home" = "$FM_HOME" ] || return 1
+    [ -n "$owner_identity" ] && fm_pid_alive "$owner_pid" || return 1
+    current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+    [ -n "$current_identity" ] && [ "$current_identity" = "$owner_identity" ]
+  }
+  while :; do
     fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
     case "$FM_RECOVERY_MARKER_TOKEN" in
       pending:downtime:*) ;;
       *) break ;;
     esac
+    if handling_owner_live; then
+      # A native persistent monitor has accepted this coordinator process and
+      # will deliver its already-emitted line even when Grok is busy for longer
+      # than the legacy prompt-adapter grace. Keep the real watcher and beacon
+      # alive until that turn confirms handling; if the identity-bound owner
+      # dies, fall back to the bounded legacy resurface path below.
+      touch "$STATE/.last-watcher-beat"
+      sleep 0.25
+      continue
+    fi
+    [ "$handling_wait" -lt "$handling_wait_attempts" ] || break
     sleep 0.05
     handling_wait=$((handling_wait + 1))
   done
-  [ "$handling_wait" -lt 600 ] || WATCHER_RECOVERY_PENDING=1
+  [ "$handling_wait" -lt "$handling_wait_attempts" ] || WATCHER_RECOVERY_PENDING=1
 fi
 
 while :; do

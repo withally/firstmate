@@ -58,11 +58,11 @@
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
-# --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
-# state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
-# wins the singleton while the duplicate child stands down. It
-# resolves and signals exactly that pid, so it can never touch another home's
-# watcher. NEVER `pkill -f
+# --restart: explicitly supersede ONLY this FM_HOME's identity-matched arm owner
+# and watcher, then own a fresh cycle, or attach if a verified live peer wins the
+# singleton while the duplicate child stands down. It resolves and signals only
+# the exact pids recorded in THIS home's owner and watcher records, so it can
+# never touch another home's watcher. NEVER `pkill -f
 # bin/fm-watch.sh`: that pattern matches every firstmate home's watcher
 # (secondmate homes run the same script) and would kill siblings.
 set -u
@@ -388,6 +388,72 @@ clear_stale_recorded_watcher_lock() {
   fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime
 }
 
+wait_for_pid_exit() {
+  local pid=$1 i=0
+  while [ "$i" -lt 50 ] && fm_pid_alive "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! fm_pid_alive "$pid"
+}
+
+restart_stop_recorded_watcher() {
+  local lock_pid
+  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  fm_pid_alive "$lock_pid" || return 0
+  if ! fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
+    clear_stale_recorded_watcher_lock || {
+      echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
+      return 1
+    }
+    return 0
+  fi
+  kill -TERM "$lock_pid" 2>/dev/null || true
+  kill -CONT "$lock_pid" 2>/dev/null || true
+  # A stopped watcher receives its pending TERM after CONT and retires. A live,
+  # TERM-resistant peer remains eligible for the established attach path below;
+  # restart never escalates a merely resistant verified watcher to KILL.
+  wait_for_pid_exit "$lock_pid" || true
+}
+
+restart_supersede_arm_owner() {
+  local owner_pid owner_identity owner_home current_identity
+  if ! arm_owner_lock_acquire; then
+    echo "watcher: FAILED - arm owner state could not be serialized" >&2
+    return 1
+  fi
+  arm_owner_read
+  owner_pid=$ARM_OWNER_PID
+  owner_identity=$ARM_OWNER_IDENTITY
+  owner_home=$ARM_OWNER_HOME
+  fm_lock_release "$ARM_OWNER_LOCK"
+  [ "$owner_pid" != "$ARM_PID" ] || return 0
+  [ "$owner_home" = "$FM_HOME" ] || {
+    if fm_pid_alive "$owner_pid"; then
+      echo "watcher: FAILED - live arm owner belongs to another home" >&2
+      return 1
+    fi
+    return 0
+  }
+  fm_pid_alive "$owner_pid" && [ -n "$owner_identity" ] || return 0
+  current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+  current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
+  [ "$current_identity" = "$owner_identity" ] || return 0
+  kill -TERM "$owner_pid" 2>/dev/null || true
+  kill -CONT "$owner_pid" 2>/dev/null || true
+  if ! wait_for_pid_exit "$owner_pid"; then
+    current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+    current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
+    if [ "$current_identity" = "$owner_identity" ]; then
+      kill -KILL "$owner_pid" 2>/dev/null || true
+      wait_for_pid_exit "$owner_pid" || {
+        echo "watcher: FAILED - home arm owner did not retire for restart" >&2
+        return 1
+      }
+    fi
+  fi
+}
+
 # A watcher is "healthy" iff the lock names a live process that is genuinely THIS
 # home's watcher (the identity match guards against a recycled/reused pid) AND the
 # liveness beacon is fresh within GRACE. Sets HEALTHY_PID on success. This is the
@@ -590,6 +656,11 @@ if [ "$mode" = handling-delivered ]; then
   exit $?
 fi
 
+if [ "$mode" = restart ]; then
+  restart_stop_recorded_watcher || exit 1
+  restart_supersede_arm_owner || exit 1
+fi
+
 arm_owner_status=0
 arm_owner_claim || arm_owner_status=$?
 case "$arm_owner_status" in
@@ -597,29 +668,6 @@ case "$arm_owner_status" in
   10) exit 0 ;;
   *) exit "$arm_owner_status" ;;
 esac
-
-if [ "$mode" = restart ]; then
-  # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
-  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
-  if fm_pid_alive "$lock_pid"; then
-    if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      kill -TERM "$lock_pid" 2>/dev/null || true
-      # Wait for it to actually exit before relaunching, so the fresh watcher
-      # either takes a released lock or reclaims a now-dead-pid stale lock instead
-      # of seeing the dying one as a live holder and no-opping.
-      i=0
-      while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
-        sleep 0.1
-        i=$((i + 1))
-      done
-    else
-      if ! clear_stale_recorded_watcher_lock; then
-        echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
-        exit 1
-      fi
-    fi
-  fi
-fi
 
 # If a genuinely live+fresh watcher already holds the lock, do not start a second
 # one - attach to that cycle and wait until it ends so the harness notify fires

@@ -47,7 +47,7 @@ agent  subagent  task  workflow  cron  schedul  worktree
 delegate  spawn  dispatch  handoff  remote  sendmessage  monitor
 ```
 
-Three exclusions keep the shape test from producing false positives.
+Three general exclusions and one command-scoped supervision exception keep the shape test from producing false positives without opening a delegation route.
 
 - A name beginning `mcp__` is never classified.
   An MCP server chooses its own tool names, a task or agent noun there is common, and it has no bearing on fleet dispatch.
@@ -64,6 +64,10 @@ Three exclusions keep the shape test from producing false positives.
 
 Both exclusion lists match the whole normalized name, never a substring, so neither can widen by accident: `TaskCreateAgent` and `RemoteTaskCreate` stay denied.
 Folding the two lists together would be the drift risk, because the observe-or-stop rationale is not true of a tool that writes.
+
+Grok's `monitor` tool remains delegation-shaped by default.
+The one exception is a stdin-verified call with `persistent=true` and the exact command `exec bin/fm-grok-watch-coordinator.mjs`.
+That process is the home-scoped watcher supervision owner documented in [`watcher-continuity.md`](watcher-continuity.md), not untracked project work; any argument, prefix, suffix, non-persistent call, or name-only classification remains denied.
 
 The shipped guard fires on every delegation-shaped name that reaches it, including future names that no deny list knows about yet.
 That future-name behavior is the reason the tracked matcher must match all tools and let the script filter.

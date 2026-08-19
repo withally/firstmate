@@ -81,6 +81,8 @@ PLAN_ONLY_TOOLS='taskcreate taskupdate'
 TOOL=""
 TOOL_SET=0
 CLAUDE_MODE=0
+TOOL_INPUT_COMMAND=
+TOOL_INPUT_PERSISTENT=
 
 usage() {
   cat <<'EOF'
@@ -138,6 +140,8 @@ if [ "$TOOL_SET" -eq 0 ]; then
   [ -n "$PAYLOAD" ] || exit 0
   command -v jq >/dev/null 2>&1 || exit 0
   TOOL=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_name // .toolName // empty)' 2>/dev/null) || exit 0
+  TOOL_INPUT_COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input.command // .toolInput.command // empty) | strings' 2>/dev/null) || exit 0
+  TOOL_INPUT_PERSISTENT=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input.persistent // .toolInput.persistent // false) | if . == true then "true" else "false" end' 2>/dev/null) || exit 0
 fi
 
 [ -n "$TOOL" ] || exit 0
@@ -185,6 +189,16 @@ STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
+
+# Grok's persistent watcher coordinator is supervision owned by this home, not
+# untracked delegated project work. Allow only its exact no-argument command,
+# only through the full stdin transport where the hook can verify persistent
+# monitor input. CLI/name-only checks and every near miss remain denied.
+if [ "$NORMALIZED" = monitor ] \
+  && [ "$TOOL_INPUT_PERSISTENT" = true ] \
+  && [ "$TOOL_INPUT_COMMAND" = 'exec bin/fm-grok-watch-coordinator.mjs' ]; then
+  exit 0
+fi
 
 # Name the dedicated scout entry point only when this home carries it; degrade
 # to the two-step brief-then-spawn path when it does not, rather than naming a

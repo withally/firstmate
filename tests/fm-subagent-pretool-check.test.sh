@@ -126,6 +126,32 @@ test_guard_allows_exact_grok_output_waiter_only() {
   pass "the guard releases only Grok's exact observe-only output waiter"
 }
 
+test_guard_allows_only_the_exact_grok_supervision_monitor() {
+  local payload rc command
+  command='exec bin/fm-grok-watch-coordinator.mjs'
+  payload=$(jq -cn --arg command "$command" '{toolName:"monitor",toolInput:{command:$command,description:"Firstmate watcher coordinator",persistent:true}}')
+  : > "$OUT"; : > "$ERR"
+  printf '%s' "$payload" \
+    | FM_ROOT_OVERRIDE="$PRIMARY" FM_HOME="$PRIMARY" FM_STATE_OVERRIDE="$STATE" \
+      "$CHECK" > "$OUT" 2> "$ERR" || rc=$?
+  [ "${rc:-0}" -eq 0 ] || fail "exact persistent Grok supervision monitor must be allowed: $(cat "$ERR")"
+  [ ! -s "$OUT" ] && [ ! -s "$ERR" ] || fail "exact Grok supervision monitor allow wrote output"
+
+  for payload in \
+    "$(jq -cn --arg command "$command" '{toolName:"monitor",toolInput:{command:$command,persistent:false}}')" \
+    "$(jq -cn --arg command "$command" '{toolName:"monitor",toolInput:{command:($command + " --extra"),persistent:true}}')" \
+    "$(jq -cn --arg command "$command" '{toolName:"monitor",toolInput:{command:("echo prefix; " + $command),persistent:true}}')"; do
+    rc=0
+    : > "$OUT"; : > "$ERR"
+    printf '%s' "$payload" \
+      | FM_ROOT_OVERRIDE="$PRIMARY" FM_HOME="$PRIMARY" FM_STATE_OVERRIDE="$STATE" \
+        "$CHECK" > "$OUT" 2> "$ERR" || rc=$?
+    [ "$rc" -eq 2 ] || fail "near-miss Grok monitor must remain denied: $payload"
+  done
+  expect_deny "name-only Grok monitor" Monitor
+  pass "the guard releases only the exact persistent Grok supervision monitor command"
+}
+
 test_guard_allows_session_local_todo_tools() {
   # These write, so they are not observe-or-stop, but what they write is the
   # harness's session-local todo list: no executor, no agent, no worktree, no
@@ -294,6 +320,7 @@ test_guard_denies_every_currently_known_delegation_tool
 test_guard_denies_hypothetical_future_tools
 test_guard_allows_ordinary_and_observe_only_tools
 test_guard_allows_exact_grok_output_waiter_only
+test_guard_allows_only_the_exact_grok_supervision_monitor
 test_guard_allows_session_local_todo_tools
 test_plan_only_exclusion_is_exact_name
 test_guard_never_classifies_mcp_tools

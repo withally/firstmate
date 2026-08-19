@@ -307,9 +307,10 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | Codex | `FM_CODEX_LIVE_E2E=1 tests/fm-codex-continuity-live-e2e.test.sh` | The one-second foreground checkpoint returned without switching to the arm wrapper. |
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
 | Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
-| Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Empty delayed recovery produced no task completion and no primary turn; a later actionable close still completed natively and recorded `reason=actionable-signal`. |
+| Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Empty delayed recovery produced no monitor event and no primary turn; one later actionable close produced one native monitor event only after a distinct live successor was linked, and the strict guard accepted it without a forced continuation. |
 
-Grok 1.0.4 repeated the continuity path on 2026-08-17 with the real interactive TUI, tracked background task, isolated home, and stored chat history.
+Grok 1.0.5 verified the monitor-owned successor-first path on 2026-08-19 with the real interactive TUI, an isolated home, and stored chat history.
+The exact persistent monitor exception passed the primary delegation guard, quiet recovery spent no turn, the actionable predecessor recorded `reason=actionable-signal` with its successor PID before notification delivery, the successor stayed live through delayed handling, the queue was acknowledged, and the unchanged strict guard returned without `TURN WOULD END BLIND`.
 
 ```sh
 FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh
@@ -318,7 +319,7 @@ FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh
 Observed output:
 
 ```text
-ok - grok 1.0.4 (d846eb93d94d) live E2E kept quiet recovery completion-free and turn-free while preserving actionable completion
+ok - grok 1.0.5 (5115b46bc909) live E2E delivered one actionable monitor event only after one live successor, with no blind-turn continuation
 ```
 
 Grok 1.0.4 also verified same-turn consumption of an auto-backgrounded wake drain on 2026-08-17.

@@ -258,6 +258,8 @@ An explicit project wins, a clear follow-up inherits its referent, and otherwise
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
 
 Route by the nature of the work against each registered secondmate scope, not by a non-exclusive clone list.
+Before creating any main-home backlog entry or running `tasks-axi add`, `fm-brief`, or an ordinary `fm-spawn`, resolve one explicit intake verdict: `second mate: <id>` or `main: <local-only | no matching scope | captain redirect | already-under-way follow-up>`.
+A `second mate: <id>` verdict must use the existing marked `fm-send` path and be owned in that home's backlog; do not create a duplicate main-home task.
 Keep `local-only` work in the main home.
 Send in-scope work to the fitting secondmate unless it is blocked or the captain explicitly redirects it; do not read the secondmate's chat because marked routed replies return through its status or referenced document.
 If no secondmate scope fits, use the main home or discuss creating an appropriate persistent secondmate.

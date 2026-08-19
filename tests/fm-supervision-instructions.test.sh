@@ -101,12 +101,12 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
 
   out=$("$RENDER" --harness grok)
   ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
-  assert_contains "$ordinary" "re-arm" "grok ordinary-wake line does not tell the model to re-arm"
-  assert_contains "$ordinary" "Grok tracked background task" "grok ordinary-wake line lost tracked background ownership"
-  assert_contains "$ordinary" "bin/fm-watch-arm.sh" "grok ordinary-wake line lost the background arm command"
+  assert_contains "$ordinary" "monitor-owned coordinator" "grok ordinary-wake line lost coordinator ownership"
+  assert_contains "$ordinary" "do not re-arm" "grok ordinary-wake line does not forbid a model re-arm"
+  assert_not_contains "$ordinary" "bin/fm-watch-arm.sh" "grok ordinary-wake line still calls the successor-late arm path"
   out=$("$RENDER" --harness grok --repair-line)
-  assert_contains "$out" "Grok tracked background task" "grok recovery line lost its tracked background repair"
-  assert_contains "$out" "bin/fm-watch-arm.sh" "grok recovery line lost the arm command"
+  assert_contains "$out" "persistent Grok monitor" "grok recovery line lost its monitor-owned repair"
+  assert_contains "$out" "bin/fm-grok-watch-coordinator.mjs" "grok recovery line lost the coordinator command"
 
   out=$("$RENDER" --harness codex)
   ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
@@ -136,32 +136,35 @@ test_pi_signed_preserves_identity_with_pi_supervision_protocol() {
   pass "pi-signed keeps its identity while sharing Pi's supervision protocol"
 }
 
-test_grok_is_background_notify() {
+test_grok_is_monitor_owned_successor_first() {
   local out
   out=$("$RENDER" --harness grok)
-  assert_contains "$out" "Mode: Grok background-notify supervision." "grok snippet missing background-notify mode"
-  assert_contains "$out" "background: true" "grok snippet missing tracked background tool instruction"
-  assert_contains "$out" "synthetic_reason: task_completed" "grok snippet missing auto-wake synthetic prompt detail"
+  assert_contains "$out" "Mode: Grok monitor-owned successor-first supervision." "grok snippet missing successor-first mode"
+  assert_contains "$out" "persistent \`monitor\` tool" "grok snippet missing persistent monitor instruction"
+  assert_contains "$out" "FIRSTMATE_GROK_WAKE" "grok snippet missing typed coordinator wake"
   assert_contains "$out" "get_command_or_subagent_output" "grok snippet missing the exact auto-backgrounded drain waiter"
   assert_contains "$out" "timeout_ms=30000" "grok snippet missing the bounded same-turn drain wait"
   assert_contains "$out" "same initiating turn" "grok snippet does not require same-turn drain consumption"
   assert_contains "$out" "WAKE_ACK_REQUIRED" "grok snippet lost the drain acknowledgement instruction"
-  assert_contains "$out" "bin/fm-watch-arm.sh" "grok snippet missing watcher arm"
+  assert_contains "$out" "bin/fm-grok-watch-coordinator.mjs" "grok snippet missing watcher coordinator"
+  assert_contains "$out" "--handling-delivered" "grok snippet missing accepted-delivery confirmation"
+  assert_contains "$out" "do not re-arm" "grok snippet still permits successor-late model re-arm"
   assert_not_contains "$out" "__FM_X_MODE_ENV" "renderer leaked an x-mode path placeholder"
   assert_not_contains "$out" "foreground checkpoint" "grok snippet must not be Codex-style foreground checkpoint"
   out=$("$RENDER" --harness grok --repair-line)
-  assert_contains "$out" "Grok tracked background task" "grok repair line is not background-notify shaped"
-  pass "grok supervision is Claude-shaped background notify with passive Stop-hook backstop"
+  assert_contains "$out" "persistent Grok monitor" "grok repair line is not coordinator shaped"
+  pass "grok supervision is monitor-owned and successor-first with a strict Stop-hook backstop"
 }
 
-test_grok_command_sources_effective_config() {
-  local home config out
-  home="$TMP_ROOT/grok-home"
-  config="$TMP_ROOT/grok-config"
-  mkdir -p "$home/state" "$config"
-  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok --x-mode 1)
-  assert_contains "$out" "[ -f '$config/x-mode.env' ] && . '$config/x-mode.env'; exec bin/fm-watch-arm.sh" "grok arm command did not use the effective x-mode config path"
-  pass "grok rendered command sources the effective x-mode config"
+test_grok_command_is_the_guarded_exact_monitor() {
+  local out repair
+  out=$("$RENDER" --harness grok --x-mode 1)
+  assert_contains "$out" "\`exec bin/fm-grok-watch-coordinator.mjs\`" "grok coordinator command drifted from the guarded exact monitor"
+  assert_contains "$out" "sources the effective \`config/x-mode.env\`" "grok coordinator lost its child-owned x-mode source contract"
+  assert_contains "$out" "the monitor-owned coordinator sources the effective config/x-mode.env" "grok x-mode state line still delegates sourcing to the model"
+  repair=$("$RENDER" --harness grok --x-mode 1 --repair-line)
+  assert_not_contains "$repair" "source " "grok x-mode repair line could cause a command that misses the exact monitor exception"
+  pass "grok supervision renders the exact command-scoped monitor exception"
 }
 
 test_pi_snippet_uses_effective_extension_path() {
@@ -186,6 +189,6 @@ test_conditional_stanzas
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
-test_grok_is_background_notify
-test_grok_command_sources_effective_config
+test_grok_is_monitor_owned_successor_first
+test_grok_command_is_the_guarded_exact_monitor
 test_pi_snippet_uses_effective_extension_path

@@ -10,6 +10,7 @@ set -u
 
 WATCH="$ROOT/bin/fm-watch.sh"
 WATCH_ARM="$ROOT/bin/fm-watch-arm.sh"
+GROK_COORDINATOR="$ROOT/bin/fm-grok-watch-coordinator.mjs"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 LIB="$ROOT/bin/fm-wake-lib.sh"
 
@@ -766,6 +767,198 @@ test_duplicate_arm_does_not_silence_owner_cycle_death() {
   pass "a verified duplicate returns, while an unexplained owned watcher death stays loud"
 }
 
+test_restart_supersedes_a_live_owner_with_a_hung_watcher() {
+  local dir state fakebin owner_out restart_out owner_arm restart_arm old_watcher new_watcher i
+  dir=$(make_case restart-supersedes-hung-owner)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  owner_out="$dir/owner.out"
+  restart_out="$dir/restart.out"
+  mark_pr_check_migration_complete "$state"
+  printf 'project=test\nwindow=test:fm-restart-hung-owner\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
+  printf 'working: routine progress\n' > "$state/task.status"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
+  owner_arm=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$owner_out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  old_watcher=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$old_watcher" "$owner_out" || fail "restart fixture owner did not start"
+  kill -STOP "$old_watcher" 2>/dev/null || fail "could not stop the restart fixture watcher"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$restart_out" &
+  restart_arm=$!
+  i=0
+  new_watcher=
+  while [ "$i" -lt 120 ]; do
+    new_watcher=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    if [ -n "$new_watcher" ] && [ "$new_watcher" != "$old_watcher" ] \
+      && grep -qF "watcher: started pid=$new_watcher" "$restart_out" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$new_watcher" ] && [ "$new_watcher" != "$old_watcher" ] \
+    || fail "--restart did not replace the hung owner watcher: $(cat "$restart_out")"
+  ! fm_test_pid_live_non_zombie "$old_watcher" || fail "--restart left the old hung watcher alive"
+  ! grep -qF '(duplicate returned)' "$restart_out" \
+    || fail "--restart returned duplicate success instead of superseding the hung owner"
+  fm_test_pid_live_non_zombie "$restart_arm" || fail "replacement arm was not live after restart repair"
+  ! fm_test_pid_live_non_zombie "$owner_arm" || fail "--restart left the superseded arm owner alive"
+  [ "$(sed -n 's/^pid=//p' "$state/.watch-arm-owner")" = "$restart_arm" ] \
+    || fail "--restart did not leave exactly the replacement as the arm owner"
+  fm_test_terminate_or_fail "$restart_arm" "restart replacement arm cleanup"
+  fm_test_wait_for_exit "$owner_arm" 20 >/dev/null 2>&1 || true
+  pass "--restart identity-scoped supersede repairs a live owner whose watcher is hung"
+}
+
+test_grok_coordinator_rearms_before_one_actionable_delivery() {
+  local dir state fakebin out duplicate_out duplicate_status coordinator initial_watcher successor_watcher wake_json generation sequence signal_count guard_out guard_status i
+  dir=$(make_case grok-coordinator-successor-first)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/coordinator.out"
+  duplicate_out="$dir/duplicate.out"
+  mark_pr_check_migration_complete "$state"
+  printf '%s\n' "$$" > "$state/.lock"
+  printf 'project=test\nwindow=test:fm-grok-successor-first\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
+  printf 'working: routine progress\n' > "$state/task.status"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 FM_WATCH_HANDLING_WAIT_ATTEMPTS=2 FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=500 node "$GROK_COORDINATOR" > "$out" &
+  coordinator=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null \
+    || fail "Grok coordinator did not verify its first watcher: $(cat "$out" 2>/dev/null)"
+  initial_watcher=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  fm_test_pid_live_non_zombie "$initial_watcher" || fail "Grok coordinator first watcher was not live"
+
+  duplicate_status=0
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" node "$GROK_COORDINATOR" > "$duplicate_out" || duplicate_status=$?
+  [ "$duplicate_status" -eq 0 ] || fail "duplicate Grok coordinator did not return cleanly"
+  grep -qF "FIRSTMATE_GROK_COORDINATOR_DUPLICATE {\"owner_pid\":$coordinator}" "$duplicate_out" \
+    || fail "duplicate Grok coordinator did not preserve the identity-matched owner: $(cat "$duplicate_out")"
+  [ "$(sed -n 's/^pid=//p' "$state/.grok-watch-coordinator")" = "$coordinator" ] \
+    || fail "duplicate Grok coordinator replaced the live owner"
+  [ "$(sed -n 's/^pid=//p' "$state/.watch-arm-owner" | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "duplicate Grok coordinator created another arm owner"
+
+  printf 'done: one actionable Grok close\n' > "$state/task.status"
+  i=0
+  while [ "$i" -lt 120 ]; do
+    grep -q '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(grep -c '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null || true)" -eq 1 ] \
+    || fail "one signal did not produce exactly one Grok coordinator delivery: $(cat "$out" 2>/dev/null)"
+  wake_json=$(sed -n 's/^FIRSTMATE_GROK_WAKE //p' "$out")
+  successor_watcher=$(printf '%s\n' "$wake_json" | jq -r '.successor_watcher_pid')
+  generation=$(printf '%s\n' "$wake_json" | jq -r '.recovery_generation')
+  [ "$successor_watcher" != "$initial_watcher" ] || fail "Grok coordinator reused the predecessor watcher"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_watcher" ] \
+    || fail "Grok completion arrived before its successor owned the watcher lock: wake=$wake_json current=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)"
+  fm_test_pid_live_non_zombie "$successor_watcher" || fail "Grok completion named a dead successor watcher"
+  ! fm_test_pid_live_non_zombie "$initial_watcher" || fail "Grok successor overlapped the predecessor watcher"
+  [ "$(sed -n 's/^pid=//p' "$state/.watch-arm-owner" | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "Grok coordinator did not retain exactly one arm owner"
+  sleep 0.5
+  [ "$(grep -c '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null || true)" -eq 1 ] \
+    || fail "the successor resurfaced pending work before Grok accepted the first delivery: $(cat "$out")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_watcher" ] \
+    || fail "the identity-bound coordinator did not hold its successor through delayed Grok acceptance"
+
+  guard_status=0
+  guard_out=$(printf '%s' '{"sessionId":"grok-coordinator-test","stopHookActive":false}' \
+    | GROK_AGENT=1 FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" bash "$ROOT/bin/fm-turnend-guard.sh" 2>&1) || guard_status=$?
+  [ "$guard_status" -eq 0 ] || fail "successor-first Grok path still forced TURN WOULD END BLIND: $guard_out"
+  ! printf '%s\n' "$guard_out" | grep -qF 'TURN WOULD END BLIND' \
+    || fail "successor-first Grok path emitted a blind-turn continuation"
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" "$WATCH_ARM" --handling-delivered "$generation" --watcher-pid "$successor_watcher" \
+    || fail "Grok coordinator successor delivery could not begin handling: wake=$wake_json marker=$(cat "$state/.watcher-down" 2>/dev/null || true)"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
+    || fail "Grok coordinator actionable drain failed"
+  signal_count=$(grep -c "$(printf '\tsignal\t')" "$dir/drain.out" || true)
+  [ "$signal_count" -eq 1 ] || fail "Grok coordinator cycle produced $signal_count durable signal rows"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "Grok coordinator acknowledgement failed"
+  fm_test_terminate_or_fail "$coordinator" "Grok coordinator cleanup"
+  [ ! -e "$state/.grok-watch-coordinator" ] || fail "Grok coordinator cleanup left its owner record"
+  pass "Grok coordinator delivers one actionable wake only after one live successor, with no blind-turn continuation"
+}
+
+test_grok_coordinator_retains_one_unready_successor_without_retry_overlap() {
+  local dir repo state out attempts retained coordinator retained_pid i wake_json
+  dir=$(make_case grok-coordinator-unready-successor)
+  repo="$dir/repo"
+  state="$dir/state"
+  out="$dir/coordinator.out"
+  attempts="$dir/attempts"
+  retained="$dir/retained"
+  mkdir -p "$repo/bin"
+  cp "$LIB" "$repo/bin/fm-wake-lib.sh"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s:%s\n' "$$" "${1:-arm}" >> "$FM_COORDINATOR_ATTEMPTS"
+if [ "${1:-}" = --restart ]; then
+  trap '' TERM
+  printf '%s\n' "$$" > "$FM_COORDINATOR_RETAINED"
+  while :; do sleep 1; done
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+while [ ! -e "$FM_COORDINATOR_FIRE" ]; do sleep 0.05; done
+printf 'signal: coordinator-unready-fixture\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh" "$repo/bin/fm-wake-lib.sh"
+  printf '%s\n' "$$" > "$state/.lock"
+  printf 'project=test\n' > "$state/task.meta"
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$repo" FM_COORDINATOR_ATTEMPTS="$attempts" FM_COORDINATOR_RETAINED="$retained" FM_COORDINATOR_FIRE="$dir/fire" FM_WATCH_ARM_READY_TIMEOUT_MS=1000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_LIMIT=2 node "$GROK_COORDINATOR" > "$out" &
+  coordinator=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null \
+    || fail "unready-successor coordinator did not establish its first arm: $(cat "$out" 2>/dev/null)"
+  touch "$dir/fire"
+  i=0
+  while [ "$i" -lt 100 ]; do
+    grep -q '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ "$(grep -c '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null || true)" -eq 1 ] \
+    || fail "unready successor did not yield exactly one typed Grok fallback: $(cat "$out" 2>/dev/null)"
+  wake_json=$(sed -n 's/^FIRSTMATE_GROK_WAKE //p' "$out")
+  printf '%s\n' "$wake_json" | jq -e '.successor_watcher_pid == null and (.continuity_failure | contains("no overlapping retry was started"))' >/dev/null \
+    || fail "unready successor fallback lost its typed single-flight failure: $wake_json"
+  [ "$(wc -l < "$attempts" | tr -d ' ')" -eq 2 ] \
+    || fail "unready successor overlapped a retry before fallback: $(cat "$attempts")"
+  sleep 0.5
+  [ "$(wc -l < "$attempts" | tr -d ' ')" -eq 2 ] \
+    || fail "unready successor overlapped a late retry after fallback: $(cat "$attempts")"
+  retained_pid=$(cat "$retained" 2>/dev/null || true)
+  fm_test_pid_live_non_zombie "$retained_pid" || fail "unready successor was abandoned instead of retained"
+  fm_test_terminate_or_fail "$coordinator" "unready-successor coordinator cleanup"
+  ! fm_test_pid_live_non_zombie "$retained_pid" || fail "coordinator cleanup left the retained successor alive"
+  pass "Grok coordinator retains one unready successor and emits one fallback without an overlapping retry"
+}
+
 test_arm_owner_rejects_a_reused_pid_identity() {
   local dir state fakebin armout armpid watcher_pid i
   dir=$(make_case arm-owner-reused-pid)
@@ -1342,6 +1535,9 @@ test_watcher_self_evicts_on_lock_takeover
 test_arm_all_absorbed_clean_close_rearms_without_failure
 test_duplicate_arm_returns_to_owner_and_preserves_one_actionable_completion
 test_duplicate_arm_does_not_silence_owner_cycle_death
+test_restart_supersedes_a_live_owner_with_a_hung_watcher
+test_grok_coordinator_rearms_before_one_actionable_delivery
+test_grok_coordinator_retains_one_unready_successor_without_retry_overlap
 test_arm_owner_rejects_a_reused_pid_identity
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger

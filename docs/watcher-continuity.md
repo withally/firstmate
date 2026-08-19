@@ -76,7 +76,7 @@ One identity-bound owner record at `state/.watch-arm-owner` names the harness-tr
 A duplicate invocation verifies that live owner under the short owner-record lock, reports `watcher: owner verified ... (duplicate returned)`, and returns promptly without following the same watcher cycle.
 A stale or PID-reused owner record cannot satisfy the process-identity check and is replaced by the next arm.
 An actionable child output returns that reason normally.
-A child that observes an empty recovery episode keeps blocking, so the same Grok-tracked arm remains alive without a completion prompt or lifecycle close row.
+A child that observes an empty recovery episode keeps blocking, so the same harness-tracked arm remains alive without a completion or lifecycle close row.
 A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, silently relaunches after a matching PID-identity-bound clean-close receipt, or resolves the close against the watcher's bounded terminal-delivery ledger.
 An arm attaches only as recovery when a healthy watcher has no identity-matched tracked arm owner.
 That recovery owner follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.

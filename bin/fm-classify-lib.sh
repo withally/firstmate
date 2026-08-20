@@ -12,13 +12,14 @@
 # markers. The delivered-decision record/consume helpers are explicit stateful
 # exceptions shared by fm-send, the watcher, and the daemon.
 #
-# The one exception is the absorb classification (crew_absorb_class and its
-# working/paused wrappers). It is NOT a pure status-file read: it reuses
+# Two further exceptions are the absorb classification and the incremental
+# open-decision scan. The absorb classification reuses
 # bin/fm-crew-state.sh, which may make a bounded no-mistakes call, to decide
 # whether a crew behind an ambiguous lifecycle signal or stale pane is working,
 # deliberately paused, or neither. Callers run it ONLY on ambiguous signal
 # handling and first sighting of a stale hash, never on every wake, so the
-# per-wake triage stays cheap.
+# per-wake triage stays cheap. The incremental scan atomically persists a
+# per-status-file byte cursor and exact folded open set for bounded warm drains.
 
 # Directory of this library, used to locate the sibling fm-crew-state.sh reader.
 # Resolved at source time from BASH_SOURCE so it works whether sourced by a
@@ -321,6 +322,40 @@ $set
 EOF
   printf '%s' "$out"
 }
+
+# Apply the authoritative open-decision rule to one status line.
+# Both the whole-history and cursor-backed folds call this function so their
+# identity-level results cannot drift.
+_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb>
+  local open=$1 line=$2 resolve=$3 held=$4 verb key keys note stripped
+  stripped=${line//[[:space:]]/}
+  if [ -z "$stripped" ]; then
+    printf '%s' "$open"
+    return 0
+  fi
+  verb=$(status_line_verb "$line")
+  case "$verb" in
+    needs-decision|blocked)
+      note=$(status_line_note "$line")
+      keys=$(_fm_opening_decision_keys "$line") || { printf '%s' "$open"; return 0; }
+      while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        open=$(_fm_decision_drop "$open" "$key")
+        [ -n "$open" ] && open="${open}"$'\n'
+        open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
+      done <<EOF
+$keys
+EOF
+      ;;
+    "$resolve"|"$held")
+      key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
+      open=$(_fm_decision_drop "$open" "$key")
+      [ -n "$open" ] && open="${open}"$'\n'
+      ;;
+  esac
+  printf '%s' "$open"
+}
+
 # Fold the WHOLE status stream into the set of decisions still open. Prints one
 # TAB-separated "<key>\t<verb>\t<summary>" line per still-open decision, in
 # most-recently-opened-last order; prints nothing when none are open. Pure read of
@@ -333,33 +368,12 @@ EOF
 # before any read - a cheap builtin, while the presentation reader separately
 # uses O_NOFOLLOW for its narrower payload-driven path resolution.
 status_open_decisions() {  # <status-file>
-  local f=$1 line verb key keys note resolve held open='' stripped
+  local f=$1 line resolve held open=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
-    stripped=${line//[[:space:]]/}
-    [ -n "$stripped" ] || continue
-    verb=$(status_line_verb "$line")
-    case "$verb" in
-      needs-decision|blocked)
-        note=$(status_line_note "$line")
-        keys=$(_fm_opening_decision_keys "$line") || continue
-        while IFS= read -r key; do
-          [ -n "$key" ] || continue
-          open=$(_fm_decision_drop "$open" "$key")
-          [ -n "$open" ] && open="${open}"$'\n'
-          open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
-        done <<EOF
-$keys
-EOF
-        ;;
-      "$resolve"|"$held")
-        key=$(_fm_decision_key "$line") || continue
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
-        ;;
-    esac
+    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
   done < "$f"
   printf '%s' "$open"
 }
@@ -628,6 +642,296 @@ EOF
   return 0
 }
 
+# --- incremental open-decision fold -----------------------------------------
+#
+# One sibling cursor per status file stores the authoritative fold version, the
+# last complete-line byte offset, the device/inode identity, the file-generation
+# value, a bounded prefix anchor, and the exact open set at that offset.
+# Warm scans read only bytes appended after that offset.
+# A malformed or unreadable cursor, truncation, replacement, generation change,
+# or anchor mismatch rebuilds from byte zero.
+# An incomplete final line is folded for this scan's output but is not committed;
+# the next scan rereads it with any continuation, matching the whole-file fold at
+# both points in time.
+
+FM_OPEN_DECISIONS_FOLD_VERSION=5
+FM_OPEN_DECISIONS_ANCHOR_BYTES=256
+
+_fm_open_decisions_cursor_path() {  # <status-file>
+  local f=$1 dir base
+  dir=${f%/*}
+  base=${f##*/}
+  printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
+}
+
+_fm_status_file_generation() {  # <file>
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    LC_ALL=C stat -f '%B' "$1" 2>/dev/null
+  else
+    LC_ALL=C stat -c '%W' "$1" 2>/dev/null
+  fi
+}
+
+_fm_open_decisions_set_valid() {  # <open-set>
+  local set=$1 key verb note seen=''
+  while IFS=$(printf '\t') read -r key verb note || [ -n "$key$verb$note" ]; do
+    [ -n "$key$verb$note" ] || continue
+    _fm_decision_slug_ok "$key" || return 1
+    case "$verb" in needs-decision|blocked) ;; *) return 1 ;; esac
+    case "$seen" in *$'\n'"$key"$'\n'*) return 1 ;; esac
+    seen="${seen}"$'\n'"${key}"$'\n'
+  done <<EOF
+$set
+EOF
+}
+
+_fm_open_decisions_numeric_pair() {  # <left:right>
+  local value=$1 left right
+  case "$value" in *:*) ;; *) return 1 ;; esac
+  left=${value%%:*}
+  right=${value#*:}
+  case "$left" in ''|*[!0-9]*) return 1 ;; esac
+  case "$right" in ''|*[!0-9]*) return 1 ;; esac
+}
+
+_fm_open_decisions_anchor() {  # <status-file> <offset>
+  local f=$1 offset=$2 start length tmp value
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$offset" -eq 0 ]; then
+    printf '0:0'
+    return 0
+  fi
+  length=$FM_OPEN_DECISIONS_ANCHOR_BYTES
+  [ "$offset" -ge "$length" ] || length=$offset
+  start=$((offset - length))
+  tmp="$(_fm_open_decisions_cursor_path "$f").anchor.$$"
+  _fm_status_read_span "$f" "$start" "$length" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  value=$(LC_ALL=C cksum < "$tmp" 2>/dev/null) || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  value=${value//[[:space:]]/:}
+  printf '%s' "$value"
+}
+
+_fm_open_decisions_complete_bytes() {  # <chunk-file>
+  perl -0777 -e '
+    local $/;
+    my $data = <>;
+    my $last = rindex($data, "\n");
+    print $last < 0 ? 0 : $last + 1;
+  ' "$1" 2>/dev/null
+}
+
+_fm_open_decisions_full_refold() {  # <status-file> [<captured-end>] [<captured-ident>]
+  local f=$1 captured_end=${2:-} captured_ident=${3:-} current size tmp folded post_ident
+  if [ -z "$captured_end" ]; then
+    status_open_decisions "$f"
+    return
+  fi
+  case "$captured_end" in ''|*[!0-9]*) return 1 ;; esac
+  current=$(_fm_status_file_ident "$f") || return 1
+  [ -z "$captured_ident" ] || [ "$current" = "$captured_ident" ] || return 1
+  size=$(_fm_status_file_size_direct "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$captured_end" -le "$size" ] || return 1
+  tmp="$(_fm_open_decisions_cursor_path "$f").refold.$$"
+  _fm_status_read_span_direct "$f" 0 "$captured_end" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  post_ident=$(_fm_status_file_ident "$f") || { rm -f "$tmp"; return 1; }
+  [ "$post_ident" = "$current" ] || { rm -f "$tmp"; return 1; }
+  folded=$(status_open_decisions "$tmp") || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  printf '%s' "$folded"
+}
+
+status_open_decisions_incremental() {  # <status-file> [<captured-end>] [<captured-ident>]
+  local f=$1 captured_end=${2:-} captured_ident=${3:-} cf cursor_data first='' rest=''
+  local offset=0 ident='' generation='' anchor='' open=''
+  local offset_line='' ident_line='' generation_line='' anchor_line='' actual_size size cur_ident cur_generation
+  local chunk chunk_size complete_size tail_size line resolve held stable_open display_open new_anchor tmp
+  local post_ident post_generation post_size
+  local cursor_valid=0 cursor_dirty=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  cf=$(_fm_open_decisions_cursor_path "$f")
+
+  if [ -f "$cf" ] && [ -r "$cf" ] && [ ! -L "$cf" ] \
+    && cursor_data=$(LC_ALL=C command cat "$cf" 2>/dev/null); then
+    case "$cursor_data" in
+      *$'\n'*)
+        first=${cursor_data%%$'\n'*}; rest=${cursor_data#*$'\n'}
+        case "$rest" in
+          *$'\n'*)
+            offset_line=${rest%%$'\n'*}; rest=${rest#*$'\n'}
+            case "$rest" in
+              *$'\n'*)
+                ident_line=${rest%%$'\n'*}; rest=${rest#*$'\n'}
+                case "$rest" in
+                  *$'\n'*)
+                    generation_line=${rest%%$'\n'*}; rest=${rest#*$'\n'}
+                    case "$rest" in
+                      *$'\n'*) anchor_line=${rest%%$'\n'*}; open=${rest#*$'\n'} ;;
+                      *) anchor_line=$rest; open='' ;;
+                    esac
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
+    offset=${offset_line#offset=}
+    ident=${ident_line#ident=}
+    generation=${generation_line#generation=}
+    anchor=${anchor_line#anchor=}
+    if [ "$first" = "version=$FM_OPEN_DECISIONS_FOLD_VERSION" ] \
+      && [ "$offset_line" = "offset=$offset" ] \
+      && [ "$ident_line" = "ident=$ident" ] \
+      && [ "$generation_line" = "generation=$generation" ] \
+      && [ "$anchor_line" = "anchor=$anchor" ] \
+      && _fm_open_decisions_numeric_pair "$ident" \
+      && _fm_open_decisions_numeric_pair "$anchor"; then
+      case "$offset" in ''|*[!0-9]*) cursor_valid=0 ;;
+        *)
+          case "$generation" in ''|*[!0-9]*) cursor_valid=0 ;;
+            *) _fm_open_decisions_set_valid "$open" && cursor_valid=1 ;;
+          esac
+          ;;
+      esac
+    fi
+  fi
+
+  cur_ident=$(_fm_status_file_ident "$f") \
+    || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
+  [ -n "$cur_ident" ] \
+    || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
+  cur_generation=$(_fm_status_file_generation "$f") \
+    || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
+  case "$cur_generation" in
+    ''|*[!0-9]*) _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return ;;
+  esac
+  actual_size=$(_fm_status_file_size "$f") \
+    || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
+  actual_size=${actual_size//[[:space:]]/}
+  case "$actual_size" in
+    ''|*[!0-9]*) _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return ;;
+  esac
+  if [ -n "$captured_ident" ] && [ "$captured_ident" != "$cur_ident" ]; then return 1; fi
+  if [ -n "$captured_end" ]; then
+    case "$captured_end" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$captured_end" -le "$actual_size" ] || return 1
+    size=$captured_end
+  else
+    size=$actual_size
+  fi
+
+  if [ "$cursor_valid" -eq 1 ]; then
+    if [ "$ident" != "$cur_ident" ] || [ "$generation" != "$cur_generation" ] \
+      || [ "$offset" -gt "$size" ]; then
+      cursor_valid=0
+    else
+      new_anchor=$(_fm_open_decisions_anchor "$f" "$offset") \
+        || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
+      [ "$anchor" = "$new_anchor" ] || cursor_valid=0
+    fi
+  fi
+  if [ "$cursor_valid" -ne 1 ]; then
+    offset=0
+    open=''
+    cursor_dirty=1
+  fi
+
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  stable_open=$open
+  display_open=$open
+  if [ "$offset" -lt "$size" ]; then
+    chunk="$cf.read.$$"
+    if ! _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk" 2>/dev/null; then
+      rm -f "$chunk"
+      _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"
+      return
+    fi
+    chunk_size=$(_fm_status_file_size "$chunk") || { rm -f "$chunk"; return 1; }
+    chunk_size=${chunk_size//[[:space:]]/}
+    case "$chunk_size" in ''|*[!0-9]*) rm -f "$chunk"; return 1 ;; esac
+    [ -n "${FM_OPEN_DECISIONS_READ_PROBE:-}" ] \
+      && printf '%s\t%s\n' "$f" "$chunk_size" >> "$FM_OPEN_DECISIONS_READ_PROBE"
+    complete_size=$(_fm_open_decisions_complete_bytes "$chunk") \
+      || { rm -f "$chunk"; return 1; }
+    case "$complete_size" in ''|*[!0-9]*) rm -f "$chunk"; return 1 ;; esac
+    while IFS= read -r line; do
+      stable_open=$(_fm_decision_fold_line "$stable_open" "$line" "$resolve" "$held")
+    done < "$chunk"
+    display_open=$stable_open
+    tail_size=$((chunk_size - complete_size))
+    if [ "$tail_size" -gt 0 ]; then
+      line=$(_fm_status_read_span "$chunk" "$complete_size" "$tail_size") \
+        || { rm -f "$chunk"; return 1; }
+      display_open=$(_fm_decision_fold_line "$display_open" "$line" "$resolve" "$held")
+    fi
+    rm -f "$chunk"
+    offset=$((offset + complete_size))
+    [ "$complete_size" -eq 0 ] || cursor_dirty=1
+  fi
+
+  post_ident=$(_fm_status_file_ident "$f") || return 1
+  post_generation=$(_fm_status_file_generation "$f") || return 1
+  post_size=$(_fm_status_file_size "$f") || return 1
+  post_size=${post_size//[[:space:]]/}
+  case "$post_size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$post_ident" = "$cur_ident" ] && [ "$post_generation" = "$cur_generation" ] \
+    && [ "$post_size" -ge "$size" ] || return 1
+
+  if [ "$cursor_dirty" -eq 1 ]; then
+    new_anchor=$(_fm_open_decisions_anchor "$f" "$offset") || return 1
+    tmp="$cf.tmp.$$"
+    {
+      printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
+      printf 'offset=%s\n' "$offset"
+      printf 'ident=%s\n' "$cur_ident"
+      printf 'generation=%s\n' "$cur_generation"
+      printf 'anchor=%s\n' "$new_anchor"
+      [ -z "$stable_open" ] || printf '%s' "$stable_open"
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$cf" || { rm -f "$tmp"; return 1; }
+  fi
+  printf '%s' "$display_open"
+}
+
+scan_open_decisions_incremental() {  # <state>
+  local state=$1 f task open line
+  for f in "$state"/*.status; do
+    [ -e "$f" ] || continue
+    task=${f##*/}; task=${task%.status}
+    open=$(status_open_decisions_incremental "$f") || return 1
+    [ -n "$open" ] || continue
+    while IFS= read -r line; do
+      [ -n "$line" ] && printf '%s\t%s\n' "$task" "$line"
+    done <<EOF
+$open
+EOF
+  done
+}
+
+scan_open_decisions_snapshot() {  # <state> <presentation-snapshot>
+  local state=$1 snapshot=$2 task endpoint ident f open line
+  while IFS=$(printf '\t') read -r task endpoint ident; do
+    [ -n "$task" ] || continue
+    f="$state/$task.status"
+    open=$(status_open_decisions_incremental "$f" "$endpoint" "$ident") || return 1
+    [ -n "$open" ] || continue
+    while IFS= read -r line; do
+      [ -n "$line" ] && printf '%s\t%s\n' "$task" "$line"
+    done <<EOF
+$open
+EOF
+  done <<EOF
+$snapshot
+EOF
+}
+
 # --- durable status presentation cursor ------------------------------------
 #
 # The status log is append-only, but a wake can be coalesced after several
@@ -647,10 +951,18 @@ _fm_status_file_ident() {  # <file> -> "dev:inode"
 }
 
 _fm_status_file_size() {  # <file>
+  if [ -n "${FM_STATUS_SIZE_READER:-}" ]; then
+    "$FM_STATUS_SIZE_READER" "$1"
+    return
+  fi
+  _fm_status_file_size_direct "$1"
+}
+
+_fm_status_file_size_direct() {  # <file>
   LC_ALL=C wc -c < "$1" 2>/dev/null
 }
 
-_fm_status_read_span() {  # <file> <start-offset> <byte-length>
+_fm_status_read_span_direct() {  # <file> <start-offset> <byte-length>
   perl -MFcntl=:DEFAULT -e '
     my ($path, $start, $length) = @ARGV;
     sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
@@ -663,6 +975,14 @@ _fm_status_read_span() {  # <file> <start-offset> <byte-length>
       $length -= $read;
     }
   ' "$1" "$2" "$3"
+}
+
+_fm_status_read_span() {  # <file> <start-offset> <byte-length>
+  if [ -n "${FM_STATUS_SPAN_READER:-}" ]; then
+    "$FM_STATUS_SPAN_READER" "$1" "$2" "$3"
+    return
+  fi
+  _fm_status_read_span_direct "$1" "$2" "$3"
 }
 
 status_presentation_snapshot() {  # <state>

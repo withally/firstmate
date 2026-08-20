@@ -122,6 +122,7 @@ state/               volatile runtime signals; gitignored
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .delivered-decisions/  private task+key answer-delivery receipts written by fm-send and consumed by the shared classifier on the first matching resolved echo; never touch
   .status-presentation-cursor .status-presentation-lock  private fleet-wide unread-status byte cursor and its presentation lock; never touch
+  .<id>.open-decisions-cursor  private per-status-file byte cursor plus folded open-decision set that bounds each warm drain's open-decision scan to newly appended bytes; retired with its status log; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch

@@ -95,18 +95,24 @@ EOF
 
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
-# fm-classify-lib.sh's status_open_decisions (via its scan_open_decisions
-# wrapper) rather than from the latest-line annotations above, so a decision
-# buried under later unrelated appends cannot be silently missed. Runs on
-# every drain - including the empty-queue fast path - because the decision can
-# still be open even when nothing new is queued for its task this turn.
+# fm-classify-lib.sh's one fold-line rule through the snapshot-bound incremental
+# wrapper rather than from the latest-line annotations above, so a decision
+# buried under later unrelated appends cannot be silently missed. The same
+# status snapshot feeds annotations, unread presentation, and this scan, while
+# each warm decision fold reads only newly appended bytes. Runs on every drain,
+# including the empty-queue fast path, because the decision can still be open
+# even when nothing new is queued for its task this turn.
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
-print_open_decisions_section() {
-  local open task key verb note line item_bytes=220 global_bytes=4000
+print_open_decisions_section() {  # <presentation-snapshot>
+  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes suffix keep
 
-  open=$(scan_open_decisions "$STATE") || return 0
+  if [ -n "$snapshot" ]; then
+    open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
+  else
+    open=$(scan_open_decisions_incremental "$STATE") || return 1
+  fi
   [ -n "$open" ] || return 0
 
   while IFS=$(printf '\t') read -r task key verb note; do
@@ -155,7 +161,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
     print_unread_status_section "$snapshot" || rc=1
   fi
-  print_open_decisions_section || rc=1
+  print_open_decisions_section "$snapshot" || rc=1
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
     acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully") || rc=1
     [ "$rc" -ne 0 ] || status_commit_presentation_snapshot "$STATE" "$acknowledged" || rc=1

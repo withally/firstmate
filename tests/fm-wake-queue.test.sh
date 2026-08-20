@@ -367,8 +367,12 @@ SH
     fail "complete unread delivery still emitted an omission or truncation marker"
   fi
   perl_reads=$(wc -l < "$fake_perl_log" | tr -d ' ')
-  [ "$perl_reads" -eq 18 ] \
-    || fail "complete annotation and unread-surface passes read $perl_reads status files instead of eighteen"
+  # Nine readable files each supply an annotation span, an unread span, one
+  # cold decision-fold span, and one bounded decision-cursor anchor.
+  # The decision scan consumes the existing fleet snapshot rather than walking
+  # the directory again; its dedicated cursor suite proves that inventory rule.
+  [ "$perl_reads" -eq 36 ] \
+    || fail "complete annotation, unread, and cold decision passes made $perl_reads span reads instead of thirty-six"
   if grep -E ': (empty|missing|malformed|unreadable)\.status:' "$out" >/dev/null; then
     fail "missing, unreadable, malformed, or empty status file produced an annotation"
   fi

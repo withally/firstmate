@@ -690,8 +690,8 @@ _fm_open_decisions_numeric_pair() {  # <left:right>
   case "$value" in *:*) ;; *) return 1 ;; esac
   left=${value%%:*}
   right=${value#*:}
-  case "$left:$right" in ''|:*|*:|*[!0-9:]*) return 1 ;; esac
-  case "$right" in *:*) return 1 ;; esac
+  case "$left" in ''|*[!0-9]*) return 1 ;; esac
+  case "$right" in ''|*[!0-9]*) return 1 ;; esac
 }
 
 _fm_open_decisions_anchor() {  # <status-file> <offset>
@@ -747,7 +747,7 @@ _fm_open_decisions_full_refold() {  # <status-file> [<captured-end>] [<captured-
 
 status_open_decisions_incremental() {  # <status-file> [<captured-end>] [<captured-ident>]
   local f=$1 captured_end=${2:-} captured_ident=${3:-} cf cursor_data first rest
-  local offset=0 ident='' generation='' anchor='' open='' trusted_open=''
+  local offset=0 ident='' generation='' anchor='' open=''
   local offset_line ident_line generation_line anchor_line actual_size size cur_ident cur_generation
   local chunk chunk_size complete_size tail_size line resolve held stable_open display_open new_anchor tmp
   local post_ident post_generation post_size
@@ -827,7 +827,6 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end>] [<captur
   fi
 
   if [ "$cursor_valid" -eq 1 ]; then
-    trusted_open=$open
     if [ "$ident" != "$cur_ident" ] || [ "$generation" != "$cur_generation" ] \
       || [ "$offset" -gt "$size" ]; then
       cursor_valid=0
@@ -840,7 +839,6 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end>] [<captur
   if [ "$cursor_valid" -ne 1 ]; then
     offset=0
     open=''
-    trusted_open=''
     cursor_dirty=1
   fi
 

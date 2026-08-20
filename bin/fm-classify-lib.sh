@@ -746,9 +746,9 @@ _fm_open_decisions_full_refold() {  # <status-file> [<captured-end>] [<captured-
 }
 
 status_open_decisions_incremental() {  # <status-file> [<captured-end>] [<captured-ident>]
-  local f=$1 captured_end=${2:-} captured_ident=${3:-} cf cursor_data first rest
+  local f=$1 captured_end=${2:-} captured_ident=${3:-} cf cursor_data first='' rest=''
   local offset=0 ident='' generation='' anchor='' open=''
-  local offset_line ident_line generation_line anchor_line actual_size size cur_ident cur_generation
+  local offset_line='' ident_line='' generation_line='' anchor_line='' actual_size size cur_ident cur_generation
   local chunk chunk_size complete_size tail_size line resolve held stable_open display_open new_anchor tmp
   local post_ident post_generation post_size
   local cursor_valid=0 cursor_dirty=0

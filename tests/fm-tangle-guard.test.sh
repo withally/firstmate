@@ -214,31 +214,51 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
-# A leading // is a portable, textually distinct spelling that resolves to the
-# same filesystem object as / on the supported Bash platforms. This drives the
-# executable through the exact settle-loop boundary that issue #2654 exposed,
-# without relying on a case-insensitive CI filesystem.
+# Drive fm-spawn's settle loop with a spelling of the primary checkout that
+# shares its device and inode but differs in path text, and require refusal.
+# The distinct spelling must survive real_path_or_raw's `pwd -P` canonicalization
+# to actually exercise identity over text: a symlink or a leading // both collapse
+# to the primary's canonical text (verified: `cd //x && pwd -P` -> /x), so under a
+# reverted text comparison they would refuse for the wrong reason and the test
+# could not tell identity from text. A case-insensitive filesystem is the portable
+# source of such a pair - two case variants that identify one directory yet keep
+# distinct `pwd -P` spellings - so where one is available this case exercises the
+# real issue #2654 boundary and fails if the guard is reverted to text (the pane
+# then passes the settle loop and is rejected later by a different message). Where
+# the filesystem is case-sensitive no such pair exists, so we assert the still
+# binding exact-path primary refusal instead of overclaiming identity-vs-text.
 test_spawn_same_identity_alias_abort() {
-  local home proj pane_alias pane_real fakebin out status
+  local home proj proj_variant fakebin out status
   home="$TMP_ROOT/spawn-identity-home"
   mkdir -p "$home/data"
-  proj=$(make_repo "$TMP_ROOT/spawn-identity-proj")
-  pane_alias="/$proj"
-  pane_real=$(cd "$pane_alias" && pwd -P)
-  [ "$pane_real" != "$proj" ] \
-    || fail "portable identity fixture collapsed its distinct path spellings ('$pane_real')"
-  [ "$pane_real" -ef "$proj" ] \
-    || fail "portable identity fixture paths do not identify the same device and inode"
+  proj=$(make_repo "$TMP_ROOT/SpawnIdentityProj")
+  proj_variant="$TMP_ROOT/spawnidentityproj"
   fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-identity-fake")
   fm_fake_exit0 "$fakebin" sleep
 
-  out=$(run_spawn "$home" abort-identity-gg7 "$proj" "$pane_alias" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn should refuse a textually distinct alias of the primary checkout"
+  if [ -d "$proj_variant" ] && [ "$proj" -ef "$proj_variant" ]; then
+    # Same device and inode, textually distinct spellings: the primary is passed
+    # as one case variant and the pane settles at the other, so only a
+    # filesystem-identity comparison can recognize them as the same checkout.
+    out=$(run_spawn "$home" abort-identity-gg7 "$proj_variant" "$proj" "$fakebin"); status=$?
+    expect_code 1 "$status" "spawn should refuse a same-inode, distinct-text spelling of the primary checkout"
+    assert_contains "$out" "treehouse get did not enter a worktree" \
+      "same-identity primary spelling did not produce the settle-loop refusal"
+    assert_not_contains "$out" "spawned abort-identity-gg7" \
+      "same-identity primary spelling was wrongly launched"
+    pass "fm-spawn: filesystem identity refuses a same-inode, distinct-text spelling of the primary checkout"
+    return
+  fi
+
+  # Case-sensitive filesystem: no portable distinct-text/same-inode pair exists,
+  # so pin the exact-path primary refusal (behavior), not identity-vs-text.
+  out=$(run_spawn "$home" abort-identity-gg7 "$proj" "$proj" "$fakebin"); status=$?
+  expect_code 1 "$status" "spawn should refuse the primary checkout"
   assert_contains "$out" "treehouse get did not enter a worktree" \
-    "same-identity primary alias did not produce the settle-loop refusal"
+    "primary checkout did not produce the settle-loop refusal"
   assert_not_contains "$out" "spawned abort-identity-gg7" \
-    "same-identity primary alias was wrongly launched"
-  pass "fm-spawn: filesystem identity refuses a textually distinct alias of the primary checkout"
+    "primary checkout was wrongly launched"
+  pass "fm-spawn: settle loop refuses the primary checkout (case-sensitive fs: exact-path coverage)"
 }
 
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------

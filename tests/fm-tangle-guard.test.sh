@@ -214,6 +214,33 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
+# A leading // is a portable, textually distinct spelling that resolves to the
+# same filesystem object as / on the supported Bash platforms. This drives the
+# executable through the exact settle-loop boundary that issue #2654 exposed,
+# without relying on a case-insensitive CI filesystem.
+test_spawn_same_identity_alias_abort() {
+  local home proj pane_alias pane_real fakebin out status
+  home="$TMP_ROOT/spawn-identity-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-identity-proj")
+  pane_alias="/$proj"
+  pane_real=$(cd "$pane_alias" && pwd -P)
+  [ "$pane_real" != "$proj" ] \
+    || fail "portable identity fixture collapsed its distinct path spellings ('$pane_real')"
+  [ "$pane_real" -ef "$proj" ] \
+    || fail "portable identity fixture paths do not identify the same device and inode"
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-identity-fake")
+  fm_fake_exit0 "$fakebin" sleep
+
+  out=$(run_spawn "$home" abort-identity-gg7 "$proj" "$pane_alias" "$fakebin"); status=$?
+  expect_code 1 "$status" "spawn should refuse a textually distinct alias of the primary checkout"
+  assert_contains "$out" "treehouse get did not enter a worktree" \
+    "same-identity primary alias did not produce the settle-loop refusal"
+  assert_not_contains "$out" "spawned abort-identity-gg7" \
+    "same-identity primary alias was wrongly launched"
+  pass "fm-spawn: filesystem identity refuses a textually distinct alias of the primary checkout"
+}
+
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
 
 # The prevention guard also depends on fm-spawn building robust tmux commands
@@ -306,4 +333,5 @@ test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
+test_spawn_same_identity_alias_abort
 test_spawn_tmux_window_construction

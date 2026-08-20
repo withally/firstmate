@@ -939,8 +939,10 @@ EOF
 # informational line was shown. These helpers snapshot each regular status
 # file at a byte endpoint, read from its last fully presented endpoint, and
 # atomically advance one fleet manifest only after the caller prints the whole
-# captured surface. A changed file identity or missing manifest row restarts at
-# byte zero; malformed cursor state fails closed without advancing anything.
+# captured surface. The first fleet manifest seeds from a valid existing
+# OPEN DECISIONS cursor; after that, a changed file identity or missing manifest
+# row restarts at byte zero. Malformed cursor state fails closed without
+# advancing anything.
 
 _fm_status_file_ident() {  # <file> -> "dev:inode"
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
@@ -1000,17 +1002,96 @@ status_presentation_snapshot() {  # <state>
   done
 }
 
+# Seed a not-yet-created fleet presentation manifest from the existing
+# per-task OPEN DECISIONS cursor. This is the fork's current version-5 cursor,
+# so trust its offset only after rechecking every identity and prefix-anchor
+# field that makes the incremental fold authoritative. A missing or invalid
+# cursor starts at byte zero; I/O failure still fails the presentation closed.
+status_open_decisions_cursor_offset() {  # <status-file>
+  local f=$1 cf cursor_data first='' rest='' offset_line='' ident_line=''
+  local generation_line='' anchor_line='' open='' offset=0 ident='' generation=''
+  local anchor='' cur_ident cur_generation size current_anchor cursor_valid=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  cf=$(_fm_open_decisions_cursor_path "$f")
+  if [ -e "$cf" ] || [ -L "$cf" ]; then
+    [ -f "$cf" ] && [ -r "$cf" ] && [ ! -L "$cf" ] || return 1
+    cursor_data=$(LC_ALL=C command cat "$cf" 2>/dev/null) || return 1
+    case "$cursor_data" in
+      *$'\n'*)
+        first=${cursor_data%%$'\n'*}; rest=${cursor_data#*$'\n'}
+        case "$rest" in
+          *$'\n'*)
+            offset_line=${rest%%$'\n'*}; rest=${rest#*$'\n'}
+            case "$rest" in
+              *$'\n'*)
+                ident_line=${rest%%$'\n'*}; rest=${rest#*$'\n'}
+                case "$rest" in
+                  *$'\n'*)
+                    generation_line=${rest%%$'\n'*}; rest=${rest#*$'\n'}
+                    case "$rest" in
+                      *$'\n'*) anchor_line=${rest%%$'\n'*}; open=${rest#*$'\n'} ;;
+                      *) anchor_line=$rest; open='' ;;
+                    esac
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
+    offset=${offset_line#offset=}
+    ident=${ident_line#ident=}
+    generation=${generation_line#generation=}
+    anchor=${anchor_line#anchor=}
+    if [ "$first" = "version=$FM_OPEN_DECISIONS_FOLD_VERSION" ] \
+      && [ "$offset_line" = "offset=$offset" ] \
+      && [ "$ident_line" = "ident=$ident" ] \
+      && [ "$generation_line" = "generation=$generation" ] \
+      && [ "$anchor_line" = "anchor=$anchor" ] \
+      && _fm_open_decisions_numeric_pair "$ident" \
+      && _fm_open_decisions_numeric_pair "$anchor" \
+      && _fm_open_decisions_set_valid "$open"; then
+      case "$offset" in
+        ''|*[!0-9]*) cursor_valid=0 ;;
+        *)
+          case "$generation" in
+            ''|*[!0-9]*) cursor_valid=0 ;;
+            *) cursor_valid=1 ;;
+          esac
+          ;;
+      esac
+    fi
+  fi
+
+  cur_ident=$(_fm_status_file_ident "$f") || return 1
+  cur_generation=$(_fm_status_file_generation "$f") || return 1
+  size=$(_fm_status_file_size "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$cur_generation" in ''|*[!0-9]*) return 1 ;; esac
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$cursor_valid" -eq 1 ] && [ "$ident" = "$cur_ident" ] \
+    && [ "$generation" = "$cur_generation" ] && [ "$offset" -le "$size" ]; then
+    current_anchor=$(_fm_open_decisions_anchor "$f" "$offset") || return 1
+    [ "$anchor" = "$current_anchor" ] || cursor_valid=0
+  else
+    cursor_valid=0
+  fi
+  [ "$cursor_valid" -eq 1 ] || offset=0
+  printf '%s' "$offset"
+}
+
 status_presentation_cursor_offset() {  # <status-file>
-  local f=$1 state task manifest data row_task ident offset extra cur_ident size found=0
+  local f=$1 state task manifest data row_task ident offset extra cur_ident size found=0 legacy
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
   state=${f%/*}
   task=${f##*/}; task=${task%.status}
   manifest="$state/.status-presentation-cursor"
-  offset=0
-  ident=$(_fm_status_file_ident "$f") || return 1
   if [ -e "$manifest" ] || [ -L "$manifest" ]; then
     [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
     data=$(LC_ALL=C command cat "$manifest" 2>/dev/null) || return 1
+    offset=0
+    ident=$(_fm_status_file_ident "$f") || return 1
     while IFS=$(printf '\t') read -r row_task cur_ident size extra; do
       [ -n "$row_task" ] || continue
       [ -z "$extra" ] && [ -n "$cur_ident" ] || return 1
@@ -1024,6 +1105,14 @@ status_presentation_cursor_offset() {  # <status-file>
     done <<EOF
 $data
 EOF
+  else
+    legacy=$(_fm_open_decisions_cursor_path "$f")
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+      status_open_decisions_cursor_offset "$f"
+      return
+    fi
+    offset=0
+    ident=$(_fm_status_file_ident "$f") || return 1
   fi
   cur_ident=$(_fm_status_file_ident "$f") || return 1
   size=$(_fm_status_file_size "$f") || return 1
@@ -1070,6 +1159,7 @@ scan_unread_surface_snapshot() {  # <state> <snapshot>
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     lines=$(status_new_lines_since_cursor "$state/$task.status" "$endpoint") || return 1
+    [ -n "$lines" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] && status_line_is_unread_surface "$line" \
         && printf '%s\t%s\n' "$task" "$line"
@@ -1079,6 +1169,7 @@ EOF
   done <<EOF
 $snapshot
 EOF
+  return 0
 }
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]

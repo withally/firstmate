@@ -214,51 +214,64 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
-# Drive fm-spawn's settle loop with a spelling of the primary checkout that
-# shares its device and inode but differs in path text, and require refusal.
-# The distinct spelling must survive real_path_or_raw's `pwd -P` canonicalization
-# to actually exercise identity over text: a symlink or a leading // both collapse
-# to the primary's canonical text (verified: `cd //x && pwd -P` -> /x), so under a
-# reverted text comparison they would refuse for the wrong reason and the test
-# could not tell identity from text. A case-insensitive filesystem is the portable
-# source of such a pair - two case variants that identify one directory yet keep
-# distinct `pwd -P` spellings - so where one is available this case exercises the
-# real issue #2654 boundary and fails if the guard is reverted to text (the pane
-# then passes the settle loop and is rejected later by a different message). Where
-# the filesystem is case-sensitive no such pair exists, so we assert the still
-# binding exact-path primary refusal instead of overclaiming identity-vs-text.
-test_spawn_same_identity_alias_abort() {
-  local home proj proj_variant fakebin out status
+# The identity primitive that every spawn same-directory comparison now routes
+# through. Load the real function out of the shipped script (fm-spawn.sh is a
+# top-level program, not a sourceable library, so eval its exact definition) and
+# exercise it: a device+inode pair is portable on BSD stat and GNU stat, two
+# textually distinct spellings of one directory must compare EQUAL, and two
+# distinct directories must compare UNEQUAL. A textual path comparison would call
+# the distinct spellings unequal, so this fails if the guard's comparison is
+# reverted to text - on both Linux and macOS, with no case-insensitive filesystem
+# required. `..`-traversal (not a symlink or leading //) is the distinct spelling,
+# because those collapse under canonicalization while stat still resolves inode.
+test_path_filesystem_identity() {
+  local fn dir dir_alias other id_dir id_alias id_other
+  fn=$(awk '/^path_filesystem_identity\(\)/{f=1} f{print} f&&/^}/{exit}' "$ROOT/bin/fm-spawn.sh")
+  [ -n "$fn" ] || fail "could not load path_filesystem_identity from bin/fm-spawn.sh"
+  eval "$fn"
+
+  mkdir -p "$TMP_ROOT/identity-dir" "$TMP_ROOT/identity-other"
+  dir="$TMP_ROOT/identity-dir"
+  dir_alias="$TMP_ROOT/identity-other/../identity-dir"
+  other="$TMP_ROOT/identity-other"
+  [ "$dir" != "$dir_alias" ] || fail "identity fixture spellings are not textually distinct"
+
+  id_dir=$(path_filesystem_identity "$dir") || fail "identity read failed for '$dir'"
+  id_alias=$(path_filesystem_identity "$dir_alias") || fail "identity read failed for '$dir_alias'"
+  id_other=$(path_filesystem_identity "$other") || fail "identity read failed for '$other'"
+
+  case "$id_dir" in
+    [0-9]*:[0-9]*) ;;
+    *) fail "identity is not a device:inode pair ('$id_dir')" ;;
+  esac
+  [ "$id_dir" = "$id_alias" ] \
+    || fail "same device+inode via distinct spellings compared unequal ('$id_dir' vs '$id_alias')"
+  [ "$id_dir" != "$id_other" ] \
+    || fail "distinct directories shared an identity ('$id_dir')"
+
+  path_filesystem_identity "$TMP_ROOT/identity-does-not-exist" >/dev/null 2>&1 \
+    && fail "identity read of a missing path should fail loudly, not succeed"
+  pass "path_filesystem_identity: distinct spellings of one dir identify equal; different dirs differ; missing path fails"
+}
+
+# The exact-path primary-copy refusal through the fm-spawn CLI: when the pane
+# settles at the primary checkout itself, the settle loop never leaves it and the
+# spawn refuses rather than tangling a hook into the primary.
+test_spawn_primary_copy_abort() {
+  local home proj fakebin out status
   home="$TMP_ROOT/spawn-identity-home"
   mkdir -p "$home/data"
-  proj=$(make_repo "$TMP_ROOT/SpawnIdentityProj")
-  proj_variant="$TMP_ROOT/spawnidentityproj"
+  proj=$(make_repo "$TMP_ROOT/spawn-identity-proj")
   fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-identity-fake")
   fm_fake_exit0 "$fakebin" sleep
 
-  if [ -d "$proj_variant" ] && [ "$proj" -ef "$proj_variant" ]; then
-    # Same device and inode, textually distinct spellings: the primary is passed
-    # as one case variant and the pane settles at the other, so only a
-    # filesystem-identity comparison can recognize them as the same checkout.
-    out=$(run_spawn "$home" abort-identity-gg7 "$proj_variant" "$proj" "$fakebin"); status=$?
-    expect_code 1 "$status" "spawn should refuse a same-inode, distinct-text spelling of the primary checkout"
-    assert_contains "$out" "treehouse get did not enter a worktree" \
-      "same-identity primary spelling did not produce the settle-loop refusal"
-    assert_not_contains "$out" "spawned abort-identity-gg7" \
-      "same-identity primary spelling was wrongly launched"
-    pass "fm-spawn: filesystem identity refuses a same-inode, distinct-text spelling of the primary checkout"
-    return
-  fi
-
-  # Case-sensitive filesystem: no portable distinct-text/same-inode pair exists,
-  # so pin the exact-path primary refusal (behavior), not identity-vs-text.
   out=$(run_spawn "$home" abort-identity-gg7 "$proj" "$proj" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn should refuse the primary checkout"
+  expect_code 1 "$status" "spawn should refuse the primary checkout itself"
   assert_contains "$out" "treehouse get did not enter a worktree" \
     "primary checkout did not produce the settle-loop refusal"
   assert_not_contains "$out" "spawned abort-identity-gg7" \
     "primary checkout was wrongly launched"
-  pass "fm-spawn: settle loop refuses the primary checkout (case-sensitive fs: exact-path coverage)"
+  pass "fm-spawn: settle loop refuses the primary checkout through the CLI"
 }
 
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
@@ -353,5 +366,6 @@ test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
-test_spawn_same_identity_alias_abort
+test_path_filesystem_identity
+test_spawn_primary_copy_abort
 test_spawn_tmux_window_construction

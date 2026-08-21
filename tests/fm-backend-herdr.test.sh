@@ -833,11 +833,13 @@ test_create_task_creates_with_no_focus_flag() {
 
 # --- default-on disposable presentation projection --------------------------
 
-# A status-only Herdr stub for the presentation release-floor contract.
-# Empty protocol or version values omit those fields, "unreadable" makes the
-# whole status call fail, and a server-running value other than true or false
-# leaves that state unknown.
-make_release_fakebin() {  # <dir> <client-protocol> <client-version> [<server-running> <server-protocol> <server-version>]
+# make_release_fakebin: a `herdr` stub whose only job is `status --json`, so the
+# presentation version floor can be exercised against scripted client and
+# selected-session server releases with no herdr installed at all. An empty
+# protocol or version omits that field; the literal client value "unreadable"
+# makes the whole call fail, and a server-running value other than true or false
+# omits that state.
+make_release_fakebin() {  # <dir> <client-protocol> <client-version> [<server-running> <server-protocol> <server-version>] -> echoes fakebin dir
   local dir=$1 protocol=$2 version=$3 server_running=${4:-false} server_protocol=${5:-} server_version=${6:-}
   local fb="$1/release-fakebin" fields="" server_fields=""
   mkdir -p "$fb"
@@ -874,15 +876,18 @@ SH
 }
 
 # fm_backend_herdr_presentation_enabled is the one gate bin/fm-spawn.sh consults
-# before projecting a crewmate or scout, so these cases pin explicit choices
-# and the release-dependent unconfigured default at that interface.
-presentation_enabled_verdict() {  # <config-dir> <fakebin> [state-dir] [session] -> on|off
+# before projecting a crewmate or scout, so these cases pin the default-on
+# contract, its explicit opt-out, its explicit opt-in, and the version floor
+# that decides the unconfigured default at that interface.
+presentation_enabled_verdict() {  # <config-dir> <fakebin> [state-dir] [session] -> "on"/"off"
   HERDR_SESSION="${4:-}" PATH="$2:$PATH" bash -c '
     . "$0/bin/backends/herdr.sh"
     if fm_backend_herdr_presentation_enabled "$1" "$2"; then printf "on\n"; else printf "off\n"; fi
   ' "$ROOT" "$1" "${3:-}"
 }
 
+# The exact release identities measured against the real macOS aarch64 release
+# binaries on 2026-08-05 and recorded in docs/verification/runtime-backends.md.
 AT_FLOOR_PROTOCOL=19
 AT_FLOOR_VERSION=0.8.0
 BELOW_FLOOR_PROTOCOL=17
@@ -910,9 +915,9 @@ test_presentation_default_falls_back_below_the_floor() {
   [ "$verdict" = off ] || fail "an unconfigured home below the floor must fall back flat, got '$verdict'"
   assert_contains "$(cat "$stderr")" "$BELOW_FLOOR_VERSION" \
     "the below-floor warning must name the running release"
-  assert_contains "$(cat "$stderr")" "$AT_FLOOR_VERSION" \
+  assert_contains "$(cat "$stderr")" "0.8.0" \
     "the below-floor warning must name the upgrade that fixes it"
-  pass "herdr presentation: an unconfigured home below the floor falls back flat with a naming warning"
+  pass "herdr presentation: an unconfigured home below the floor falls back flat with one naming warning"
 }
 
 test_presentation_unreadable_release_falls_back() {
@@ -927,13 +932,14 @@ test_presentation_unreadable_release_falls_back() {
   pass "herdr presentation: an unreadable client release falls back flat instead of guessing"
 }
 
-test_presentation_legacy_opt_in_file_still_resolves_on() {
+test_presentation_explicit_opt_in_survives_the_floor() {
   local dir config fb verdict stderr
   dir="$TMP_ROOT/presentation-legacy-opt-in"; config="$dir/config"; mkdir -p "$config"
   stderr="$dir/legacy.err"
   fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
   # The historical opt-in was a bare `touch` of the file, so an empty file must
-  # keep meaning on - and must not warn, or every migrated home warns on every spawn.
+  # keep meaning a deliberate on - and must not warn, or every migrated home
+  # warns on every spawn.
   : > "$config/herdr-presentation-spaces"
   verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
   [ "$verdict" = on ] || fail "a legacy empty opt-in file must resolve on below the floor, got '$verdict'"
@@ -946,7 +952,7 @@ test_presentation_legacy_opt_in_file_still_resolves_on() {
   verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
   [ "$verdict" = on ] || fail "an explicit on must resolve on below the floor, got '$verdict'"
   [ ! -s "$stderr" ] || fail "an explicit opt-in must not warn: $(cat "$stderr")"
-  pass "herdr presentation: a deliberate opt-in remains on below the floor"
+  pass "herdr presentation: a deliberate opt-in is never silently downgraded below the floor"
 }
 
 test_presentation_explicit_off_opts_out() {
@@ -962,19 +968,22 @@ test_presentation_explicit_off_opts_out() {
   pass "herdr presentation: an explicit off opts the home out"
 }
 
-test_presentation_unrecognized_value_warns_and_keeps_default() {
+test_presentation_unrecognized_value_warns_and_keeps_the_default() {
   local dir config fb verdict stderr
   dir="$TMP_ROOT/presentation-unrecognized"; config="$dir/config"; mkdir -p "$config"
   stderr="$dir/unrecognized.err"
   printf 'disabled\n' > "$config/herdr-presentation-spaces"
   fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
   verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
-  [ "$verdict" = on ] || fail "an unrecognized value must keep the default on, got '$verdict'"
-  [ -s "$stderr" ] || fail "an unrecognized value must warn so a typo is visible"
-  fb=$(make_release_fakebin "$dir/below" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  [ "$verdict" = on ] || fail "an unrecognized value at the floor must keep the default on, got '$verdict'"
+  assert_contains "$(cat "$stderr")" 'unrecognized value' \
+    "an unrecognized value must warn so a typo is visible"
+  # A typo is not a deliberate opt-in, so below the floor it takes the default's
+  # flat fallback rather than forcing a focus-unsafe projection.
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
   verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
   [ "$verdict" = off ] || fail "an unrecognized value below the floor must follow the default, got '$verdict'"
-  pass "herdr presentation: an unrecognized value warns and follows the release-dependent default"
+  pass "herdr presentation: an unrecognized value warns and follows the default instead of failing a spawn"
 }
 
 test_presentation_floor_warning_is_one_per_release() {
@@ -986,14 +995,15 @@ test_presentation_floor_warning_is_one_per_release() {
   second=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
   [ -n "$first" ] || fail "the first below-floor spawn must warn"
   [ -z "$second" ] || fail "a repeat spawn on the same release must not warn again: $second"
+  # A downgrade or an upgrade is a different release, so it is announced again.
   fb=$(make_release_fakebin "$dir/other" 16 0.7.3)
   third=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
   assert_contains "$third" '0.7.3' "a changed release must re-announce the floor"
-  pass "herdr presentation: the below-floor warning is one per home per release"
+  pass "herdr presentation: the below-floor warning is one per home per release, not one per spawn"
 }
 
 test_presentation_floor_warning_marker_is_atomic_and_symlink_safe() {
-  local dir config state fb i pid warnings marker outside symlink_warning
+  local dir config state fb i pid warnings marker outside symlink_warning failure_state failure_warning
   local pids=()
   dir="$TMP_ROOT/presentation-floor-marker-safety"; config="$dir/config"; state="$dir/state"
   mkdir -p "$config" "$state"
@@ -1020,7 +1030,18 @@ test_presentation_floor_warning_marker_is_atomic_and_symlink_safe() {
     || fail "an existing dangling marker symlink must be treated as already claimed: $symlink_warning"
   [ ! -e "$outside" ] \
     || fail "publishing the floor marker followed a dangling symlink outside the state directory"
-  pass "herdr presentation: warning marker publication is atomic and symlink-safe"
+
+  failure_state="$dir/failure-state"
+  mkdir -p "$failure_state"
+  cat > "$fb/ln" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fb/ln"
+  failure_warning=$(presentation_enabled_verdict "$config" "$fb" "$failure_state" 2>&1 >/dev/null)
+  [ -n "$failure_warning" ] \
+    || fail "a non-collision marker publication failure must not suppress the warning"
+  pass "herdr presentation: warning marker publication is atomic, symlink-safe, and fails visible"
 }
 
 test_presentation_running_server_release_is_load_bearing() {
@@ -1048,22 +1069,31 @@ test_presentation_running_server_release_is_load_bearing() {
     true "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
   verdict=$(presentation_enabled_verdict "$config" "$fb" "" current-session 2>"$stderr")
   [ "$verdict" = off ] \
-    || fail "a below-floor client must block projection despite an at-floor server, got '$verdict'"
+    || fail "a below-floor client must conservatively block projection despite an at-floor server, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "$BELOW_FLOOR_VERSION" \
+    "the conservative client/server warning must name the below-floor client"
 
   printf 'on\n' > "$config/herdr-presentation-spaces"
-  fb=$(make_release_fakebin "$dir/opt-in" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+  fb=$(make_release_fakebin "$dir/opt-in-old-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
     true "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
   verdict=$(presentation_enabled_verdict "$config" "$fb" "" stale-session 2>"$stderr")
-  [ "$verdict" = on ] || fail "an explicit opt-in must survive a below-floor running server"
-  [ ! -s "$stderr" ] || fail "an explicit opt-in below the server floor must not warn"
-  rm -f "$config/herdr-presentation-spaces"
+  [ "$verdict" = on ] \
+    || fail "an explicit opt-in must survive a below-floor running server, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "an explicit opt-in below the server floor must not warn: $(cat "$stderr")"
+  unlink "$config/herdr-presentation-spaces"
 
   fb=$(make_release_fakebin "$dir/unknown-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" unknown)
   verdict=$(presentation_enabled_verdict "$config" "$fb" "" unknown-session 2>"$stderr")
-  [ "$verdict" = off ] || fail "an unreadable selected server state must fail flat, got '$verdict'"
-  pass "herdr presentation: client and selected server floors compose conservatively"
+  [ "$verdict" = off ] \
+    || fail "an unreadable selected-session server state must fail flat instead of substituting the client, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "could not be read" \
+    "an unreadable selected-session server state must warn"
+  pass "herdr presentation: client and selected server floors compose conservatively without overriding explicit opt-in"
 }
 
+# The floor classifier is pure, so these cases pin it against every release
+# identity measured from the real binaries plus the deliberate signal-loss and
+# signal-divergence shapes that decide which signal carried a verdict.
 release_floor_verdict() {  # <protocol> <version> -> above|below|indeterminate
   bash -c '
     . "$0/bin/backends/herdr.sh"
@@ -1077,8 +1107,9 @@ release_floor_verdict() {  # <protocol> <version> -> above|below|indeterminate
   ' "$ROOT" "$1" "$2"
 }
 
-test_release_floor_verdict_matches_measured_releases_and_signal_loss() {
-  local protocol version expected got
+test_release_floor_verdict_matches_the_measured_releases() {
+  local expected protocol version got case_line
+  # protocol<TAB>version<TAB>expected, from the 2026-08-05 measurement.
   while IFS=$'\t' read -r protocol version expected; do
     [ -n "$expected" ] || continue
     got=$(release_floor_verdict "$protocol" "$version")
@@ -1088,19 +1119,63 @@ test_release_floor_verdict_matches_measured_releases_and_signal_loss() {
 16	0.7.3	below
 16	0.7.4	below
 17	0.7.5	below
+17	0.7.5-preview.2026-07-21-0f10e1453a7f	below
 18	0.7.5-preview.2026-07-29-44b3adb12552	below
 19	0.8.0-preview.2026-08-04-d78e3d3b5126	above
 19	0.8.0	above
 20	0.9.0	above
 CASES
-  [ "$(release_floor_verdict 19 '')" = above ] || fail "the floor protocol alone must carry an above verdict"
-  [ "$(release_floor_verdict 17 '')" = below ] || fail "a below-floor protocol alone must carry a below verdict"
-  [ "$(release_floor_verdict '' 0.8.0)" = above ] || fail "the floor version alone must carry an above verdict"
-  [ "$(release_floor_verdict '' 0.7.5)" = below ] || fail "a below-floor version alone must carry a below verdict"
-  [ "$(release_floor_verdict '' '')" = indeterminate ] || fail "losing both signals must be indeterminate"
-  [ "$(release_floor_verdict 19 0.7.5)" = above ] || fail "the protocol signal must survive a divergent version"
-  [ "$(release_floor_verdict 16 0.9.0)" = above ] || fail "the version signal must survive a divergent protocol"
-  pass "herdr presentation floor: measured releases and independent signals classify correctly"
+  case_line=$(release_floor_verdict 19 '')
+  [ "$case_line" = above ] || fail "a floor protocol alone must carry an above verdict, got $case_line"
+  case_line=$(release_floor_verdict 17 '')
+  [ "$case_line" = below ] || fail "a below-floor protocol alone must carry a below verdict, got $case_line"
+  case_line=$(release_floor_verdict '' 0.8.0)
+  [ "$case_line" = above ] || fail "a floor version alone must carry an above verdict, got $case_line"
+  case_line=$(release_floor_verdict '' 0.7.5)
+  [ "$case_line" = below ] || fail "a below-floor version alone must carry a below verdict, got $case_line"
+  case_line=$(release_floor_verdict '' '')
+  [ "$case_line" = indeterminate ] || fail "losing both signals must be indeterminate, got $case_line"
+  case_line=$(release_floor_verdict 'not-a-number' 'not-a-version')
+  [ "$case_line" = indeterminate ] || fail "two unparseable signals must be indeterminate, got $case_line"
+  pass "herdr presentation floor: every measured release, and each signal alone, classifies correctly"
+}
+
+test_release_floor_verdict_survives_losing_either_signal() {
+  local got
+  # Divergence, asserted explicitly so neither half can go vacuous: with a
+  # floor protocol and a below-floor version the protocol carries the verdict,
+  # and removing it flips the answer, which proves it was load-bearing there.
+  got=$(release_floor_verdict 19 0.7.5)
+  [ "$got" = above ] || fail "the protocol signal must carry an above verdict on its own, got $got"
+  got=$(release_floor_verdict '' 0.7.5)
+  [ "$got" = below ] || fail "the divergent case must flip once the protocol signal is gone, got $got"
+  # The mirror image: a floor version with a stale protocol, and the same
+  # removal check.
+  got=$(release_floor_verdict 16 0.9.0)
+  [ "$got" = above ] || fail "the version signal must carry an above verdict on its own, got $got"
+  got=$(release_floor_verdict 16 '')
+  [ "$got" = below ] || fail "the divergent case must flip once the version signal is gone, got $got"
+  pass "herdr presentation floor: either signal alone can carry an above verdict, and each divergence is real"
+}
+
+test_presentation_preference_reports_three_distinct_states() {
+  local dir config got
+  dir="$TMP_ROOT/presentation-preference"; config="$dir/config"; mkdir -p "$config"
+  preference() {
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_preference "$1"' "$ROOT" "$1" 2>/dev/null
+  }
+  got=$(preference "$config")
+  [ "$got" = default ] || fail "an absent file must report the default, got '$got'"
+  printf 'on\n' > "$config/herdr-presentation-spaces"
+  got=$(preference "$config")
+  [ "$got" = on ] || fail "an explicit on must report on, got '$got'"
+  printf 'off\n' > "$config/herdr-presentation-spaces"
+  got=$(preference "$config")
+  [ "$got" = off ] || fail "an explicit off must report off, got '$got'"
+  printf 'disabled\n' > "$config/herdr-presentation-spaces"
+  got=$(preference "$config")
+  [ "$got" = default ] || fail "an unrecognized value must report the default, got '$got'"
+  pass "herdr presentation: config parsing separates a deliberate choice from an unconfigured default"
 }
 
 test_projection_journal_is_atomic_and_uses_128_bit_token() {
@@ -3357,16 +3432,20 @@ test_send_text_submit_detects_landed_send() {
 test_send_text_submit_detects_swallowed_enter() {
   local dir log resp fb out
   dir="$TMP_ROOT/submit-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # Every post-Enter agent-get read still reports idle: the Enter never
-  # started a turn (swallowed), so wait_for_working never observes "busy".
+  # Every post-Enter agent-get read still reports idle, and the composer still
+  # holds the typed text: a genuine swallow, not a queued Enter.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/8.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/9.out"
+  printf '  ready\n' > "$resp/10.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = pending ] || fail "send_text_submit should report pending once retries are exhausted with agent_status never going busy, got '$out'"
-  pass "fm_backend_herdr_send_text_submit: reports 'pending' when agent_status never reports working after retried Enters (swallowed)"
+  [ "$out" = pending ] || fail "send_text_submit should report pending once retries are exhausted with agent_status never going busy and the composer still holding the text, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: reports 'pending' when agent_status stays idle and the composer still holds unsent text after retried Enters (swallowed)"
 }
 
 # Regression coverage for the 2026-07-03 incident using the NEW mechanism: a
@@ -3384,9 +3463,12 @@ test_send_text_submit_popup_autocomplete_requires_second_enter() {
   # 4: agent get -> idle (not submitted yet)
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  # 5: send-keys enter (#2) - actually submits
-  # 6: agent get -> working (submitted)
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  # 5: composer still holds the placeholder fill; native idle falls through
+  #    to the shared composer verdict, which retries rather than confirming.
+  printf '  \xe2\x9d\xaf /compact\n' > "$resp/5.out"
+  # 6: send-keys enter (#2) - actually submits
+  # 7: agent get -> working (submitted)
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "/compact" 3 0.01 1.2' "$ROOT" )
@@ -3411,94 +3493,198 @@ test_send_text_submit_confirms_blocked_after_enter() {
   pass "fm_backend_herdr_send_text_submit: a post-Enter blocked state confirms delivery without retrying into the prompt"
 }
 
-test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter() {
-  local dir log resp fb out enter_count read_count
-  dir="$TMP_ROOT/submit-preexisting-working-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+test_send_text_submit_preexisting_working_pending_is_queued_enter() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-preexisting-working-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # Native working + proven pending after the retry budget is the OpenCode
+  # busy-queued Enter: the harness accepted Enter and will submit when the
+  # current turn ends. Footer transition is not the confirmation path here
+  # because the pre-Enter native status is already working.
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/3.out"
+  printf '  ready\n' > "$resp/3.out"
   printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = pending ] || fail "send_text_submit must not accept preexisting working as proof that this Enter landed, got '$out'"
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "a working native baseline plus proven pending after retries is a queued Enter, got '$out'"
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 2 ] || fail "preexisting-working swallowed Enter should retry Enter up to the configured count, sent $enter_count Enter(s)"
-  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 3 ] || fail "preexisting-working confirmation should observe the typed text and then fall back to composer reads, made $read_count read(s)"
-  pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message"
+  [ "$enter_count" -eq 1 ] || fail "queued-Enter confirmation should use the configured retry count, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: native working + proven pending after retries reports empty (queued Enter)"
 }
 
-# The busy-baseline success case: a steer typed into a mid-turn pane is
-# observed pending BEFORE the first Enter, and the post-Enter clearance then
-# confirms delivery. Without the pre-Enter observation this genuinely
-# delivered message would report unknown forever (the false negative the
-# intent forbids).
-test_send_text_submit_busy_baseline_observed_clear_confirms() {
+test_send_text_submit_preexisting_working_does_not_confirm_failed_enter() {
   local dir log resp fb out enter_count
-  dir="$TMP_ROOT/submit-busy-observed-clear"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  dir="$TMP_ROOT/submit-preexisting-working-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/3.out"
+  printf '  ready\n' > "$resp/3.out"
+  printf '1\n' > "$resp/4.exit"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = send-failed ] || fail "a failed Enter must not be reported as queued delivery merely because native status is working, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "send_text_submit should attempt the configured number of Enters, made $enter_count attempt(s)"
+  pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow preexisting working state as queued-delivery proof"
+}
+
+test_send_text_submit_idle_baseline_does_not_confirm_failed_enter() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-idle-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '1\n' > "$resp/3.exit"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = send-failed ] || fail "a failed Enter must not borrow a later native transition as delivery proof, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "send_text_submit should attempt the configured number of Enters, made $enter_count attempt(s)"
+  [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] || fail "a failed Enter must not run native delivery confirmation"
+  pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow a later native transition as delivery proof"
+}
+
+test_send_text_submit_idle_native_empty_composer_confirms_delivery() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-idle-native-empty-composer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # Live Claude on Herdr 0.8.0 keeps agent_status idle through a landed turn.
+  # After Enter, native wait_for_working stays idle and the composer clears:
+  # that empty verdict is positive delivery, not a swallow.
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
   printf '  \xe2\x9d\xaf\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "an idle native status plus a cleared composer must confirm delivery, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a cleared composer should confirm without extra Enters, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: idle native agent-state plus empty composer reports empty (landed Claude turn)"
+}
+
+test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-idle-native-rendered-busy-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # Idle native baseline (Claude never leaves idle) with proven pending text
+  # and a generating footer after retries is a queued follow-up Enter.
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "idle native + proven pending + rendered busy after retries is a queued Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: idle native baseline uses a rendered busy footer to confirm a queued Enter"
+}
+
+# --- the never-idle-native-state harness (real cursor on herdr) --------------
+# Measured live on cursor-agent 2026.08.11-e8db854 under herdr: `agent get`
+# reports a cursor pane `blocked` in EVERY state - idle, mid-turn, and after -
+# so the idle-baseline native path is structurally unreachable and every send
+# lands in the composer branch. Cursor's mid-turn composer row renders its own
+# `Add a follow-up` placeholder beside a right-aligned `ctrl+c to stop`, so the
+# content verdict is `pending` on a composer holding no user text, and every
+# steer reported delivery unconfirmed on a message that had actually landed.
+# The bytes below are the real captures from that pane.
+
+# The idle capture: no busy token anywhere, which is the pre-Enter baseline.
+herdr_cursor_idle_plain() {
+  printf '%b' ' ▄▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 7%%           Run Everything\n  ~/.treehouse/curhd-ae68cd/1/curhd · 39418af\n'
+}
+
+# The mid-turn capture, plain: the spinner verb rotates, the `ctrl+c to stop`
+# token does not, which is why the token is what the matcher keys on.
+herdr_cursor_midturn_plain() {
+  printf '%b' ' ⠘⠆ Running  59 tokens\n ▄▄▄▄▄▄▄▄▄▄\n  → Add a follow-up                   ctrl+c to stop\n ▀▀▀▀▀▀▀▀▀▀\n  1 task\n  Cursor Grok 4.5 High · 7%%           Run Everything\n  ~/.treehouse/curhd-ae68cd/1/curhd · 39418af\n'
+}
+
+# The same mid-turn rows as herdr renders them with styling: the glyph and the
+# placeholder tail are dim, the cell under the parked terminal cursor is
+# reverse video, and the busy token trails on the SAME row.
+herdr_cursor_midturn_ansi() {
+  printf '%b' ' \033[0m\033[38;2;21;21;21m▄▄▄▄▄▄▄▄▄▄\033[0m\r\n \033[0m\033[48;2;21;21;21m \033[0m\033[2m\033[48;2;21;21;21m→ \033[0m\033[7m\033[48;2;21;21;21mA\033[0m\033[2m\033[48;2;21;21;21mdd a follow-up\033[0m\033[48;2;21;21;21m                   \033[0m\033[2m\033[48;2;21;21;21mctrl+c to stop\033[0m\033[48;2;21;21;21m \033[0m\r\n \033[0m\033[38;2;21;21;21m▀▀▀▀▀▀▀▀▀▀\033[0m\r\n  \033[0m\033[38;5;4m1 task\033[0m\r\n  \033[0m\033[2mCursor Grok 4.5 High\033[0m \033[0m\033[2m·\033[0m \033[0m\033[2m7%%\033[0m           \033[0m\033[38;5;5mRun Everything\033[0m\r\n  \033[0m\033[2m~/.treehouse/curhd-ae68cd/1/curhd · 39418af\033[0m\r\n'
+}
+
+# Non-vacuity anchor for the two submit tests below: the real mid-turn capture
+# genuinely reads `pending`, so the confirmation those tests assert can only be
+# coming from the rendered-footer transition and never from a softened composer
+# verdict. The composer verdict is deliberately NOT relaxed - a right-aligned
+# status token on the composer row is content the shared classifier must keep
+# treating as content for every other caller.
+test_composer_state_cursor_midturn_row_reads_pending() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-cursor-midturn"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  herdr_cursor_midturn_ansi > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = pending ] || fail "cursor's mid-turn composer row carries a busy token and must stay 'pending' as composer CONTENT, got '$out'"
+  pass "fm_backend_herdr_composer_state: cursor's mid-turn placeholder-plus-busy-token row reads pending (why delivery needs a separate signal)"
+}
+
+test_rendered_busy_state_reads_the_cursor_busy_token() {
+  local dir log resp fb idle_out busy_out fail_out
+  dir="$TMP_ROOT/rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  herdr_cursor_idle_plain > "$resp/1.out"
+  herdr_cursor_midturn_plain > "$resp/2.out"
+  printf '1\n' > "$resp/3.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  idle_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2' "$ROOT" )
+  busy_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2' "$ROOT" )
+  fail_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2' "$ROOT" )
+  [ "$idle_out" = idle ] || fail "an idle cursor pane renders no busy token and must read idle, got '$idle_out'"
+  [ "$busy_out" = busy ] || fail "a mid-turn cursor pane renders 'ctrl+c to stop' and must read busy, got '$busy_out'"
+  [ "$fail_out" = unknown ] || fail "an unreadable pane must read unknown, never idle, got '$fail_out'"
+  pass "fm_backend_herdr_rendered_busy_state: busy/idle/unknown from the rendered footer, with an unreadable pane never reading idle"
+}
+
+test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-cursor-footer-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: send-text
+  # 2: agent get - cursor is `blocked` even while idle, so the native
+  #    idle-baseline path is unreachable and the composer branch runs
+  # 3: pane read - rendered footer baseline: no busy token, so the pane was NOT
+  #    mid-turn before our Enter
+  # 4: send-keys enter
+  # 5: pane read - composer content mid-turn: placeholder plus busy token
+  # 6: pane read - rendered footer now busy: an idle-to-busy transition ACROSS
+  #    our Enter, which is the submission proof
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  herdr_cursor_idle_plain > "$resp/3.out"
+  herdr_cursor_midturn_ansi > "$resp/5.out"
+  herdr_cursor_midturn_plain > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "an idle-to-busy rendered-footer transition must confirm the submit for a harness whose native state never goes idle, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a confirmed submit must not send a needless extra Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: a rendered-footer idle-to-busy transition confirms delivery when native agent-state never reports idle"
+}
+
+test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-cursor-no-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # The pane was ALREADY mid-turn before our Enter, so its busy footer is not
+  # evidence about OUR message: the verdict must stay pending rather than
+  # borrowing someone else's turn as proof of our delivery.
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  herdr_cursor_midturn_plain > "$resp/3.out"
+  herdr_cursor_midturn_ansi > "$resp/5.out"
+  herdr_cursor_midturn_ansi > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = empty ] || fail "a busy-baseline submit whose typed text was observed pending and then cleared must confirm, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 1 ] || fail "an observed clear after the first Enter must not provoke another Enter, sent $enter_count Enter(s)"
-  pass "fm_backend_herdr_send_text_submit: a busy-baseline steer confirms once its observed pending text clears"
-}
-
-test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition() {
-  local dir log resp fb out enter_count
-  dir="$TMP_ROOT/submit-pi-rendered-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: rendered pre-submit capture is idle.
-  printf '›\n' > "$resp/1.out"
-  # 2: send-text is silent.
-  # 3: native post-settle agent status is unavailable for this harness/model.
-  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/3.out"
-  # 4: the pre-Enter typed-text observation cannot positively read the
-  # composer (the pane is already mid-repaint), so no pending is observed.
-  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/4.out"
-  # 5: send-keys Enter is silent.
-  # 6: the submitted turn has replaced the composer, so structural composer
-  # classification is unknown rather than pending or empty.
-  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/6.out"
-  # 7: an independent rendered busy read sees Pi's verified active footer.
-  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/7.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "build the curriculum" 2 0.01 0.01 "" pi' "$ROOT" )
-  [ "$out" = empty ] \
-    || fail "an unknown native status with a proven Pi idle-to-working transition should confirm submission, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 1 ] || fail "a proven Pi turn start must not provoke another Enter, sent $enter_count Enter(s)"
-  pass "fm_backend_herdr_send_text_submit: rendered Pi idle-to-working transition confirms a submitted turn when native status is unknown"
-}
-
-# The rendered turn-start read must be POLLED across the retry budget, exactly
-# like its tmux counterpart: under the startup contention this path exists for,
-# Pi's `Working...` footer can render a beat after the Enter, and a single
-# early sample would report a landed submission as unconfirmed.
-test_send_text_submit_polls_a_slow_pi_rendered_turn_start() {
-  local dir log resp fb out enter_count
-  dir="$TMP_ROOT/submit-pi-slow-render"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '\xe2\x80\xba\n' > "$resp/1.out"
-  printf '{"result":{"agent":{"agent_status":"unknown"}}}\n' > "$resp/3.out"
-  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/4.out"
-  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/6.out"
-  # The first post-Enter rendered sample has not painted the footer yet.
-  printf 'user: build the curriculum\nassistant: starting work\n' > "$resp/7.out"
-  # The second sample, inside the same retry budget, shows the started turn.
-  printf 'user: build the curriculum\nassistant: starting work\nWorking...\n' > "$resp/8.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "build the curriculum" 2 0.01 0.01 "" pi' "$ROOT" )
-  [ "$out" = empty ] \
-    || fail "a Pi turn start that renders after the first sample must still be confirmed within the retry budget, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 1 ] || fail "polling for a slow render must not retype or re-Enter, sent $enter_count Enter(s)"
-  pass "fm_backend_herdr_send_text_submit: a slow Pi rendered turn start is polled across the retry budget, not sampled once"
+  [ "$out" = pending ] || fail "a pane already busy before our Enter must not confirm from that same busy footer, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: an already-busy footer baseline is never accepted as proof that this Enter landed"
 }
 
 # Regression for the submit-confirmation side of the 2026-07-07 incident:
@@ -3596,6 +3782,21 @@ test_send_text_submit_unknown_on_capture_failure() {
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "send_text_submit must never retry past an unreadable target (that is a hard I/O failure, not a timing race), sent $enter_count Enter(s)"
   pass "fm_backend_herdr_send_text_submit: reports 'unknown' when the post-Enter agent-get read fails (never retries past an unreadable target)"
+}
+
+test_send_text_submit_unknown_on_composer_capture_failure() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-composer-read-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '1\n' > "$resp/5.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "x" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = unknown ] || fail "send_text_submit should report unknown when native status stays idle but the composer cannot be read, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "send_text_submit must not retry Enter after composer verification becomes unreadable, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: an unreadable composer stops Enter retries after native status stays idle"
 }
 
 # --- fm-backend.sh dispatch wiring -------------------------------------------
@@ -4245,13 +4446,15 @@ test_create_task_creates_with_no_focus_flag
 test_presentation_defaults_on_at_or_above_the_floor
 test_presentation_default_falls_back_below_the_floor
 test_presentation_unreadable_release_falls_back
-test_presentation_legacy_opt_in_file_still_resolves_on
+test_presentation_explicit_opt_in_survives_the_floor
 test_presentation_explicit_off_opts_out
-test_presentation_unrecognized_value_warns_and_keeps_default
+test_presentation_unrecognized_value_warns_and_keeps_the_default
 test_presentation_floor_warning_is_one_per_release
 test_presentation_floor_warning_marker_is_atomic_and_symlink_safe
 test_presentation_running_server_release_is_load_bearing
-test_release_floor_verdict_matches_measured_releases_and_signal_loss
+test_release_floor_verdict_matches_the_measured_releases
+test_release_floor_verdict_survives_losing_either_signal
+test_presentation_preference_reports_three_distinct_states
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane
@@ -4342,16 +4545,22 @@ test_send_text_submit_detects_landed_send
 test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
-test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
-test_send_text_submit_busy_baseline_observed_clear_confirms
-test_send_text_submit_confirms_unknown_native_pi_idle_to_working_transition
-test_send_text_submit_polls_a_slow_pi_rendered_turn_start
+test_send_text_submit_preexisting_working_pending_is_queued_enter
+test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
+test_send_text_submit_idle_baseline_does_not_confirm_failed_enter
+test_send_text_submit_idle_native_empty_composer_confirms_delivery
+test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
+test_composer_state_cursor_midturn_row_reads_pending
+test_rendered_busy_state_reads_the_cursor_busy_token
+test_send_text_submit_confirms_never_idle_native_state_via_footer_transition
+test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
 test_send_text_submit_confirms_despite_codex_idle_tip_composer
 test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
 test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmation_change
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
+test_send_text_submit_unknown_on_composer_capture_failure
 test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
 test_dispatch_composer_state_routes_by_backend

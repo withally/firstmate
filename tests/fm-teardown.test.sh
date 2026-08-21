@@ -57,7 +57,6 @@ fm_git_identity fmtest fmtest@example.invalid
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
-PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
 REAL_GIT_FOR_TEST=$(command -v git)
 export REAL_GIT_FOR_TEST
@@ -181,7 +180,7 @@ add_compatible_tasks_axi() {
   cat > "$case_dir/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' '0.2.2'
+  printf '%s\n' '0.2.4'
   exit 0
 fi
 if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
@@ -578,102 +577,6 @@ test_local_only_fork_remote_allows() {
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
-}
-
-test_deliver_teardown_then_merge_later_allows() {
-  local case_dir rc receipt
-  case_dir=$(make_case teardown-then-merge)
-  write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "delivered work"
-  git -C "$case_dir/wt" push -q origin fm/task-x1
-  git -C "$case_dir/project" fetch -q origin
-  printf '%s\n' 'pr=https://github.com/example/repo/pull/18' >> "$case_dir/state/task-x1.meta"
-
-  run_teardown "$case_dir" > "$case_dir/teardown.stdout" 2> "$case_dir/teardown.stderr" \
-    || fail "teardown-then-merge: teardown failed"
-  assert_absent "$case_dir/state/task-x1.meta" \
-    "teardown-then-merge: live task metadata should be retired"
-  receipt="$case_dir/state/task-x1.teardown-pr"
-  [ -f "$receipt" ] || fail "teardown-then-merge: teardown did not preserve the exact-PR receipt"
-
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/gh-axi"
-  : > "$case_dir/gh-axi.log"
-
-  set +e
-  FM_ROOT_OVERRIDE="$ROOT" \
-  FM_STATE_OVERRIDE="$case_dir/state" \
-  FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
-  PATH="$case_dir/fakebin:$PATH" \
-    "$PR_MERGE" task-x1 https://github.com/example/repo/pull/18 \
-      > "$case_dir/merge.stdout" 2> "$case_dir/merge.stderr"
-  rc=$?
-  set -e
-
-  expect_code 0 "$rc" "teardown-then-merge: exact delivered PR should merge after teardown"
-  grep -qxF 'pr merge 18 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    || fail "teardown-then-merge: gh-axi did not receive the exact merge request"
-  assert_absent "$receipt" "teardown-then-merge: successful merge did not retire the receipt"
-  pass "delivered PR can be torn down and later merged through its exact completed-task receipt"
-}
-
-# A relaunched task's meta carries spawn-owned keys AFTER the preserved pr=
-# (control_relaunch_tx= from the relaunch publish, traceparent= re-appended by
-# spawn). Teardown must still recognize the recorded PR and issue the receipt.
-test_relaunched_task_teardown_publishes_receipt() {
-  local case_dir receipt
-  case_dir=$(make_case teardown-after-relaunch)
-  write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "delivered work"
-  git -C "$case_dir/wt" push -q origin fm/task-x1
-  git -C "$case_dir/project" fetch -q origin
-  printf '%s\n' \
-    'pr=https://github.com/example/repo/pull/19' \
-    'control_relaunch_tx=tx-1' \
-    'traceparent=00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' \
-    >> "$case_dir/state/task-x1.meta"
-
-  run_teardown "$case_dir" > "$case_dir/teardown.stdout" 2> "$case_dir/teardown.stderr" \
-    || fail "teardown-after-relaunch: teardown of a relaunched PR task failed"
-  receipt="$case_dir/state/task-x1.teardown-pr"
-  [ -f "$receipt" ] || fail "teardown-after-relaunch: no receipt was published"
-  grep -qxF 'pr=https://github.com/example/repo/pull/19' "$receipt" \
-    || fail "teardown-after-relaunch: receipt does not name the recorded PR"
-  pass "teardown of a relaunched PR task still publishes its exact-PR receipt"
-}
-
-# The receipt's preconditions are metadata-only, so an unusable recorded PR must
-# refuse while every durable task record is still intact.
-test_unusable_pr_metadata_refuses_before_cleanup() {
-  local case_dir rc
-  case_dir=$(make_case teardown-receipt-precondition)
-  write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "delivered work"
-  git -C "$case_dir/wt" push -q origin fm/task-x1
-  git -C "$case_dir/project" fetch -q origin
-  printf '%s\n' \
-    'pr=https://github.com/example/repo/pull/22' \
-    'pr=https://github.com/example/repo/pull/23' \
-    >> "$case_dir/state/task-x1.meta"
-
-  set +e
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "teardown-receipt-precondition: teardown should refuse"
-  assert_grep 'refusing before any cleanup' "$case_dir/stderr" \
-    "teardown-receipt-precondition: refusal did not name the precondition"
-  [ -f "$case_dir/state/task-x1.meta" ] \
-    || fail "teardown-receipt-precondition: task metadata was discarded"
-  [ -d "$case_dir/wt" ] || fail "teardown-receipt-precondition: worktree was returned anyway"
-  assert_absent "$case_dir/state/task-x1.teardown-pr" \
-    "teardown-receipt-precondition: a receipt was published despite the refusal"
-  pass "an unusable recorded PR refuses teardown before any destructive cleanup"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
@@ -2018,6 +1921,9 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}'
     ;;
   "tab focus")
+    if [ "${FM_FAKE_HERDR_RESTORE_FAIL:-0}" = 1 ]; then
+      exit 1
+    fi
     : > "${FM_FAKE_HERDR_RESTORED:?}"
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}'
     ;;
@@ -2074,6 +1980,26 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   assert_not_contains "$(cat "$log")" "workspace close" \
     "unconfirmed projected close must not escalate to workspace cleanup"
   pass "herdr projection teardown retains every record when post-close presence is unknown"
+}
+
+test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup() {
+  local case_dir log closed restored
+  case_dir=$(make_case herdr-projection-restore-failure)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_RESTORE_FAIL=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-projection-restore-failure: a confirmed close with a failed focus restore blocked teardown"
+  [ -e "$closed" ] \
+    || fail "herdr-projection-restore-failure: regression did not exercise the exact projected-pane close"
+  [ ! -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "herdr-projection-restore-failure: confirmed closure did not retire the presentation journal"
+  assert_grep "exact-tab restoration failed" "$case_dir/stderr" \
+    "herdr-projection-restore-failure: teardown swallowed the focus helper's restore warning"
+  pass "herdr projection teardown surfaces failed focus restoration without turning confirmed cleanup into a hard failure"
 }
 
 # --- Fix 1: conclude/abort the task's own parked no-mistakes run before the
@@ -2666,9 +2592,6 @@ EOF
 }
 
 test_local_only_fork_remote_allows
-test_deliver_teardown_then_merge_later_allows
-test_relaunched_task_teardown_publishes_receipt
-test_unusable_pr_metadata_refuses_before_cleanup
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
@@ -2687,6 +2610,7 @@ test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows

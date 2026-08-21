@@ -85,7 +85,7 @@ case "\${1:-}" in
     esac
     exit 0
     ;;
-  capture-pane) printf '\n'; exit 0 ;;
+  capture-pane) printf '❯\n'; exit 0 ;;
   send-keys) [ ! -f "\$fail_send" ] || exit 1; exit 0 ;;
   kill-window) rm -f -- "\$state"; exit 0 ;;
   list-panes) printf 'codex\n'; exit 0 ;;
@@ -437,6 +437,204 @@ doctor-fixable --fix
 doctor-fixable -' ] || fail "the repaired seed did not re-check after its repair"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "remote seeding proceeds once the repair closes every gap"
 
+# Seeding must not need a copy of the project in this home: firstmate names the
+# origin it already resolved, the seed validates and transports it, and the
+# primary project tree is left exactly as it was found.
+projects_snapshot() { # <dir>
+  local dir=$1 path
+  (
+    cd "$dir" 2>/dev/null || exit 0
+    find . -print | LC_ALL=C sort | while IFS= read -r path; do
+      if [ -f "$path" ] && [ ! -L "$path" ]; then
+        printf '%s %s\n' "$path" "$(sha256_file "$path")"
+      else
+        printf '%s\n' "$path"
+      fi
+    done
+  )
+}
+mkdir -p "$TMP_ROOT/seed-parent/projects"
+fm_git_init_commit "$TMP_ROOT/seed-parent/projects/resident"
+git init -q --bare "$TMP_ROOT/beta.git"
+fm_git_init_commit "$TMP_ROOT/beta-src"
+git -C "$TMP_ROOT/beta-src" remote add origin "file://$TMP_ROOT/beta.git"
+git -C "$TMP_ROOT/beta-src" push -q -u origin HEAD
+rm -rf "$TMP_ROOT/beta-src"
+cat > "$TMP_ROOT/seed-parent/data/projects.md" <<'EOF'
+- beta [direct-PR] - beta project (added 2026-08-06)
+- delta [local-only] - delta project (added 2026-08-06)
+EOF
+BETA_ORIGIN="file://$TMP_ROOT/beta.git"
+PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects")
+
+if FM_SECONDMATE_CHARTER='Unsupplied origin charter.' FM_SECONDMATE_SCOPE='unsupplied origin' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noorigin remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-noorigin-home" beta > "$TMP_ROOT/seed-noorigin.out" 2>&1; then
+  fail "seeding an uncloned project with no origin claimed success"
+fi
+assert_grep 'pass beta=<origin-url>' "$TMP_ROOT/seed-noorigin.out" \
+  "the refusal did not name how to supply the origin"
+assert_absent "$TMP_ROOT/seed-noorigin-home" "the unresolvable origin still provisioned a remote home"
+
+if FM_SECONDMATE_CHARTER='Unsafe origin charter.' FM_SECONDMATE_SCOPE='unsafe origin' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-unsafe remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-unsafe-home" 'beta=ext::git-upload-pack' \
+  > "$TMP_ROOT/seed-unsafe.out" 2>&1; then
+  fail "seeding accepted a remote-helper origin the remote host would execute"
+fi
+assert_grep 'not an accepted clone URL' "$TMP_ROOT/seed-unsafe.out" \
+  "the unsafe-origin refusal did not name the reason"
+assert_absent "$TMP_ROOT/seed-unsafe-home" "the unsafe origin still provisioned a remote home"
+
+if FM_SECONDMATE_CHARTER='Local-only charter.' FM_SECONDMATE_SCOPE='local only' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-localonly remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-localonly-home" "delta=$BETA_ORIGIN" \
+  > "$TMP_ROOT/seed-localonly.out" 2>&1; then
+  fail "a supplied origin bypassed the local-only delivery-mode refusal"
+fi
+assert_grep 'is local-only and cannot be provisioned remotely' "$TMP_ROOT/seed-localonly.out" \
+  "the local-only refusal did not name the registered mode"
+
+if FM_SECONDMATE_CHARTER='Unregistered charter.' FM_SECONDMATE_SCOPE='unregistered' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-unregistered remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-unregistered-home" "gamma=$BETA_ORIGIN" \
+  > "$TMP_ROOT/seed-unregistered.out" 2>&1; then
+  fail "a supplied origin bypassed the project registry requirement"
+fi
+assert_grep 'has no registry record' "$TMP_ROOT/seed-unregistered.out" \
+  "the unregistered-project refusal did not name the missing record"
+
+out=$(FM_SECONDMATE_CHARTER='Own beta delivery on the build Mac.' \
+  FM_SECONDMATE_SCOPE='beta delivery and validation' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noclone remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/seed-noclone-home" "beta=$BETA_ORIGIN" 2>&1) \
+  || fail "seeding refused a registered project whose origin was supplied"$'\n'"$out"
+assert_contains "$out" "home=remote-mac:$TMP_ROOT/seed-noclone-home" \
+  "the no-clone seed did not report the host-qualified home"
+assert_grep '- seed-noclone ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
+  "the no-clone seed did not register the remote route"
+assert_present "$TMP_ROOT/seed-noclone-home/projects/beta/README.md" \
+  "the remote host did not clone the supplied origin"
+[ "$(git -C "$TMP_ROOT/seed-noclone-home/projects/beta" remote get-url origin)" = "$BETA_ORIGIN" ] \
+  || fail "the remote clone did not come from the supplied origin"
+assert_grep '- beta [direct-PR]' "$TMP_ROOT/seed-noclone-home/data/projects.md" \
+  "the remote home did not publish the project's registered posture"
+assert_absent "$TMP_ROOT/seed-parent/projects/beta" \
+  "seeding cloned the project into the primary project tree"
+[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+  || fail "seeding changed the primary project tree"
+pass "remote seeding provisions a supplied origin without touching the primary project tree"
+
+# The receiving host validates the origin itself rather than trusting whatever
+# reached it, so a manifest naming an executable transport provisions nothing.
+printf 'schema=fm-remote-home-provision.v1\nid_b64=%s\ncharter_b64=%s\nproject_count=1\nproject=%s|%s|%s|%s\n' \
+  "$(printf unsafe-origin | base64 | tr -d '\n')" \
+  "$(printf 'Unsafe origin manifest charter.\n' | base64 | tr -d '\n')" \
+  "$(printf beta | base64 | tr -d '\n')" \
+  "$(printf 'ext::git-upload-pack' | base64 | tr -d '\n')" \
+  "$(printf -- '- beta [direct-PR] - beta project (added 2026-08-06)' | base64 | tr -d '\n')" \
+  "$(printf direct-PR | base64 | tr -d '\n')" \
+  > "$TMP_ROOT/unsafe-origin.manifest"
+if FM_HOME="$TMP_ROOT/unsafe-origin-home" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+  "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/unsafe-origin.manifest" \
+  > "$TMP_ROOT/unsafe-origin.out" 2>&1; then
+  fail "remote provisioning accepted an origin the transport had not validated"
+fi
+assert_grep 'not an accepted clone URL' "$TMP_ROOT/unsafe-origin.out" \
+  "remote provisioning did not name the rejected origin"
+assert_absent "$TMP_ROOT/unsafe-origin-home" "the rejected manifest left a remote home behind"
+pass "remote provisioning re-validates a supplied origin at the receiving host"
+
+# Firstmate is a shared template, so seeding must carry a project origin from any
+# forge or host, not a privileged one. These four URL shapes have to survive the
+# parent's validation, the manifest, the transport, and the receiving host's own
+# validation, and arrive at git unchanged. A fixture resolver records the exact
+# clone source the remote side hands to git and then serves it from a local bare
+# repository, because an offline run cannot reach bitbucket.org itself.
+FORGE_CLONE_LOG="$TMP_ROOT/forge-clone.log"
+FORGE_ORIGIN_MAP="$TMP_ROOT/forge-origin.map"
+: > "$FORGE_CLONE_LOG"
+: > "$FORGE_ORIGIN_MAP"
+forge_project() { # <project> <origin-url>
+  local project=$1 origin=$2 tab
+  tab=$(printf '\t')
+  fm_git_init_commit "$TMP_ROOT/forge-src-$project"
+  printf 'served from %s\n' "$origin" > "$TMP_ROOT/forge-src-$project/ORIGIN.txt"
+  git -C "$TMP_ROOT/forge-src-$project" add ORIGIN.txt
+  git -C "$TMP_ROOT/forge-src-$project" \
+    -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm origin
+  git clone --quiet --bare "$TMP_ROOT/forge-src-$project" "$TMP_ROOT/forge-$project.git"
+  rm -rf "$TMP_ROOT/forge-src-$project"
+  printf '%s%s%s\n' "$origin" "$tab" "$TMP_ROOT/forge-$project.git" >> "$FORGE_ORIGIN_MAP"
+  printf -- '- %s [direct-PR] - %s project (added 2026-08-06)\n' "$project" "$project" \
+    >> "$TMP_ROOT/seed-parent/data/projects.md"
+}
+forge_project bitbucket-app 'https://bitbucket.org/team/bitbucket-app.git'
+forge_project ghe-app 'https://git.example.com/org/ghe-app.git'
+forge_project gitlab-app 'ssh://git@gitlab.self.hosted:2222/group/subgroup/gitlab-app.git'
+forge_project scp-app 'git@host.internal:group/scp-app.git'
+
+cat > "$REMOTE_ROOT/bin/git" <<SH
+#!/usr/bin/env bash
+# Fixture origin resolver for the remote side: record the clone source exactly as
+# the production code hands it to git, then serve any recorded URL from a local
+# bare repository so the run stays offline. Everything else is real git.
+set -u
+if [ "\${1:-}" = clone ]; then
+  printf '%s\n' "\$*" >> '$FORGE_CLONE_LOG'
+  args=()
+  for arg in "\$@"; do
+    replacement=\$(awk -v k="\$arg" -F'\t' '\$1 == k { print \$2; exit }' '$FORGE_ORIGIN_MAP' 2>/dev/null)
+    if [ -n "\$replacement" ]; then args+=("\$replacement"); else args+=("\$arg"); fi
+  done
+  exec '$REAL_GIT' "\${args[@]}"
+fi
+exec '$REAL_GIT' "\$@"
+SH
+chmod +x "$REMOTE_ROOT/bin/git"
+
+FORGE_HOME="$TMP_ROOT/seed-forge-home"
+out=$(FM_SECONDMATE_CHARTER='Own delivery for projects hosted anywhere.' \
+  FM_SECONDMATE_SCOPE='multi-forge delivery' \
+  seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-forge remote-mac "$REMOTE_ROOT" \
+  "$FORGE_HOME" \
+  'bitbucket-app=https://bitbucket.org/team/bitbucket-app.git' \
+  'ghe-app=https://git.example.com/org/ghe-app.git' \
+  'gitlab-app=ssh://git@gitlab.self.hosted:2222/group/subgroup/gitlab-app.git' \
+  'scp-app=git@host.internal:group/scp-app.git' 2>&1) \
+  || fail "seeding refused origins hosted outside GitHub"$'\n'"$out"
+
+while IFS="$(printf '\t')" read -r forge_origin _; do
+  [ -n "$forge_origin" ] || continue
+  assert_grep "$forge_origin" "$FORGE_CLONE_LOG" \
+    "the remote host did not clone from the supplied origin $forge_origin"
+done < "$FORGE_ORIGIN_MAP"
+for forge_project_name in bitbucket-app ghe-app gitlab-app scp-app; do
+  assert_present "$FORGE_HOME/projects/$forge_project_name/.git" \
+    "the remote home has no clone for $forge_project_name"
+  assert_grep "$forge_project_name" "$FORGE_HOME/data/projects.md" \
+    "the remote registry omitted $forge_project_name"
+  assert_absent "$TMP_ROOT/seed-parent/projects/$forge_project_name" \
+    "seeding $forge_project_name cloned it into the primary project tree"
+done
+# Each clone must carry its own origin's content, so one shared fixture repo
+# cannot make a mismatched route look routed.
+[ "$(cat "$FORGE_HOME/projects/bitbucket-app/ORIGIN.txt")" = \
+  'served from https://bitbucket.org/team/bitbucket-app.git' ] \
+  || fail "the bitbucket route did not clone its own origin"
+[ "$(cat "$FORGE_HOME/projects/scp-app/ORIGIN.txt")" = \
+  'served from git@host.internal:group/scp-app.git' ] \
+  || fail "the scp-like route did not clone its own origin"
+[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+  || fail "seeding non-GitHub projects changed the primary project tree"
+assert_grep '- seed-forge ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
+  "the multi-forge route was not registered"
+
+rm -f "$REMOTE_ROOT/bin/git"
+[ -z "$(git -C "$REMOTE_ROOT" status --porcelain)" ] \
+  || fail "the fixture origin resolver was left behind in the remote code root"
+pass "seeding carries bitbucket, self-hosted, and scp-like origins through to the remote clone"
+
 # Provision and register the remote route from the captain-facing primary.
 out=$(FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
@@ -444,10 +642,6 @@ out=$(FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
 assert_contains "$out" "home=remote-mac:$REMOTE_HOME" "remote seed did not report the host-qualified home"
 assert_grep 'host: remote-mac; root:' "$PARENT/data/secondmates.md" "registry did not record the remote host dimension"
 assert_present "$REMOTE_HOME/.fm-secondmate-home" "remote provisioning did not publish the identity marker"
-assert_present "$REMOTE_HOME/.fm-secondmate-parent" "remote provisioning did not publish the durable parent route"
-assert_grep 'schema=fm-secondmate-parent.v1' "$REMOTE_HOME/.fm-secondmate-parent" "remote parent route has the wrong schema"
-assert_grep 'route=remote' "$REMOTE_HOME/.fm-secondmate-parent" "remote parent route was not identified as remote"
-assert_grep 'parent_host=remote-mac' "$REMOTE_HOME/.fm-secondmate-parent" "remote parent route omitted its diagnostic host"
 assert_present "$REMOTE_HOME/projects/alpha/.git" "remote provisioning did not clone the project on that host"
 assert_grep "$REMOTE_HOME/state/parent-replies.status" "$REMOTE_HOME/data/charter.md" "remote charter did not use its append-only reply log"
 assert_no_grep "$PARENT/state/ios.status" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local status path"
@@ -529,107 +723,6 @@ publish_healthy_watcher_identity "$PARENT/state" "$PARENT" "$ROOT/bin/fm-watch.s
 [ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh observe ios)" = idle ] \
   || fail "remote endpoint delivery observation did not execute on its own host"
 pass "remote spawn launches on the remote-local backend and records a host-qualified route"
-
-# Lifecycle input must cross the same registered remote-home transport while
-# staying on fm-control's closed semantic plane. An interrupt is a named key,
-# never marked conversational text that the secondmate could reason about.
-remote_control_text_before=$(grep -c '^pane send-text' "$HERDR_LOG" || true)
-REMOTE_INTERRUPT=$(remote_env "$ROOT/bin/fm-control.sh" ios interrupt)
-assert_contains "$REMOTE_INTERRUPT" 'interrupt-delivered ios' \
-  "remote fm-control did not confirm the interrupt postcondition"
-remote_control_text_after=$(grep -c '^pane send-text' "$HERDR_LOG" || true)
-[ "$remote_control_text_before" -eq "$remote_control_text_after" ] \
-  || fail "remote interrupt crossed the conversational text plane"
-grep -E '^pane send-keys .* escape ' "$HERDR_LOG" >/dev/null \
-  || fail "remote interrupt did not deliver the harness-owned lifecycle key"
-pass "remote interrupt uses fm-control over the existing remote-home route"
-
-REMOTE_EXIT=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 \
-  remote_env "$ROOT/bin/fm-control.sh" ios exit)
-assert_contains "$REMOTE_EXIT" 'stopped ios' \
-  "remote fm-control did not verify the stopped-agent postcondition"
-assert_grep 'pane send-text w1:p3 /quit --session fm-remote' "$HERDR_LOG" \
-  "remote exit did not submit the harness-owned lifecycle command"
-assert_no_grep '[fm-from-firstmate] /quit' "$HERDR_LOG" \
-  "remote exit was delivered as marked conversational chat"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = dead ] \
-  || fail "remote exit reported success while the endpoint still had an agent"
-pass "remote exit uses fm-control and verifies the agent stopped"
-
-cp "$PARENT/state/ios.meta" "$TMP_ROOT/parent-ios-before-control-relaunch.meta"
-REMOTE_RELAUNCH=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 FM_CONTROL_LAUNCH_WAIT=2 \
-  remote_env "$ROOT/bin/fm-control.sh" ios relaunch)
-assert_contains "$REMOTE_RELAUNCH" 'relaunched ios harness=codex' \
-  "remote fm-control did not confirm the replacement agent"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
-  || fail "remote relaunch reported success while no replacement agent was alive"
-cmp -s "$TMP_ROOT/parent-ios-before-control-relaunch.meta" "$PARENT/state/ios.meta" \
-  || fail "same-profile remote relaunch changed the parent-owned route record"
-assert_no_grep '[fm-from-firstmate] /quit' "$HERDR_LOG" \
-  "remote relaunch delivered its stop phase as marked conversational chat"
-pass "remote relaunch preserves the route and verifies the replacement agent"
-
-REMOTE_SWITCH=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 FM_CONTROL_LAUNCH_WAIT=2 \
-  remote_env "$ROOT/bin/fm-control.sh" ios relaunch \
-    --harness pi --model remote-model --effort high)
-assert_contains "$REMOTE_SWITCH" 'relaunched ios harness=pi' \
-  "remote profile switch did not confirm the replacement harness"
-assert_grep 'harness=pi' "$PARENT/state/ios.meta" \
-  "remote profile switch left the parent record on the retired harness"
-assert_grep 'model=remote-model' "$PARENT/state/ios.meta" \
-  "remote profile switch did not publish its model to the parent record"
-assert_grep 'effort=high' "$PARENT/state/ios.meta" \
-  "remote profile switch did not publish its effort to the parent record"
-assert_grep 'harness=pi' "$REMOTE_HOME/state/parent-route/ios.meta" \
-  "remote profile switch did not publish its host-local harness"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
-  || fail "remote profile switch reported success without a live replacement"
-pass "remote relaunch publishes the verified profile on both hosts"
-
-REMOTE_RESTORE=$(FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=1 FM_CONTROL_LAUNCH_WAIT=2 \
-  remote_env "$ROOT/bin/fm-control.sh" ios relaunch)
-assert_contains "$REMOTE_RESTORE" 'relaunched ios harness=codex' \
-  "default remote relaunch did not re-resolve the primary's secondmate pin"
-assert_grep 'harness=codex' "$PARENT/state/ios.meta" \
-  "default remote relaunch did not restore the configured parent profile"
-assert_grep 'harness=codex' "$REMOTE_HOME/state/parent-route/ios.meta" \
-  "default remote relaunch did not restore the configured host-local profile"
-pass "remote relaunch re-resolves the primary secondmate profile"
-
-ssh_before_control_unknown=$(cat "$SSH_COUNT")
-set +e
-FM_FAKE_SSH_MODE=ambiguous remote_env "$ROOT/bin/fm-control.sh" ios interrupt \
-  > "$TMP_ROOT/control-unknown.out" 2>&1
-control_unknown_rc=$?
-set -e
-[ "$control_unknown_rc" -ne 0 ] \
-  || fail "unknown remote interrupt completion reported success"
-assert_grep 'completion for task ios on remote-mac is unknown; do not retry' \
-  "$TMP_ROOT/control-unknown.out" \
-  "unknown remote control completion did not require host-local reconciliation"
-ssh_after_control_unknown=$(cat "$SSH_COUNT")
-[ "$ssh_after_control_unknown" -eq $((ssh_before_control_unknown + 1)) ] \
-  || fail "unknown remote interrupt completion was retried"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
-  || fail "ambiguous interrupt completion stopped the remote agent"
-pass "unknown remote control completion fails closed without transport retry"
-
-pending_before_failed_send=$(find "$PARENT/state/pending-replies" -type f 2>/dev/null | wc -l | tr -d ' ')
-touch "$TMP_ROOT/herdr-send-fail"
-set +e
-remote_env "$ROOT/bin/fm-send.sh" fm-ios 'this instruction must not report success' \
-  > "$TMP_ROOT/remote-send-failed.out" 2>&1
-remote_send_failed_rc=$?
-set -e
-rm -f "$TMP_ROOT/herdr-send-fail"
-[ "$remote_send_failed_rc" -ne 0 ] \
-  || fail "remote send reported success after the host-local submit failed"
-assert_grep 'text not sent' "$TMP_ROOT/remote-send-failed.out" \
-  "remote send failure did not report that delivery failed"
-pending_after_failed_send=$(find "$PARENT/state/pending-replies" -type f 2>/dev/null | wc -l | tr -d ' ')
-[ "$pending_before_failed_send" -eq "$pending_after_failed_send" ] \
-  || fail "known failed remote send retained a false pending-reply expectation"
-pass "remote send succeeds only after host-local submit confirmation"
 
 remote_route_meta="$REMOTE_HOME/state/parent-route/ios.meta"
 cp "$remote_route_meta" "$TMP_ROOT/remote-ios-before-default-session.meta"
@@ -834,7 +927,9 @@ inherit_wait=0
 while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
   kill -0 "$config_first" 2>/dev/null || fail "first inheritance transaction exited before its blocked write"
   inherit_wait=$((inherit_wait + 1))
-  [ "$inherit_wait" -le 1000 ] || fail "first inheritance transaction never reached its blocked write"
+  # Match the earlier spawn/inheritance wait: a loaded portable runner can
+  # spend several seconds in the remote entrypoint before reaching this write.
+  [ "$inherit_wait" -le 1500 ] || fail "first inheritance transaction never reached its blocked write"
   sleep 0.02
 done
 cat > "$PARENT/data/captain-shared.md" <<'EOF'

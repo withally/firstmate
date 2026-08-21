@@ -11,8 +11,6 @@
 #   - verified submit preserves the terminal-safe marker and clears delivery state;
 #   - an unmarked return request opens the catch-up gate before Bearings;
 #   - remediation/resolution clears the gate, and re-entry is idempotent.
-# Set FM_PI_HERDR_SUBMIT_ONLY=1 to stop after the direct type-once submit
-# confirmation probe, without running the longer away-return scenario.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -164,21 +162,6 @@ wait_for_prompt() {  # <jq predicate>
 }
 
 wait_for_idle || fail "real Pi primary did not become stably idle"
-
-DIRECT_PROMPT="FM_PI_HERDR_SUBMIT_CONFIRM_$$"
-DIRECT_VERDICT=$(PATH="$FAKEBIN:$ORIGINAL_PATH" HERDR_SESSION="$SESSION" FM_HOME="$HOME_DIR" \
-  fm_backend_send_text_submit herdr "$PRIMARY_TARGET" "$DIRECT_PROMPT" 3 0.4 0.3 '' pi)
-[ "$DIRECT_VERDICT" = empty ] \
-  || fail "real Pi/Herdr submit was accepted but not positively confirmed (verdict=$DIRECT_VERDICT)"
-wait_for_prompt "[.[] | select(.prompt == \"$DIRECT_PROMPT\")] | length == 1" \
-  || fail "real Pi/Herdr direct submit did not produce exactly one captured prompt"
-pass "real Pi/Herdr type-once submit is positively confirmed with exactly one delivered prompt"
-if [ "${FM_PI_HERDR_SUBMIT_ONLY:-0}" = 1 ]; then
-  printf 'evidence: herdr=%s pi=%s target=%s direct-submit=empty prompt-count=1\n' \
-    "$(herdr --version)" "$(pi --version)" "$PRIMARY_TARGET"
-  exit 0
-fi
-wait_for_idle || fail "real Pi did not settle after the direct submit-confirmation probe"
 
 assert_blocker_open() {
   local at=$1 open

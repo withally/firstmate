@@ -15,7 +15,8 @@ CONFIG_PUSH="$ROOT/bin/fm-config-push.sh"
 make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" node chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" node chrome-devtools-axi
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
@@ -26,7 +27,7 @@ SH
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'quota-axi 0.1.16 (fake)'
+  printf '%s\n' 'quota-axi 0.1.29 (fake)'
 fi
 exit 0
 SH
@@ -49,7 +50,7 @@ SH
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}:${2:-}" in
-  --version:*) printf '%s\n' '0.2.3' ;;
+  --version:*) printf '%s\n' '0.2.4' ;;
   update:--help) printf '%s\n' '--archive-body' ;;
   mv:--help) printf '%s\n' 'usage: tasks-axi mv <id> [<id>...]' ;;
 esac
@@ -57,23 +58,11 @@ SH
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 [ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
-composer="$(dirname "$0")/tmux.composer"
 case "$*" in
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1' ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0 ;;
-  # Row 0 (the cursor row) is a bare agent composer: it carries the typed text
-  # after `send-keys -l` and clears on Enter, so a verified submit can observe
-  # its own typing before believing the post-Enter empty composer.
-  *send-keys*' -l '*) printf '%s' "${!#}" > "$composer" ;;
-  *send-keys*Enter*) : > "$composer" ;;
-  *capture-pane*)
-    if [ -s "$composer" ]; then
-      printf '\342\235\257 %s\n' "$(cat "$composer")"
-    else
-      printf '\342\235\257 \n'
-    fi
-    ;;
+  *capture-pane*) printf '❯\n' ;;
 esac
 exit 0
 SH

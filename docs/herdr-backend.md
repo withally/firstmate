@@ -1,7 +1,7 @@
 # Herdr runtime backend
 
 Herdr is an experimental agent-native terminal backend with native per-pane agent state and push events.
-Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, and 0.7.5, while the presentation-projection suite is additionally verified on 0.8.0 protocol 19 and protocol-16 features remain gated by availability.
+Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, and 0.8.0, while protocol-16 features remain gated by availability.
 Default-on presentation spaces have a higher floor of Herdr 0.8.0 for the reason given under [Presentation spaces](#presentation-spaces).
 Herdr provides the terminal session while Treehouse continues to provide task worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared backend selection and metadata semantics.
@@ -69,23 +69,22 @@ Closing its last tab can remove the workspace, and the next spawn recreates it.
 
 ## Presentation spaces
 
-Each new crewmate or scout is placed in a disposable one-task workspace by default on Herdr 0.8.0 and newer.
+Each new crewmate or scout is placed in a disposable one-task workspace by default, on Herdr 0.8.0 and newer.
 A home opts out by writing `off` into local gitignored `config/herdr-presentation-spaces`, and forces the projection on by writing `on`.
 An absent file leaves the choice to the version floor below, an empty file and the value `on` are both a deliberate opt-in, values are compared with whitespace stripped and case ignored, and an unrecognized value warns and follows the unconfigured default rather than failing a spawn over a purely visual setting.
 The empty file is the historical presence-based opt-in form, so every home that had already enabled the projection stays enabled with no migration step, and no previously enabled home can be turned off by the default or by the floor.
 A home that never created the file gains the projection at its next Herdr spawn on a supported release; that flip is deliberate, and it reaches only the Herdr backend because no other runtime backend has a projection path.
 
-Projecting each task into its own workspace makes every task cleanup a workspace-emptying removal, which is the only removal shape Herdr's pre-0.8.0 focus defect touches.
-The focus-safe removal plan below can avoid that defect only while the closing pane's shell can be proved lone, childless, and idle.
-A persistent child of that shell - a `gitstatusd`, a `zsh-async` worker, or `direnv` - fails that proof permanently and forces the plain explicit close, which on those releases briefly moves the active workspace before the restore backstop pulls it back.
+Projecting each task into its own workspace makes every task cleanup a workspace-emptying removal, which is the only removal shape Herdr's pre-0.8.0 focus defect touches, and the focus-safe removal plan below can only avoid it while the closing pane's shell can be proved lone, childless, and idle.
+A persistent child of that shell - a `gitstatusd`, a `zsh-async` worker, or `direnv` - fails that proof permanently and forces the plain explicit close, which on those releases moves the active workspace for roughly a seventh of a second before the restore backstop pulls it back, once per task cleanup.
 An unconfigured home is therefore projected only on a release at or above the 0.8.0 floor, where every workspace-removal primitive preserves focus and that proof stops being load-bearing.
 Below the floor an unconfigured home uses the ordinary flat per-home layout instead and warns once per home per detected release, naming the running release and the upgrade that restores the projection.
 That one-warning-per-release record is a `state/.herdr-presentation-floor-<release>` marker; deleting it only makes the same warning appear again, and an upgrade or downgrade re-announces itself because the release is part of the key.
 The floor reads both the installed client's protocol and version and the selected named session's server signals while that server is running, requires both applicable releases to pass, and uses only the client when status positively reports no running server because that client will start it.
 The unconfigured default is rechecked after the server is started or adopted and before any presentation journal or workspace is created, while an unreadable server state or release is treated as unsupported rather than guessed at.
 An explicit `on` is honored below the floor, so a home that deliberately opted in is never silently downgraded; it accepts that documented focus move, and the exact prior-tab restore stays its backstop.
-The floor has a single owner, the spawn-time gate, and that gate decides only whether a fresh projection is created: recovery of an already-journaled projection runs whenever its journal exists, so cleanup for a projection that already exists always runs and never strands a workspace, whatever release the home is on or however the setting is written now.
-Upgrading Herdr to 0.8.0 or newer is the durable fix; writing `off` is the immediate mitigation for a home that cannot upgrade yet.
+The floor has a single owner, the spawn-time gate, so cleanup for a projection that already exists always runs and never strands a workspace, whatever release the home is on now.
+Upgrading Herdr to 0.8.0 or newer is the fix; writing `off` is the immediate mitigation for a home that cannot upgrade yet.
 The setting is inherited into secondmate homes through the normal configuration-convergence owner, and the default needs no special convergence: the primary's absent file and the secondmate's absent file both mean the same unconfigured default, so leaving it converges a secondmate to that same default rather than turning it off, and only an explicit primary `off` propagates the opt-out.
 A secondmate agent itself always stays in its ordinary parent workspace; only children launched by that home are eligible.
 An unconverged opt-out keeps the default projection in that home until convergence.
@@ -159,7 +158,7 @@ Operational compromises:
 
 - Grouping is best-effort; only an exact same-identity version 2 binding survives a Herdr restart in place.
 - A failed journal publication or projected workspace create stops that spawn instead of falling back flat, so a Herdr create failure surfaces as a spawn failure in every Herdr home rather than only in homes that opted in; every earlier degradation on the fresh projected-create path (no session server, contended presentation lock, absent or ambiguous parent) still warns and continues flat.
-- Recovery of an existing presentation journal deliberately refuses the spawn when the shared presentation lock is contended rather than falling back flat; the unconfigured default makes that refusal reachable without any opt-in on a supported release, and recovery of an already-journaled projection runs whatever release the home is on now.
+- Recovery of an existing presentation journal deliberately refuses the spawn when the shared presentation lock is contended rather than falling back flat, and default-on makes that refusal reachable in any Herdr home.
 - Existing layouts are not force-renamed or rearranged.
 - Missing or ambiguous restart bindings fall back to the ordinary home workspace while the old projection remains untouched.
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; session start removes only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.
@@ -213,23 +212,20 @@ Enter, Escape, and Ctrl-C are supported.
 Slash and dollar-prefixed input uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
 Text is typed once; only Enter is retried.
 
-On an idle or done native baseline, submit confirmation waits for `working` or `blocked` across a bounded polling window.
-When native state is unknown before and after submission, an explicit harness identity permits one independent fallback: a rendered idle baseline must become a harness-scoped rendered busy state after Enter.
-The post-Enter rendered read is polled across the same retry budget rather than sampled once, because the turn takes a beat to render and a single early sample would report a real submission as unconfirmed.
-A preexisting rendered busy state never qualifies, so unrelated activity cannot confirm the new steer.
-The rendered read itself is not a second implementation: the visible-tail window and the harness-scoped busy match are the shared owners in `bin/fm-tmux-lib.sh`, and this adapter supplies only its own capture.
-On an already active or otherwise unreadable baseline, it falls back to composer evidence with a typed-text observation requirement: the submit's own text must first be observed pending (polled before the first Enter within the retry budget, or seen on a post-Enter read), and only then does a positively classified clearance confirm.
-A clearance that never showed this submit's own text may be a stale pre-typing frame, so it reports unknown unless the independent rendered turn-start converts it.
+On an idle or done native baseline, submit confirmation first waits for `working` or `blocked` across a bounded polling window.
+If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
+After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter, and keeps an idle pending composer as a genuine swallow.
+On an already active or unreadable baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A fully unreadable target stops retrying and reports unknown.
-The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
-Away-mode digests add a durable cross-invocation boundary around this primitive.
-The daemon persists the logical digest identity immediately before submit.
-If native state or composer evidence cannot confirm delivery, the daemon treats the result as possibly accepted and never automatically types that digest again across housekeeping, max-defer, shutdown, or restart.
-The buffer and identity remain unresolved for return catch-up, and exactly one delivery-uncertain alarm is raised through the wedge-alarm channel.
-The suppression is per logical digest: the unresolved items stay at the front of the buffer under a durable count, and any escalation buffered afterwards becomes a new logical digest with its own single delivery attempt, so the away channel keeps working after an ambiguous submit.
-Herdr 0.7.3 exposes native agent state but no supported durable Pi session-record acknowledgement through its pane or agent API.
-Pi exposes its session file to its own process, but Firstmate does not scrape another process's environment or infer private session paths.
-Until a compatibility-probed durable acknowledgement is available, ambiguity therefore resolves toward no retype.
+blocked is not treated as a queued-Enter busy signal, so a Cursor pane that reports blocked in every state does not receive that conversion.
+
+Some harnesses never present a legibly idle native baseline at all, so the composer fallback is their only path.
+Herdr reports a Cursor pane `blocked` in every state, and Cursor's mid-turn composer renders its placeholder beside a right-aligned busy token, which is composer content and therefore `pending` on a composer that holds no user text.
+That fallback alone reported every delivered steer as unconfirmed, so it is paired with a rendered-footer transition: the pane's verified busy footer is read once before the first Enter, and an idle-to-busy transition across that Enter confirms the submit.
+It is the same semantic signal the native path uses and the same one the tmux submit core reads.
+A pane already mid-turn cannot borrow a rendered-footer transition as proof of this delivery; after retries, only proven pending text plus native `working` can establish that its Enter was accepted and queued.
+The composer verdict itself is deliberately unchanged: a right-aligned status token on the composer row stays content for every other caller, including the away-mode pre-injection guard.
+The poll density bounds the residual possibility of an extremely fast complete turn; a missed native transition falls through to the composer verdict rather than reporting a false swallow.
 
 `pane read --lines N` can return empty output when N is below the viewport height.
 The capture owner requests at least 200 lines from Herdr and trims locally to the caller's bound.
@@ -242,7 +238,7 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 ## Composer and injection safety
 
 Herdr has no direct cursor-row primitive.
-The adapter is a thin capture: it hands a bounded ANSI tail plus Herdr's capability facts to the fleet-wide classifier in `bin/fm-composer-lib.sh`, which owns every shape - bordered boxes, bare verified agent-glyph rows, opencode's left bar, and the Pi separator region this adapter pioneered, admitted only when native `agent get` identity is exactly Pi and state is idle, done, or blocked.
+The adapter is a thin capture: it hands a bounded ANSI tail plus Herdr's capability facts to the fleet-wide classifier in `bin/fm-composer-lib.sh`, which owns every shape - bordered boxes, bare agent-glyph rows (including muse's `⟩`, which the adapter's retired local pattern silently omitted), opencode's left bar, and the Pi separator region this adapter pioneered, admitted only when native `agent get` identity is exactly Pi and state is idle, done, or blocked.
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains unknown or pending.
 Identity stays a lazy second read, consulted only when a separator pair could change the verdict.
 
@@ -294,17 +290,14 @@ It refuses Zellij, Orca, and cmux as supervisor backends rather than applying th
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
-Claude uses the terminal-backed `bin/fm-afk-launch.sh start` path because Claude's native background jobs have been observed being reaped across later turn boundaries.
-Grok uses the same terminal-backed path because an older overlapping Grok session can issue a delayed native start after the captain returns.
-For both harnesses, `start-native` refuses before writing away state.
-Pi has no native background mechanism.
-For a terminal-backed launch, `bin/fm-afk-launch.sh` creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
+Harnesses with native tracked background execution can run the daemon in their terminal.
+Pi has no such mechanism.
+`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
 It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-A genuinely new away session clears prior delivery artifacts, while a daemon restart under an existing `state/.afk` preserves the escalation buffer, in-flight identity, and alarm.
-Return catch-up surfaces those artifacts before clearing them.
+A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
 
 ## Destructive lab safety
 
@@ -327,14 +320,14 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate liveness is not implemented.
-- OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
-  The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points
 
 ```sh
 tests/fm-backend-herdr.test.sh
+tests/fm-composer-lib.test.sh
+tests/fm-herdr-submit-confirm-live-e2e.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh
@@ -345,7 +338,6 @@ tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
-tests/fm-afk-digest-replay-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 

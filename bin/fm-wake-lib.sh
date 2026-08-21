@@ -78,6 +78,19 @@ fm_path_age() {
   echo $(( $(date +%s) - m ))
 }
 
+# fm_watcher_lock_unheld <state>
+# True when the watcher lock or its symlinked owner directory is absent, or when
+# the existing lock records no pid at all. Any non-empty pid remains held here;
+# its syntax, liveness, ownership metadata, and identity are health concerns.
+fm_watcher_lock_unheld() {
+  local state=$1 lockdir pid
+  lockdir="$state/.watch.lock"
+  [ ! -e "$lockdir" ] && return 0
+  [ ! -e "$lockdir/pid" ] && return 0
+  pid=$(cat "$lockdir/pid" 2>/dev/null) || return 1
+  [ -z "$pid" ]
+}
+
 FM_WATCHER_MATCHED_IDENTITY=
 fm_watcher_lock_matches_pid() {
   local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity current_identity
@@ -127,10 +140,16 @@ fm_watcher_healthy() {
 
 # fm_supervision_model
 # Print the supervision model of this home's PRIMARY harness:
-#   autoarm     Claude Stop-hook auto-arm: the watcher is armed at each turn end
-#               and exits on its wake, so it runs only BETWEEN turns. Mid-turn a
-#               fresh beacon with no live watcher process is the healthy state.
-#   persistent  every other harness (codex foreground checkpoint, opencode/pi/grok
+#   autoarm     Claude's Stop-hook auto-arm and Cursor's stop-hook park: the
+#               watcher is armed at each turn end and exits on its wake, so it
+#               runs only BETWEEN turns. Mid-turn a fresh beacon with no live
+#               watcher process is the healthy state.
+#   extension   Pi (and pi-signed): .pi/extensions/fm-primary-pi-watch.ts owns
+#               continuity. It tears the watcher down on every actionable wake and
+#               spawns the replacement itself, so a genuinely unheld singleton lock
+#               is healthy during that hand-off only with extension ownership and a
+#               fresh beacon. Any held but unhealthy lock remains down.
+#   persistent  every other harness (codex foreground checkpoint, opencode/grok
 #               background arm, tmux, unknown): the watcher runs as a tracked live
 #               process, so a live identity-matched pid is the real liveness signal.
 # FM_SUPERVISION_MODEL overrides detection (tests, and callers that already know
@@ -139,16 +158,75 @@ fm_watcher_healthy() {
 fm_supervision_model() {
   local harness
   case "${FM_SUPERVISION_MODEL:-}" in
-    autoarm|persistent) printf '%s\n' "$FM_SUPERVISION_MODEL"; return 0 ;;
+    autoarm|extension|persistent) printf '%s\n' "$FM_SUPERVISION_MODEL"; return 0 ;;
   esac
   harness=$("$FM_WAKE_LIB_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
   case "$harness" in
-    claude) printf 'autoarm\n' ;;
+    claude|cursor) printf 'autoarm\n' ;;
+    pi|pi-signed) printf 'extension\n' ;;
     *) printf 'persistent\n' ;;
   esac
 }
 
-# fm_watcher_supervision_verdict <state> <watch-path> [grace] [home]
+# Pi primary supervision evidence. The Pi extensions record, in their state
+# markers, the exact build they loaded and the session process that loaded it, so
+# "a live Pi session owns supervision" is provable from durable state without a
+# watcher process and without reading any vendor-rendered surface.
+#
+# fm_pi_extension_version <file>
+# Print the marker version string the Pi extensions record for <file>. Must stay
+# byte-identical to the "sha256:<hex>" digest .pi/extensions/fm-primary-pi-watch.ts
+# and .pi/extensions/fm-primary-turnend-guard.ts compute for themselves; a host
+# with no SHA-256 tool falls back to a form no marker can match, which keeps every
+# consumer loud rather than silently satisfied.
+fm_pi_extension_version() {
+  local file=$1
+  [ -f "$file" ] || return 1
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print "sha256:" $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print "sha256:" $1}'
+  else
+    cksum "$file" | awk '{print "cksum:" $1 ":" $2}'
+  fi
+}
+
+# fm_pi_extension_loaded <marker> <expected-version> <session-lock>
+# True when <marker> records <expected-version> and names the session process in
+# <session-lock>, i.e. the session holding this home loaded exactly this build.
+fm_pi_extension_loaded() {
+  local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid lock_pid
+  [ -f "$marker" ] && [ -f "$lock" ] && [ -n "$expected_version" ] || return 1
+  marker_version=$(sed -n '1p' "$marker")
+  marker_pid=$(sed -n '2p' "$marker")
+  lock_pid=$(sed -n '1p' "$lock")
+  [ -n "$marker_pid" ] || return 1
+  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
+}
+
+# fm_pi_extension_owns_supervision <state> <root>
+# True when a LIVE Pi session owns supervision continuity for this home: both
+# primary extensions are loaded at their current on-disk builds by the process
+# recorded in this home's session lock, and that process is still alive.
+# Requiring the turn-end guard extension too is deliberate - it is the structural
+# backstop that catches a cycle the watch extension failed to restore, so a home
+# missing it has no benign hand-off to tolerate.
+fm_pi_extension_owns_supervision() {
+  local state=$1 root=$2 lock session_pid pair source marker version
+  lock="$state/.lock"
+  for pair in \
+    "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
+    "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
+    source=${pair%%:*}
+    marker=${pair#*:}
+    version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || return 1
+    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
+  done
+  session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
+  fm_pid_alive "$session_pid"
+}
+
+# fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]
 # Model-aware "is supervision healthy right now" verdict for the pull warning
 # guard (bin/fm-guard.sh), NOT the arm layer or the turn-end guard. Sets:
 #   FM_WATCHER_VERDICT_OK      true when supervision is healthy for this model
@@ -160,6 +238,14 @@ fm_supervision_model() {
 #                                             absent (a genuine supervision lapse)
 # autoarm: a fresh beacon within grace is healthy even with no live watcher,
 # because the watcher only runs between turns; only a stale beacon is a lapse.
+# extension: a live identity-matched watcher is the ordinary healthy state, but a
+# genuinely unheld lock is also healthy while the beacon is fresh AND a live Pi
+# session provably owns continuity (fm_pi_extension_owns_supervision) - that is the
+# extension's own tear-down-and-respawn hand-off, which it retries and escalates
+# itself. A lock with any recorded pid remains down if the strict health check fails.
+# Without ownership proof an unheld lock is down exactly as before, so an unloaded,
+# version-drifted, or exited Pi session still alarms immediately, and a cycle the
+# extension never restores still alarms once the beacon passes grace.
 # persistent: require a live identity-matched watcher with a fresh beacon
 # (fm_watcher_healthy); a fresh leftover beacon with no live watcher is still down.
 # shellcheck disable=SC2034 # Read by callers after the function returns.
@@ -168,7 +254,8 @@ FM_WATCHER_VERDICT_OK=false
 FM_WATCHER_VERDICT_REASON=stale-beacon
 fm_watcher_supervision_verdict() {
   local state=$1 watch=$2 grace=${3:-${FM_GUARD_GRACE:-300}} home=${4:-$FM_HOME}
-  local beat age fresh=false
+  local root=${5:-$FM_ROOT}
+  local beat age fresh=false model
   FM_WATCHER_VERDICT_OK=false
   FM_WATCHER_VERDICT_REASON=stale-beacon
   beat="$state/.last-watcher-beat"
@@ -177,7 +264,8 @@ fm_watcher_supervision_verdict() {
     ''|*[!0-9]*) ;;
     *) [ "$age" -lt "$grace" ] && fresh=true ;;
   esac
-  if [ "$(fm_supervision_model)" = autoarm ]; then
+  model=$(fm_supervision_model)
+  if [ "$model" = autoarm ]; then
     [ "$fresh" = true ] && FM_WATCHER_VERDICT_OK=true
     return 0
   fi
@@ -185,57 +273,16 @@ fm_watcher_supervision_verdict() {
     # shellcheck disable=SC2034 # Read by callers after the function returns.
     FM_WATCHER_VERDICT_OK=true
   elif [ "$fresh" = true ]; then
-    # shellcheck disable=SC2034 # Read by callers after the function returns.
-    FM_WATCHER_VERDICT_REASON=no-watcher
+    if [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
+      && fm_pi_extension_owns_supervision "$state" "$root"; then
+      # shellcheck disable=SC2034 # Read by callers after the function returns.
+      FM_WATCHER_VERDICT_OK=true
+    else
+      # shellcheck disable=SC2034 # Read by callers after the function returns.
+      FM_WATCHER_VERDICT_REASON=no-watcher
+    fi
   fi
   return 0
-}
-
-# Away-mode supervisor lock (state/.supervise-daemon.lock). This is the single
-# owner of "an identity-matched away daemon is alive for this home", shared by
-# bin/fm-afk-start.sh (and through it bin/fm-afk-launch.sh and
-# bin/fm-session-start.sh) and bin/fm-turnend-guard.sh. The lock is either a
-# directory or a symlink to one, matching the watcher lock's shape.
-fm_daemon_lock_owner() {  # <state-dir>
-  local lock=$1/.supervise-daemon.lock owner
-  if [ -L "$lock" ]; then
-    owner=$(readlink "$lock" 2>/dev/null) || return 1
-    [ -n "$owner" ] || return 1
-    case "$owner" in
-      /*) printf '%s\n' "$owner" ;;
-      *) printf '%s/%s\n' "$(dirname "$lock")" "$owner" ;;
-    esac
-    return 0
-  fi
-  [ -d "$lock" ] || return 1
-  printf '%s\n' "$lock"
-}
-
-fm_daemon_lock_pid() {  # <state-dir>
-  local owner
-  owner=$(fm_daemon_lock_owner "$1") || return 1
-  cat "$owner/pid" 2>/dev/null || true
-}
-
-# 0 only when the lock exists, its recorded pid is alive, and that process is
-# provably the daemon: a recorded pid-identity must match exactly, and the
-# command-name fallback applies only to locks written before identities existed.
-fm_daemon_lock_alive() {  # <state-dir> [daemon-path]
-  local daemon=${2:-$FM_WAKE_LIB_DIR/fm-supervise-daemon.sh} owner pid identity current command
-  owner=$(fm_daemon_lock_owner "$1") || return 1
-  pid=$(cat "$owner/pid" 2>/dev/null || true)
-  fm_pid_alive "$pid" || return 1
-  identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
-  if [ -n "$identity" ]; then
-    current=$(fm_pid_identity "$pid") || return 1
-    [ "$current" = "$identity" ]
-    return
-  fi
-  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
-  case "$command" in
-    *"$daemon"*|*"fm-supervise-daemon.sh"*) return 0 ;;
-  esac
-  return 1
 }
 
 fm_lock_clean_known_files() {
@@ -427,7 +474,7 @@ fm_lock_recheck_stale_owner() {
 }
 
 FM_RECOVERY_MARKER_TOKEN=
-FM_RECOVERY_MARKER_ACTION=none
+FM_RECOVERY_MARKER_ACTION='none'
 
 fm_recovery_marker_read() {
   local marker=$1 line count
@@ -549,7 +596,7 @@ _fm_recovery_marker_ack() {
   tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_release "$lock"; return 1; }
   if ! printf '%s\n' "$line" > "$tmp" \
     || ! chmod 0600 "$tmp" \
-    || ! _fm_atomic_replace "$tmp" "$marker"; then
+    || ! mv -f -- "$tmp" "$marker"; then
     rm -f -- "$tmp"
     fm_lock_release "$lock"
     return 1
@@ -559,7 +606,7 @@ _fm_recovery_marker_ack() {
 
 _fm_recovery_marker_arm_check() {
   local marker=$1 lock line quarantine
-  FM_RECOVERY_MARKER_ACTION=none
+  FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   if ! fm_lock_acquire_wait "$lock"; then
@@ -573,18 +620,19 @@ _fm_recovery_marker_arm_check() {
         fm_lock_release "$FM_WAKE_QUEUE_LOCK"
         return 1
       fi
-      FM_RECOVERY_MARKER_ACTION=recover
+      FM_RECOVERY_MARKER_ACTION='recover'
     fi
     fm_lock_release "$lock"
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
   fi
   if ! fm_recovery_marker_read "$marker"; then
-    quarantine=$(mktemp -d "${marker}.invalid.XXXXXX") || {
-      fm_lock_release "$lock"
-      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-      return 1
-    }
+    quarantine=$(mktemp -d "${marker}.invalid.XXXXXX") \
+      || {
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 1
+      }
     if ! mv -- "$marker" "$quarantine/marker" \
       || ! _fm_recovery_marker_write_locked "$marker" downtime; then
       rmdir "$quarantine" 2>/dev/null || true
@@ -592,7 +640,7 @@ _fm_recovery_marker_arm_check() {
       fm_lock_release "$FM_WAKE_QUEUE_LOCK"
       return 1
     fi
-    FM_RECOVERY_MARKER_ACTION=recover
+    FM_RECOVERY_MARKER_ACTION='recover'
     fm_lock_release "$lock"
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
@@ -600,12 +648,12 @@ _fm_recovery_marker_arm_check() {
   line=$FM_RECOVERY_MARKER_TOKEN
   case "$line" in
     pending:handling:*)
-      FM_RECOVERY_MARKER_ACTION="wait"
+      FM_RECOVERY_MARKER_ACTION='wait'
       fm_lock_release "$lock"
       fm_lock_release "$FM_WAKE_QUEUE_LOCK"
       return 0
       ;;
-    pending:downtime:*) FM_RECOVERY_MARKER_ACTION=recover ;;
+    pending:downtime:*) FM_RECOVERY_MARKER_ACTION='recover' ;;
     acked:*)
       if [ -s "$FM_WAKE_QUEUE" ]; then
         if ! _fm_recovery_marker_write_locked "$marker" downtime; then
@@ -613,8 +661,8 @@ _fm_recovery_marker_arm_check() {
           fm_lock_release "$FM_WAKE_QUEUE_LOCK"
           return 1
         fi
-        # shellcheck disable=SC2034 # Read by the watcher after this sourced helper returns.
-        FM_RECOVERY_MARKER_ACTION=recover
+        # shellcheck disable=SC2034 # Output read by callers after this function returns.
+        FM_RECOVERY_MARKER_ACTION='recover'
       fi
       ;;
   esac
@@ -625,9 +673,15 @@ _fm_recovery_marker_arm_check() {
 fm_recovery_transition() {
   local marker=$1 action=$2 target=${3:-} value=${4:-}
   case "$action" in
-    publish) _fm_recovery_marker_publish "$marker" "${target:-downtime}" ;;
-    acknowledge) _fm_recovery_marker_ack "$marker" "$target" ;;
-    arm-check) _fm_recovery_marker_arm_check "$marker" ;;
+    publish)
+      _fm_recovery_marker_publish "$marker" "${target:-downtime}"
+      ;;
+    acknowledge)
+      _fm_recovery_marker_ack "$marker" "$target"
+      ;;
+    arm-check)
+      _fm_recovery_marker_arm_check "$marker"
+      ;;
     release-lock)
       [ -n "$target" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
@@ -679,7 +733,25 @@ fm_lock_try_acquire() {
     return 0
   fi
 
+  # Compare against ${BASHPID:-$$} inline, never via a command substitution:
+  # $() forks a subshell whose BASHPID is not this frame's pid.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ]; then
+    # The recorded holder is THIS very process. Single-threaded bash can only
+    # observe that when an interrupting trap abandoned the frame that held the
+    # lock mid-critical-section (e.g. TERM inside a recovery-marker section,
+    # with the EXIT path then re-acquiring the same lock), and every
+    # lock-taking trap path in this repo exits rather than resuming the
+    # interrupted frame. Spinning here deadlocks the exit path against itself
+    # - the hang reproduced by the self-held reclaim regression in
+    # tests/fm-wake-queue.test.sh - so reclaim the abandoned hold instead.
+    fm_lock_remove_path "$lockdir" || true
+    if fm_lock_try_create "$lockdir"; then
+      return 0
+    fi
+    FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+    return 1
+  fi
   if fm_pid_alive "$pid"; then
     FM_LOCK_HELD_PID=$pid
     return 1
@@ -740,7 +812,7 @@ fm_lock_try_acquire() {
   rc=1
   if fm_lock_try_create "$lockdir" "$steal_owner"; then
     rc=0
-    # shellcheck disable=SC2034 # Read by lock-recovery callers after acquisition returns.
+    # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
   fi
   if [ "$rc" -ne 0 ]; then
@@ -803,127 +875,15 @@ fm_meta_lock_path() {
 # so it gets destructively processed while never lifecycle-locked (reproduced
 # with real agents: a record published 0.249s after teardown began was removed
 # and its worktree returned to the pool, with both commands reporting success).
-#
-# The two roles are asymmetric, so the guard is a shared/exclusive pair rather
-# than one mutex. Destructive owners (forced teardown) take this lock
-# EXCLUSIVELY from enumeration through cleanup. Fresh spawns are SHARED: several
-# of them may publish different tasks into one home at once - concurrent spawns
-# are ordinary fleet behavior - so each registers itself with
-# fm_task_set_publish_begin instead of taking this lock, and holds that
-# registration until its record is published.
-#
-# Registration is published before the exclusive lock is read, and the exclusive
-# lock is created before registrations are read, so neither side can slip
-# through the other's window: either the spawn sees the teardown's lock and
-# refuses, or the teardown sees the spawn's registration and refuses (or both
-# refuse). Every direction fails closed, and spawns never exclude each other.
+# Holding this lock from enumeration through cleanup makes the two operations
+# serialize: either the spawn publishes first and the teardown's preflight
+# covers it, or the teardown owns the set and the spawn refuses. Both directions
+# fail closed.
 fm_task_set_lock_path() {  # <state-dir>
   local state=$1
   [ -n "$state" ] || return 1
   case "$state" in *[$'\n\r\t']*) return 1 ;; esac
   printf '%s/.task-set.lock\n' "$state"
-}
-
-# fm_task_set_publishers_dir: where shared publication registrations live, one
-# file per in-flight fresh spawn. Entries are named by mktemp rather than by
-# pid, so two spawns can never contend over one name and a recycled pid can
-# never land on an existing entry.
-fm_task_set_publishers_dir() {  # <state-dir>
-  local state=$1
-  [ -n "$state" ] || return 1
-  case "$state" in *[$'\n\r\t']*) return 1 ;; esac
-  printf '%s/.task-set-publishers\n' "$state"
-}
-
-# fm_task_set_lock_is_owned: is the exclusive task-set lock held by a live owner?
-# Observation only - a spawn must never steal a teardown's lock, so this reads
-# the lock rather than acquiring it, and applies the same liveness and
-# mid-acquire freshness rules fm_lock_try_acquire uses before reclaiming.
-fm_task_set_lock_is_owned() {  # <state-dir>
-  local state=$1 lock pid
-  lock=$(fm_task_set_lock_path "$state") || return 0
-  [ -e "$lock" ] || [ -L "$lock" ] || return 1
-  pid=$(cat "$lock/pid" 2>/dev/null || true)
-  fm_pid_alive "$pid" && return 0
-  fm_lock_mid_acquire_is_fresh "$lock" "$pid" && return 0
-  return 1
-}
-
-# fm_task_set_publish_begin: register this process as publishing a task into the
-# home. On success FM_TASK_SET_PUBLISH_ENTRY holds the registration to release
-# later with fm_task_set_publish_end; on failure FM_TASK_SET_PUBLISH_REASON says
-# whether a destructive owner holds the exclusive lock (owned) or the
-# registration itself could not be established (error).
-#
-# The result is returned in variables rather than on stdout because the
-# registration records the CALLER's pid: read through a command substitution it
-# would record a subshell that exits immediately, leaving a registration nothing
-# is actually publishing behind. Call it directly.
-FM_TASK_SET_PUBLISH_REASON=
-FM_TASK_SET_PUBLISH_ENTRY=
-fm_task_set_publish_begin() {  # <state-dir>
-  local state=$1 dir entry pid
-  FM_TASK_SET_PUBLISH_REASON=error
-  FM_TASK_SET_PUBLISH_ENTRY=
-  dir=$(fm_task_set_publishers_dir "$state") || return 1
-  [ ! -L "$dir" ] || return 1
-  mkdir -p -- "$dir" 2>/dev/null || return 1
-  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  pid=${BASHPID:-$$}
-  entry=$(mktemp "$dir/publisher.XXXXXX" 2>/dev/null) || return 1
-  if ! { printf '%s\n' "$pid" > "$entry"; } 2>/dev/null; then
-    rm -f -- "$entry" 2>/dev/null || true
-    return 1
-  fi
-  # Publish first, then look: an exclusive owner that started before this point
-  # is visible here, and one that starts after this point sees this entry.
-  if fm_task_set_lock_is_owned "$state"; then
-    rm -f -- "$entry" 2>/dev/null || true
-    FM_TASK_SET_PUBLISH_REASON=owned
-    return 1
-  fi
-  # shellcheck disable=SC2034 # Both are read by callers after this returns.
-  FM_TASK_SET_PUBLISH_REASON=
-  # shellcheck disable=SC2034 # Read by callers as the registration to release.
-  FM_TASK_SET_PUBLISH_ENTRY=$entry
-}
-
-fm_task_set_publish_end() {  # <registration-path>
-  local entry=$1
-  [ -n "$entry" ] || return 0
-  rm -f -- "$entry" 2>/dev/null || true
-}
-
-# fm_task_set_publish_in_flight: 0 when a fresh spawn may be publishing into the
-# home, 1 only when that is definitively not the case. Called by the exclusive
-# owner after it holds the lock, so anything unreadable answers 0 - a
-# destructive operation must not proceed on an unproven task set. Registrations
-# left behind by a killed spawn are reclaimed once their pid is gone.
-fm_task_set_publish_in_flight() {  # <state-dir>
-  local state=$1 dir entry pid write_window
-  dir=$(fm_task_set_publishers_dir "$state") || return 0
-  [ ! -L "$dir" ] || return 0
-  [ -d "$dir" ] || return 1
-  write_window=$FM_LOCK_STALE_AFTER
-  [ "$write_window" -ge 2 ] || write_window=2
-  for entry in "$dir"/publisher.*; do
-    [ -e "$entry" ] || [ -L "$entry" ] || continue
-    [ -f "$entry" ] && [ ! -L "$entry" ] || return 0
-    pid=$(cat "$entry" 2>/dev/null || true)
-    case "$pid" in
-      ''|*[!0-9]*)
-        # Caught between the registration's creation and its pid write: fail
-        # closed while it is fresh, and only reclaim it once it is older than
-        # any real write window.
-        [ "$(fm_path_age "$entry")" -lt "$write_window" ] && return 0
-        rm -f -- "$entry" 2>/dev/null || true
-        continue
-        ;;
-    esac
-    fm_pid_alive "$pid" && return 0
-    rm -f -- "$entry" 2>/dev/null || true
-  done
-  return 1
 }
 
 fm_failure_episode_reset() {
@@ -968,7 +928,8 @@ fm_wake_clean_field() {
 }
 
 fm_wake_append() {
-  local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status recovery_marker
+  local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status
+  local recovery_marker
   case "$kind" in
     signal|stale|check|heartbeat) ;;
     *) printf 'fm_wake_append: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
@@ -1031,44 +992,6 @@ fm_wake_restore_queue() {
   fi
 }
 
-# Quarantine structurally invalid queue rows (fewer than five fields, or a
-# non-numeric sequence) under the queue's append lock, mirroring the invalid
-# recovery-marker quarantine: evidence is retained beside the queue instead of
-# deleted, and the surviving queue holds only presentable rows so an
-# empty-queue acknowledgement can still finalize a recovery generation.
-# Caller must hold FM_WAKE_QUEUE_LOCK. On failure the queue is left untouched.
-FM_WAKE_QUEUE_QUARANTINED=0
-FM_WAKE_QUEUE_QUARANTINE_DIR=
-fm_wake_queue_quarantine_invalid_locked() {  # <queue-path>
-  local queue=$1 bad quarantine tmp
-  FM_WAKE_QUEUE_QUARANTINED=0
-  FM_WAKE_QUEUE_QUARANTINE_DIR=
-  [ -f "$queue" ] && [ -s "$queue" ] || return 0
-  bad=$(awk -F '\t' 'NF < 5 || $2 !~ /^[0-9]+$/ { n++ } END { print n + 0 }' "$queue") || return 1
-  [ "$bad" -gt 0 ] || return 0
-  quarantine=$(mktemp -d "${queue}.invalid.XXXXXX") || return 1
-  if ! awk -F '\t' 'NF < 5 || $2 !~ /^[0-9]+$/' "$queue" > "$quarantine/rows" \
-    || ! chmod 0600 "$quarantine/rows"; then
-    rm -rf -- "$quarantine" 2>/dev/null || true
-    return 1
-  fi
-  tmp=$(mktemp "${queue}.valid.XXXXXX") || {
-    rm -rf -- "$quarantine" 2>/dev/null || true
-    return 1
-  }
-  if ! awk -F '\t' 'NF >= 5 && $2 ~ /^[0-9]+$/' "$queue" > "$tmp" \
-    || ! chmod 0600 "$tmp" \
-    || ! _fm_atomic_replace "$tmp" "$queue"; then
-    rm -f -- "$tmp" 2>/dev/null || true
-    rm -rf -- "$quarantine" 2>/dev/null || true
-    return 1
-  fi
-  # shellcheck disable=SC2034 # Read by callers after the function returns.
-  FM_WAKE_QUEUE_QUARANTINED=$bad
-  # shellcheck disable=SC2034 # Read by callers after the function returns.
-  FM_WAKE_QUEUE_QUARANTINE_DIR=$quarantine
-}
-
 fm_wake_print_deduped() {
   local file=$1
   awk -F '\t' '
@@ -1091,12 +1014,19 @@ fm_wake_print_deduped() {
   ' "$file"
 }
 
-# Guarded append for bookkeeping lines this home has already presented.
-# The seen marker advances only when it covered every pre-existing byte and no
-# other writer interleaved with this append. Every uncertainty leaves the new
-# line for the ordinary watcher, so a later foreign append cannot be swallowed.
-fm_wake_signal_sig() {  # <file>
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+# --- signal announcement signatures -----------------------------------------
+#
+# The watcher's per-file signal scan (bin/fm-watch.sh scan_signals) detects a
+# status or turn-ended change by comparing a size:mtime signature against a
+# persisted state/.seen-* marker, and advances that marker only after the change
+# has been surfaced to firstmate or deliberately absorbed by the signal triage.
+# These three helpers plus the guarded append below are the ONE owner of that
+# signature and marker format, shared by the scan itself, by the drain-time
+# historical-annotation staleness check, and by this home's own bookkeeping
+# writers.
+
+fm_wake_signal_sig() {  # <file> -> "size:mtime"
+  if [ "$_FM_UNAME" = Darwin ]; then
     stat -f '%z:%Fm' "$1" 2>/dev/null
   else
     stat -c '%s:%Y' "$1" 2>/dev/null
@@ -1107,22 +1037,53 @@ fm_wake_signal_seen_path() {  # <state> <file>
   printf '%s/.seen-%s' "$1" "$(basename "$2" | tr '.' '_')"
 }
 
+# 0 when <file>'s current signature exactly matches its recorded seen marker,
+# meaning every byte in it was already surfaced or deliberately absorbed.
+# A missing marker or unreadable signature is NOT a match, so uncertainty reads
+# as "unannounced bytes present".
+fm_wake_signal_seen_current() {  # <state> <file>
+  local sig
+  sig=$(fm_wake_signal_sig "$2") || return 1
+  [ -n "$sig" ] || return 1
+  [ "$(cat "$(fm_wake_signal_seen_path "$1" "$2")" 2>/dev/null)" = "$sig" ]
+}
+
+# Guarded self-announced status append - the one dedup primitive for a status
+# line THIS home's own machinery writes as bookkeeping it has already presented
+# in the very turn or tick that writes it (an answerer-closes resolved line, a
+# pending-reply escalation close, a captain-held transfer). Such a close must
+# not wake the session that wrote it, so this appends the line and then
+# advances the watcher's seen marker to cover exactly the appended bytes and
+# nothing else. The advance is provenance-gated and fails toward waking:
+#   - the marker advances ONLY when the file's pre-append signature matched the
+#     recorded seen marker (every earlier byte was already announced or
+#     deliberately absorbed), AND the post-append size equals the pre-append
+#     size plus exactly the appended bytes (no foreign write interleaved);
+#   - on ANY other condition - missing marker, pending foreign bytes, an
+#     interleaved writer, an unreadable signature - the line is still appended
+#     but the marker is left alone, so the watcher surfaces the file normally.
+# A later, different line from any other writer grows the size past the marker
+# and wakes as before: task identity alone can never suppress new content.
+# Returns 0 appended and self-announced, 1 appended but left for the watcher
+# (the safe direction), 2 the append itself failed.
 fm_wake_status_append_self_announced() {  # <state> <status-file> <line>
-  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size line_bytes
+  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size
+  local LC_ALL=C
   marker=$(fm_wake_signal_seen_path "$state" "$file")
   if [ -e "$file" ]; then
     pre_sig=$(fm_wake_signal_sig "$file") || pre_sig=''
   fi
   printf '%s\n' "$line" >> "$file" || return 2
-  [ -n "$pre_sig" ] && [ "$(cat "$marker" 2>/dev/null)" = "$pre_sig" ] || return 1
+  [ -n "$pre_sig" ] || return 1
+  [ "$(cat "$marker" 2>/dev/null)" = "$pre_sig" ] || return 1
   post_sig=$(fm_wake_signal_sig "$file") || return 1
+  [ -n "$post_sig" ] || return 1
   pre_size=${pre_sig%%:*}
   post_size=${post_sig%%:*}
   case "$pre_size$post_size" in ''|*[!0-9]*) return 1 ;; esac
-  line_bytes=$(printf '%s' "$line" | LC_ALL=C wc -c 2>/dev/null | tr -d '[:space:]')
-  case "$line_bytes" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$post_size" -eq $((pre_size + line_bytes + 1)) ] || return 1
+  [ "$post_size" -eq $((pre_size + ${#line} + 1)) ] || return 1
   printf '%s' "$post_sig" > "$marker" 2>/dev/null || return 1
+  return 0
 }
 
 # Map one structurally valid signal key to its home-local status filename.
@@ -1169,13 +1130,75 @@ $rows
 EOF
 }
 
-fm_wake_print_annotations() {  # <deduped-raw-rows> <presentation-snapshot>
-  local rows=$1 snapshot=$2 manifest status_key mode path prefix line task endpoint
-  local snapshot_task snapshot_endpoint _snapshot_ident lines last total omitted
-  local annotation_limit=${FM_WAKE_ANNOTATION_LIMIT:-0}
-  local LC_ALL=C
+FM_WAKE_EVENT_LINE=
+FM_WAKE_UNREAD_LINES=
+fm_wake_status_cursor_offset() {  # <validated-status-path> -> already-presented byte offset
+  local path=$1 offset
+  command -v status_presentation_cursor_offset >/dev/null 2>&1 || return 1
+  offset=$(status_presentation_cursor_offset "$path" 2>/dev/null) || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$offset"
+}
 
-  case "$annotation_limit" in ''|*[!0-9]*) annotation_limit=0 ;; esac
+# O_NOFOLLOW read of every still-unread status byte. min-offset is the
+# already-presented cursor from classify-lib. Lines whose bytes begin before
+# that offset are not replayed. Prints nothing and returns 1 when no unread
+# non-blank line exists.
+fm_wake_unread_events() {  # <validated-status-path> <unused-tail-byte-cap> <min-offset> [<end-offset>]
+  local path=$1 min_offset=$3 end_offset=${4:-} result size chunk chunk_start
+  local LC_ALL=C
+  FM_WAKE_EVENT_LINE=
+  FM_WAKE_UNREAD_LINES=
+  case "$min_offset" in ''|*[!0-9]*) min_offset=0 ;; esac
+  result=$(perl -MFcntl=:DEFAULT -e '
+    my ($path, $start, $end) = @ARGV;
+    sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
+    my @stat = stat $file or exit 1;
+    exit 1 unless -f _;
+    my $size = $stat[7];
+    exit 1 unless $size =~ /\A\d+\z/ && $start =~ /\A\d+\z/ && $start <= $size;
+    $end = $size unless length $end;
+    exit 1 unless $end =~ /\A\d+\z/ && $start <= $end && $end <= $size;
+    seek($file, $start, 0) or exit 1;
+    printf "%s\t", $end or exit 1;
+    my $remaining = $end - $start;
+    while ($remaining > 0) {
+      my $read = read($file, my $buffer, $remaining);
+      exit 1 unless defined $read;
+      last unless $read;
+      print $buffer or exit 1;
+      $remaining -= $read;
+    }
+  ' "$path" "$min_offset" "$end_offset" 2>/dev/null) || return 1
+  size=${result%%$'\t'*}
+  chunk=${result#*$'\t'}
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$chunk" ] || return 1
+  [ "$min_offset" -lt "$size" ] || return 1
+  chunk_start=$min_offset
+  FM_WAKE_UNREAD_LINES=$(printf '%s' "$chunk" | LC_ALL=C awk -v start="$chunk_start" -v min="$min_offset" '
+    BEGIN { pos = start + 0 }
+    {
+      line_start = pos
+      pos += length($0) + 1
+      if ($0 ~ /[^[:space:]]/ && line_start >= min) print $0
+    }
+  ') || return 1
+  [ -n "$FM_WAKE_UNREAD_LINES" ] || return 1
+  FM_WAKE_EVENT_LINE=$(printf '%s\n' "$FM_WAKE_UNREAD_LINES" | tail -1)
+  FM_WAKE_EVENT_LINE=$(printf '%s' "$FM_WAKE_EVENT_LINE" | LC_ALL=C tr '\t\r' '  ')
+}
+
+fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap>
+  fm_wake_unread_events "$1" "$2" 0
+}
+
+# Print supplemental drain-time context only after the caller has committed the
+# raw queue consumption and released the append lock.
+fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
+  local rows=$1 snapshot=${2:-} manifest status_key mode path prefix line task endpoint
+  local snapshot_task snapshot_endpoint _snapshot_ident offset last_event event_line
+  local LC_ALL=C
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
     {
@@ -1204,42 +1227,57 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> <presentation-snapshot>
   while IFS=$(printf '\t') read -r status_key mode; do
     [ -n "$status_key" ] || continue
     path="$STATE/$status_key"
-    task=${status_key%.status}
+    # A turn-ended-only (historical) row's annotation would show unread status
+    # lines even when those bytes are fully covered by the seen marker - already
+    # surfaced to firstmate or deliberately absorbed by the signal triage.
+    # Presenting such an already-announced line again makes a bare turn-end look
+    # like fresh progress, so skip the annotation when the status file's
+    # signature still matches its marker (a proven replay). Any uncertainty -
+    # missing marker, unreadable signature - keeps the annotation with its
+    # existing historical caveat. A direct status row is annotated for every
+    # still-unread line since the last drain presentation; already-presented
+    # bytes are not replayed.
+    if [ "$mode" = historical ] && fm_wake_signal_seen_current "$STATE" "$path"; then
+      continue
+    fi
+    offset=$(fm_wake_status_cursor_offset "$path") || return 1
     endpoint=
-    while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint _snapshot_ident; do
-      if [ "$snapshot_task" = "$task" ]; then endpoint=$snapshot_endpoint; break; fi
-    done <<EOF
+    if [ -n "$snapshot" ]; then
+      task=${status_key%.status}
+      while IFS=$(printf '\t') read -r snapshot_task snapshot_endpoint _snapshot_ident; do
+        if [ "$snapshot_task" = "$task" ]; then endpoint=$snapshot_endpoint; break; fi
+      done <<EOF
 $snapshot
 EOF
-    [ -n "$endpoint" ] || continue
-    # A status file can disappear or be replaced after the presentation
-    # snapshot. Skip only that stale annotation; the later identity-bound
-    # cursor commit will fail closed instead of acknowledging the snapshot.
-    lines=$(status_new_lines_since_cursor "$path" "$endpoint") || continue
-    [ -n "$lines" ] || continue
-    if [ "$annotation_limit" -gt 0 ]; then
-      total=$(printf '%s\n' "$lines" | awk 'NF { count++ } END { print count + 0 }')
-      if [ "$total" -gt "$annotation_limit" ]; then
-        omitted=$((total - annotation_limit))
-        lines=$(printf '%s\n' "$lines" | tail -n "$annotation_limit")
-        printf 'wake annotation: %s earlier unread wake-EVENT annotation line(s) omitted; durable raw-wake presentation and OPEN DECISIONS remain intact.\n' \
-          "$omitted" || return 1
-      fi
+      [ -n "$endpoint" ] || continue
     fi
-    last=$(printf '%s\n' "$lines" | tail -1)
-    while IFS= read -r line || [ -n "$line" ]; do
-      [ -n "$line" ] || continue
-      prefix="wake annotation: unread wake-EVENT since last drain, not current state"
-      [ "$line" = "$last" ] \
-        && prefix="wake annotation: latest wake-EVENT observed at drain, not current state"
-      [ "$mode" != historical ] \
-        || prefix="$prefix; historical / not necessarily the triggering event"
-      printf '%s: %s: %s\n' "$prefix" "$status_key" \
-        "$(printf '%s' "$line" | LC_ALL=C tr '\t\r' '  ')" || return 1
+    if [ -n "$endpoint" ] && [ "$offset" -ge "$endpoint" ]; then continue; fi
+    if ! fm_wake_unread_events "$path" 0 "$offset" "$endpoint"; then
+      # Annotation enrichment is supplemental to the already-printed durable
+      # wake rows. A file that disappears, rotates, or becomes unreadable after
+      # the snapshot must not suppress annotations for other status files; the
+      # presentation commit will reject a changed snapshot identity.
+      continue
+    fi
+    last_event=$FM_WAKE_EVENT_LINE
+    while IFS= read -r event_line || [ -n "$event_line" ]; do
+      [ -n "$event_line" ] || continue
+      event_line=$(printf '%s' "$event_line" | LC_ALL=C tr '\t\r' '  ')
+      prefix="wake annotation: latest wake-EVENT observed at drain, not current state"
+      if [ "$event_line" != "$last_event" ]; then
+        prefix="wake annotation: unread wake-EVENT since last drain, not current state"
+      fi
+      if [ "$mode" = historical ]; then
+        prefix="$prefix; historical / not necessarily the triggering event"
+      fi
+      line="$prefix: $status_key: $event_line"
+      printf '%s\n' "$line" || return 1
     done <<EOF
-$lines
+$FM_WAKE_UNREAD_LINES
 EOF
   done <<EOF
 $manifest
 EOF
+
+  return 0
 }

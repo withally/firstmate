@@ -27,12 +27,10 @@ TMP_ROOT=$(fm_test_tmproot fm-send-marker)
 
 # A fake tmux that (a) records the literal text of every `send-keys -l` to
 # FM_SEND_LOG and (b) lets fm-send's submit path reach a clean "empty" verdict.
-# display-message yields a numeric cursor_y; capture-pane renders the composer
-# the way a real one behaves - the typed text appears after `send-keys -l` and
-# the row clears on Enter - so the submit path can observe its own typed text
-# before believing the post-Enter empty composer. Only the literal (-l) text is
-# logged; Enter retries and --key sends are not, so the log holds exactly what
-# was typed into the composer.
+# display-message yields a numeric cursor_y; capture-pane returns an empty
+# bordered composer so fm_tmux_composer_state reads "empty" (submit landed) on the
+# first Enter. Only the literal (-l) text is logged; Enter retries and --key sends
+# are not, so the log holds exactly what was typed into the composer.
 make_stubs() {  # <dir> -> echoes fakebin dir
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -52,21 +50,12 @@ case "${1:-}" in
     done
     if [ "$literal" = 1 ]; then
       printf '%s' "${1:-}" >> "$FM_SEND_LOG"
-      printf '%s' "${1:-}" > "$FM_SEND_LOG.composer"
-    elif [ "${1:-}" = Enter ]; then
-      : > "$FM_SEND_LOG.composer"
     fi
     exit 0 ;;
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
-  capture-pane)
-    if [ -s "$FM_SEND_LOG.composer" ]; then
-      printf '╭────╮\n│ > %s │\n╰────╯\n' "$(cat "$FM_SEND_LOG.composer")"
-    else
-      printf '╭────╮\n│    │\n╰────╯\n'
-    fi
-    exit 0 ;;
+  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0

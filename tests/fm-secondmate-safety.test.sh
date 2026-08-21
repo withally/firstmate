@@ -1259,7 +1259,7 @@ test_home_seed_refuses_operational_dirs_outside_subhome() {
   pass "home seeding refuses operational directories outside the subhome"
 }
 
-test_home_seed_refuses_symlinked_leaf_files() {
+test_home_seed_refuses_unsafe_leaf_files() {
   local home subhome sink err leaf target expected
   home="$TMP_ROOT/symlink-leaf-home"
   err="$TMP_ROOT/symlink-leaf.err"
@@ -1269,7 +1269,7 @@ test_home_seed_refuses_symlinked_leaf_files() {
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   scaffold_secondmate_charter "$home" design 'design domain' alpha || fail "charter scaffold failed for symlink leaf seed test"
 
-  for leaf in data/projects.md data/charter.md .fm-secondmate-home; do
+  for leaf in data/projects.md data/charter.md .fm-secondmate-home .fm-secondmate-parent; do
     subhome="$TMP_ROOT/symlink-leaf-subhome-${leaf//\//-}"
     sink="$home/data/symlink-leaf-${leaf//\//-}"
     rm -rf "$subhome" "$sink"
@@ -1290,7 +1290,68 @@ test_home_seed_refuses_symlinked_leaf_files() {
     [ "$target" = "$expected" ] || fail "seed overwrote outside symlink target for $leaf"
     [ ! -f "$subhome/.fm-secondmate-home" ] || [ "$leaf" = ".fm-secondmate-home" ] || fail "seed marked subhome after symlinked leaf refusal"
   done
-  pass "home seeding refuses symlinked leaf files"
+  for leaf in data/projects.md data/charter.md .fm-secondmate-home .fm-secondmate-parent; do
+    subhome="$TMP_ROOT/directory-leaf-subhome-${leaf//\//-}"
+    rm -rf "$subhome"
+    git clone --quiet "$ROOT" "$subhome"
+    mkdir -p "$subhome/$leaf"
+    if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
+      fail "seed accepted directory leaf $leaf"
+    fi
+    grep -F 'secondmate leaf file must be a regular file:' "$err" >/dev/null \
+      || fail "seed did not explain directory leaf refusal for $leaf"
+    [ -d "$subhome/$leaf" ] || fail "seed changed directory leaf $leaf"
+    [ ! -f "$subhome/.fm-secondmate-home" ] \
+      || fail "seed published an identity marker after directory leaf refusal for $leaf"
+  done
+  pass "home seeding refuses symlinked and non-regular leaf files"
+}
+
+test_home_seed_preserves_existing_parent_binding() {
+  local parent_a parent_b child child_abs before err out parent_a_abs parent_b_abs leaf
+  parent_a="$TMP_ROOT/reseed-parent-a"
+  parent_b="$TMP_ROOT/reseed-parent-b"
+  child="$TMP_ROOT/reseed-parent-child"
+  before="$TMP_ROOT/reseed-parent-before"
+  err="$TMP_ROOT/reseed-parent.err"
+  mkdir -p "$parent_a/data" "$parent_a/state" "$parent_a/projects" \
+    "$parent_b/data" "$parent_b/state" "$parent_b/projects" "$before/data"
+
+  FM_HOME="$parent_a" FM_SECONDMATE_CHARTER='Durable parent reseed charter.' \
+    FM_SECONDMATE_SCOPE='durable parent reseed scope' \
+    "$ROOT/bin/fm-home-seed.sh" mate "$child" --no-projects >/dev/null \
+    || fail "initial durable-parent seed failed"
+  parent_a_abs=$(cd "$parent_a" && pwd -P)
+  parent_b_abs=$(cd "$parent_b" && pwd -P)
+  child_abs=$(cd "$child" && pwd -P)
+  for leaf in data/projects.md data/charter.md .fm-secondmate-home .fm-secondmate-parent; do
+    mkdir -p "$before/$(dirname "$leaf")"
+    cp "$child/$leaf" "$before/$leaf"
+  done
+
+  if FM_HOME="$parent_b" FM_SECONDMATE_CHARTER='Replacement parent charter.' \
+    FM_SECONDMATE_SCOPE='replacement parent scope' \
+    "$ROOT/bin/fm-home-seed.sh" mate "$child" --no-projects > /dev/null 2>"$err"; then
+    fail "reseed replaced a valid durable parent binding"
+  fi
+  grep -F "bound to parent $parent_a_abs, not requested parent $parent_b_abs" "$err" >/dev/null \
+    || fail "mismatched-parent reseed did not name both parent identities"
+  for leaf in data/projects.md data/charter.md .fm-secondmate-home .fm-secondmate-parent; do
+    cmp -s "$before/$leaf" "$child/$leaf" \
+      || fail "mismatched-parent reseed changed $leaf"
+  done
+  [ ! -e "$parent_b/data/mate/brief.md" ] \
+    || fail "mismatched-parent reseed created a replacement parent brief"
+  [ ! -e "$parent_b/data/secondmates.md" ] \
+    || fail "mismatched-parent reseed registered the child to the replacement parent"
+
+  out=$(FM_HOME="$parent_a" "$ROOT/bin/fm-home-seed.sh" mate "$child" --no-projects) \
+    || fail "matching-parent reseed failed"
+  printf '%s\n' "$out" | grep -F "home=$child_abs" >/dev/null \
+    || fail "matching-parent reseed did not report success"
+  cmp -s "$before/.fm-secondmate-parent" "$child/.fm-secondmate-parent" \
+    || fail "matching-parent reseed changed the durable parent binding"
+  pass "home reseeding preserves and enforces the durable parent binding"
 }
 
 test_secondmate_spawn_requires_seeded_matching_home() {
@@ -2354,48 +2415,11 @@ hold_task_set_lock() {  # <state-dir> -> echoes "<holder-pid> <lock-path>"
     i=$((i + 1))
   done
   [ -e "$lock" ] || {
-    fm_test_terminate_or_fail "$holder" "task-set lock holder cleanup after setup failure"
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
     return 1
   }
   printf '%s %s\n' "$holder" "$lock"
-}
-
-task_set_publishers_dir() {  # <state-dir>
-  local state=$1
-  ( . "$ROOT/bin/fm-wake-lib.sh"; fm_task_set_publishers_dir "$state" )
-}
-
-# A fresh spawn does NOT take the exclusive lock - several spawns publish into
-# one home at once - so "a task is being published" is staged as a live shared
-# registration, exactly what bin/fm-spawn.sh holds across its own publication.
-# The registering process must stay ALIVE: a registration whose pid is gone is
-# reclaimed, so the contention under test would not happen.
-hold_task_set_publication() {  # <state-dir> -> echoes "<holder-pid> <registration>"
-  local state=$1 dir holder i=0 entry
-  dir=$(task_set_publishers_dir "$state") || return 1
-  [ -n "$dir" ] || return 1
-  # stdout/stderr are redirected so the long-lived publisher does not inherit
-  # this function's command-substitution pipe (see hold_task_set_lock).
-  (
-    # shellcheck source=/dev/null
-    . "$ROOT/bin/fm-wake-lib.sh"
-    fm_task_set_publish_begin "$state" || exit 1
-    # shellcheck disable=SC2031 # Set and read inside this same subshell, which
-    # is deliberately the registered publisher for the rest of its life.
-    printf '%s\n' "$FM_TASK_SET_PUBLISH_ENTRY" > "$dir.staged"
-    sleep 30
-  ) >/dev/null 2>&1 &
-  holder=$!
-  while [ ! -s "$dir.staged" ] && [ "$i" -lt 100 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  entry=$(cat "$dir.staged" 2>/dev/null || true)
-  [ -n "$entry" ] && [ -e "$entry" ] || {
-    fm_test_terminate_or_fail "$holder" "task-set publisher cleanup after setup failure"
-    return 1
-  }
-  printf '%s %s\n' "$holder" "$entry"
 }
 
 seed_empty_task_set_home() {  # <tag> -> echoes "<home>|<subhome>"
@@ -2506,7 +2530,7 @@ SH
   done
   [ -e "$ready" ] || {
     : > "$release"
-    fm_test_wait_or_fail "$pid" 600 "forced teardown preflight cleanup"
+    wait "$pid" 2>/dev/null || true
     fail "forced teardown did not reach the post-lock preflight: $(cat "$err")"
   }
   lock=$(task_set_lock_path "$subhome/state") \
@@ -2515,8 +2539,7 @@ SH
   [ -e "$lock" ] || fail "forced teardown did not own the descendant task-set lock during preflight"
   kill -0 "$pid" 2>/dev/null || fail "forced teardown exited before task-set ownership was observed"
   : > "$release"
-  fm_test_wait_or_fail "$pid" 600 "forced teardown post-lock preflight"
-  if [ "$FM_TEST_WAIT_STATUS" -eq 0 ]; then
+  if wait "$pid"; then
     fail "forced teardown ignored the staged process-event preflight refusal"
   fi
   [ -d "$subhome" ] || fail "post-lock refusal removed the descendant home"
@@ -2527,19 +2550,17 @@ SH
 }
 
 test_force_teardown_refuses_while_a_task_is_being_published() {
-  local home subhome fakebin err log lock rec held holder entry
+  local home subhome fakebin err log lock rec held holder
   rec=$(seed_task_set_lock_home taskset-teardown)
   IFS='|' read -r home subhome <<EOF
 $rec
 EOF
   err="$TMP_ROOT/taskset-teardown.err"
   # Stand in for a fresh spawn that is mid-publication in the secondmate's home.
-  held=$(hold_task_set_publication "$subhome/state") \
-    || fail "could not stage a live task-set publication"
+  held=$(hold_task_set_lock "$subhome/state") \
+    || fail "could not stage a held task-set lock"
   holder=${held%% *}
-  entry=${held#* }
-  lock=$(task_set_lock_path "$subhome/state") \
-    || fail "could not resolve the task-set lock"
+  lock=${held#* }
   fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-fake")
   log="$TMP_ROOT/taskset-teardown-fake/tmux.log"
   if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
@@ -2551,72 +2572,12 @@ EOF
   [ -e "$subhome/state/child.meta" ] || fail "forced teardown removed child metadata despite refusing"
   [ -e "$home/state/domain.meta" ] || fail "forced teardown cleared parent metadata despite refusing"
   grep -F 'kill-window' "$log" >/dev/null && fail "forced teardown killed a window despite refusing"
-  [ -e "$entry" ] || fail "forced teardown removed the live publication registration"
-  [ ! -e "$lock" ] || fail "the refused teardown left its exclusive task-set lock behind"
-  grep -F 'a fresh spawn is registered against its task set' "$err" >/dev/null \
-    || fail "the refusal did not name the task-set contention: $(cat "$err")"
-  fm_test_terminate_or_fail "$holder" "live task-set publisher cleanup"
-  pass "forced teardown refuses while a fresh task is being published in the home"
-}
-
-# The other exclusive direction: a second destructive owner of the same task set
-# is refused by the lock itself, before any registration is consulted.
-test_force_teardown_refuses_while_the_task_set_lock_is_owned() {
-  local home subhome fakebin err log lock rec held holder
-  rec=$(seed_task_set_lock_home taskset-teardown-owned)
-  IFS='|' read -r home subhome <<EOF
-$rec
-EOF
-  err="$TMP_ROOT/taskset-teardown-owned.err"
-  held=$(hold_task_set_lock "$subhome/state") \
-    || fail "could not stage a held task-set lock"
-  holder=${held%% *}
-  lock=${held#* }
-  fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-owned-fake")
-  log="$TMP_ROOT/taskset-teardown-owned-fake/tmux.log"
-  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
-    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/taskset-teardown-owned-fake/pane.txt" \
-    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err"; then
-    fail "forced teardown proceeded while another owner held the task set"
-  fi
-  [ -d "$subhome" ] || fail "forced teardown removed the home despite refusing"
-  [ -e "$subhome/state/child.meta" ] || fail "forced teardown removed child metadata despite refusing"
-  grep -F 'kill-window' "$log" >/dev/null && fail "forced teardown killed a window despite refusing"
-  [ -e "$lock" ] || fail "forced teardown removed the other owner's task-set lock"
+  [ -e "$lock" ] || fail "forced teardown removed the publisher's task-set lock"
   grep -F 'task-set lock is held' "$err" >/dev/null \
-    || fail "the refusal did not name the task-set lock: $(cat "$err")"
-  fm_test_terminate_or_fail "$holder" "live task-set lock holder cleanup"
-  pass "forced teardown refuses while another owner holds the task-set lock"
-}
-
-# A registration left behind by a killed spawn must not wedge the home forever:
-# the destructive owner reclaims it once its process is gone, so teardown is
-# blocked by live publication only.
-test_force_teardown_reclaims_a_dead_publication_registration() {
-  local home subhome fakebin err log rec dir dead
-  rec=$(seed_task_set_lock_home taskset-teardown-dead)
-  IFS='|' read -r home subhome <<EOF
-$rec
-EOF
-  err="$TMP_ROOT/taskset-teardown-dead.err"
-  dir=$(task_set_publishers_dir "$subhome/state") \
-    || fail "could not resolve the publishers directory"
-  mkdir -p "$dir"
-  # A pid that has certainly exited: reaped here, so nothing can reuse it while
-  # this test runs.
-  ( exit 0 ) &
-  dead=$!
-  fm_test_wait_or_fail "$dead" 600 "dead publisher fixture"
-  printf '%s\n' "$dead" > "$dir/publisher.dead"
-  fakebin=$(make_fake_tmux "$TMP_ROOT/taskset-teardown-dead-fake")
-  log="$TMP_ROOT/taskset-teardown-dead-fake/tmux.log"
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
-    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/taskset-teardown-dead-fake/pane.txt" \
-    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err" \
-    || fail "forced teardown was blocked by a dead publication registration: $(cat "$err")"
-  [ ! -e "$dir/publisher.dead" ] || fail "the dead publication registration was not reclaimed"
-  [ ! -e "$home/state/domain.meta" ] || fail "forced teardown did not remove the secondmate record"
-  pass "forced teardown reclaims a registration whose publisher is gone"
+    || fail "the refusal did not name the task-set contention: $(cat "$err")"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "forced teardown refuses while a fresh task is being published in the home"
 }
 
 test_fresh_spawn_refuses_while_a_forced_teardown_owns_the_task_set() {
@@ -2643,43 +2604,9 @@ EOF
     || fail "the spawn refusal did not name the task-set contention: $(cat "$err")"
   [ ! -e "$subhome/state/.spawn-newtask.lock" ] \
     || fail "a refused spawn left its own task lock behind"
-  [ -z "$(find "$(task_set_publishers_dir "$subhome/state")" -name 'publisher.*' 2>/dev/null)" ] \
-    || fail "a refused spawn left its publication registration behind"
-  fm_test_terminate_or_fail "$holder" "task-set lock holder after refused spawn"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
   pass "a fresh spawn refuses to publish while a forced teardown owns the task set"
-}
-
-# Spawning several tasks into one home at once is ordinary fleet behavior, and
-# the task-set guard must not turn it into a refusal: the exclusive lock is for
-# destructive owners only, so a spawn proceeds past the guard while another
-# spawn's publication is registered, and gets to its own brief check.
-test_concurrent_fresh_spawns_do_not_exclude_each_other() {
-  local home subhome err rec held holder entry
-  rec=$(seed_task_set_lock_home taskset-shared)
-  IFS='|' read -r home subhome <<EOF
-$rec
-EOF
-  err="$TMP_ROOT/taskset-shared.err"
-  held=$(hold_task_set_publication "$subhome/state") \
-    || fail "could not stage a live task-set publication"
-  holder=${held%% *}
-  entry=${held#* }
-  # An explicit harness, like every other spawn assertion in this file: this
-  # spawn must run past harness resolution to reach the brief check, and the
-  # resolved default depends on the harness the test itself runs under, which is
-  # 'unknown' (no launch template, so an earlier refusal) on a bare CI runner.
-  if FM_HOME="$subhome" FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" sharedtask "$subhome/projects/alpha" codex --scout >/dev/null 2>"$err"; then
-    kill "$holder" 2>/dev/null || true
-    fail "a briefless spawn unexpectedly succeeded"
-  fi
-  grep -F "task set is locked" "$err" >/dev/null \
-    && fail "a concurrent fresh spawn was refused by another spawn's publication"
-  grep -F "no brief at" "$err" >/dev/null \
-    || fail "the concurrent spawn did not reach its own brief check: $(cat "$err")"
-  [ -e "$entry" ] || fail "the concurrent spawn removed the other publisher's registration"
-  fm_test_terminate_or_fail "$holder" "concurrent publisher cleanup"
-  pass "concurrent fresh spawns share the task set instead of excluding each other"
 }
 
 test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned() {
@@ -2705,7 +2632,8 @@ test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned() {
     || fail "the remote spawn refusal did not name task-set contention: $(cat "$err")"
   [ ! -e "$home/state/.spawn-remote-new.lock" ] \
     || fail "a refused remote secondmate spawn left its own task lock behind"
-  fm_test_terminate_or_fail "$holder" "remote-spawn task-set holder cleanup"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
   pass "a fresh remote secondmate spawn refuses while the task set is owned"
 }
 
@@ -2851,7 +2779,7 @@ EOF
 }
 
 test_secondmate_idle_pane_is_not_stale() {
-  local home fakebin out pid window i=0
+  local home fakebin out pid window
   home="$TMP_ROOT/watch-home"
   mkdir -p "$home/state"
   window="firstmate:fm-domain"
@@ -2869,31 +2797,12 @@ EOF
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_LOG="$TMP_ROOT/watch-fake/tmux.log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/watch-fake/pane.txt" \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$ROOT/bin/fm-watch.sh" > "$out" &
   pid=$!
-  while [ ! -e "$home/state/.last-watcher-beat" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if [ ! -e "$home/state/.last-watcher-beat" ]; then
-    kill -KILL "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    fail "watcher did not publish readiness before idle-secondmate supervision"
-  fi
   if ! wait_live "$pid" 25; then
-    fm_test_wait_or_fail "$pid" 600 "unexpected idle secondmate watcher exit"
+    wait "$pid" || true
     grep -F "stale: $window" "$out" >/dev/null && fail "idle secondmate pane triggered stale wake"
     fail "watcher exited unexpectedly while supervising idle secondmate"
   fi
   kill "$pid" 2>/dev/null || true
-  i=0
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    fail "watcher ignored TERM after publishing readiness"
-  fi
   wait "$pid" 2>/dev/null || true
   grep -F "stale: $window" "$out" >/dev/null && fail "idle secondmate pane triggered stale wake"
   pass "idle kind=secondmate pane is healthy and not stale"
@@ -3085,7 +2994,8 @@ test_home_seed_skips_initialized_existing_no_mistakes_projects
 test_home_seed_refuses_uninitialized_existing_no_mistakes_project
 test_home_seed_refuses_project_destinations_outside_subhome
 test_home_seed_refuses_operational_dirs_outside_subhome
-test_home_seed_refuses_symlinked_leaf_files
+test_home_seed_refuses_unsafe_leaf_files
+test_home_seed_preserves_existing_parent_binding
 test_secondmate_spawn_requires_seeded_matching_home
 test_secondmate_spawn_refuses_operational_dirs_outside_subhome
 test_fm_send_refuses_bare_window_without_home_meta
@@ -3110,10 +3020,7 @@ test_force_teardown_refuses_non_directory_descendant_state
 test_force_teardown_refuses_symlinked_descendant_state
 test_force_teardown_locks_descendant_with_absent_state
 test_force_teardown_refuses_while_a_task_is_being_published
-test_force_teardown_refuses_while_the_task_set_lock_is_owned
-test_force_teardown_reclaims_a_dead_publication_registration
 test_fresh_spawn_refuses_while_a_forced_teardown_owns_the_task_set
-test_concurrent_fresh_spawns_do_not_exclude_each_other
 test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned
 test_secondmate_force_teardown_refuses_child_active_home_descendant
 test_secondmate_force_teardown_refuses_child_repo_descendant

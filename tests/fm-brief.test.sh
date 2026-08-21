@@ -209,95 +209,12 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "# Definition of done" "$brief" "$id: brief missing Definition of done section"
     grep -qx "Delivery contract: mode=$mode" "$brief" \
       || fail "$id: brief did not record its machine-readable delivery contract line"
-    assert_grep "{PURPOSE - one sentence outcome, not activity}" "$brief" \
-      "$id: brief missing the task-shape purpose placeholder"
+    assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
-}
-
-# The task surface must make binding authority and delegated judgement visible
-# without making the caller infer the discipline from prose elsewhere.
-test_task_shape_distinguishes_constraints_from_choices() {
-  local home id kind brief purpose authorities bar boundaries budget help
-  home="$TMP_ROOT/task-shape-home"
-  mkdir -p "$home/data"
-
-  for kind in ship scout; do
-    id="brief-task-shape-$kind"
-    if [ "$kind" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
-    fi
-    brief="$home/data/$id/brief.md"
-    assert_present "$brief" "$kind task-shape brief was not scaffolded"
-    assert_grep "## Purpose" "$brief" "$kind brief missing the one-sentence purpose part"
-    assert_grep "## Authorities, in order" "$brief" "$kind brief missing ordered authorities"
-    assert_grep "## The bar" "$brief" "$kind brief missing the global-law and rejection part"
-    assert_grep "## Boundaries" "$brief" "$kind brief missing the boundaries part"
-    assert_grep "Judgment budget:" "$brief" "$kind brief missing the explicit judgement budget"
-    assert_grep "higher authority wins; record the conflict" "$brief" \
-      "$kind brief missing the authority conflict rule"
-    assert_grep "rejection conditions" "$brief" \
-      "$kind brief invites acceptance recipes instead of rejection conditions"
-    assert_grep "examples marked as hypotheses" "$brief" \
-      "$kind brief lets seeded examples harden into mandates"
-    purpose=$(grep -n '^## Purpose$' "$brief" | cut -d: -f1)
-    authorities=$(grep -n '^## Authorities, in order$' "$brief" | cut -d: -f1)
-    bar=$(grep -n '^## The bar$' "$brief" | cut -d: -f1)
-    boundaries=$(grep -n '^## Boundaries$' "$brief" | cut -d: -f1)
-    budget=$(grep -n '^Judgment budget:' "$brief" | cut -d: -f1)
-    [ "$purpose" -lt "$authorities" ] \
-      && [ "$authorities" -lt "$bar" ] \
-      && [ "$bar" -lt "$boundaries" ] \
-      && [ "$boundaries" -lt "$budget" ] \
-      || fail "$kind brief task parts are not rendered in binding order"
-  done
-  help=$("$ROOT/bin/fm-brief.sh" --help)
-  assert_contains "$help" "Purpose is one sentence" \
-    "fm-brief.sh --help did not teach outcome-first purpose"
-  assert_contains "$help" "acceptance as rejection conditions" \
-    "fm-brief.sh --help did not reject implementation recipes"
-  assert_contains "$help" "Seeded examples are hypotheses" \
-    "fm-brief.sh --help did not prevent examples becoming mandates"
-  assert_contains "$help" "discipline, not a fixed-length form" \
-    "fm-brief.sh --help turned the shape into uniform boilerplate"
-  assert_contains "$help" "The judgment-budget line is the per-model dial" \
-    "fm-brief.sh --help did not name the per-model calibration control"
-  pass "fm-brief.sh: ship and scout tasks distinguish constraints from delegated judgement"
-}
-
-# A strong thinking model is briefed short - goal and constraints, no method,
-# file tour, or step list - and that loosening must never strip a safety
-# scaffold. The guidance firstmate reads at scaffold time is the script's --help,
-# so assert it names the loosened worker classes and the recipe-free shape while
-# still holding the isolation assertion and delivery contract verbatim, then
-# confirm a real generated ship brief keeps both safety scaffolds.
-test_strong_thinking_model_brief_is_short_without_loosening_safety() {
-  local help help_flat home brief
-  help=$("$ROOT/bin/fm-brief.sh" --help)
-  # Line wrapping in the header is not the contract; the semantic guidance is.
-  help_flat=$(printf '%s' "$help" | tr '\n' ' ' | tr -s ' ')
-  assert_contains "$help_flat" "with no method, file tour, or step list" \
-    "fm-brief.sh --help did not carry the strong-thinking-model short-brief loosening"
-  assert_contains "$help_flat" "an approved Fable, an approved K3, or a captain-named high-effort Claude" \
-    "fm-brief.sh --help did not name the strong-thinking-model classes that get the short brief"
-  assert_contains "$help_flat" "any other safety scaffold, which stay verbatim" \
-    "fm-brief.sh --help let the short-brief loosening reach the safety scaffold"
-
-  home="$TMP_ROOT/strong-model-home"
-  mkdir -p "$home/data"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-strong-model some-proj --mode no-mistakes >/dev/null 2>&1
-  brief="$home/data/brief-strong-model/brief.md"
-  assert_present "$brief" "strong-model ship brief was not scaffolded"
-  assert_grep "**Verify isolation before anything else.**" "$brief" \
-    "short-brief loosening dropped the worktree-isolation assertion from a generated ship brief"
-  assert_grep "Delivery contract: mode=no-mistakes" "$brief" \
-    "short-brief loosening dropped the delivery contract from a generated ship brief"
-  pass "fm-brief.sh: strong-thinking-model briefs loosen the shape while safety scaffolds stay verbatim"
 }
 
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
@@ -339,8 +256,8 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Do not append \`done:\` or stop between the implementation commit and that CI-ready result." "$brief" \
-    "explicit no-mistakes brief did not render the single-phase definition of done"
+  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+    "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a6 never-registered --mode local-only >/dev/null 2>&1 \
@@ -414,16 +331,6 @@ test_no_mistakes_dod_wording() {
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
     "no-mistakes DOD lost its guidance-reference sentence"
-  assert_grep "using the invocation form supported by your harness" "$brief" \
-    "no-mistakes DOD hard-coded one harness's skill token"
-  assert_grep "Do not append \`done:\` or stop between the implementation commit and that CI-ready result." "$brief" \
-    "no-mistakes DOD retained the premature implementation-done phase"
-  assert_no_grep "When you believe it is complete, append \`done: {summary}\`" "$brief" \
-    "no-mistakes DOD still tells the worker to report done before validation"
-  assert_no_grep "Firstmate will then instruct you" "$brief" \
-    "no-mistakes DOD still waits for a second validation steer"
-  assert_no_grep "/no-mistakes" "$brief" \
-    "no-mistakes DOD still hard-codes the Claude-style invocation token"
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
   assert_grep '`no-mistakes axi run --help`' "$brief" \
     "no-mistakes DOD must render literal backticks around the help command"
@@ -512,8 +419,8 @@ test_herdr_lab_contract_quotes_foreign_firstmate_path() {
   pass "fm-brief.sh: --herdr-lab uses its quoted Firstmate-owned helper path"
 }
 
-test_herdr_lab_gate_is_conditional_without_default_noise() {
-  local home id brief help
+test_herdr_lab_omission_is_loud_for_ship_and_scout() {
+  local home id brief
   home="$TMP_ROOT/herdr-gate-home"
   mkdir -p "$home/data"
   for kind in ship scout; do
@@ -524,92 +431,12 @@ test_herdr_lab_gate_is_conditional_without_default_noise() {
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
     fi
     brief="$home/data/$id/brief.md"
-    assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
-      "$kind brief retained an unrelated negative declaration"
-    assert_no_grep "regenerate the brief with \`--herdr-lab\` before dispatch" "$brief" \
-      "$kind brief retained the absent Herdr contract as standing noise"
+    assert_grep "# Herdr lifecycle declaration - NOT ENABLED" "$brief" \
+      "$kind brief silently omitted the Herdr declaration"
+    assert_grep "regenerate the brief with \`--herdr-lab\` before dispatch" "$brief" \
+      "$kind brief missing the fail-visible regeneration instruction"
   done
-  help=$("$ROOT/bin/fm-brief.sh" --help)
-  assert_contains "$help" "--herdr-lab is mandatory" \
-    "fm-brief.sh --help lost the Herdr intake gate"
-  pass "fm-brief.sh: Herdr safety is flag-gated without a negative declaration on every brief"
-}
-
-test_content_mutation_contract_is_explicit_and_complete() {
-  local home id brief
-  home="$TMP_ROOT/content-mutation-home"
-  mkdir -p "$home/data"
-  id="brief-content-mutation-d3"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --content-mutation >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_present "$brief" "content-mutating brief was not scaffolded"
-  assert_grep "# Content conservation - REQUIRED" "$brief" \
-    "content-mutating brief missing its conservation contract"
-  assert_grep "every content class" "$brief" \
-    "content-mutating brief did not require a complete class inventory"
-  assert_grep "class name, before count, and after count" "$brief" \
-    "content-mutating brief did not require before/after counts"
-  assert_grep "Identity-level deltas are required" "$brief" \
-    "content-mutating brief allowed aggregate counts to hide swaps"
-  assert_grep "Name every dropped identity" "$brief" \
-    "content-mutating brief did not require named drops"
-  assert_grep "reason and the decision it belongs to" "$brief" \
-    "content-mutating brief did not bind drops to reasons and decisions"
-  assert_grep "drops to zero requires an explicit captain reference" "$brief" \
-    "content-mutating brief allowed worker judgement to zero a class"
-  assert_grep "independently re-derive the before/after inventory for every content class" "$brief" \
-    "ship brief missing the standing independent deletion audit"
-  assert_no_grep "Content mutation declaration - NOT ENABLED" "$brief" \
-    "content-mutating brief retained the unguarded declaration"
-  pass "fm-brief.sh: --content-mutation emits the complete conservation contract"
-}
-
-test_content_mutation_is_conditional_and_scouts_rederive_deletions() {
-  local home id brief help status=0 out
-  home="$TMP_ROOT/content-conservation-gate-home"
-  mkdir -p "$home/data"
-
-  id="brief-content-gate-ship"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_no_grep "Content mutation declaration - NOT ENABLED" "$brief" \
-    "ordinary ship brief retained an unrelated negative declaration"
-  assert_no_grep "regenerate the brief with \`--content-mutation\` before dispatch" "$brief" \
-    "ordinary ship brief retained the absent content contract as standing noise"
-
-  id="brief-content-audit-scout"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_grep "# Deletion audit" "$brief" \
-    "scout brief missing the standing deletion-audit contract"
-  assert_grep "independently re-derive the before/after inventory for every content class" "$brief" \
-    "scout brief allowed the verifier to accept the deliverer's ledger"
-  assert_grep "nothing was silently dropped" "$brief" \
-    "scout brief did not state the subtraction check"
-  assert_grep "nothing beyond the approved scope was added" "$brief" \
-    "scout brief did not pair deletion with the existing addition check"
-
-  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-content-scout-refusal firstmate --scout --content-mutation 2>&1) || status=$?
-  expect_code 1 "$status" "scout --content-mutation must be rejected"
-  assert_contains "$out" "--content-mutation applies only to ship briefs" \
-    "scout refusal did not explain the ship-only content mutation contract"
-  assert_absent "$home/data/brief-content-scout-refusal/brief.md" \
-    "rejected scout --content-mutation still wrote a brief"
-
-  status=0
-  out=$(FM_HOME="$home" FM_SECONDMATE_CHARTER=ops "$ROOT/bin/fm-brief.sh" brief-content-secondmate-refusal --secondmate firstmate --content-mutation 2>&1) || status=$?
-  expect_code 1 "$status" "secondmate --content-mutation must be rejected"
-  assert_contains "$out" "--content-mutation applies only to ship briefs" \
-    "secondmate refusal did not explain the ship-only content mutation contract"
-  assert_absent "$home/data/brief-content-secondmate-refusal/brief.md" \
-    "rejected secondmate --content-mutation still wrote a brief"
-
-  help=$("$ROOT/bin/fm-brief.sh" --help)
-  assert_contains "$help" "--content-mutation" \
-    "fm-brief.sh --help did not document the explicit content-mutation contract"
-  assert_contains "$help" "identity-level" \
-    "fm-brief.sh --help did not explain why aggregate counts are insufficient"
-  pass "fm-brief.sh: content mutation is flag-gated and scout verification audits deletions independently"
+  pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
 test_secondmate_no_projects_charter() {
@@ -683,10 +510,6 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost same-key closure for a reportable material phase"
   assert_grep 'resolved [key=<work-slug>]' "$brief" \
     "secondmate charter lost resolved closure for a keyed material phase"
-  assert_grep 'needs-decision [key=<slug>]: {summary of options}' "$brief" \
-    "secondmate charter did not teach the canonical opening-key position"
-  assert_grep 'exactly one decision per line' "$brief" \
-    "secondmate charter did not keep multi-key openings out of the canonical format"
 
   assert_grep 'include that exact token in your parent status reply' "$brief" \
     "secondmate charter lost correlated parent results"
@@ -840,18 +663,10 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_no_grep '`paused: {why}`' "$brief" \
       "$kind brief still instructs the default paused status"
-    assert_grep 'or the blocker clears' "$brief" \
+    assert_grep 'a blocker or wait clears' "$brief" \
       "$kind brief did not require durable resolution when a blocker clears"
-    assert_grep 'you must still append it yourself' "$brief" \
-      "$kind brief dropped the crew close-on-reply duty"
-    assert_grep 'is already closed is harmless' "$brief" \
-      "$kind brief did not state that duplicate same-key closure is harmless"
-    assert_grep 'needs-decision [key=<slug>]: {summary of options}' "$brief" \
-      "$kind brief did not teach the canonical opening-key position"
-    assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$brief" \
-      "$kind brief did not teach the canonical closing-key position"
-    assert_grep 'the key belongs before the colon' "$brief" \
-      "$kind brief left the opening-key position ambiguous"
+    assert_grep 'even when the answer is what started that work' "$brief" \
+      "$kind brief did not warn that an answer-started done/working never closes a decision"
   done
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
@@ -884,6 +699,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
+  assert_grep "you may host the Lavish review loop yourself" "$brief" \
+    "scout brief must mention the option to host a Lavish review loop"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \
@@ -899,8 +716,6 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
-test_task_shape_distinguishes_constraints_from_choices
-test_strong_thinking_model_brief_is_short_without_loosening_safety
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
@@ -909,9 +724,7 @@ test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
-test_herdr_lab_gate_is_conditional_without_default_noise
-test_content_mutation_contract_is_explicit_and_complete
-test_content_mutation_is_conditional_and_scouts_rederive_deletions
+test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract

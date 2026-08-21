@@ -119,7 +119,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-backend-hometag-lib.sh
 . "$FM_BACKEND_ZELLIJ_ROOT/bin/fm-backend-hometag-lib.sh"
 
-# Shared fleet-wide composer shape and verdict owner.
+# Shared composer classification (the fleet-wide shape catalogue and verdict
+# owner; this adapter contributes only capture and capability facts).
 # shellcheck source=bin/fm-composer-lib.sh
 . "$FM_BACKEND_ZELLIJ_ROOT/bin/fm-composer-lib.sh"
 
@@ -450,6 +451,9 @@ fm_backend_zellij_normalize_key() {  # <key>
     Enter|enter) printf 'Enter' ;;
     Escape|escape|Esc|esc) printf 'Esc' ;;
     C-c|c-c|ctrl+c|Ctrl+c|Ctrl+C|'Ctrl c'|'ctrl c') printf 'Ctrl c' ;;
+    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
+    # drop the prompt muse restores into the composer after Escape.
+    C-u|c-u|ctrl+u|Ctrl+u|Ctrl+U|'Ctrl u'|'ctrl u') printf 'Ctrl u' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -498,14 +502,9 @@ fm_backend_zellij_capture() {  # <target> <lines> [expected-label]
 # the shared owner (bin/fm-composer-lib.sh, fm_composer_classify_screen);
 # this adapter contributes only the capture and its capability facts.
 
-# fm_backend_zellij_composer_capture: bounded styled tail of the pane. The
-# plain-dump fallback for an older zellij without --ansi belongs to the STATE
-# read alone (fm_backend_zellij_composer_state). The send path
-# (fm_backend_zellij_composer_content, fm_backend_zellij_composer_observed_append)
-# deliberately has NO fallback and hard-requires --ansi: its paste proof is a
-# content comparison, and without styling an idle placeholder or a dim hint is
-# indistinguishable from typed text, so an unstyled read could "prove" a paste
-# that never landed. No styling means no proof, not a weaker proof.
+# fm_backend_zellij_composer_capture: bounded styled tail of the pane. When
+# --ansi is unsupported (an older zellij), the caller falls back to the plain
+# dump and a styled=0 descriptor - see fm_backend_zellij_composer_state.
 fm_backend_zellij_composer_capture() {  # <target> [expected-label]
   fm_backend_zellij_target_ready "$1" "${2:-}" || return 1
   local out
@@ -518,8 +517,8 @@ fm_backend_zellij_composer_capture() {  # <target> [expected-label]
 # in, shared verdict out. This replaced the content-diff submit heuristic
 # that was the fleet's only FALSE-POSITIVE delivery confirmation: a pane
 # whose content changed for any reason (a spinner, streaming output, a
-# clock) read as "submitted", which could falsely confirm delivery for a message the crew never received.
-# The fork's delivered-decision receipt and resolved-echo contract remains unchanged. A dead pane still fails safe here: the
+# clock) read as "submitted", which could close a --resolve-key decision for
+# a message the crew never received. A dead pane still fails safe here: the
 # unconditional-exit-0 CLI quirk (file header) yields an empty dump, which
 # classifies unknown - never a confirmation.
 fm_backend_zellij_composer_state() {  # <target> [expected-label] -> empty|pending|pending-unproven|unknown
@@ -568,16 +567,6 @@ fm_backend_zellij_composer_observed_append() {  # <target> <before> <text> [expe
 # subset of the proof-carrying submit vocabulary. Only a positively classified
 # empty composer confirms delivery - a pane that merely CHANGED does not, so
 # the old heuristic's false "delivery confirmed" cannot recur.
-#
-# `send-failed` is reserved for the PRE-paste failures, the only two points at
-# which this adapter can assert that nothing reached the pane. Once the literal
-# bracketed paste has been issued, an unproven append is `unknown` (fm-send
-# reports "delivery unconfirmed"): the harness may legitimately render the
-# paste as something other than the literal bytes - claude collapsing a
-# multi-line paste into `[Pasted text #1 +N lines]`, a single-row composer
-# scrolling horizontally, unrelated pane output racing the read - and in each
-# of those the text IS in the composer. Neither verdict submits or confirms,
-# but only `unknown` is honest about possible residue left in the pane.
 fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected_label=${6:-} before
   before=$(fm_backend_zellij_composer_content "$target" "$expected_label") \
@@ -585,9 +574,9 @@ fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep
   fm_backend_zellij_send_literal "$target" "$text" "$expected_label" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   fm_backend_zellij_composer_observed_append "$target" "$before" "$text" "$expected_label" \
-    || { printf 'unknown'; return 0; }
+    || { printf 'send-failed'; return 0; }
   fm_composer_submit_retry_core fm_backend_zellij_send_key fm_backend_zellij_composer_state \
-    "$target" "$retries" "$sleep_s" "$expected_label" 1
+    "$target" "$retries" "$sleep_s" "$expected_label"
 }
 
 # fm_backend_zellij_kill: remove the task's tab, best-effort (mirrors

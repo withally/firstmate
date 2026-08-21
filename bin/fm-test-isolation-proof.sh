@@ -119,9 +119,10 @@ exclusion_reason() {
       printf '%s\n' 'AFK lifecycle / inject path; exclusive daemon and pane control'
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
-    fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|fm-grok-drain-consumption-live-e2e.test.sh|\
+    fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
-    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
+    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
+    fm-sessionstart-instruction-refresh-live-e2e.test.sh)
       printf '%s\n' 'live harness opt-in; never default parallel CI'
       ;;
     fm-backend-autodetect-smoke.test.sh|fm-backend-herdr-eventwait-smoke.test.sh|\

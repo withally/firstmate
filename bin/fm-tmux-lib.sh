@@ -13,11 +13,11 @@
 # plain.
 #
 # OpenCode's busy-queued Enter conversion accepts only structurally proven
-# pending text after retries and an explicit OpenCode harness identity.
-# The separate turn-started conversion accepts an unknown post-Enter composer
-# only after this submit observed an idle baseline become busy.
-# Herdr's OpenCode busy-queue limitation remains documented in
-# docs/herdr-backend.md.
+# pending text after retries, while the separate turn-started conversion accepts
+# an unknown post-Enter composer only after this submit observed an idle baseline
+# become busy.
+# The queued-Enter policy itself lives in fm_composer_queued_enter_verdict
+# (bin/fm-composer-lib.sh); this file supplies tmux's pane-busy primitive.
 #
 # FM_COMPOSER_IDLE_RE is interpreted by the shared classifier with its structural
 # and styling safety gates.
@@ -43,69 +43,13 @@
 
 # shellcheck source=bin/fm-composer-lib.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/fm-composer-lib.sh"
+# shellcheck source=bin/fm-cursor-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/fm-cursor-lib.sh"
 
-# Delivery-only rendered busy footers per harness. claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel".
-# Claude's current spinner has a rotating glyph and word, but every active-turn
-# line has an ellipsis followed by a parenthesized elapsed duration. Keep this
-# signature separate from the shared default because that shape is not generic
-# enough to classify arbitrary harness output safely.
-# Kimi's anchored moon-phase spinner is separate because bare moon glyphs in
-# ordinary output must not classify another harness as busy. Leading whitespace is
-# OPTIONAL; whitespace on both sides of the separator is REQUIRED because every
-# captured spinner row had it. A zero-whitespace form has NEVER been observed and
-# is deliberately not matched. The line end is intentionally unanchored because
-# rotating tip text follows and is not required to be present. The idle status
-# bar's lowercase `thinking` label and independently rotating tip text are not
-# busy signals on their own.
-# The full moon-phase set remains locale- and emoji-font-sensitive because Kimi
-# exposes no stable ASCII busy token.
-FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'
-FM_TMUX_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
-FM_TMUX_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
-FM_TMUX_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
-FM_TMUX_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
-FM_TMUX_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
-FM_TMUX_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
-fm_busy_lines_match() {  # [harness]
-  local harness=${1:-} lines regex
-  IFS= read -r -d '' lines || true
-  if [ -n "${FM_BUSY_REGEX:-}" ]; then
-    regex=$FM_BUSY_REGEX
-  else
-    case "$harness" in
-      claude) regex=$FM_TMUX_CLAUDE_BUSY_REGEX_DEFAULT ;;
-      codex) regex=$FM_TMUX_CODEX_BUSY_REGEX_DEFAULT ;;
-      opencode) regex=$FM_TMUX_OPENCODE_BUSY_REGEX_DEFAULT ;;
-      pi|pi-signed) regex=$FM_TMUX_PI_BUSY_REGEX_DEFAULT ;;
-      grok) regex=$FM_TMUX_GROK_BUSY_REGEX_DEFAULT ;;
-      kimi) regex=$FM_TMUX_KIMI_BUSY_REGEX_DEFAULT ;;
-      '') regex=$FM_TMUX_BUSY_REGEX_DEFAULT ;;
-      *)
-        # A supplied harness must never borrow another harness's signature.
-        # Register its verified signature explicitly before classifying it busy.
-        regex=
-        ;;
-    esac
-  fi
-  [ -n "$regex" ] && printf '%s' "$lines" | grep -qiE "$regex"
-}
-
-# fm_busy_harness_scope: reduce a caller-supplied harness name to a usable
-# busy-signature scope. Only a name registered in the signature table above
-# is a scope; any other name (a raw-launch command basename recorded in task
-# meta, or fm-harness.sh's 'unknown') is not a signature and degrades to the
-# empty string, so harness-scoped reads fall back to the harness-agnostic
-# default instead of a regex that can never match.
-fm_busy_harness_scope() {  # [harness] -> registered harness or ''
-  case "${1:-}" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi) printf '%s' "$1" ;;
-  esac
-}
 # fm_tmux_strip_ghost: thin adapter over the shared, fleet-wide ghost extractor
 # fm_composer_strip_ghost (bin/fm-composer-lib.sh). It drops de-emphasised
-# ghost/placeholder runs - dim/faint (SGR 2, claude's/codex's ghost) AND a
+# ghost/placeholder runs - dim/faint (SGR 2, claude's/codex's/cursor's ghost) AND a
 # dark/muted truecolor foreground (grok's placeholder) - from one captured,
 # styled composer line and prints the plain, real-typed text. Kept as a named
 # tmux entry point (and for existing callers/tests) but owns no logic of its own,
@@ -206,7 +150,43 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
     verdict=$(fm_composer_classify_screen "$(fm_tmux_composer_caps)" "$pane" "$cy" "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
   fi
+  # Cursor Agent CLI parks its terminal cursor OUTSIDE its composer, below the
+  # footer, with #{cursor_flag} 0 - so on a Cursor pane tmux's cursor row is not
+  # a composer locator and the cursor-anchored read can only ever answer
+  # `unknown`. Reclassify that pane the way every cursorless backend already
+  # classifies it, letting the bottom-most shape win, which is the same rule
+  # herdr, zellij, cmux, and orca use for every harness including this one.
+  # Gated on Cursor's own structural process identity, never on the verdict
+  # alone, so the strict blank-row posture that owns `unknown` for every other
+  # harness is untouched.
+  if [ "$verdict" = unknown ] && fm_tmux_pane_is_cursor "$target"; then
+    verdict=$(fm_composer_classify_screen "$(fm_tmux_composer_caps)" "$pane" '')
+  fi
   printf '%s' "$verdict"
+}
+
+# fm_tmux_pane_is_cursor: true when the pane's FOREGROUND process group contains
+# a genuine Cursor Agent CLI process. Cursor runs as a bundled node script, so
+# tmux's own #{pane_current_command} reports a bare `node`; identity therefore
+# comes from Cursor's name or install tree in the command path or argv[0], whose
+# single owner is bin/fm-cursor-lib.sh. The foreground scoping (pgid = tpgid)
+# matches fm_tmux_composer_identity, so a pane whose agent exited to a shell has
+# no Cursor foreground process and gets no reclassification.
+fm_tmux_pane_is_cursor() {  # <target>
+  local target=$1 tty pid pgid tpgid comm args argv0
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 1
+  case "$tty" in /dev/*) ;; *) return 1 ;; esac
+  while read -r pid pgid tpgid comm; do
+    [ -n "$comm" ] || continue
+    [ "$pgid" = "$tpgid" ] || continue
+    args=$(LC_ALL=C ps -p "$pid" -o args= 2>/dev/null) || args=
+    args=${args#"${args%%[![:space:]]*}"}
+    argv0=${args%%[[:space:]]*}
+    fm_cursor_process_matches "$comm" '' "$argv0" && return 0
+  done <<EOF
+$(LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null)
+EOF
+  return 1
 }
 
 # fm_pane_input_pending: 0 when the composer is not proven empty, so pending
@@ -215,16 +195,13 @@ fm_pane_input_pending() {  # <target>
   [ "$(fm_tmux_composer_state "$1")" != empty ]
 }
 
-# fm_busy_tail_state: the single owner of the rendered busy READ - which slice
-# of a captured screen is "visible" (the last non-blank lines) and what an
-# unreadable slice means - on top of the single owner of the busy MATCH
-# (fm_busy_lines_match). Takes an already-captured screen tail on stdin, so
-# every backend supplies only its own capture primitive and no backend keeps a
-# private copy of the window heuristic.
-fm_busy_tail_state() {  # [harness]  (captured tail on stdin) -> busy|idle|unknown
-  local harness=${1:-} captured visible
-  IFS= read -r -d '' captured || true
-  visible=$(printf '%s' "$captured" | grep -v '^[[:space:]]*$' | tail -12)
+# fm_pane_is_busy: 0 if the pane's last few non-blank lines show a busy footer
+# (an agent mid-turn). Scans a 40-line tail like fm-watch.sh.
+fm_pane_busy_state() {  # <target> [harness] -> busy|idle|unknown
+  local win=$1 harness=${2:-} tail40 visible
+  tail40=$(tmux capture-pane -p -t "$win" -S -40 2>/dev/null) \
+    || { printf 'unknown'; return 0; }
+  visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
   [ -n "$visible" ] || { printf 'unknown'; return 0; }
   if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
     printf 'busy'
@@ -233,37 +210,8 @@ fm_busy_tail_state() {  # [harness]  (captured tail on stdin) -> busy|idle|unkno
   fi
 }
 
-# fm_pane_is_busy: 0 if the pane's last few non-blank lines show a busy footer
-# (an agent mid-turn). Scans a 40-line tail like fm-watch.sh.
-fm_pane_busy_state() {  # <target> [harness] -> busy|idle|unknown
-  local win=$1 harness=${2:-} tail40
-  tail40=$(tmux capture-pane -p -t "$win" -S -40 2>/dev/null) \
-    || { printf 'unknown'; return 0; }
-  printf '%s' "$tail40" | fm_busy_tail_state "$harness"
-}
-
 fm_pane_is_busy() {  # <target> [harness]
   [ "$(fm_pane_busy_state "$1" "${2:-}")" = busy ]
-}
-
-# fm_tmux_turn_started_state: the sole implementation of the turn-started
-# conversion documented below, shared by every post-Enter composer verdict this
-# submit cannot itself prove. Without an idle baseline it converts nothing. With
-# one, it polls the busy read across the remaining retry budget, because the
-# turn takes a beat to render.
-fm_tmux_turn_started_state() {  # <target> <retries> <enter-sleep> <baseline-idle> [harness] -> empty|unknown
-  local target=$1 retries=$2 sleep_s=$3 baseline_idle=$4 harness=${5:-} j=0
-  if [ "$baseline_idle" = 1 ]; then
-    while [ "$j" -lt "$retries" ]; do
-      if fm_pane_is_busy "$target" "$harness"; then
-        printf 'empty'
-        return 0
-      fi
-      j=$((j + 1))
-      [ "$j" -ge "$retries" ] || sleep "$sleep_s"
-    done
-  fi
-  printf 'unknown'
 }
 
 # fm_tmux_submit_core: type <text> into <target> ONCE, then submit with Enter,
@@ -291,24 +239,27 @@ fm_tmux_turn_started_state() {  # <target> <retries> <enter-sleep> <baseline-idl
 # fm_tmux_submit_enter_core caller, or a pane already busy before typing) an
 # `unknown` verdict is preserved untouched: busy conversion without the
 # transition evidence could mark an undelivered message delivered.
-fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle] [harness] [typed-observed]
-  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} harness=${5:-} typed_observed=${6:-1} i=0 state
+fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle]
+  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} i=0 j state busy_state
   while :; do
     tmux send-keys -t "$target" Enter 2>/dev/null || true
     sleep "$sleep_s"
     state=$(fm_tmux_composer_state "$target")
     case "$state" in
-      pending|pending-unproven) typed_observed=1 ;;
-      empty)
-        if [ "$typed_observed" = 1 ]; then
-          printf 'empty'
-          return 0
-        fi
-        fm_tmux_turn_started_state "$target" "$retries" "$sleep_s" "$baseline_idle" "$harness"
-        return 0
-        ;;
+      pending|pending-unproven) ;;
       unknown)
-        fm_tmux_turn_started_state "$target" "$retries" "$sleep_s" "$baseline_idle" "$harness"
+        if [ "$baseline_idle" = 1 ]; then
+          j=0
+          while [ "$j" -lt "$retries" ]; do
+            if fm_pane_is_busy "$target"; then
+              printf 'empty'
+              return 0
+            fi
+            j=$((j + 1))
+            [ "$j" -ge "$retries" ] || sleep "$sleep_s"
+          done
+        fi
+        printf 'unknown'
         return 0
         ;;
       *) printf '%s' "$state"; return 0 ;;
@@ -321,43 +272,20 @@ fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle
     return 0
   fi
   # Retries exhausted, composer still shows proven pending.
-  # If the pane is busy (agent mid-turn), the harness accepted the Enter
-  # and queued the message for processing when the current turn ends.
-  # Treat it as submitted so the caller does not re-send.
-  # On an idle pane, keep reporting pending - a genuine swallow.
-  if [ "$harness" = opencode ] && fm_pane_is_busy "$target" "$harness"; then
-    printf 'empty'
-  else
-    printf 'pending'
-  fi
+  # Busy conversion is owned by fm_composer_queued_enter_verdict.
+  busy_state=idle
+  fm_pane_is_busy "$target" && busy_state=busy
+  fm_composer_queued_enter_verdict "$state" "$busy_state"
 }
 
-fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness baseline_idle='' baseline_state
-  local typed_observed=0 typed_state i=0
-  harness=$(fm_busy_harness_scope "${7:-}")
+fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle>
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 baseline_idle='' baseline_state
   # The turn-started baseline must predate our own typing: a pane already
   # busy before the text lands can turn "busy" for reasons unrelated to our
   # Enter, so only a clean idle-to-busy transition may confirm a submit.
-  baseline_state=$(fm_pane_busy_state "$target" "$harness")
+  baseline_state=$(fm_pane_busy_state "$target")
   [ "$baseline_state" = idle ] && baseline_idle=1
   tmux send-keys -t "$target" -l "$text" 2>/dev/null || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  # Do not let a stale pre-render screen count as post-Enter clearance. Observe
-  # the typed text when the harness exposes it; if rendering is delayed, poll
-  # the condition within the existing retry budget instead of adding a fixed
-  # race-masking sleep. A harness that hides its composer can still confirm via
-  # the independently observed idle-to-busy transition below.
-  while [ "$i" -lt "$retries" ]; do
-    typed_state=$(fm_tmux_composer_state "$target")
-    case "$typed_state" in
-      pending|pending-unproven) typed_observed=1; break ;;
-      empty)
-        i=$((i + 1))
-        [ "$i" -ge "$retries" ] || sleep "$sleep_s"
-        ;;
-      *) break ;;
-    esac
-  done
-  fm_tmux_submit_enter_core "$target" "$retries" "$sleep_s" "$baseline_idle" "$harness" "$typed_observed"
+  fm_tmux_submit_enter_core "$target" "$retries" "$sleep_s" "$baseline_idle"
 }

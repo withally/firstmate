@@ -16,10 +16,17 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
 #
 # Logic, in order:
-#   1. Resolve worktree + backend target + kind from state/<id>.meta.
+#   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
+#      recording remote_host= is a remote secondmate: its worktree and endpoint
+#      live on that host, so the local worktree and pane reads are skipped and
+#      the remote host is asked for the endpoint's recovery-grade state
+#      (fm-on.sh + fm-remote-secondmate-control.sh state). alive falls through
+#      to the routed status log; dead/missing report the remote verdict; an
+#      unreachable or unreadable remote reports unknown-remote, never a false
+#      gone/dead.
 #   2. Matching no-mistakes run for this crew's branch AND current code identity,
 #      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
@@ -28,14 +35,6 @@
 #      is an ancestor of the run head (pipeline fix commits advanced the run on
 #      the same line of history). Local work that advanced past the run head, or
 #      diverged from it, invalidates attribution.
-#      Current run IDENTITY belongs to the newest-first runs listing, never to a
-#      latched older run: the first same-branch row is the current run even when
-#      its code identity no longer matches this worktree (then no run is
-#      attributed - an older matching row is never revived). `axi status` can
-#      answer with an earlier run when several runs share a branch and head, so
-#      its detail is bound against a fresh listing read taken after it; when the
-#      two disagree the listing wins and only its coarse verdict is emitted,
-#      rather than a terminal result from the superseded object.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -82,12 +81,10 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the newest-first
-# current-run read (nm_runs_status_for_branch, below) scans - both when it
-# reconciles a possibly-superseded `axi status` object and when it is the
-# fallback for a status object that cannot be attributed. Generous enough to
-# still find a branch's own run on a busy multi-crew fleet without listing the
-# entire history every call.
+# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
+# (nm_runs_status_for_branch, below) scans. Generous enough to still find a
+# branch's own run on a busy multi-crew fleet without listing the entire
+# history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 SEP=' · '
@@ -111,10 +108,13 @@ meta_value() {  # <key>
 WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
+REMOTE_HOST=$(meta_value remote_host)
 [ -n "$KIND" ] || KIND=ship
 
-# A torn-down (or never-created) worktree has no current state to read.
-if [ -z "$WT" ] || [ ! -d "$WT" ]; then
+# A torn-down (or never-created) worktree has no current state to read. A
+# remote secondmate's recorded worktree is a path on ITS host, so the local
+# probe proves nothing for it - the remote arm below reads the true source.
+if [ -z "$REMOTE_HOST" ] && { [ -z "$WT" ] || [ ! -d "$WT" ]; }; then
   emit unknown none "worktree gone (torn down?)"
 fi
 
@@ -147,6 +147,45 @@ map_log_state() {  # <line>
 
 LOG_LINE=$(log_last_line || true)
 LOG_VERB=$(status_line_verb "$LOG_LINE")
+
+# --- remote secondmate: the true source is the remote endpoint ---------------
+# A remote mate's recorded worktree and backend target live on its own host, so
+# the local worktree probe above and the local pane reads below would misreport
+# a healthy remote mate as gone or dead. Ask the remote host for the endpoint's
+# recovery-grade state over the same fm-on.sh transport fm-send uses, then read
+# current activity from the routed status log exactly as for a local
+# secondmate (an idle endpoint is healthy for a secondmate either way). An
+# unreachable host or unreadable endpoint is reported as unknown-remote -
+# explicitly NOT proof of death - so a transport blip never reads as a torn
+# down or dead mate; only the remote host's own dead/missing verdict may say
+# the endpoint is actually gone.
+if [ -n "$REMOTE_HOST" ]; then
+  if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
+    fm-remote-secondmate-control.sh state "$ID" < /dev/null 2>/dev/null); then
+    REMOTE_STATE=
+  fi
+  REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)
+  case "$REMOTE_STATE" in
+    alive)
+      if [ -n "$LOG_VERB" ]; then
+        LOG_STATE=$(map_log_state "$LOG_LINE")
+        if [ "$LOG_STATE" != unknown ]; then
+          emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
+        fi
+      fi
+      emit unknown remote-endpoint "alive on $REMOTE_HOST (an idle secondmate is healthy)"
+      ;;
+    dead|missing)
+      emit unknown remote-endpoint "remote endpoint $REMOTE_STATE on $REMOTE_HOST"
+      ;;
+    '')
+      emit unknown remote-endpoint "unknown-remote: $REMOTE_HOST unreachable or endpoint unreadable (not proof of death)"
+      ;;
+    *)
+      emit unknown remote-endpoint "unknown-remote: endpoint state '$REMOTE_STATE' on $REMOTE_HOST (not proof of death)"
+      ;;
+  esac
+fi
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
 # stays authoritative regardless of pane liveness - judge by the run-step, not the
@@ -342,17 +381,8 @@ nm_ci_checks_state() {
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
 # is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (pending/running/completed/cancelled/failed), or
-# empty when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows, or
-# when that newest row's code identity does not match this worktree (that row
-# still owns current run identity, so there is nothing older to fall back to).
-#
-# The read is deliberately per-crew and uncached. A pass-scoped cache shared
-# across crews was tried and removed: it makes the listing an EARLIER read than
-# the `axi status` object it is used to overrule, which broke the reconciliation
-# below in both directions (a cached terminal row can call a live rerun failed;
-# a cached alive row can call an ended run working). Correctness at one bounded
-# round-trip per crew is the deliberate trade.
+# matching row's status word (running/completed/cancelled/failed), or empty
+# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
 nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br sha
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
@@ -368,59 +398,16 @@ nm_runs_status_for_branch() {  # <branch>
     rest=$(trim "$rest")
     sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
-      # The listing is newest-first, so the first same-branch row owns current
-      # run identity even when its code identity no longer matches this worktree.
-      # Never scan backward into an older matching run in that case.
+      # Same code-identity rule as axi status: skip a same-branch row whose
+      # short-sha does not match this worktree (rewritten or advanced tip).
       if ! nm_coarse_head_matches_worktree "$sha"; then
-        return 0
+        continue
       fi
       printf '%s' "$st"
       return 0
     fi
   done <<< "$out"
   return 0
-}
-
-# Map the detailed axi-status object onto the coarse vocabulary emitted by the
-# newest-first runs listing.
-# This is used only to detect when axi status selected a different run than the
-# listing's current same-branch/code-identity row.
-nm_full_coarse_status() {
-  local status outcome
-  status=$(strip_quotes "$(nm_field status)")
-  outcome=$(strip_quotes "$(nm_field outcome)")
-  case "$outcome" in
-    passed|checks-passed) printf 'completed'; return ;;
-    failed)               printf 'failed'; return ;;
-    cancelled)            printf 'cancelled'; return ;;
-  esac
-  if [ -n "$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)" ] \
-    || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] \
-    || [ -n "$(nm_gate_status)" ] || nm_has_gate; then
-    printf 'running'
-    return
-  fi
-  case "$status" in
-    completed) printf 'completed' ;;
-    failed)    printf 'failed' ;;
-    cancelled) printf 'cancelled' ;;
-    # Fail-safe-ALIVE default, matching the emitter this reconciles against: it
-    # reads any non-terminal word (running/fixing/ci/pending, empty, or a status
-    # word the CLI adds later) as an active run. A default of `unknown` here
-    # would manufacture a disagreement for a healthy run and degrade it to
-    # `unknown` - exactly the false surface this file exists to prevent.
-    *)         printf 'running' ;;
-  esac
-}
-
-# The coarse vocabulary this reconciliation can act on. A word outside it cannot
-# be compared against the detailed object or mapped to a state, so it must never
-# demote that object - the full path's own fail-safe-alive mapping keeps it.
-nm_coarse_status_is_modeled() {  # <status>
-  case "$1" in
-    pending|running|completed|failed|cancelled) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
@@ -458,17 +445,6 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
     run_branch=$(strip_quotes "$(nm_field branch)")
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
       HAVE_RUN=1
-      # `axi status` can select an older run when several runs share a branch
-      # and head, so bind its detail against the later, newest-first runs read.
-      # A disagreement means the listing's row is current and the detailed
-      # object is stale; retain the current coarse verdict rather than emitting
-      # a terminal result from the superseded run. The argument depends on the
-      # listing being the LATER of the two reads, so it is taken fresh here for
-      # every crew.
-      COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      if nm_coarse_status_is_modeled "$COARSE_STATUS" && [ "$(nm_full_coarse_status)" != "$COARSE_STATUS" ]; then
-        RUN_SOURCE=coarse
-      fi
     else
       # The active-or-most-recent run is for another branch, or same branch with
       # a rewritten/diverged head (the CLI is alive and answered; only the
@@ -503,7 +479,6 @@ if [ "$HAVE_RUN" = 1 ]; then
     # surfaced through signal_reason_is_actionable regardless of this
     # coarse-vs-full distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
-      pending)   RUN_STATE=working; RUN_DETAIL="validating (queued run)" ;;
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
       failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;

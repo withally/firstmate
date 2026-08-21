@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Merge a live task's PR after recording pr= and any available pr_head= through
+# Merge a task's PR after recording pr= and any available pr_head= through
 # bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
-# A task already torn down through bin/fm-teardown.sh instead requires that
-# teardown's private exact-PR receipt; missing metadata alone never authorizes a
-# merge, and a receipt for a different PR is refused.
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
 #
@@ -20,8 +17,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -70,56 +65,16 @@ reject_repo_overrides "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
-RECEIPT="$STATE/$ID.teardown-pr"
-CONTROL_LOCK="$STATE/.control-$ID.lock"
-SPAWN_LOCK="$STATE/.spawn-$ID.lock"
-STATE_DEVICE=$(fm_pr_file_device "$STATE") || {
-  echo "error: task state is unavailable" >&2
+if [ ! -f "$META" ] || [ -L "$META" ]; then
+  echo "error: task metadata is unavailable" >&2
   exit 1
-}
-CONTROL_LOCK_HELD=0
-SPAWN_LOCK_HELD=0
-merge_release_locks() {
-  local status=$?
-  if [ "$SPAWN_LOCK_HELD" = 1 ]; then
-    fm_lock_release "$SPAWN_LOCK" || true
-    SPAWN_LOCK_HELD=0
-  fi
-  if [ "$CONTROL_LOCK_HELD" = 1 ]; then
-    fm_lock_release "$CONTROL_LOCK" || true
-    CONTROL_LOCK_HELD=0
-  fi
-  return "$status"
-}
-trap merge_release_locks EXIT
-fm_lock_try_acquire "$CONTROL_LOCK" || {
-  echo "error: another lifecycle action is already running for task $ID" >&2
-  exit 1
-}
-CONTROL_LOCK_HELD=1
-
-COMPLETED_TASK=0
-if [ -f "$META" ] && [ ! -L "$META" ]; then
-  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
-  grep -qxF "pr=$URL" "$META" || {
-    echo "error: PR metadata recording failed" >&2
-    exit 1
-  }
-else
-  fm_lock_try_acquire "$SPAWN_LOCK" || {
-    echo "error: another task launch is already running for task $ID" >&2
-    exit 1
-  }
-  SPAWN_LOCK_HELD=1
-  if [ -e "$META" ] || [ -L "$META" ] \
-    || ! fm_pr_private_file_valid "$RECEIPT" 600 "$STATE_DEVICE" \
-    || ! fm_pr_teardown_receipt_parse "$RECEIPT" "$ID" \
-    || [ "$FM_PR_TEARDOWN_URL" != "$URL" ]; then
-    echo "error: task metadata is unavailable and no matching completed-task PR receipt exists" >&2
-    exit 1
-  fi
-  COMPLETED_TASK=1
 fi
+
+"$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+grep -qxF "pr=$URL" "$META" || {
+  echo "error: PR metadata recording failed" >&2
+  exit 1
+}
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then
@@ -127,6 +82,3 @@ if ! caller_has_merge_method "$@"; then
 fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
-if [ "$COMPLETED_TASK" = 1 ]; then
-  rm -f -- "$RECEIPT"
-fi

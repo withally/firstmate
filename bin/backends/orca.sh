@@ -15,6 +15,7 @@
 fm_backend_orca_tool_check() {
   command -v orca >/dev/null 2>&1 || { echo "error: backend=orca selected but the 'orca' CLI is not installed" >&2; return 1; }
 }
+
 fm_backend_orca_runtime_check() {
   fm_backend_orca_tool_check || return 1
   local out
@@ -222,28 +223,6 @@ if (r.terminal && Array.isArray(r.terminal.tail)) {
 '
 }
 
-fm_backend_orca_json_field() {  # <field> <json>
-  local field=$1
-  printf '%s' "$2" | node -e '
-const fs = require("fs");
-const field = process.argv[1];
-const data = JSON.parse(fs.readFileSync(0, "utf8"));
-if (data.ok === false) process.exit(2);
-const r = data.result || {};
-const term = r.terminal || {};
-function scalar(v) {
-  return (typeof v === "string" || typeof v === "number" || typeof v === "boolean") ? String(v) : "";
-}
-let v = "";
-if (field === "limited") v = scalar(r.limited ?? term.limited);
-if (field === "oldestCursor") v = scalar(r.oldestCursor || term.oldestCursor);
-if (field === "nextCursor") v = scalar(r.nextCursor || term.nextCursor);
-if (field === "latestCursor") v = scalar(r.latestCursor || term.latestCursor);
-if (!v) process.exit(1);
-process.stdout.write(v);
-' "$field"
-}
-
 # fm_backend_orca_composer_capture: the orca composer screen - one bounded
 # tail read of the live terminal. Deliberately NOT the old 200-line
 # backward-paged read: the composer is bottom-anchored, and paging back into
@@ -264,7 +243,7 @@ fm_backend_orca_composer_caps() {
 
 # fm_backend_orca_composer_state: thin adapter - capture plus capabilities in,
 # shared verdict out. Every shape (bordered boxes AND the borderless bare-glyph
-# row this adapter never learned, which left verified bare-glyph steers
+# row this adapter never learned, which left every claude/codex/pi/muse steer
 # unconfirmed) lives in bin/fm-composer-lib.sh.
 fm_backend_orca_composer_state() {  # <terminal-id> [expected-label] -> empty|pending|pending-unproven|unknown
   local cap verdict

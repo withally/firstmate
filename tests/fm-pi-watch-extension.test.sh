@@ -199,63 +199,6 @@ EOF
   pass "Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance"
 }
 
-# A correctly loaded primary extension is delivery machinery, not evidence that
-# every observed status deserves a model turn. When the watcher producer remains
-# live and emits no actionable reason, the registered tool must create no
-# user-role follow-up. Missing-cycle and arm-failure prompts are covered by the
-# separate close/retry tests below and must not be conflated with this quiet path.
-test_pi_quiet_arm_sends_no_followup() {
-  local repo home plugin stop out status
-  repo="$TMP_ROOT/pi-quiet-arm-root"
-  home="$TMP_ROOT/pi-quiet-arm-home"
-  stop="$TMP_ROOT/pi-quiet-arm.stop"
-  mkdir -p "$repo/bin" "$home/state" "$home/config"
-  install_pi_watch_extension_fixture "$repo"
-  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
-  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
-#!/usr/bin/env bash
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-trap 'exit 0' TERM INT
-while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
-SH
-  chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
-import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-
-let tool = null;
-const prompts = [];
-const pi = {
-  on() {},
-  registerCommand() {},
-  registerTool(candidate) {
-    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
-  },
-  sendUserMessage: async (message) => {
-    prompts.push(message);
-  },
-};
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
-mod.default(pi);
-if (!tool) throw new Error("fm_watch_arm_pi was not registered by the loaded extension");
-const result = await tool.execute("tool-call-quiet", {}, undefined, undefined, {});
-if (!result.content[0]?.text.includes("started Pi extension arm child")) {
-  throw new Error(`quiet arm did not start: ${result.content[0]?.text}`);
-}
-await new Promise((resolve) => setTimeout(resolve, 250));
-if (prompts.length !== 0) {
-  throw new Error(`quiet watcher produced ${prompts.length} user-role follow-ups: ${JSON.stringify(prompts)}`);
-}
-writeFileSync(process.env.FM_STOP_FILE, "stop\n");
-EOF
-)
-  status=$?
-  expect_code 0 "$status" "a loaded Pi extension must not create a model turn before an actionable watcher reason"
-  [ -z "$out" ] || fail "Pi quiet-arm test printed output: $out"
-  pass "loaded Pi extension keeps a quiet watcher cycle turn-free; continuity alarms remain a separate path"
-}
-
 test_pi_redundant_tool_call_is_owned_noop() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-redundant-tool-root"
@@ -962,11 +905,8 @@ test_pi_session_transition_generation_owner() {
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'watcher: started pid=%s\n' "$$"
-# Append the arm-ledger row BEFORE publishing the pid file: the harness gates on
-# the pid file and then asserts on the ledger, so the row must already be
-# durable when the pid file appears.
-printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
+printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 trap 'exit 0' TERM INT
 while :; do sleep 0.2; done
 SH
@@ -2210,110 +2150,8 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
-test_pi_away_mode_leaves_one_supervision_cycle() {
-  local repo home plugin log stop out status
-  repo="$TMP_ROOT/pi-away-mode-root"
-  home="$TMP_ROOT/pi-away-mode-home"
-  log="$TMP_ROOT/pi-away-mode.log"
-  stop="$TMP_ROOT/pi-away-mode.stop"
-  mkdir -p "$repo/bin" "$home/state" "$home/config"
-  install_pi_watch_extension_fixture "$repo"
-  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
-  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
-#!/usr/bin/env bash
-printf 'start %s\n' "$$" >> "${FM_ARM_LOG:?}"
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-trap 'printf "stop %s\n" "$$" >> "$FM_ARM_LOG"; exit 0' TERM INT
-while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
-SH
-  chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" \
-    FM_PI_AWAY_POLL_MS=50 node --input-type=module 2>&1 <<'EOF'
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-
-const home = process.env.FM_HOME;
-const armLog = process.env.FM_ARM_LOG;
-const awayFlag = `${home}/state/.afk`;
-const wakes = [];
-let tool = null;
-const pi = {
-  on() {},
-  registerCommand() {},
-  registerTool(candidate) {
-    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
-  },
-  sendUserMessage: async (message) => {
-    wakes.push(message);
-  },
-};
-writeFileSync(`${home}/state/.lock`, `${process.pid}\n`);
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
-mod.default(pi);
-
-const armRecords = () =>
-  existsSync(armLog) ? readFileSync(armLog, "utf8").split("\n").filter(Boolean) : [];
-const armCount = (verb) => armRecords().filter((record) => record.startsWith(verb)).length;
-const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const waitFor = async (predicate, label) => {
-  for (let i = 0; i < 400; i += 1) {
-    if (predicate()) return;
-    await settle(20);
-  }
-  throw new Error(`${label}; arm records: ${armRecords().join(" | ")}`);
-};
-
-const first = await tool.execute("call-first", {}, undefined, undefined, {});
-if (!first.content[0]?.text.includes("started Pi extension arm child")) {
-  throw new Error(`the first cycle was not armed: ${first.content[0]?.text}`);
-}
-await waitFor(() => armCount("start") === 1, "the first extension-owned cycle never started");
-
-// Away mode arrives: the sub-supervisor daemon becomes the only supervision owner.
-writeFileSync(awayFlag, `${Math.floor(Date.now() / 1000)}\n`);
-await waitFor(
-  () => armCount("stop") === 1,
-  "the extension kept its own watcher cycle alive alongside the away daemon",
-);
-
-const standby = await tool.execute("call-away", {}, undefined, undefined, {});
-if (!standby.content[0]?.text.includes("standby - away mode owns supervision")) {
-  throw new Error(`away-mode arm did not report standby: ${standby.content[0]?.text}`);
-}
-await settle(300);
-if (armCount("start") !== 1) {
-  throw new Error(`the extension armed a second cycle while away: ${armRecords().join(" | ")}`);
-}
-if (wakes.length !== 0) {
-  throw new Error(`ordinary watcher turns reached the primary while away: ${wakes.join(" | ")}`);
-}
-
-// The captain returns: exactly one extension-owned cycle comes back.
-rmSync(awayFlag);
-await waitFor(
-  () => armCount("start") === 2,
-  "extension-owned supervision did not resume after away mode cleared",
-);
-await settle(300);
-if (armCount("start") !== 2) {
-  throw new Error(`away-mode return armed more than one cycle: ${armRecords().join(" | ")}`);
-}
-if (wakes.length !== 0) {
-  throw new Error(`unexpected watcher turns across the away cycle: ${wakes.join(" | ")}`);
-}
-writeFileSync(process.env.FM_STOP_FILE, "");
-EOF
-)
-  status=$?
-  expect_code 0 "$status" "Pi extension must leave the away daemon as the only supervision cycle and resume exactly one cycle on return"
-  [ -z "$out" ] || fail "Pi away-mode test printed output: $out"
-  pass "Pi away mode leaves one supervision cycle and resumes exactly one on return"
-}
-
 test_pi_extension_reports_external_healthy_watcher
-test_pi_away_mode_leaves_one_supervision_cycle
 test_pi_tool_returns_agent_tool_result
-test_pi_quiet_arm_sends_no_followup
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery

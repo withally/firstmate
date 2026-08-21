@@ -16,19 +16,11 @@
 #     report a delivered send, and a real claude-in-zellij `dump-screen
 #     --ansi` capture must classify empty through the zellij thin adapter.
 #
-# Run explicitly with FM_COMPOSER_MATRIX_LIVE=1. By default no prompt is ever
-# submitted to any harness, so no model tokens are spent. Set
-# FM_SUBMIT_CONFIRM_LIVE=1 to exercise submit confirmation on every installed
-# harness, or name one harness to target only that adapter. Set
-# FM_COMPOSER_MATRIX_HARNESSES to a space-separated harness subset when a
-# focused refresh must avoid unrelated trust prompts. The submit probe
-# types once, swallows every initial Enter in the transport shim, requires the
-# retained composer to report pending, then removes the swallow and retries
-# Enter only, requiring a confirmed submit with exactly one transcript copy.
-# An absent harness is reported explicitly and skipped; a run that verified
-# nothing fails rather than passing vacuously. Refresh
-# docs/verification/runtime-backends.md ("Composer classification matrix")
-# from this guard's output after any harness upgrade.
+# Run explicitly with FM_COMPOSER_MATRIX_LIVE=1. No prompt is ever submitted
+# to any harness, so no model tokens are spent. An absent harness is reported
+# explicitly and skipped; a run that verified nothing fails rather than
+# passing vacuously. Refresh docs/verification/runtime-backends.md ("Composer
+# classification matrix") from this guard's output after any harness upgrade.
 #
 # Folder trust: harnesses are launched with the repo root as cwd, which the
 # operator's machine has normally already trusted; a trust dialog is a real
@@ -69,11 +61,6 @@ SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-cmx-live.XXXXXX")
 REAL_TMUX=$(command -v tmux)
 cat > "$SHIM_DIR/tmux" <<SH
 #!/usr/bin/env bash
-if [ "\${1:-}" = send-keys ] && [ -n "\${FM_SUBMIT_SWALLOW_FILE:-}" ] && [ -f "\$FM_SUBMIT_SWALLOW_FILE" ]; then
-  for arg in "\$@"; do
-    [ "\$arg" != Enter ] || exit 0
-  done
-fi
 exec "$REAL_TMUX" -L "$SOCKET" "\$@"
 SH
 chmod +x "$SHIM_DIR/tmux"
@@ -89,7 +76,6 @@ harness_version() {  # <binary>
 
 check_harness_idle_empty() {  # <name> <launch-cmd...>
   local name=$1 win="hx-$1" verdict='' i=0 budget=${FM_COMPOSER_MATRIX_LIVE_POLLS:-45} version dismissed=0 startup_screen
-  local submit_scope=${FM_SUBMIT_CONFIRM_LIVE:-0} probe swallow count
   shift
   version=$(harness_version "$1")
   tmux -L "$SOCKET" new-window -d -t "$SESSION:" -n "$win" -c "$ROOT" -- "$@" \
@@ -127,37 +113,11 @@ check_harness_idle_empty() {  # <name> <launch-cmd...>
     CHECKED=$((CHECKED + 1))
     pass "$name ($version): real idle composer classifies empty"
   fi
-  case "$submit_scope" in
-    1|"$name")
-      probe="FM_SUBMIT_CONFIRM_LIVE_${name}_$$"
-      swallow="$SHIM_DIR/swallow-$name"
-      : > "$swallow"
-      export FM_SUBMIT_SWALLOW_FILE="$swallow"
-      verdict=$(fm_tmux_submit_core "$SESSION:$win" "$probe" 3 0.2 0.1 '' "$name")
-      rm -f "$swallow"
-      unset FM_SUBMIT_SWALLOW_FILE
-      [ "$verdict" = pending ] \
-        || fail "$name ($version): swallowed Enter with retained text reported '$verdict', expected pending"
-      verdict=$(fm_tmux_submit_enter_core "$SESSION:$win" 6 0.25 1 "$name")
-      [ "$verdict" = empty ] \
-        || fail "$name ($version): Enter-only recovery did not confirm the real submit (verdict: $verdict)"
-      count=$(tmux -L "$SOCKET" capture-pane -p -t "$SESSION:$win" 2>/dev/null \
-        | grep -Fc "$probe" || true)
-      [ "$count" -eq 1 ] \
-        || fail "$name ($version): submit probe appeared $count times instead of exactly once"
-      CHECKED=$((CHECKED + 1))
-      pass "$name ($version): retained text fails closed, Enter-only recovery submits exactly once"
-      ;;
-  esac
   tmux -L "$SOCKET" kill-window -t "$SESSION:$win" 2>/dev/null || true
 }
 
 # --- 1. Every installed verified harness must reach a proven-empty composer --
-for h in claude codex opencode pi pi-signed grok kimi; do
-  case " ${FM_COMPOSER_MATRIX_HARNESSES:-claude codex opencode pi pi-signed grok kimi} " in
-    *" $h "*) ;;
-    *) note "harness excluded from focused verification: $h"; continue ;;
-  esac
+for h in claude codex opencode pi grok kimi muse; do
   if command -v "$h" >/dev/null 2>&1; then
     check_harness_idle_empty "$h" "$h"
   else

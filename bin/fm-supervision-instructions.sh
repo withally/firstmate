@@ -81,7 +81,7 @@ if [ -z "$HARNESS" ]; then
 fi
 
 case "$HARNESS" in
-  claude|codex|opencode|pi|grok) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
+  claude|codex|opencode|pi|grok|cursor) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
   pi-signed) SNIPPET="$DOC_DIR/pi.md" ;;
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
@@ -129,7 +129,7 @@ repair_line() {
   if [ "$QUEUE_PENDING" -eq 1 ]; then
     prefix='After draining queued wakes, '
   fi
-  if [ "$X_MODE" -eq 1 ] && [ "$HARNESS" != grok ]; then
+  if [ "$X_MODE" -eq 1 ]; then
     prefix="${prefix}source ${x_mode_env_sh} first, then "
   fi
 
@@ -147,7 +147,10 @@ repair_line() {
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision by letting the OpenCode TUI plugin arm after idle; use bin/fm-watch-arm.sh only as a manual recovery probe if the plugin reports failure.'
       ;;
     grok)
-      printf '%s%s\n' "$prefix" 'repair missing watcher supervision with one persistent Grok monitor running bin/fm-grok-watch-coordinator.mjs, never shell &.'
+      printf '%s%s\n' "$prefix" 'repair missing watcher supervision with bin/fm-watch-arm.sh as its own Grok tracked background task, never shell &.'
+      ;;
+    cursor)
+      printf '%s%s\n' "$prefix" 'watcher supervision is owned by the stop-hook park; inspect the hook registration and watcher startup path before ending the turn.'
       ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
@@ -170,7 +173,10 @@ ordinary_wake_line() {
       printf '%s\n' '- Ordinary wake: the OpenCode TUI plugin already owns watcher continuity; do not arm manually.'
       ;;
     grok)
-      printf '%s\n' '- Ordinary wake: the Grok monitor-owned coordinator already verified and owns the successor; do not re-arm.'
+      printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh Grok tracked background task as directed below.'
+      ;;
+    cursor)
+      printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
@@ -199,11 +205,7 @@ else
   printf '%s\n' '- Away mode: inactive.'
 fi
 if [ "$X_MODE" -eq 1 ]; then
-  if [ "$HARNESS" = grok ]; then
-    printf '%s\n' '- X mode: active; the monitor-owned coordinator sources the effective config/x-mode.env for each arm child.'
-  else
-    printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
-  fi
+  printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
 else
   printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
 fi

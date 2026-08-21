@@ -24,7 +24,11 @@
 #     archiving;
 #   - the multi-key classification and idempotent per-key reporting: a key
 #     already present in the secondmate backlog is reported and skipped, and if
-#     any key matches neither backlog nothing is moved.
+#     any key matches neither backlog nothing is moved;
+#   - warning, after a successful move, when a moved key still owes a public
+#     relay reply bound to main/<key>, because that binding no longer names the
+#     home that owns the work. The move is not blocked: rebinding the commitment
+#     to secondmate:<id> is a relay-side decision the caller makes.
 #
 # What `tasks-axi mv <id>... --to <dest>` owns: moving each full item BLOCK
 # byte-exact (header, body lines, blank separators, and indented pseudo-headings
@@ -37,7 +41,7 @@
 # item with a single-space or tab-indented continuation rather than risk leaving
 # it orphaned, because tasks-axi treats only two-or-more-space lines as body.
 # The move needs compatible `tasks-axi` on PATH, including atomic multi-ID `mv`
-# (introduced in 0.2.2). Bootstrap requires it fleet-wide, so this works
+# support. Bootstrap requires a compatible build fleet-wide, so this works
 # everywhere; the `config/backlog-backend=manual` knob only governs firstmate's
 # own hand-editing of its own backlog, not this validated helper. Idempotent:
 # re-running converges. Atomic: on any move failure nothing moves.
@@ -266,6 +270,28 @@ seed_backlog_scaffold() { # <path>
   [ -f "$1" ] || printf '## In flight\n\n## Queued\n\n## Done\n' > "$1"
 }
 
+# A public commitment made through the relay binds its work by home AND id, so an
+# item that leaves this home takes that binding out of sync: reconciliation would
+# still look for main/<key> while the work now lives in the secondmate's home.
+# The move itself stays safe and is never blocked - rebinding is a relay-side
+# decision the caller owns - but this is the one moment the staleness is
+# detectable, so report it loudly instead of letting the promise go quiet.
+# A home that never opted into the relay pays one presence check per key here.
+warn_stale_public_commitments() { # <secondmate-id> <moved-key>...
+  local id=$1 key out rc
+  shift
+  for key in "$@"; do
+    rc=0
+    out=$("$SCRIPT_DIR/fm-public-followup.sh" guard-work main "$key" 2>/dev/null) || rc=$?
+    [ "$rc" -ne 0 ] || continue
+    [ -z "$out" ] || printf '%s\n' "$out" >&2
+    printf 'warning: %s still owes a public reply bound to main/%s; rebind it to secondmate:%s (tasks-axi public-followup bind-work, then bin/fm-public-followup.sh register <obligation-id> --relation <relation-id> --work-home secondmate:%s --work-id %s --generation <n>) or the promised reply will be reconciled against work this home no longer owns.\n' \
+      "$key" "$key" "$id" "$id" "$key" >&2
+  done
+  # Reporting never changes the handoff's own success: the move already landed.
+  return 0
+}
+
 outbox_item_count() { # <path>
   awk '/^- \[[ x]\] / { count++ } END { print count + 0 }' "$1"
 }
@@ -355,7 +381,7 @@ remote_handoff() { # <secondmate-id> <keys...>
   validate_backlog_file "main backlog" "$MAIN_BACKLOG" || return 1
   validate_backlog_file "remote handoff outbox" "$outbox" || return 1
   fm_tasks_axi_compatible || {
-    echo "error: tasks-axi with atomic multi-ID mv support (0.2.2+) is required to stage remote handoffs" >&2
+    echo "error: a compatible tasks-axi with atomic multi-ID mv support is required to stage remote handoffs; run bin/fm-bootstrap.sh for the required version" >&2
     return 1
   }
   to_move=()
@@ -410,6 +436,7 @@ remote_handoff() { # <secondmate-id> <keys...>
   remote_deliver_outbox "$id" "$outbox" || return 1
   echo "handed off ${#requested[@]} item(s) to remote secondmate $id: ${requested[*]}"
   [ "${#already[@]}" -eq 0 ] || echo "  already staged (recovered): ${already[*]}"
+  warn_stale_public_commitments "$id" "${requested[@]}"
 }
 
 with_remote_route_locks() { # <secondmate-id> <function> <args...>
@@ -540,7 +567,7 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 if ! fm_tasks_axi_compatible; then
-  echo "error: tasks-axi with atomic multi-ID mv support (0.2.2+) is required to move backlog items" >&2
+  echo "error: a compatible tasks-axi with atomic multi-ID mv support is required to move backlog items; run bin/fm-bootstrap.sh for the required version" >&2
   exit 1
 fi
 
@@ -576,3 +603,4 @@ echo "  into $SUB_BACKLOG"
 if [ "${#ALREADY[@]}" -gt 0 ]; then
   echo "  already present (skipped): ${ALREADY[*]}"
 fi
+warn_stale_public_commitments "$ID" "${TO_MOVE[@]}"

@@ -46,8 +46,8 @@ fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# fm_afk_clear_stale_artifacts: on a genuinely NEW away-session entry (state/.afk
-# did not already exist), drop the previous away session's delivery
+# fm_afk_clear_stale_artifacts: on a FRESH away-session entry (the daemon is not
+# already running), drop the previous away session's leftover escalation-delivery
 # artifacts so they cannot surface as stale escalations under the new session.
 # These are session-scoped by timing: a fresh entry owns a new supervision
 # session and the new daemon has not produced anything yet, so anything present
@@ -63,20 +63,71 @@ fm_afk_clear_stale_artifacts() {  # <state-dir>
   local state=$1
   rm -f "$state/.subsuper-escalations" \
         "$state/.subsuper-escalations.since" \
-        "$state/.subsuper-escalations.unresolved" \
-        "$state/.subsuper-inject-wedged" \
-        "$state/.subsuper-digest-inflight" 2>/dev/null
+        "$state/.subsuper-inject-wedged" 2>/dev/null
 }
 
-# Daemon-lock liveness lives in bin/fm-wake-lib.sh so bin/fm-turnend-guard.sh
-# can prove away-mode supervision from the same predicate without sourcing this
-# script's set -eu. These wrappers bind it to this home's state dir and daemon.
+daemon_lock_owner() {
+  local owner
+  if [ -L "$FM_AFK_LOCK" ]; then
+    owner=$(readlink "$FM_AFK_LOCK" 2>/dev/null) || return 1
+    [ -n "$owner" ] || return 1
+    case "$owner" in
+      /*) printf '%s\n' "$owner" ;;
+      *) printf '%s/%s\n' "$(dirname "$FM_AFK_LOCK")" "$owner" ;;
+    esac
+    return 0
+  fi
+  [ -d "$FM_AFK_LOCK" ] || return 1
+  printf '%s\n' "$FM_AFK_LOCK"
+}
+
+daemon_pid_matches() {
+  local pid=$1 owner=$2 identity current command
+  identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  if [ -n "$identity" ]; then
+    current=$(fm_pid_identity "$pid") || return 1
+    [ "$current" = "$identity" ]
+    return
+  fi
+  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  case "$command" in
+    *"$FM_AFK_DAEMON"*|*"fm-supervise-daemon.sh"*) return 0 ;;
+  esac
+  return 1
+}
+
 daemon_lock_pid() {
-  fm_daemon_lock_pid "$FM_AFK_STATE"
+  local owner
+  owner=$(daemon_lock_owner) || return 1
+  cat "$owner/pid" 2>/dev/null || true
 }
 
 daemon_lock_held_by_live_daemon() {
-  fm_daemon_lock_alive "$FM_AFK_STATE" "$FM_AFK_DAEMON"
+  local owner pid
+  owner=$(daemon_lock_owner) || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" || return 1
+  daemon_pid_matches "$pid" "$owner"
+}
+
+fm_afk_flag_write() {  # <state-dir>
+  local state=$1 lock="$1/.cursor-park-owner.lock" pending attempt=0 status=1
+  mkdir -p "$state" || return 1
+  [ ! -d "$state/.afk" ] || return 1
+  pending=$(mktemp "$state/.afk.pending.XXXXXX") || return 1
+  date '+%s' > "$pending" || { rm -f "$pending"; return 1; }
+  while [ "$attempt" -lt 50 ]; do
+    attempt=$((attempt + 1))
+    if fm_lock_try_acquire "$lock"; then
+      mv "$pending" "$state/.afk" && status=0
+      fm_lock_release "$lock"
+      rm -f "$pending" 2>/dev/null || true
+      return "$status"
+    fi
+    [ "$attempt" -lt 50 ] && sleep 0.1
+  done
+  rm -f "$pending" 2>/dev/null || true
+  return 1
 }
 
 fm_afk_start_main() {
@@ -86,13 +137,11 @@ fm_afk_start_main() {
     * ) echo "usage: $(basename "${BASH_SOURCE[1]:-fm-afk-start.sh}")" >&2; return 2 ;;
   esac
 
-  local was_afk=0
   mkdir -p "$FM_AFK_STATE"
-  [ ! -f "$FM_AFK_STATE/.afk" ] || was_afk=1
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
     [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
   else
-    date '+%s' > "$FM_AFK_STATE/.afk"
+    fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
   fi
 
   local pid
@@ -106,9 +155,9 @@ fm_afk_start_main() {
     fm_lock_remove_path "$FM_AFK_LOCK" 2>/dev/null || true
   fi
 
-  # A daemon restart inside the same away session must retain the unresolved
-  # digest identity. Only a genuinely new away session clears old artifacts.
-  if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ] && [ "$was_afk" -eq 0 ]; then
+  # Fresh start: clear the previous away session's stale delivery artifacts
+  # before the new daemon can surface them (fix for the leaked-artifact defect).
+  if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ]; then
     fm_afk_clear_stale_artifacts "$FM_AFK_STATE"
   fi
 

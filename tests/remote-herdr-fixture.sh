@@ -82,8 +82,7 @@ case "${1:-} ${2:-}" in
     if [ "$(jq_state -r --arg p "$pane" '[.tabs[]|select(.pane_id==$p)]|length')" = 0 ]; then
       printf '{"error":{"code":"pane_not_found","message":"%s"}}\n' "$pane"
     else
-      jq_state --arg p "$pane" \
-        '{result:{pane:(.tabs[]|select(.pane_id==$p)|{pane_id,tab_id,workspace_id,foreground_cwd:.cwd})}}'
+      printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$pane"
     fi
     ;;
   "pane close")
@@ -93,16 +92,10 @@ case "${1:-} ${2:-}" in
        | .working |= with_entries(select(.key != $p))' | save ;;
   "pane send-text")
     [ ! -f "$SEND_FAIL" ] || exit 1
-    jq_state --arg p "${3:-}" --arg text "${4:-}" '.typed[$p] = $text' | save ;;
+    jq_state --arg p "${3:-}" '.typed[$p] = true' | save ;;
   "pane send-keys")
     [ ! -f "$SEND_FAIL" ] || exit 1
-    jq_state --arg p "${3:-}" '
-      if (.typed[$p] == "/quit" or .typed[$p] == "/exit") then
-        .typed |= with_entries(select(.key != $p))
-        | .working |= with_entries(select(.key != $p))
-      else
-        .working[$p] = true
-      end' | save ;;
+    jq_state --arg p "${3:-}" '.typed[$p] = true | .working[$p] = true' | save ;;
   "pane read") printf '\n' ;;
   "pane process-info") printf '{"result":{"process":{"name":"codex"}}}\n' ;;
   "agent get")
@@ -110,7 +103,7 @@ case "${1:-} ${2:-}" in
     if [ "$(jq_state -r --arg p "$pane" '.working[$p] // false')" = true ]; then
       jq_state --arg p "$pane" '.working |= with_entries(select(.key != $p))' | save
       printf '{"result":{"agent":{"agent_status":"working"}}}\n'
-    elif [ "$(jq_state -r --arg p "$pane" '(.typed[$p] // "") != ""')" = true ]; then
+    elif [ "$(jq_state -r --arg p "$pane" '.typed[$p] // false')" = true ]; then
       printf '{"result":{"agent":{"agent_status":"idle"}}}\n'
     else
       printf '{"error":{"code":"agent_not_found","message":"%s"}}\n' "$pane"

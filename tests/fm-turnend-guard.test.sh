@@ -98,17 +98,6 @@ test_predicate_source_needs_supervision() {
   pass "fm_supervision_unhealthy: source-only home needs supervision"
 }
 
-test_predicate_afk_only_needs_supervision() {
-  local state="$TMP_ROOT/pred-afk-only/state"
-  mkdir -p "$state"
-  : > "$state/.afk"
-  fm_supervision_unhealthy "$state" 300 || fail "away mode with no watcher did not register as unhealthy"
-  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "away mode must not count as an in-flight task"
-  [ "$FM_SUP_AFK" = true ] || fail "away mode must set FM_SUP_AFK"
-  [ "$FM_SUP_NEEDED" = true ] || fail "away mode must set FM_SUP_NEEDED"
-  pass "fm_supervision_unhealthy: an AFK-only home needs supervision"
-}
-
 # --- HOOK: bin/fm-turnend-guard.sh ------------------------------------------
 #
 # Each scenario gets its own directory carrying a copy of the two guard scripts
@@ -126,6 +115,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
   chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh"
@@ -227,16 +217,6 @@ record_watcher_lock() {
   printf '%s\n' "$root" > "$dir/state/.watch.lock/fm-home"
   printf '%s\n' "$bin_dir/fm-watch.sh" > "$dir/state/.watch.lock/watcher-path"
   printf '%s\n' "$identity" > "$dir/state/.watch.lock/pid-identity"
-}
-
-# The away supervisor's own lock. Away mode proves supervision from this lock,
-# not from state/.watch.lock, because the daemon runs the watcher one-shot and
-# that watcher lock is legitimately absent between wakes.
-record_daemon_lock() {
-  local dir=$1 pid=$2 identity=$3
-  mkdir -p "$dir/state/.supervise-daemon.lock"
-  printf '%s\n' "$pid" > "$dir/state/.supervise-daemon.lock/pid"
-  printf '%s\n' "$identity" > "$dir/state/.supervise-daemon.lock/pid-identity"
 }
 
 test_hook_silent_when_no_work_in_flight() {
@@ -381,64 +361,6 @@ test_hook_blocks_when_unhealthy_in_primary() {
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   assert_contains "$out" "TURN WOULD END BLIND" "block banner must read as an alarm"
   pass "fm-turnend-guard: blocks with the exact required reason in the primary when unhealthy"
-}
-
-test_hook_blocks_afk_only_home_with_away_recovery() {
-  local dir out status
-  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-only")
-  : > "$dir/state/.afk"
-  out=$(run_hook "$dir" false); status=$?
-  expect_code 2 "$status" "hook must block an AFK-only home whose supervisor is missing"
-  assert_contains "$out" "Away mode needs supervision" "AFK-only block must name away mode instead of X mode"
-  assert_contains "$out" "load /afk and ensure the daemon is running" "AFK-only block must point at away-mode recovery"
-  assert_not_contains "$out" "X-mode relay polling needs supervision" "AFK-only block mislabeled the need as X mode"
-  pass "fm-turnend-guard: an AFK-only home blocks with away-mode recovery guidance"
-}
-
-# The away daemon exits its watcher after every actionable wake and restarts it
-# only once injection finishes, so a captain turn can end inside that gap with a
-# healthy daemon and no watcher lock at all. That must not read as blind.
-test_hook_afk_live_daemon_allows_without_watcher_lock() {
-  local dir pid out status
-  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-live-daemon")
-  : > "$dir/state/.afk"
-  : > "$dir/state/task1.meta"
-  sleep 60 &
-  pid=$!
-  record_daemon_lock "$dir" "$pid" "$(watcher_identity "$dir" "$pid")"
-  out=$(run_hook "$dir" false); status=$?
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "an away home whose daemon is alive must end its turn even with no watcher lock"
-  [ -z "$out" ] || fail "live-daemon away allow produced output: $out"
-  pass "fm-turnend-guard: a live away daemon proves supervision while the watcher lock is released"
-}
-
-test_hook_afk_dead_daemon_still_blocks() {
-  local dir dead out status
-  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-dead-daemon")
-  : > "$dir/state/.afk"
-  dead=$(nonexistent_pid)
-  record_daemon_lock "$dir" "$dead" "dead daemon identity"
-  out=$(run_hook "$dir" false); status=$?
-  expect_code 2 "$status" "an away home whose daemon lock owner is dead must still block"
-  assert_contains "$out" "Away mode needs supervision" "dead-daemon away block must name away mode"
-  pass "fm-turnend-guard: a dead away daemon lock does not prove supervision"
-}
-
-test_hook_afk_foreign_daemon_identity_still_blocks() {
-  local dir pid out status
-  dir=$(make_primary_dir "$TMP_ROOT/hook-afk-foreign-daemon")
-  : > "$dir/state/.afk"
-  sleep 60 &
-  pid=$!
-  record_daemon_lock "$dir" "$pid" "some other process identity"
-  out=$(run_hook "$dir" false); status=$?
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  expect_code 2 "$status" "a recycled pid whose identity does not match must not prove away supervision"
-  assert_contains "$out" "Away mode needs supervision" "identity-mismatched away block must name away mode"
-  pass "fm-turnend-guard: an identity-mismatched away daemon lock does not prove supervision"
 }
 
 test_hook_blocks_from_fm_home_state() {
@@ -861,15 +783,17 @@ test_grok_adapter_missing_jq_and_no_supervision_allow() {
   pass "fm-turnend-guard-grok: missing jq and no-supervision-needed stops stay silent and bounded"
 }
 
-# Grok loads Claude-compatible settings, so a tracked .claude/settings.json
-# entry that also has a .grok/hooks/ counterpart must refuse to run under Grok,
-# or the home gets a duplicate path.
-# The regression this pins is the old GROK_AGENT-only guard: a Grok 1.0.0 hook
-# process omitted GROK_AGENT, so Claude's auto-arm ran synchronously under Grok
-# and wedged the turn for its declared 28800-second timeout.
+# Grok loads Claude-compatible settings, so a TRACKED .claude/settings.json entry
+# that also has a .grok/hooks/ counterpart must refuse to run under Grok, or the
+# home gets a duplicate path. The regression this pins: the guard once tested
+# GROK_AGENT alone, which a grok 1.0.0 HOOK process does not carry, so the
+# Claude-only Stop auto-arm ran synchronously under Grok, foregrounded the
+# watcher, and wedged the Grok turn for its declared 28800-second timeout.
 #
-# bin/fm-subagent-pretool-check.sh is the deliberate exception because Grok has
-# no counterpart registration for that event.
+# bin/fm-subagent-pretool-check.sh is the deliberate exception: Grok has no
+# counterpart registration, so guarding it would REMOVE the guard from Grok
+# rather than deduplicate it (docs/subagent-guard.md "Known residual gap").
+# It is asserted to stay unguarded so the exception cannot be closed silently.
 test_tracked_claude_entries_inert_under_grok() {
   local dir cmd script target guarded=0 unguarded=0
   command -v jq >/dev/null 2>&1 || fail "test host must provide jq"
@@ -881,6 +805,7 @@ test_tracked_claude_entries_inert_under_grok() {
     chmod +x "$dir/bin/$script"
   done
 
+  # Runs one tracked command string and reports whether it reached its script.
   ran_under() {
     rm -f "$dir/invoked"
     env "$@" CLAUDE_PROJECT_DIR="$dir" bash -c "$cmd" </dev/null >/dev/null 2>&1
@@ -892,6 +817,8 @@ test_tracked_claude_entries_inert_under_grok() {
     target=$(printf '%s\n' "$cmd" | sed -n 's|.*/bin/\([a-z0-9-]*\.sh\).*|\1|p')
     [ -n "$target" ] || fail "could not identify the target script of tracked entry: $cmd"
 
+    # Native Claude: EVERY tracked entry must still reach its script, or a guard
+    # has silently disarmed Claude's own protection.
     ran_under -u GROK_AGENT -u GROK_HOOK_EVENT -u GROK_HOOK_NAME -u GROK_SESSION_ID \
       -u GROK_WORKSPACE_ROOT \
       || fail "tracked entry for $target did not run under a native Claude environment"
@@ -904,17 +831,19 @@ test_tracked_claude_entries_inert_under_grok() {
     fi
 
     guarded=$((guarded + 1))
+    # grok 1.0.0 hook process: hook markers present, GROK_AGENT absent.
     ! ran_under -u GROK_AGENT GROK_HOOK_EVENT=stop \
       GROK_HOOK_NAME='project/settings:stop[0].hooks[0]' \
       GROK_SESSION_ID=grok-test-session GROK_WORKSPACE_ROOT="$dir" \
-      || fail "tracked entry for $target ran under a Grok 1.0.0 hook environment"
+      || fail "tracked entry for $target ran under a grok 1.0.0 hook environment"
+    # grok 0.2.73 child/tool process: GROK_AGENT present, hook markers absent.
     ! ran_under -u GROK_HOOK_EVENT -u GROK_HOOK_NAME GROK_AGENT=1 \
       || fail "tracked entry for $target ran under a legacy GROK_AGENT environment"
   done < <(jq -r '.hooks[][].hooks[].command' "$ROOT/.claude/settings.json")
 
-  [ "$guarded" -eq 5 ] || fail "expected 5 Grok-guarded tracked entries, saw $guarded"
+  [ "$guarded" -eq 5 ] || fail "expected 5 grok-guarded tracked entries, saw $guarded"
   [ "$unguarded" -eq 1 ] || fail "expected 1 documented unguarded tracked entry, saw $unguarded"
-  pass "tracked .claude/settings.json entries: $guarded inert under Grok, the documented subagent exception still armed, all live under Claude"
+  pass "tracked .claude/settings.json entries: $guarded inert under grok, the documented subagent exception still armed, all live under Claude"
 }
 
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root() {
@@ -1192,7 +1121,9 @@ install_integrated_autoarm() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
+  cp "$ROOT/bin/fm-cursor-lib.sh" "$dir/bin/fm-cursor-lib.sh"
   cp "$ROOT/bin/fm-lock.sh" "$dir/bin/fm-lock.sh"
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
   ln -s /bin/bash "$dir/fake-claude"
@@ -1240,24 +1171,8 @@ test_hook_claude_mode_reblocks_x_mode_without_tasks() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   expect_code 2 "$status" "--claude mode must re-block an X-mode-only stop when no auto-arm claims recovery"
   assert_contains "$out" "X-mode relay polling needs supervision" "--claude X-mode re-block must name the active supervision need"
-  assert_contains "$out" "Stop-owned auto-arm did not claim" "--claude re-block outside away mode must still report the missing auto-arm claim"
   [ -f "$dir/state/.turnend-claude-blocks" ] || fail "--claude X-mode re-block must consume the shared block budget"
   pass "fm-turnend-guard --claude: X-mode-only homes re-block when auto-arm recovery is absent"
-}
-
-test_hook_claude_mode_afk_never_degrades_to_normal_autoarm() {
-  local dir out status i
-  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-afk-only")
-  : > "$dir/state/.afk"
-  for i in 1 2 3 4; do
-    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
-    expect_code 2 "$status" "--claude AFK-only stop $i must remain blocked"
-    assert_contains "$out" "Away mode needs supervision" "--claude AFK-only block must name away mode"
-    assert_not_contains "$out" "Stop-owned auto-arm did not claim" \
-      "--claude AFK-only block must not blame an auto-arm that is inert by design in away mode"
-  done
-  [ ! -e "$dir/state/.turnend-claude-blocks" ] || fail "AFK-only guard consumed the ordinary auto-arm block budget"
-  pass "fm-turnend-guard --claude: AFK recovery stays blocked without ordinary auto-arm or degraded allow"
 }
 
 test_hook_claude_mode_allows_when_autoarm_owner_alive() {
@@ -1693,7 +1608,6 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
-test_predicate_afk_only_needs_supervision
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
@@ -1702,10 +1616,6 @@ test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_non_claude_health_ignores_claude_budget_contention
 test_hook_blocks_with_live_lock_and_stale_beacon
 test_hook_blocks_when_unhealthy_in_primary
-test_hook_blocks_afk_only_home_with_away_recovery
-test_hook_afk_live_daemon_allows_without_watcher_lock
-test_hook_afk_dead_daemon_still_blocks
-test_hook_afk_foreign_daemon_identity_still_blocks
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence
 test_hook_x_mode_only_blocks_in_default_mode
@@ -1739,7 +1649,6 @@ test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
-test_hook_claude_mode_afk_never_degrades_to_normal_autoarm
 test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner

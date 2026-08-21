@@ -9,7 +9,6 @@
 #   fm-remote-secondmate-control.sh key <id> <key>
 #   fm-remote-secondmate-control.sh capture <id> [lines]
 #   fm-remote-secondmate-control.sh observe <id>
-#   fm-remote-secondmate-control.sh control <id> interrupt
 #   fm-remote-secondmate-control.sh sync <id>
 #   fm-remote-secondmate-control.sh update <id>
 #   fm-remote-secondmate-control.sh retire <id> [--force]
@@ -110,19 +109,15 @@ state_value() { # <id>; prints recovery-grade state
 }
 
 print_route() { # <id>
-  local id=$1 harness model effort traceparent
+  local id=$1 harness traceparent
   remote_endpoint_require "$id"
   harness=$(fm_meta_get "$REMOTE_ENDPOINT_META" harness)
-  model=$(fm_meta_get "$REMOTE_ENDPOINT_META" model)
-  effort=$(fm_meta_get "$REMOTE_ENDPOINT_META" effort)
   traceparent=$(fm_meta_get "$REMOTE_ENDPOINT_META" traceparent)
   printf 'schema=fm-remote-secondmate-control.v1\n'
   printf 'backend=%s\n' "$REMOTE_ENDPOINT_BACKEND"
   printf 'target=%s\n' "$REMOTE_ENDPOINT_TARGET"
   printf 'herdr_session=%s\n' "$REMOTE_HERDR_SESSION"
   printf 'harness=%s\n' "$harness"
-  printf 'model=%s\n' "${model:-default}"
-  printf 'effort=%s\n' "${effort:-default}"
   [ -z "$traceparent" ] || printf 'traceparent=%s\n' "$traceparent"
 }
 
@@ -143,7 +138,10 @@ cmd_launch() {
 
   validate_id "$id"
   validate_home "$id"
-  case "$harness" in claude|codex|opencode|pi|pi-signed|grok|kimi) ;; *) die "unverified remote secondmate harness: $harness" ;; esac
+  case "$harness" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
+    *) die "unverified remote secondmate harness: $harness" ;;
+  esac
   case "$effort" in -|low|medium|high|xhigh|max) ;; *) die "invalid remote secondmate effort: $effort" ;; esac
   # Herdr is required on this host, not merely preferred: its server belongs to
   # the GUI login session, so the endpoint survives every SSH disconnection that
@@ -190,6 +188,12 @@ cmd_send() {
   validate_id "$id"
   validate_home "$id"
   remote_endpoint_require "$id"
+  # fm-send's exit status is the delivery verdict the parent home acts on
+  # (0 = confirmed, 3 = delivered with the submit read-back unconfirmed, other
+  # nonzero = failed; see bin/fm-send.sh's header). The job worker, entrypoint,
+  # and ssh all preserve it, so no mapping may happen here: flattening exit 3
+  # into a generic failure is exactly the false-negative the parent's remote
+  # send path exists to avoid.
   FM_HOME="$TARGET_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$TARGET_HOME/state" \
     "$SCRIPT_DIR/fm-send.sh" "$REMOTE_ENDPOINT_TARGET" "$message"
 }
@@ -221,33 +225,6 @@ cmd_observe() {
   harness=$(fm_meta_get "$REMOTE_ENDPOINT_META" harness)
   fm_pending_reply_backend_observation "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" "fm-$id" "$harness"
   printf '\n'
-}
-
-cmd_control() {
-  local id=$1 verb=$2 primary_harness='' primary_model='' primary_effort='' primary_resolved=0
-  shift 2
-  validate_id "$id"
-  validate_home "$id"
-  case "$verb" in interrupt|exit|relaunch) ;; *) die "unsupported remote lifecycle verb: $verb" ;; esac
-  if [ "$verb" = relaunch ] && [ "${1:-}" = --primary-config-harness ]; then
-    [ "$#" -ge 6 ] || die "incomplete primary relaunch profile carrier"
-    primary_harness=$2
-    [ "$3" = --primary-config-model ] || die "malformed primary relaunch profile carrier"
-    primary_model=$4
-    [ "$5" = --primary-config-effort ] || die "malformed primary relaunch profile carrier"
-    primary_effort=$6
-    primary_resolved=1
-    shift 6
-  fi
-  FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" \
-    FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
-    FM_CONFIG_OVERRIDE="$TARGET_HOME/config" \
-    FM_CONTROL_SECONDMATE_CONFIG_RESOLVED="$primary_resolved" \
-    FM_CONTROL_SECONDMATE_CONFIG_HARNESS="$primary_harness" \
-    FM_CONTROL_SECONDMATE_CONFIG_MODEL="$primary_model" \
-    FM_CONTROL_SECONDMATE_CONFIG_EFFORT="$primary_effort" \
-    "$SCRIPT_DIR/fm-control.sh" "$id" "$verb" "$@"
-  [ "$verb" != relaunch ] || print_route "$id"
 }
 
 cmd_sync() {
@@ -326,7 +303,6 @@ case "${1:-}" in
   key) shift; [ "$#" -eq 2 ] || usage; cmd_key "$@" ;;
   capture) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage; cmd_capture "$@" ;;
   observe) shift; [ "$#" -eq 1 ] || usage; cmd_observe "$@" ;;
-  control) shift; [ "$#" -ge 2 ] || usage; cmd_control "$@" ;;
   sync) shift; [ "$#" -eq 1 ] || usage; cmd_sync "$@" ;;
   update) shift; [ "$#" -eq 1 ] || usage; cmd_update "$@" ;;
   retire) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage; cmd_retire "$@" ;;

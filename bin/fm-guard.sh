@@ -12,20 +12,17 @@
 # has. Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
 # bin/fm-wake-lib.sh): under the Claude Stop auto-arm model the watcher runs only
 # between turns, so mid-turn a fresh beacon with no live watcher is healthy and
-# only a stale beacon (beyond FM_GUARD_GRACE) is a genuine lapse; under every
+# only a stale beacon (beyond FM_GUARD_GRACE) is a genuine lapse; under the Pi
+# extension model the extension tears the watcher down and respawns it on every
+# actionable wake, so a fresh beacon with a genuinely unheld lock is healthy
+# while that live Pi session provably owns continuity; any held but unhealthy
+# lock is down; under every
 # persistent-watcher harness a live identity-matched watcher with a fresh beacon
 # is required. The banner names the true failing condition (a missing live
 # watcher process vs a genuinely stale beacon). The full banner is emitted once
 # per distinct down-episode in this FM_HOME (keyed to the failing condition, not
 # the beacon mtime, which a healthy between-turns watcher advances every poll);
 # later guarded commands in the same episode print a one-line reminder instead.
-# An away home whose identity-matched supervise daemon is still alive gets the
-# DEGRADED variant of that banner instead: the daemon keeps running its marker
-# rechecks and its status-file catch-all scan, so a stale beacon there means its
-# watcher is not staying up, not that supervision stopped. That variant also
-# states what stops with the watcher - pane-level staleness detection - because
-# the daemon samples a pane only from markers the watcher itself created. An away
-# home with no live daemon keeps the full supervision-is-off alarm.
 # Episode state lives only under state/.guard-watcher-stale-banner (volatile,
 # bounded). Independent alarms (queued wakes, worktree tangle) are never
 # suppressed by that dedup. Normal wake handling (watcher briefly down between a
@@ -62,11 +59,8 @@ STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
 # episode" key change every turn and re-print the full banner. Keying on the
 # failing condition keeps one continuous down-episode stable, while positive
 # recovery clears the marker (below) and re-arms the next episode.
-# The away-supervisor state is part of that condition, not decoration: a degraded
-# away episode whose daemon then dies is a different, worse failure and must
-# re-print the full supervision-off banner instead of a one-line reminder.
 fm_guard_stale_episode_key() {
-  printf '%s away-supervisor=%s\n' "$1" "$2"
+  printf '%s\n' "$1"
 }
 
 # Claim the full banner for this episode. Exit 0 = print full banner (this call
@@ -156,16 +150,13 @@ fi
 
 # Compute supervision need and watcher-beacon freshness via the shared
 # grace-based predicate (bin/fm-supervision-lib.sh). Act when work, an event
-# source, away mode, or an X-mode relay poll needs supervision.
-# Count each need so the banner can say what is riding on an absent watcher.
+# source, or an X-mode relay poll needs supervision.
 fm_supervision_status "$STATE" "$GRACE"
 in_flight=$FM_SUP_IN_FLIGHT
 sources=$FM_SUP_SOURCES
-afk_needed=$FM_SUP_AFK
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
-watcher_fresh=$FM_SUP_WATCHER_FRESH
-fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME"
+fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME" "$FM_ROOT"
 watcher_healthy=$FM_WATCHER_VERDICT_OK
 watcher_down_reason=$FM_WATCHER_VERDICT_REASON
 if [ "$needed" = false ]; then
@@ -178,28 +169,11 @@ fi
 
 [ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
-# Away mode with a live identity-matched daemon is judged on the beacon, not on a
-# live watcher process: the away daemon deliberately runs the watcher one-shot, so
-# the watcher lock is legitimately absent between wakes and a fresh beacon is real
-# proof of supervision. When that beacon goes stale the home is DEGRADED, not
-# blind: the daemon still runs its marker rechecks and its status-file catch-all
-# scan, but it reads a pane only from markers the watcher created, so pane-level
-# staleness detection is NOT running meanwhile.
-# bin/fm-wake-lib.sh is the single owner of this liveness check, shared with
-# bin/fm-turnend-guard.sh and bin/fm-session-start.sh.
-away_supervisor_alive=false
-if [ "$afk_needed" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
-  away_supervisor_alive=true
-fi
-if [ "$away_supervisor_alive" = true ] && [ "$watcher_fresh" = true ]; then
-  watcher_healthy=true
-fi
-
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
 # calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
-  episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason" "$away_supervisor_alive")
+  episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
   episode_key=${episode_key%$'\n'}
   print_full_banner=0
   if [ "$READ_ONLY" -eq 1 ]; then
@@ -208,65 +182,43 @@ if [ "$watcher_healthy" = false ]; then
     print_full_banner=1
   fi
   if [ "$print_full_banner" -eq 1 ]; then
+    afk=0
+    [ -e "$STATE/.afk" ] && afk=1
+    queue_arg=0
+    "$queue_pending" && queue_arg=1
+    x_mode=0
+    [ -f "$CONFIG/x-mode.env" ] && x_mode=1
+    fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
+      --read-only "$READ_ONLY" \
+      --afk "$afk" \
+      --x-mode "$x_mode" \
+      --queue-pending "$queue_arg" \
+      --repair-line 2>/dev/null || printf '%s\n' 'Repair missing watcher supervision according to the session-start operating block.')
     rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-    if [ "$away_supervisor_alive" = true ]; then
-      {
-        printf '●%s\n' "$rule"
-        printf '●  AWAY SUPERVISION DEGRADED - THE DAEMON IS UP, ITS WATCHER IS NOT\n'
-        printf '●  The away supervisor holds state/.supervise-daemon.lock and keeps running its existing stale and pause marker rechecks and its status-file catch-all scan.\n'
-        printf '●  Its watcher is not staying up: no fresh beacon (last beat: %s, grace %ss), so pane-level staleness detection is NOT running until the watcher is back.\n' "$beacon_desc" "$GRACE"
-        printf '●  A crew that goes quiet without writing a captain-relevant status is therefore not escalated at all right now.\n'
-        if [ "$READ_ONLY" -eq 1 ]; then
-          printf '●  This read-only session should report the lapse, not repair it.\n'
-        else
-          printf '●  Read state/.supervise-daemon.log for the watcher exit reason and fix that cause; do not arm a second watcher while the daemon owns this home.\n'
-        fi
-        printf '●  %s\n' "$CONTINUE_LINE"
-        printf '●%s\n' "$rule"
-      } >&2
-    else
-      afk=0
-      [ "$afk_needed" = true ] && afk=1
-      queue_arg=0
-      "$queue_pending" && queue_arg=1
-      x_mode=0
-      [ -f "$CONFIG/x-mode.env" ] && x_mode=1
-      fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
-        --read-only "$READ_ONLY" \
-        --afk "$afk" \
-        --x-mode "$x_mode" \
-        --queue-pending "$queue_arg" \
-        --repair-line 2>/dev/null || printf '%s\n' 'Repair missing watcher supervision according to the session-start operating block.')
-      {
-        printf '●%s\n' "$rule"
-        printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-        if [ "$watcher_down_reason" = no-watcher ]; then
-          watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
-        else
-          watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
-        fi
-        if [ "$in_flight" -gt 0 ]; then
-          printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
-        elif [ "$sources" -gt 0 ]; then
-          printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
-        elif [ "$afk_needed" = true ]; then
-          printf '●  Away mode needs supervision, but %s.\n' "$watcher_cause"
-        else
-          printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
-        fi
-        if [ "$READ_ONLY" -eq 1 ]; then
-          printf '●  This read-only session should report the lapse, not repair it.\n'
-        else
-          printf '●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.\n'
-        fi
-        printf '●  %s\n' "$CONTINUE_LINE"
-        printf '●  %s\n' "$fix"
-        printf '●%s\n' "$rule"
-      } >&2
-    fi
-  elif [ "$away_supervisor_alive" = true ]; then
-    printf 'WARNING: away supervisor up, its watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
-      "$beacon_desc" "$GRACE" >&2
+    {
+      printf '●%s\n' "$rule"
+      printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
+      if [ "$watcher_down_reason" = no-watcher ]; then
+        watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
+      else
+        watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
+      fi
+      if [ "$in_flight" -gt 0 ]; then
+        printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
+      elif [ "$sources" -gt 0 ]; then
+        printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
+      else
+        printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
+      fi
+      if [ "$READ_ONLY" -eq 1 ]; then
+        printf '●  This read-only session should report the lapse, not repair it.\n'
+      else
+        printf '●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.\n'
+      fi
+      printf '●  %s\n' "$CONTINUE_LINE"
+      printf '●  %s\n' "$fix"
+      printf '●%s\n' "$rule"
+    } >&2
   else
     printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
       "$beacon_desc" "$GRACE" >&2
@@ -279,24 +231,12 @@ fi
 
 # Queued wakes are an independent hazard; warn whenever they are pending, even if
 # a watcher is alive. Kept after the banner so the no-watcher alarm reads first.
-# Dedup of the watcher-down banner never suppresses this warning. The advisory is
-# recovery-marker-aware: under the retained-until-ack model, presented rows stay
-# queued for the whole handling window (marker pending:handling), and telling
-# that turn to re-drain would contradict its handle-then-acknowledge protocol,
-# so the handling window gets acknowledge wording instead of drain wording.
+# Dedup of the watcher-down banner never suppresses this warning.
 if "$queue_pending"; then
   if [ "$READ_ONLY" -eq 1 ]; then
     echo "WARNING: queued wakes pending - left untouched because this session lacks verified fleet-lock ownership." >&2
   else
-    fm_recovery_marker_read "$STATE/.watcher-down" || true
-    case "$FM_RECOVERY_MARKER_TOKEN" in
-      pending:handling:*)
-        echo "WARNING: presented wakes retained until handling acknowledgement - finish handling them, then run the acknowledgement from the drain's WAKE_ACK_REQUIRED line; do not re-drain mid-handling." >&2
-        ;;
-      *)
-        echo "WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else." >&2
-        ;;
-    esac
+    echo "WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else." >&2
   fi
 fi
 exit 0

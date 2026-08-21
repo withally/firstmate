@@ -9,6 +9,8 @@ set -u
 . "$ROOT/tests/cutover-state-fixture-helpers.sh"
 
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
+# Keep the fixture directory discoverable by fm-test-run.sh's changed-path mapper.
+# Fixture selection path: tests/fixtures/fm-cutover-state-migration.
 TMP_ROOT=$(fm_test_tmproot fm-cutover-state-migration-tests)
 
 exercise_version_5_home() {  # <fixture> <state> <task> <key> <post-copy-note>

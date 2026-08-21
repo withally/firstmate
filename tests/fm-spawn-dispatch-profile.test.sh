@@ -327,8 +327,8 @@ test_active_dispatch_profile_allows_explicit_harness() {
   assert_contains "$out" "spawned $id harness=codex" "spawn did not report explicit codex harness"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
-    "explicit harness launch did not thread model and effort"
+  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' -c \"service_tier=\\\"default\\\"\" --dangerously-bypass-approvals-and-sandbox" \
+    "explicit harness launch did not thread model, effort, and the Standard service-tier default"
   pass "active crew-dispatch profile allows an explicit resolved harness"
 }
 
@@ -366,6 +366,22 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
 }
 
+test_codex_exact_raw_launch_can_request_priority() {
+  local rec id out status launch exact
+  id=profile-codex-priority-z15b
+  rec=$(make_spawn_case profile-codex-priority codex "$id")
+  read_case_record "$rec"
+  exact='codex -c '\''service_tier="priority"'\'' --dangerously-bypass-approvals-and-sandbox'
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" "$exact")
+  status=$?
+  expect_code 0 "$status" "an exact raw Codex launch should remain available for an authorized Priority exception"
+  launch=$(cat "$LAUNCH_LOG")
+  [ "$launch" = "$exact" ] || fail "exact Priority launch changed"$'\n'"actual: $launch"
+  pass "an exact raw Codex launch can still request Priority"
+}
+
 test_claude_threads_model_and_effort() {
   local rec id out status launch
   id=profile-claude-z2
@@ -393,9 +409,9 @@ test_codex_threads_model_and_effort() {
   expect_code 0 "$status" "codex spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
-    "codex launch did not thread model and reasoning effort config"
-  pass "codex receives --model and model_reasoning_effort profile flags"
+  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' -c \"service_tier=\\\"default\\\"\" --dangerously-bypass-approvals-and-sandbox" \
+    "codex launch did not thread model, reasoning effort, and the Standard service-tier default"
+  pass "codex receives model and effort while pinning the Standard service tier"
 }
 
 test_codex_omits_invalid_max_effort() {
@@ -409,7 +425,7 @@ test_codex_omits_invalid_max_effort() {
   expect_code 0 "$status" "codex spawn with unsupported max effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5' --dangerously-bypass-approvals-and-sandbox" \
+  assert_contains "$launch" "codex --model 'gpt-5' -c \"service_tier=\\\"default\\\"\" --dangerously-bypass-approvals-and-sandbox" \
     "codex launch did not preserve the model flag when max effort was omitted"
   assert_not_contains "$launch" "model_reasoning_effort" "codex launch must omit unsupported max reasoning effort"
   pass "codex omits unsupported max effort instead of passing a bad config value"
@@ -656,7 +672,7 @@ test_non_claude_harness_ignores_config_dir() {
 }
 
 test_active_dispatch_profile_does_not_block_secondmate_launch() {
-  local rec id sm out status
+  local rec id sm out status launch
   id=profile-secondmate-z16
   rec=$(make_spawn_case profile-secondmate codex "$id")
   read_case_record "$rec"
@@ -670,7 +686,10 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   assert_contains "$out" "spawned $id harness=codex kind=secondmate" "secondmate launch did not use secondmate harness resolution"
   assert_grep "kind=secondmate" "$HOME_DIR/state/$id.meta" "secondmate meta missing kind=secondmate"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex default default
-  pass "active crew-dispatch profile does not block secondmate launches"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "codex -c \"service_tier=\\\"default\\\"\" --dangerously-bypass-approvals-and-sandbox" \
+    "secondmate Codex launch did not pin the Standard service tier"
+  pass "active crew-dispatch profile does not block secondmates and Codex stays Standard"
 }
 
 test_no_profile_keeps_claude_profile_defaults
@@ -683,6 +702,7 @@ test_active_dispatch_profile_requires_explicit_harness_for_scout
 test_active_dispatch_profile_allows_explicit_harness
 test_active_dispatch_profile_allows_positional_harness
 test_active_dispatch_profile_allows_raw_launch_command
+test_codex_exact_raw_launch_can_request_priority
 test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort

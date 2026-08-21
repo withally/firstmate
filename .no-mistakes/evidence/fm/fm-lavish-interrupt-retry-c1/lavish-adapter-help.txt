@@ -1,0 +1,10 @@
+=== adapter --help: retry policy documented ===
+poll       Run the registered blocking listen. The exact two-line
+           "poll response was interrupted" SERVER_ERROR is retried up to 12
+           times, waiting five seconds between attempts. Every other result
+           returns immediately, and the final exact interrupt returns after
+           exhaustion so the runner captures and announces it. The wait may
+           be set to a nonnegative integer with
+           FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS for deterministic tests.
+
+This adapter is deliberately thin. It owns only what is specific to Lavish:

@@ -1,0 +1,6 @@
+ok - one Send & End yields exactly one captured result, automatic retirement, and no recurring poll
+ok - exact poll interrupts are retried without wakes before real feedback
+ok - exact poll interrupt retries are bounded and exhaustion stays visible
+ok - arbitrary SERVER_ERROR results are never retried
+ok - the published interfaces state the loss limitation and claim no lossless delivery
+all procevent tests passed

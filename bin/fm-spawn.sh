@@ -71,9 +71,6 @@
 #   selected client and running server meet the Herdr 0.8.0 floor. The local
 #   config/herdr-presentation-spaces file can say off to disable it or on to
 #   opt in below that floor; an empty file remains the historical opt-in form.
-#   That gate decides only whether a FRESH projection is created; recovery of
-#   an already-journaled projection runs whenever the journal exists, so no
-#   preference or floor change strands a previously projected workspace.
 #   A clean fresh task first writes state/<id>.herdr-presentation atomically,
 #   then creates a disposable
 #   workspace containing only the ordinary task pane. A successful clean create
@@ -107,11 +104,15 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
-#   new adapters. pi-signed launches that exact executable name from PATH and
-#   refuses before endpoint creation when it is unavailable; it never falls back to pi.
+#   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
+#   name from PATH once, probes that concrete path with --help, and launches the
+#   same path. It adds --tui-mode regular only when that help advertises the flag;
+#   a failed or inconclusive probe omits it so older Pi versions remain launchable.
+#   A missing selected executable refuses before endpoint creation, and pi-signed
+#   never falls back to pi.
 #   config/secondmate-harness may also carry an optional model and effort as extra
 #   whitespace-separated tokens ("<harness> [<model>] [<effort>]"). For a
 #   --secondmate spawn, those tokens apply only when this spawn also resolves its
@@ -133,6 +134,10 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   Before a fresh ship or scout worker starts, its clean task worktree fetches
+#   origin, resolves the current remote default branch, and resets to its tip.
+#   An unreachable origin, unresolved default branch, or non-clean worktree
+#   refuses the spawn rather than risking a PR based on stale history.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -145,6 +150,8 @@
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
+#     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
+#     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
@@ -152,15 +159,29 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
+#     __WORKTREE__  absolute path to the task worktree
+#     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
+# muse installs no hook at all - its plugin engine is off in the default build - so
+# it writes state/<id>.muse-session to bind the pane to muse's own session event
+# log; muse is crewmate/scout only and is refused for --secondmate.
+# cursor installs no per-task hook either: it writes state/<id>.cursor-session to
+# bind the pane to cursor's own conversation transcript (projects root, the exact
+# workspace path cursor records in .workspace-trusted, and the conversations that
+# already existed for that workspace). It is launched through the verified binary
+# resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
+# the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
+# park owns that home's supervision (docs/supervision-protocols/cursor.md).
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
+# Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
+# consumers can distinguish a replacement worker that reuses the same task id.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
 # one W3C traceparent= carrier, the same value injected into the pane as
@@ -231,6 +252,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-cursor-lib.sh
+. "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
@@ -398,15 +421,6 @@ spawn_remote_secondmate() {
     fm_lock_release "$SPAWN_TASK_LOCK" || true
     return 3
   fi
-  # A secondmate lifecycle never issues a receipt of its own, so any receipt
-  # under this id belongs to a completed ship task whose id is being reused.
-  # Retire it under the spawn lock before this route publishes its metadata.
-  if ! rm -f -- "$STATE/$id.teardown-pr"; then
-    fm_lock_release "$registry_lock" || true
-    fm_lock_release "$SPAWN_TASK_LOCK" || true
-    echo "error: could not retire the prior completed-task PR receipt for $id" >&2
-    return 1
-  fi
   host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
   root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
   home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
@@ -425,7 +439,7 @@ spawn_remote_secondmate() {
     harness=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
   fi
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
     *)
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -615,9 +629,9 @@ spawn_remote_secondmate() {
     [ -z "$remote_recorded_traceparent" ] || echo "traceparent=$remote_recorded_traceparent"
   } > "$tmp"
   mv -f -- "$tmp" "$meta"
-  if [ "$SPAWN_TASK_SET_PUBLISHER_HELD" = 1 ]; then
-    SPAWN_TASK_SET_PUBLISHER_HELD=0
-    fm_task_set_publish_end "$SPAWN_TASK_SET_PUBLISHER"
+  if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
+    SPAWN_TASK_SET_LOCK_HELD=0
+    fm_lock_release "$SPAWN_TASK_SET_LOCK"
   fi
   fm_lock_release "$remote_lock" || true
   fm_lock_release "$registry_lock" || true
@@ -649,8 +663,8 @@ SPAWN_META_TMP=
 SPAWN_META_LOCK=
 SPAWN_META_LOCK_HELD=0
 SPAWN_META_PUBLISH_STARTED=0
-SPAWN_TASK_SET_PUBLISHER=
-SPAWN_TASK_SET_PUBLISHER_HELD=0
+SPAWN_TASK_SET_LOCK=
+SPAWN_TASK_SET_LOCK_HELD=0
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -756,9 +770,9 @@ spawn_abort_cleanup() {
     SPAWN_META_LOCK_HELD=0
     fm_lock_release "$SPAWN_META_LOCK" || true
   fi
-  if [ "$SPAWN_TASK_SET_PUBLISHER_HELD" = 1 ]; then
-    SPAWN_TASK_SET_PUBLISHER_HELD=0
-    fm_task_set_publish_end "$SPAWN_TASK_SET_PUBLISHER" || true
+  if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
+    SPAWN_TASK_SET_LOCK_HELD=0
+    fm_lock_release "$SPAWN_TASK_SET_LOCK" || true
   fi
   if [ "$SPAWN_CONTROL_LOCK_HELD" = 1 ]; then
     SPAWN_CONTROL_LOCK_HELD=0
@@ -895,15 +909,9 @@ if [ "$RELAUNCH" -eq 0 ]; then
   # published inside the enumerate-then-remove window is invisible to the
   # teardown's per-task preflight but visible to its cleanup, and gets mutated
   # while never lifecycle-locked (bin/fm-wake-lib.sh's fm_task_set_lock_path
-  # owns the evidence; bin/fm-teardown.sh holds that lock exclusively from
-  # enumeration through cleanup).
-  #
-  # This is the SHARED side of that guard: spawning several tasks into one home
-  # at once is ordinary fleet behavior, so a spawn registers itself as a
-  # publisher rather than taking the lock. Concurrent spawns therefore never
-  # exclude each other, while a forced teardown still sees this registration and
-  # refuses. Taken before this task's own locks, matching the acquisition order
-  # documented there, and held through publication.
+  # owns the evidence; bin/fm-teardown.sh holds the same lock from enumeration
+  # through cleanup). Taken before this task's own locks, matching the
+  # acquisition order documented there, and held through publication.
   #
   # A relaunch is exempt: it republishes a task that already exists, so it is
   # already covered by that task's control lock, which the teardown preflight
@@ -911,16 +919,15 @@ if [ "$RELAUNCH" -eq 0 ]; then
   #
   # Refusing rather than waiting is the fail-closed direction: the home may be
   # moments from removal, so there is nothing worth waiting for.
-  if ! fm_task_set_publish_begin "$STATE"; then
-    if [ "$FM_TASK_SET_PUBLISH_REASON" = owned ]; then
-      echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
-    else
-      echo "error: could not register task publication against the task set for $STATE" >&2
-    fi
+  SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
+    echo "error: could not resolve the task-set lock for $STATE" >&2
+    exit 1
+  }
+  if ! fm_lock_try_acquire "$SPAWN_TASK_SET_LOCK"; then
+    echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
     exit 1
   fi
-  SPAWN_TASK_SET_PUBLISHER=$FM_TASK_SET_PUBLISH_ENTRY
-  SPAWN_TASK_SET_PUBLISHER_HELD=1
+  SPAWN_TASK_SET_LOCK_HELD=1
 fi
 if [ "$KIND" = secondmate ]; then
   if spawn_remote_secondmate "$ID"; then
@@ -963,20 +970,15 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
-# Reusing a completed task id starts a new lifecycle, so the previous
-# lifecycle's exact-PR receipt is retired here, before ANY path in this spawn -
-# including the orca abort-cleanup record - can publish metadata under the id.
-# The per-id spawn lock excludes a concurrent post-teardown merge meanwhile.
-if [ "$RELAUNCH" -eq 0 ]; then
-  rm -f -- "$STATE/$ID.teardown-pr" || {
-    echo "error: could not retire the prior completed-task PR receipt for $ID" >&2
-    exit 1
-  }
-fi
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
 
+# --relaunch adoption: every identity axis comes from the task's own validated
+# durable record, never from the command line, so a relaunch can only ever
+# re-launch the task it names. The endpoint identity check is the same shared
+# validation teardown uses, so a malformed, ambiguous, or foreign record
+# refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
@@ -993,8 +995,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
+  # A relaunch must PROVE the previous agent is gone before it launches another
+  # one into the same endpoint, and only tmux and herdr have a recovery-grade
+  # classifier that can (bin/fm-control-lib.sh owns that capability table).
   fm_control_backend_state_verified "$BACKEND" || {
-    echo "error: backend '$BACKEND' has no recovery-grade agent-state classifier, so a relaunch cannot prove the previous agent exited" >&2
+    echo "error: backend '$BACKEND' has no recovery-grade agent-state classifier, so a relaunch cannot prove the previous agent exited; refusing rather than risking two agents in one endpoint" >&2
     exit 1
   }
   RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
@@ -1009,7 +1014,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
   [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
-    echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing" >&2
+    echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
     exit 1
   }
   if [ "$KIND" = secondmate ]; then
@@ -1017,7 +1022,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
     [ -n "$FIRSTMATE_HOME" ] || FIRSTMATE_HOME=$RELAUNCH_WT
   else
     PROJ=$(fm_meta_get "$RELAUNCH_META" project)
-    [ -n "$PROJ" ] || { echo "error: task $ID has no recorded project" >&2; exit 1; }
+    [ -n "$PROJ" ] || {
+      echo "error: task $ID has no recorded project; refusing to relaunch" >&2
+      exit 1
+    }
   fi
   if [ "$BACKEND" = herdr ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
@@ -1025,11 +1033,20 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
   fi
+  # With no explicit harness, a relaunch reuses the harness already recorded
+  # for this task. It must NOT fall through to the fresh-spawn config
+  # resolution, which would silently move an existing task onto whatever the
+  # crew or secondmate default currently says. Choosing a different harness is
+  # the caller's explicit decision, made with --harness (bin/fm-control.sh
+  # resolves that decision, including a secondmate's durable pin).
   ARG3=${HARNESS_ARG:-$RELAUNCH_PRIOR_HARNESS}
-  [ -n "$ARG3" ] || { echo "error: task $ID has no recorded harness; pass --harness" >&2; exit 1; }
+  [ -n "$ARG3" ] || {
+    echo "error: task $ID has no recorded harness; pass --harness to relaunch it" >&2
+    exit 1
+  }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi)
+    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1050,6 +1067,34 @@ else
   ARG3=${POS[2]:-}
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+resolve_pi_executable() {
+  local candidate dir
+  candidate=$(type -P -- "$1" 2>/dev/null) || return 1
+  [ -x "$candidate" ] || return 1
+  case "$candidate" in
+    /*) printf '%s\n' "$candidate" ;;
+    *)
+      dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || return 1
+      printf '%s/%s\n' "$dir" "$(basename "$candidate")"
+      ;;
+  esac
+}
+
+# Pi's CLI surface is version-dependent, so probe the resolved executable's help
+# before composing the optional regular-TUI flag. An absent or inconclusive probe
+# omits the flag so older Pi versions can still spawn.
+pi_supports_tui_mode() {
+  local executable=$1 help
+  help=$("$executable" --help 2>&1) || return 1
+  printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--tui-mode([[:space:]=]|$)'
+}
 
 # The verified launch command per adapter. The knowledge half of each adapter
 # (busy-state source, exit command, dialogs, quirks) lives in the harness-adapters skill.
@@ -1076,10 +1121,11 @@ launch_template() {
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
+      printf '%s' '__PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -1090,11 +1136,46 @@ launch_template() {
     # launch command - it is a Stop-event hook installed below (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # Cursor Agent CLI. --trust suppresses the workspace-trust prompt, which
+    # --yolo does NOT cover and which would otherwise block every spawn, since
+    # each task gets a fresh worktree path cursor has never seen. --yolo is the
+    # --force alias whose TUI label is "Run Everything". --workspace pins the
+    # exact worktree. -w/--worktree is deliberately never passed: it allocates a
+    # SECOND worktree under ~/.cursor/worktrees and would break firstmate's
+    # isolation contract. The binary is resolved rather than named because
+    # `cursor` is not the CLI (the installed names are cursor-agent and the
+    # legacy alias agent), and the foreign primary markers are cleared so an
+    # inherited CLAUDECODE cannot outrank cursor's own marker in a process that
+    # only reads the environment. Cursor exposes no effort flag, so the shared
+    # effort axis is deliberately omitted and stays in task metadata only.
+    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # Kimi Code rejects a positional prompt, so it launches bare and receives
     # only an absolute brief pointer after the TUI readiness gate below.
     # Its turn-end signal is a globally configured Stop hook plus a guarded
     # per-task worktree token, so no launch placeholder belongs here.
     kimi) printf '%s' '__KIMIBIN__ __MODELFLAG__--auto' ;;
+    # muse (Muse Code): a positional prompt starts the supervised interactive
+    # session. --yolo is the single flag that makes a crewmate pane viable: muse
+    # ships approval prompts AND a filesystem/network sandbox ON by default
+    # (--sandbox-network defaults to proxy-only, which refuses outright without a
+    # managed proxy), and it gates a fresh workspace behind a trust dialog. One
+    # --yolo disables approval, disables the sandbox so git and network work, and
+    # trusts the workspace for the run, so no dialog appears on the fresh
+    # per-task worktree (verified, muse 0.1.0-R708.1).
+    # MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on is the privacy control:
+    # muse otherwise loads the OPERATOR's foreign personal rules from ~/.claude
+    # into every run and ships them to Meta-hosted inference, even under an
+    # isolated XDG_CONFIG_HOME. exec mode's --no-foreign-personal-context flag is
+    # NOT accepted by the interactive TUI (it exits with "unexpected argument"),
+    # so this env var is the only control that reaches a pane worker. Verified to
+    # drop the foreign rules_file context block while KEEPING the project's own
+    # AGENTS.md rules, which the crewmate contract depends on.
+    # muse's turn-end signal rides neither the launch command nor a hook: its
+    # plugin engine is off in the default build, so firstmate folds muse's own
+    # session event log instead (bin/fm-busy-lib.sh), bound by the sidecar
+    # written below. Nothing to place in the template for it.
+    # codex, opencode, and kimi are also markerless and share this inherited-marker hazard; changing their verified launch boundaries belongs in follow-up work.
+    muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -1135,17 +1216,47 @@ case "$ARG3" in
     ;;
 esac
 
-case "$HARNESS" in
-  pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
-esac
-
-# pi-signed is an explicitly selected executable identity, not an alias that may
-# silently fall back to pi. Resolve it from PATH before creating an endpoint and
-# retain the literal name in the launch command and task metadata.
-if [ "$HARNESS" = pi-signed ] && ! command -v pi-signed >/dev/null 2>&1; then
-  echo "error: pi-signed executable not found on PATH; install the signed Pi wrapper or select a different verified harness" >&2
+# muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
+# instance, so it needs a primary supervision protocol; muse has none, and its
+# Claude-compatible hook dialect explicitly rejects the model-reawakening and
+# asyncRewake handlers that firstmate's primary turn-end supervision is built on
+# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
+# secondmate whose supervision cycle could never be armed.
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
+  echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
+
+case "$HARNESS" in
+  pi|pi-signed)
+    PI_BIN=$(resolve_pi_executable "$HARNESS") || {
+      echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
+      exit 1
+    }
+    PI_TUI_MODE=
+    if pi_supports_tui_mode "$PI_BIN"; then
+      PI_TUI_MODE=' --tui-mode regular'
+    fi
+    LAUNCH=${LAUNCH//__PITUIMODE__/$PI_TUI_MODE}
+    LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
+    ;;
+  cursor)
+    # `cursor` is not the CLI name, and the legacy alias `agent` is far too
+    # generic to launch on its name alone, so resolution runs through the
+    # verified owner rather than a bare command lookup. Refusing here keeps a
+    # missing install a loud spawn refusal instead of a pane that dies with a
+    # command-not-found the supervisor would read as a wedged worker.
+    CURSOR_BIN=$(fm_cursor_resolve_binary) || exit 1
+    if [ -n "$MODEL" ] && [ "$MODEL" != default ]; then
+      if CURSOR_MODELS=$(fm_cursor_list_models "$CURSOR_BIN"); then
+        if ! printf '%s\n' "$CURSOR_MODELS" | fm_cursor_catalog_has_model "$MODEL"; then
+          echo "error: Cursor model '$MODEL' is not available from '$CURSOR_BIN --list-models'; choose an id listed by that command or omit --model" >&2
+          exit 1
+        fi
+      fi
+    fi
+    ;;
+esac
 
 # config/secondmate-harness may carry optional model/effort tokens alongside the
 # harness ("<harness> [<model>] [<effort>]"). They apply only when this is a
@@ -1173,12 +1284,6 @@ secondmate_registry_value() {
   secondmate_registry_field "$DATA/secondmates.md" "$1" "$2"
 }
 
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
-
 resolve_kimi_binary() {
   local candidate dir fallback
   candidate=$(command -v kimi 2>/dev/null || true)
@@ -1203,11 +1308,60 @@ resolve_kimi_binary() {
   return 1
 }
 
+resolve_muse_binary() {
+  local candidate dir
+  candidate=$(command -v muse 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    case "$candidate" in
+      /*) printf '%s\n' "$candidate"; return 0 ;;
+      *)
+        dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || dir=
+        if [ -n "$dir" ]; then
+          printf '%s/%s\n' "$dir" "$(basename "$candidate")"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  echo "error: muse executable not found on PATH; install Muse Code or select a different verified harness" >&2
+  return 1
+}
+
+# muse_credential_present: 0 when a launched muse pane can reach its provider
+# without an interactive login. muse offers exactly two credential paths
+# (verified, muse 0.1.0-R708.1): the META_API_KEY environment variable, which
+# always takes priority, and a stored credential written by `muse auth set` or
+# `muse login` into <config>/muse/auth.json. This is a PREFLIGHT rather than a
+# rendered-screen check because an unauthenticated pane does not exit - it sits
+# on an OAuth device-code prompt ("Sign in at this page ... Waiting for
+# approval...") waiting for a human who is not there, which would look to
+# supervision like a wedged worker rather than a missing credential.
+muse_worker_meta_api_key_present() {
+  local session worker_env
+  [ "$BACKEND" = tmux ] || return 1
+  if [ -n "${TMUX:-}" ]; then
+    session=$(tmux display-message -p '#S' 2>/dev/null) || return 1
+  else
+    tmux has-session -t firstmate 2>/dev/null || return 1
+    session=firstmate
+  fi
+  worker_env=$(tmux show-environment -t "$session" META_API_KEY 2>/dev/null) || return 1
+  case "$worker_env" in
+    META_API_KEY=?*) return 0 ;;
+  esac
+  return 1
+}
+
+muse_credential_present() {
+  local auth=$1
+  [ -s "$auth" ] || muse_worker_meta_api_key_present
+}
+
 model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -1246,13 +1400,49 @@ effort_flag_for_harness() {
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
+    muse)
+      # muse 0.1.0-R708.1 --reasoning-effort accepts none|minimal|low|medium|
+      # high|xhigh|ultra and defaults to high, so low..xhigh map straight across.
+      # ultra is muse's max-CLASS level, so firstmate's max maps onto it - but
+      # only ever as an EXPLICIT captain choice, never as a fallback, because
+      # AGENTS.md section 4 forbids selecting max without captain preference and
+      # the omitted effort here leaves muse on its own high default. muse's extra
+      # none/minimal levels sit below firstmate's shared vocabulary and are
+      # deliberately unreachable rather than remapped onto low.
+      case "$effort" in
+        low|medium|high|xhigh) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
+        max) printf -- '--reasoning-effort %s ' "$(shell_quote ultra)" ;;
+      esac
+      ;;
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
     # kimi likewise has no reasoning-effort flag; the requested axis stays in
-    # task metadata but never reaches the launch command.
+    # task metadata but never reaches the launch command. Cursor encodes effort
+    # in model ids such as cursor-grok-4.5-high, so it also receives no separate
+    # effort flag.
   esac
 }
+
+case "$LAUNCH" in
+  *__MUSEBIN__*)
+    MUSE_BIN=$(resolve_muse_binary) || exit 1
+    MUSE_CONFIG_HOME=$(resolve_directory_input XDG_CONFIG_HOME "${XDG_CONFIG_HOME:-${HOME:-}/.config}") || exit 1
+    MUSE_DATA_HOME=$(resolve_directory_input XDG_DATA_HOME "${XDG_DATA_HOME:-${HOME:-}/.local/share}") || exit 1
+    MUSE_AUTH_FILE="$MUSE_CONFIG_HOME/muse/auth.json"
+    if ! muse_credential_present "$MUSE_AUTH_FILE"; then
+      if [ -n "${META_API_KEY:-}" ]; then
+        echo "error: muse has no worker-reachable credential; META_API_KEY is set for fm-spawn but cannot be proven present in the $BACKEND worker environment. Store the fleet credential at '$MUSE_AUTH_FILE' with 'muse login' or 'muse auth set --api-key-stdin'. The secret will not be copied into the launch command." >&2
+      else
+        echo "error: muse has no worker-reachable credential; META_API_KEY cannot be proven present in the $BACKEND worker environment and '$MUSE_AUTH_FILE' is absent or empty. Store the fleet credential with 'muse login' or 'muse auth set --api-key-stdin'." >&2
+      fi
+      exit 1
+    fi
+    LAUNCH=${LAUNCH//__MUSEBIN__/$(shell_quote "$MUSE_BIN")}
+    LAUNCH=${LAUNCH//__MUSECONFIG__/$(shell_quote "$MUSE_CONFIG_HOME")}
+    LAUNCH=${LAUNCH//__MUSEDATA__/$(shell_quote "$MUSE_DATA_HOME")}
+    ;;
+esac
 
 case "$LAUNCH" in
   *__KIMIBIN__*)
@@ -1578,6 +1768,48 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+freshen_spawn_worktree_base() {  # <worktree>
+  local worktree=$1 default target expected actual status
+  if ! git -C "$worktree" fetch --quiet origin; then
+    echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
+    echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  default=$(default_branch "$worktree") || {
+    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  }
+  target="origin/$default"
+  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
+    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
+    echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  }
+  status=$(git -C "$worktree" status --porcelain) || {
+    echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
+    return 1
+  }
+  if [ -n "$status" ]; then
+    echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
+    return 1
+  fi
+  if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
+    echo "error: could not reset pooled worktree '$worktree' to '$target'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  actual=$(git -C "$worktree" rev-parse --verify --quiet HEAD 2>/dev/null || true)
+  if [ "$actual" != "$expected" ]; then
+    echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
+    return 1
+  fi
+}
+
 herdr_projection_meta_field_exact() {  # <meta> <key>
   local meta=$1 key=$2 count
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -1707,14 +1939,9 @@ case "$BACKEND" in
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
-    if [ "$KIND" != secondmate ]; then
+    if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
-      # An existing presentation journal names a projection that may still
-      # hold a workspace, so its recovery path runs whenever the journal
-      # exists; the presentation preference and the release floor govern only
-      # whether a FRESH projection is created (docs/herdr-backend.md
-      # "Presentation spaces").
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
@@ -1757,8 +1984,7 @@ case "$BACKEND" in
         else
           spawn_herdr_presentation_order_lock_release
         fi
-      elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] \
-        && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
+      elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
         # Session lock path resolution and exact parent binding both need a
         # live named-session socket before journal publication.
         if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
@@ -1955,11 +2181,14 @@ kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
 
-# Kimi launch readiness and delivery route their composer-emptiness half
+# Kimi launch-readiness and delivery route their composer-emptiness half
 # through the shared classifier (bin/fm-composer-lib.sh via
 # fm_backend_composer_state), the same owner every steer and injection guard
-# reads. This retires the spawn-local hardcoded bordered composer regex while
-# leaving the banner and brief-echo launch-progress signals here.
+# reads. This retired a fourth, spawn-local copy of composer shape knowledge -
+# a hardcoded bordered `│ > │` regex that would have silently broken kimi
+# spawn readiness fleet-wide the day kimi's TUI goes borderless the way
+# claude's did. The banner and brief-echo greps below are launch-progress
+# signals, not composer shapes, so they stay here.
 kimi_composer_is_empty() {
   [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]
 }
@@ -2082,6 +2311,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -2325,6 +2557,57 @@ EOF
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-grok-turnend"
       exclude_path '.fm-grok-turnend'
       ;;
+    muse*)
+      # muse's turn lifecycle is neither a hook nor a launch flag: its plugin
+      # engine (the only hook surface) is disabled in the default build, so
+      # firstmate reads muse's own durable session event log instead
+      # (bin/fm-busy-lib.sh owns the fold). That is a PULL
+      # source with no writer, so nothing is armed and no record is seeded -
+      # exactly the reason standalone Kimi is not armed either.
+      # This sidecar is the whole binding: it pins the sessions root, the
+      # workspace root that muse records in each log's metadata, this pane's
+      # binding identity, and every matching main log that predates this pane.
+      # The classifier then accepts only one new matching log, so it never
+      # guesses between pane incarnations. Recording the resolved root here
+      # also means a later change to XDG_DATA_HOME cannot silently re-point an
+      # already-running task at a different log tree.
+      MUSE_SESSIONS_ROOT="${MUSE_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}}/muse/sessions"
+      MUSE_BINDING_ID="$$.$RANDOM.$(date +%s)"
+      rm -f "$STATE/$ID.muse-session-current"
+      {
+        printf 'sessions_root=%s\n' "$MUSE_SESSIONS_ROOT"
+        printf 'workspace_root=%s\n' "$WT"
+        printf 'binding_id=%s\n' "$MUSE_BINDING_ID"
+        while IFS= read -r MUSE_PRIOR_LOG; do
+          [ -n "$MUSE_PRIOR_LOG" ] && printf 'prior_log=%s\n' "$MUSE_PRIOR_LOG"
+        done <<EOF
+$(fm_busy_muse_matching_logs "$MUSE_SESSIONS_ROOT" "$WT" || true)
+EOF
+      } > "$STATE/$ID.muse-session"
+      ;;
+    cursor*)
+      # Cursor's turn lifecycle is neither a hook nor a launch flag: it writes
+      # its own durable per-conversation transcript and brackets every turn
+      # there (bin/fm-busy-lib.sh owns the fold). Like muse that is a PULL
+      # source with no writer, so nothing is armed and no record is seeded.
+      # This sidecar is the whole binding. It pins the projects root and the
+      # exact workspace path cursor records in each project's
+      # .workspace-trusted, plus every conversation that already exists for
+      # that workspace, so a relaunch into a reused worktree folds its OWN
+      # conversation instead of its predecessor's. The classifier then accepts
+      # only one remaining conversation and never guesses between incarnations.
+      CURSOR_PROJECTS_ROOT="${CURSOR_PROJECTS_ROOT_OVERRIDE:-$HOME/.cursor/projects}"
+      {
+        printf 'projects_root=%s\n' "$CURSOR_PROJECTS_ROOT"
+        printf 'workspace_root=%s\n' "$WT"
+        if CURSOR_PRIOR_PROJECT=$(fm_busy_cursor_project_dir "$CURSOR_PROJECTS_ROOT" "$WT" 2>/dev/null); then
+          for CURSOR_PRIOR_DIR in "$CURSOR_PRIOR_PROJECT"/agent-transcripts/*/; do
+            [ -d "$CURSOR_PRIOR_DIR" ] || continue
+            printf 'prior_conversation=%s\n' "$(basename -- "${CURSOR_PRIOR_DIR%/}")"
+          done
+        fi
+      } > "$STATE/$ID.cursor-session"
+      ;;
     kimi*)
       # Kimi's Stop hook is global, but it is inert unless cwd contains this
       # task's token pointer and the token resolves through Firstmate's private
@@ -2389,6 +2672,7 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
@@ -2400,13 +2684,13 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
   ' "$RELAUNCH_META"
 }
-if {
+{
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
@@ -2419,6 +2703,7 @@ if {
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
+  echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -2447,16 +2732,13 @@ if {
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-  [ "$RELAUNCH" -eq 0 ] || preserve_relaunch_meta
+  if [ "$RELAUNCH" -eq 1 ]; then
+    preserve_relaunch_meta
+  fi
   if [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ]; then
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
-} > "$SPAWN_META_PATH"; then
-  :
-else
-  echo "error: could not publish task metadata for $ID" >&2
-  exit 1
-fi
+} > "$SPAWN_META_PATH"
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"
@@ -2466,9 +2748,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
-if [ "$SPAWN_TASK_SET_PUBLISHER_HELD" = 1 ]; then
-  SPAWN_TASK_SET_PUBLISHER_HELD=0
-  fm_task_set_publish_end "$SPAWN_TASK_SET_PUBLISHER"
+if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
+  # The record is published, so this task is now part of the set a teardown
+  # enumerates and locks per task. The set lock is only needed across that
+  # publication.
+  SPAWN_TASK_SET_LOCK_HELD=0
+  fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
@@ -2478,6 +2763,7 @@ sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
+sq_worktree=$(shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
@@ -2488,6 +2774,16 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
+case "$HARNESS" in
+  pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
+  cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
+esac
+LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
+case "$HARNESS" in
+  claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
+    ;;
+esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a
@@ -2501,8 +2797,11 @@ fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   sq_primary_home=$(shell_quote "$FM_HOME")
+  # Keep this in step with fm_supervision_model (bin/fm-wake-lib.sh): Claude's
+  # Stop auto-arm and Cursor's stop-hook park both run the watcher only BETWEEN
+  # turns, so a fresh beacon with no live watcher is their healthy mid-turn state.
   case "$HARNESS" in
-    claude) supervision_model=autoarm ;;
+    claude|cursor) supervision_model=autoarm ;;
     *) supervision_model=persistent ;;
   esac
   # Deliver the primary's EFFECTIVE trace-context decision as a normalized on/off

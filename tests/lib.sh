@@ -50,91 +50,6 @@ pass() {
   printf 'ok - %s\n' "$1"
 }
 
-# Wait up to <limit> 0.1s ticks for a background child and preserve its exit
-# status. A timed-out child gets a bounded TERM-then-KILL cleanup and sets the
-# timeout flag so callers can distinguish it from a child that exits 124.
-fm_test_wait_for_exit() {  # <pid> [limit]
-  local pid=$1 limit=${2:-200} i=0 detail
-  FM_TEST_WAIT_TIMED_OUT=0
-  FM_TEST_WAIT_TIMEOUT_DETAIL=
-  while [ "$i" -lt "$limit" ]; do
-    if ! fm_test_pid_live_non_zombie "$pid"; then
-      wait "$pid"
-      return "$?"
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-
-  detail=$(ps -p "$pid" -o stat= -o wchan= -o command= 2>/dev/null || true)
-  FM_TEST_WAIT_TIMEOUT_DETAIL=$(printf '%s' "$detail" | tr '\t\r\n' '   ' | cut -c1-512)
-  kill -TERM "$pid" 2>/dev/null || true
-  i=0
-  while [ "$i" -lt 10 ] && fm_test_pid_live_non_zombie "$pid"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if fm_test_pid_live_non_zombie "$pid"; then
-    kill -KILL "$pid" 2>/dev/null || true
-    i=0
-    while [ "$i" -lt 20 ] && fm_test_pid_live_non_zombie "$pid"; do
-      sleep 0.1
-      i=$((i + 1))
-    done
-  fi
-  if ! fm_test_pid_live_non_zombie "$pid"; then
-    wait "$pid" 2>/dev/null || true
-  fi
-  FM_TEST_WAIT_TIMED_OUT=1
-  return 124
-}
-
-fm_test_pid_live_non_zombie() {  # <pid>
-  local pid=$1 stat
-  kill -0 "$pid" 2>/dev/null || return 1
-  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
-  case "$stat" in
-    Z*) return 1 ;;
-  esac
-  return 0
-}
-
-FM_TEST_WAIT_STATUS=0
-FM_TEST_WAIT_TIMED_OUT=0
-FM_TEST_WAIT_TIMEOUT_DETAIL=
-fm_test_wait_or_fail() {  # <pid> <limit> <timeout-description>
-  local pid=$1 limit=$2 description=$3 status=0
-  fm_test_wait_for_exit "$pid" "$limit" || status=$?
-  if [ "$FM_TEST_WAIT_TIMED_OUT" -eq 1 ]; then
-    fail "$description timed out after $((limit / 10)).$((limit % 10))s waiting for pid $pid (${FM_TEST_WAIT_TIMEOUT_DETAIL:-process state unavailable})"
-  fi
-  # shellcheck disable=SC2034 # Sourced test callers inspect the preserved status.
-  FM_TEST_WAIT_STATUS=$status
-}
-
-fm_test_terminate_or_fail() {  # <pid> <timeout-description>
-  local pid=$1 description=$2 i=0 detail
-  kill -TERM "$pid" 2>/dev/null || true
-  while [ "$i" -lt 30 ] && fm_test_pid_live_non_zombie "$pid"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if fm_test_pid_live_non_zombie "$pid"; then
-    kill -KILL "$pid" 2>/dev/null || true
-    i=0
-    while [ "$i" -lt 20 ] && fm_test_pid_live_non_zombie "$pid"; do
-      sleep 0.1
-      i=$((i + 1))
-    done
-  fi
-  if fm_test_pid_live_non_zombie "$pid"; then
-    detail=$(ps -p "$pid" -o stat= -o wchan= -o command= 2>/dev/null || true)
-    detail=$(printf '%s' "$detail" | tr '\t\r\n' '   ' | cut -c1-512)
-    fail "$description timed out after bounded TERM/KILL cleanup for pid $pid (${detail:-process state unavailable})"
-  fi
-  wait "$pid" 2>/dev/null || true
-}
-
 # --- self-cleaning temp root ------------------------------------------------
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
@@ -177,30 +92,6 @@ fm_test_cleanup() {
       [ -n "$d" ] && rm -rf "$d"
     done < "$FM_TEST_CLEANUP_REGISTRY"
     rm -f "$FM_TEST_CLEANUP_REGISTRY"
-  fi
-}
-
-# fm_test_stop_worker: stop a background worker recorded in <pid-file> and wait
-# for it to actually leave, so a following rm -rf of its state root cannot race
-# a last write from the dying process ("Directory not empty"). Mirrors the
-# terminate-then-poll shape fm_remote_job_start_linux_worker uses in bin/.
-fm_test_stop_worker() {
-  local pid_file=$1 pid i=0
-  [ -f "$pid_file" ] || return 0
-  pid=$(cat "$pid_file" 2>/dev/null) || return 0
-  case "$pid" in '' | *[!0-9]*) return 0 ;; esac
-  kill "$pid" 2>/dev/null || return 0
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do
-    i=$((i + 1))
-    sleep 0.1
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
-    i=0
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
-      i=$((i + 1))
-      sleep 0.1
-    done
   fi
 }
 
@@ -257,7 +148,9 @@ fm_test_reap_orphans
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
 # shadow real tools with stubs. fm_fake_exit0 drops trivial exit-0 stubs for the
-# named tools into a fakebin dir.
+# named tools into a fakebin dir. fm_fake_version_tool drops a stub for a tool
+# whose installed version bootstrap gates, so a fixture cannot be reported as an
+# unparseable build simply for answering `--version` with nothing.
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"
@@ -275,6 +168,23 @@ exit 0
 SH
     chmod +x "$fakebin/$tool"
   done
+}
+
+# fm_fake_version_tool <fakebin> <tool> <override-env-var> <default-version>
+# The stub answers `--version` with <override-env-var> when that variable is set
+# and non-empty, and with <default-version> otherwise; every other invocation
+# exits 0. A case that needs to drive a version floor exports the variable.
+fm_fake_version_tool() {
+  local fakebin=$1 tool=$2 override=$3 default=$4
+  cat > "$fakebin/$tool" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = --version ]; then
+  printf '%s\n' "\${$override:-$default}"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/$tool"
 }
 
 # --- deterministic git identity and fixtures --------------------------------
@@ -307,11 +217,12 @@ fm_git_add_origin() {
   git -C "$repo" remote add origin "file://$remote_abs"
 }
 
-# fm_git_worktree <repo> <worktree> <branch>: init <repo> with one commit, then
-# add a worktree on a fresh branch.
+# fm_git_worktree <repo> <worktree> <branch>: initialize <repo> with one commit
+# and a local bare origin, then add a worktree on a fresh branch.
 fm_git_worktree() {
   local repo=$1 worktree=$2 branch=$3
   fm_git_init_commit "$repo"
+  fm_git_add_origin "$repo" "$repo.origin.git"
   git -C "$repo" worktree add --quiet -b "$branch" "$worktree"
 }
 

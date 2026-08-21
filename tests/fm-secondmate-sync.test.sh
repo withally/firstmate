@@ -291,7 +291,8 @@ make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin="$dir/fakebin"
   mkdir -p "$fakebin"
-  fm_fake_exit0 "$fakebin" node chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" node chrome-devtools-axi
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
@@ -306,7 +307,6 @@ SH
 if [ -n "${FM_FAKE_TMUX_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 fi
-composer="$(dirname "$0")/tmux.composer"
 case "$*" in
   list-windows*)
     sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta
@@ -315,24 +315,9 @@ case "$*" in
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex; exit 0 ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1'; exit 0 ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0; exit 0 ;;
-  capture-pane*)
-    # Row 0 (the cursor row) is a bare agent composer: it carries the typed
-    # text after `send-keys -l` and clears on Enter, so a verified submit can
-    # observe its own typing before believing the post-Enter empty composer.
-    if [ -s "$composer" ]; then
-      printf '\342\235\257 %s\n' "$(cat "$composer")"
-    else
-      printf '\342\235\257 \n'
-    fi
-    exit 0
-    ;;
+  *capture-pane*) printf '❯\n'; exit 0 ;;
   *'send-keys'*' -l '*)
     [ "${FM_FAKE_TMUX_FAIL_LITERAL:-0}" = 1 ] && exit 1
-    printf '%s' "${!#}" > "$composer"
-    exit 0
-    ;;
-  *send-keys*Enter*)
-    : > "$composer"
     exit 0
     ;;
 esac
@@ -364,7 +349,7 @@ SH
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
-  "--version ") printf '%s\n' '0.2.2' ;;
+  "--version ") printf '%s\n' '0.2.4' ;;
   "update --help") printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body' ;;
   "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>' ;;
 esac
@@ -374,7 +359,7 @@ SH
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'quota-axi 0.1.16 (fake)'
+  printf '%s\n' 'quota-axi 0.1.29 (fake)'
 fi
 exit 0
 SH

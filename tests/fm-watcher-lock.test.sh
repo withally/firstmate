@@ -10,7 +10,6 @@ set -u
 
 WATCH="$ROOT/bin/fm-watch.sh"
 WATCH_ARM="$ROOT/bin/fm-watch-arm.sh"
-GROK_COORDINATOR="$ROOT/bin/fm-grok-watch-coordinator.mjs"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 LIB="$ROOT/bin/fm-wake-lib.sh"
 
@@ -23,34 +22,17 @@ mark_pr_check_migration_complete() {
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
 }
 
-terminate_test_pid() {  # <pid>
-  local pid=$1
-  fm_test_terminate_or_fail "$pid" "test-process termination"
+drain_and_ack() {  # <state>
+  local state=$1 err sequence generation
+  err="$state/.test-drain.err"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  rm -f "$err"
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
+    --recovery-generation "$generation"
 }
-
-test_background_wait_is_bounded() {
-  local output pid status=0
-  sleep 300 &
-  pid=$!
-  fm_test_wait_for_exit "$pid" 2 || status=$?
-  [ "$status" -eq 124 ] || fail "background wait did not report timeout status 124 (got $status)"
-  [ "$FM_TEST_WAIT_TIMED_OUT" -eq 1 ] || fail "background wait did not identify status 124 as its own timeout"
-  ! fm_test_pid_live_non_zombie "$pid" || fail "timed-out background process remained live"
-  status=0
-  output=$(bash -c '
-    . "$1"
-    sleep 300 &
-    pid=$!
-    fm_test_wait_or_fail "$pid" 2 "stuck fixture wait"
-  ' _ "$ROOT/tests/lib.sh" 2>&1) || status=$?
-  [ "$status" -ne 0 ] || fail "named background wait timeout returned success"
-  case "$output" in
-    *"not ok - stuck fixture wait timed out after 0.2s waiting for pid "*) ;;
-    *) fail "background wait timeout was not named: $output" ;;
-  esac
-  pass "background process waits return a typed timeout instead of hanging"
-}
-
 
 test_singleton_start() {
   local dir state fakebin out1 out2 pid1 pid2 live i
@@ -80,8 +62,9 @@ test_singleton_start() {
     i=$((i + 1))
   done
   grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null || fail "second watcher did not report existing singleton"
-  terminate_test_pid "$pid1"
-  terminate_test_pid "$pid2"
+  kill "$pid1" "$pid2" 2>/dev/null || true
+  wait "$pid1" 2>/dev/null || true
+  wait "$pid2" 2>/dev/null || true
   pass "simultaneous watcher starts leave exactly one live process"
 }
 
@@ -112,7 +95,8 @@ test_stale_watch_lock_reclaimed() {
   done
   [ "$live" -eq 1 ] || fail "watcher did not reclaim stale lock and stay alive"
   [ "$lock_pid" != "$dead_pid" ] || fail "stale watch lock pid was not replaced"
-  fm_test_terminate_or_fail "$pid" "stale-lock watcher cleanup"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   pass "killed watcher stale lock is reclaimed"
 }
 
@@ -200,47 +184,10 @@ test_guard_warnings() {
   # Non-git FM_ROOT keeps the worktree-tangle check inert so "fresh watcher ->
   # total silence" stays a pure assertion about watcher state.
   FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
-  fm_test_terminate_or_fail "$pid" "fresh guard watcher cleanup"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   [ ! -s "$err" ] || fail "guard warned with a live watcher and fresh beacon: $(cat "$err")"
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
-}
-
-test_guard_handling_window_advisory() {
-  # The queued-wakes advisory must track the recovery marker: before a drain the
-  # queue is genuinely undrained (drain wording), during the handling window the
-  # retained rows are already presented (acknowledge wording, never a re-drain
-  # instruction), and a fresh post-acknowledgement wake re-arms drain wording.
-  local dir state err sequence generation
-  dir=$(make_case guard-handling-advisory)
-  state="$dir/state"
-  err="$dir/guard.err"
-  printf 'project=x\n' > "$state/task.meta"
-  touch "$state/.last-watcher-beat"
-  append_wake "$state" check advisory 'check: advisory' || fail "advisory wake append failed"
-  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
-    || fail "guard failed before handling"
-  grep -F 'queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
-    || fail "undrained queue lost its drain advisory"
-
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" || fail "presentation drain failed"
-  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
-    || fail "guard failed mid-handling"
-  grep -F 'retained until handling acknowledgement' "$err" >/dev/null \
-    || fail "handling window did not get acknowledge wording"
-  ! grep -F 'drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
-    || fail "guard still told the handling turn to re-drain"
-
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
-  [ -n "$sequence" ] && [ -n "$generation" ] || fail "advisory drain omitted its acknowledgement boundary"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
-    || fail "advisory acknowledgement failed"
-  append_wake "$state" check advisory-two 'check: advisory two' || fail "second advisory wake append failed"
-  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
-    || fail "guard failed after post-acknowledgement wake"
-  grep -F 'queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else' "$err" >/dev/null \
-    || fail "genuinely undrained queue lost its drain advisory after acknowledgement"
-  pass "guard queued-wakes advisory is recovery-marker-aware across the handling window"
 }
 
 test_lock_single_winner_under_concurrency() {
@@ -266,7 +213,7 @@ test_lock_single_winner_under_concurrency() {
     i=$((i + 1))
   done
   for pid in $pids; do
-    fm_test_wait_or_fail "$pid" 600 "concurrent lock contender"
+    wait "$pid" 2>/dev/null || true
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one lock winner under concurrency, got $wins"
@@ -316,7 +263,7 @@ test_lock_stale_steal_single_winner_under_concurrency() {
     i=$((i + 1))
   done
   for pid in $pids; do
-    fm_test_wait_or_fail "$pid" 600 "concurrent stale-lock contender"
+    wait "$pid" 2>/dev/null || true
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one stale-lock stealer, got $wins"
@@ -351,8 +298,7 @@ test_lock_live_steal_mutex_is_not_reclaimed() {
     if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
     printf "rc=%s held=%s lockpid=%s stealpid=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}" "$(cat "$2/pid" 2>/dev/null || true)" "$(cat "$2.steal/pid" 2>/dev/null || true)"
   ' _ "$LIB" "$lockdir")
-  fm_test_wait_or_fail "$holder" 600 "live steal mutex holder"
-  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "live steal mutex holder failed"
+  wait "$holder" || fail "live steal mutex holder failed"
   case "$out" in
     *"rc=1"*) ;;
     *) fail "stale lock was stolen while a live stealer held the mutex: $out" ;;
@@ -378,7 +324,8 @@ test_lock_does_not_steal_live_lock() {
     if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
     printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
   ' _ "$LIB" "$lockdir")
-  fm_test_terminate_or_fail "$live" "live lock holder cleanup"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
   case "$out" in
     *"rc=1"*) ;;
     *) fail "live-held lock was acquired instead of refused: $out" ;;
@@ -490,48 +437,41 @@ test_watch_restart_rejects_reused_pid() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" --restart > "$out" &
   pid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$out" 2>/dev/null && break
-    is_live_non_zombie "$pid" || break
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$pid"; do
     sleep 0.1
     i=$((i + 1))
   done
   is_live_non_zombie "$pid" \
-    || fail "restart arm died after replacing a reused-pid lock: $(cat "$out")"
-  grep -qF 'watcher: started pid=' "$out" \
-    || fail "restart did not establish a replacement watcher: $(cat "$out")"
-  ! grep -F 'check: rearm-resurface' "$out" >/dev/null \
-    || fail "empty reused-pid recovery completed the tracked arm"
+    && fail "restart did not surface recovery after replacing a reused-pid lock"
+  wait "$pid" 2>/dev/null || true
+  grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "restart replaced reused-pid lock without surfacing recovery: $(cat "$out")"
   is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
-  fm_test_terminate_or_fail "$live" "reused unrelated pid cleanup"
-  printf 'done: reused-pid recovery reached real work\n' > "$state/demo.status"
-  fm_test_wait_or_fail "$pid" 600 "reused-pid actionable arm"
-  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] \
-    || fail "reused-pid replacement arm did not deliver later real work"
-  grep -q '^signal:' "$out" \
-    || fail "reused-pid replacement arm lost the later actionable reason: $(cat "$out")"
-  pass "watch restart preserves quiet recovery and later real work without signaling a reused pid"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  pass "watch restart preserves recovery without signaling a reused pid"
 }
 
 test_watch_restart_attaches_to_healthy_peer() {
-  local dir state fakebin out peer identity armpid status i ready
+  local dir state fakebin out peer_ready peer identity armpid status i
   dir=$(make_case restart-healthy-peer)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
-  ready="$dir/peer-ready"
+  peer_ready="$dir/peer.ready"
   mark_pr_check_migration_complete "$state"
-  # --restart TERMs the recorded watcher first, so the peer only stands in for a
-  # healthy holder once its SIGTERM handler is actually installed. Wait for the
-  # peer's own ready file instead of racing Node's startup with the arm's TERM.
-  FM_PEER_READY="$ready" node -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.env.FM_PEER_READY, "ready\n"); setTimeout(() => {}, 300000)' &
+  node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[1], "ready\n"); setTimeout(() => {}, 300000)' "$peer_ready" &
   peer=$!
   i=0
-  while [ "$i" -lt 100 ] && [ ! -s "$ready" ]; do
+  while [ "$i" -lt 50 ] && [ ! -s "$peer_ready" ]; do
     sleep 0.1
     i=$((i + 1))
   done
-  [ -s "$ready" ] || fail "peer never became TERM-resistant"
+  if [ ! -s "$peer_ready" ]; then
+    kill -KILL "$peer" 2>/dev/null || true
+    wait "$peer" 2>/dev/null || true
+    fail "TERM-resistant peer did not become ready"
+  fi
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
@@ -542,7 +482,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$out" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
+  while [ "$i" -lt 80 ]; do
     grep -qF "watcher: attached pid=$peer" "$out" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -551,7 +491,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   is_live_non_zombie "$armpid" || fail "restart arm exited instead of following the healthy peer"
   is_live_non_zombie "$peer" || fail "restart killed a TERM-resistant peer unexpectedly"
   kill -KILL "$peer" 2>/dev/null || true
-  fm_test_terminate_or_fail "$peer" "TERM-resistant peer cleanup"
+  wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status)"
@@ -589,15 +529,13 @@ test_watcher_self_evicts_on_lock_takeover() {
   pass "watcher self-evicts when the lock pid no longer names it"
 }
 
-test_arm_all_absorbed_clean_close_rearms_without_failure() {
-  local dir state fakebin armout armpid watcher_pid successor_pid status i
-  dir=$(make_case arm-all-absorbed-clean-close)
+test_arm_self_eviction_is_loud_without_successor() {
+  local dir state fakebin armout armpid watcher_pid status i
+  dir=$(make_case arm-self-evict)
   state="$dir/state"
   fakebin="$dir/fakebin"
   armout="$dir/arm.out"
   mark_pr_check_migration_complete "$state"
-  printf 'project=test\nwindow=test:fm-absorbed\nkind=ship\nharness=claude\nbackend=tmux\n' > "$state/absorbed.meta"
-  printf 'working: routine progress\n' > "$state/absorbed.status"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
@@ -607,382 +545,18 @@ test_arm_all_absorbed_clean_close_rearms_without_failure() {
     i=$((i + 1))
   done
   watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$watcher_pid" "$armout" || fail "arm did not start before all-absorbed close check"
+  grep -qF "watcher: started pid=$watcher_pid" "$armout" || fail "arm did not start before self-eviction check"
 
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'absorbed benign signal:' "$state/.watch-triage.log" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -qF 'absorbed benign signal:' "$state/.watch-triage.log" \
-    || fail "watcher did not absorb the routine signal before its clean close"
-
-  # Removing the singleton claim makes this watcher intentionally self-evict
-  # after a cycle that surfaced nothing. The arm must classify the watcher's
-  # explicit clean-close handshake and silently establish a successor instead
-  # of waking the primary with the reasonless-dead alarm.
-  rm -rf "$state/.watch.lock"
-  i=0
-  successor_pid=
-  while [ "$i" -lt 100 ]; do
-    if [ "$(grep -cF 'watcher: started pid=' "$armout" 2>/dev/null || true)" -ge 2 ]; then
-      successor_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$armout" | tail -1)
-      [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_pid" ] && break
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  [ -n "$successor_pid" ] && [ "$successor_pid" != "$watcher_pid" ] \
-    || fail "arm did not establish a successor after the all-absorbed clean close"
-  is_live_non_zombie "$armpid" || fail "arm ended instead of continuing across the all-absorbed clean close"
-  ! grep -qF 'watcher: FAILED' "$armout" || fail "all-absorbed clean close emitted a FAILED classification"
-  grep -q 'reason=clean-close' "$state/.watch-cycle-exits.log" \
-    || fail "all-absorbed close was not classified clean in the lifecycle ledger"
-
-  # Actionable close control: the successor still surfaces and exits through
-  # the unchanged actionable path after the internal clean re-arm. The leftover
-  # working: status can age past FM_SIGNAL_GRACE before this done: write lands,
-  # so the successor may legitimately surface it as an actionable stale wake
-  # first; either actionable shape proves the actionable path is unchanged.
-  printf 'done: ready for review\n' > "$state/absorbed.status"
-  status=0
-  wait_for_exit "$armpid" 80 || status=$?
-  [ "$status" -eq 0 ] || fail "actionable successor close changed status after clean re-arm (status $status)"
-  grep -Eq '^(signal|stale):' "$armout" || fail "actionable successor close did not surface an actionable reason"
-  grep -Eq 'reason=actionable-(signal|stale)' "$state/.watch-cycle-exits.log" \
-    || fail "actionable successor close lost its lifecycle classification"
-  pass "all-absorbed clean close silently re-arms and the successor's actionable close stays unchanged"
-}
-
-test_duplicate_arm_returns_to_owner_and_preserves_one_actionable_completion() {
-  local dir state fakebin owner_out duplicate_out successor_out owner_arm duplicate_arm successor_arm watcher_pid successor_pid owner_status duplicate_status sequence generation signal_count i
-  dir=$(make_case duplicate-arm-single-owner-actionable)
-  state="$dir/state"
-  fakebin="$dir/fakebin"
-  owner_out="$dir/owner.out"
-  duplicate_out="$dir/duplicate.out"
-  successor_out="$dir/successor.out"
-  mark_pr_check_migration_complete "$state"
-  printf 'project=test\nwindow=test:fm-single-owner-actionable\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
-  printf 'working: routine progress\n' > "$state/task.status"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
-  owner_arm=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$owner_out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$watcher_pid" "$owner_out" || fail "owner arm did not start before duplicate-arm check"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$duplicate_out" &
-  duplicate_arm=$!
-  duplicate_status=0
-  wait_for_exit "$duplicate_arm" 20 || duplicate_status=$?
-  [ "$duplicate_status" -eq 0 ] || fail "duplicate arm did not return promptly after verifying owner (status $duplicate_status): $(cat "$duplicate_out")"
-  grep -qF "watcher: owner verified pid=$owner_arm (duplicate returned)" "$duplicate_out" \
-    || fail "duplicate arm did not report the identity-verified owner: $(cat "$duplicate_out")"
-  ! grep -Eq '^(signal:|stale:|check:|heartbeat)' "$duplicate_out" \
-    || fail "duplicate arm invented actionable work before the owner cycle completed"
-
-  printf 'done: first actionable close\n' > "$state/task.status"
-  owner_status=0
-  wait_for_exit "$owner_arm" 80 || owner_status=$?
-  [ "$owner_status" -eq 0 ] || fail "owner actionable arm exited $owner_status"
-  grep -q '^signal:' "$owner_out" || fail "owner arm lost the actionable close reason"
-  [ ! -e "$state/.watch-arm-owner" ] || fail "completed owner left a live ownership record behind"
-  signal_count=$(cat "$owner_out" "$duplicate_out" | grep -c '^signal:' || true)
-  [ "$signal_count" -eq 1 ] || fail "one watcher lifecycle produced $signal_count actionable arm completions"
-
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
-    || fail "single-owner actionable drain failed"
-  signal_count=$(grep -c "$(printf '\tsignal\t')" "$dir/drain.out" || true)
-  [ "$signal_count" -eq 1 ] || fail "single-owner cycle produced $signal_count durable signal rows"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/drain.err")
-  [ -n "$sequence" ] && [ -n "$generation" ] || fail "single-owner drain omitted its acknowledgement boundary"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
-    || fail "single-owner actionable acknowledgement failed"
-  [ ! -s "$state/.wake-queue" ] || fail "single-owner acknowledgement left the actionable row queued"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$successor_out" &
-  successor_arm=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$successor_out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  successor_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$successor_pid" "$successor_out" \
-    || fail "successor arm did not establish the next watcher cycle"
-  [ "$successor_pid" != "$watcher_pid" ] || fail "successor arm reused the completed watcher cycle"
-  fm_test_terminate_or_fail "$successor_arm" "single-owner successor arm cleanup"
-  pass "duplicate arm returns to one owner; one signal, one completion, one drain/ack, and one successor remain"
-}
-
-test_duplicate_arm_does_not_silence_owner_cycle_death() {
-  local dir state fakebin owner_out duplicate_out owner_arm duplicate_arm watcher_pid owner_status duplicate_status i
-  dir=$(make_case duplicate-arm-owner-death)
-  state="$dir/state"
-  fakebin="$dir/fakebin"
-  owner_out="$dir/owner.out"
-  duplicate_out="$dir/duplicate.out"
-  mark_pr_check_migration_complete "$state"
-  printf 'project=test\nwindow=test:fm-single-owner-death\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
-  printf 'working: routine progress\n' > "$state/task.status"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
-  owner_arm=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$owner_out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$watcher_pid" "$owner_out" || fail "owner arm did not start before owner-death check"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$duplicate_out" &
-  duplicate_arm=$!
-  duplicate_status=0
-  wait_for_exit "$duplicate_arm" 20 || duplicate_status=$?
-  [ "$duplicate_status" -eq 0 ] || fail "owner-death duplicate did not return promptly (status $duplicate_status): $(cat "$duplicate_out")"
-  grep -qF "watcher: owner verified pid=$owner_arm (duplicate returned)" "$duplicate_out" \
-    || fail "owner-death duplicate did not verify the live owner"
-
-  kill -KILL "$watcher_pid" 2>/dev/null || fail "could not kill the owned watcher cycle"
-  owner_status=0
-  wait_for_exit "$owner_arm" 80 || owner_status=$?
-  [ "$owner_status" -ne 0 ] && [ "$owner_status" -ne 124 ] \
-    || fail "owned watcher death was not a loud nonzero completion (status $owner_status)"
-  grep -q '^watcher: FAILED' "$owner_out" \
-    || fail "owned watcher death omitted the typed FAILED result: $(cat "$owner_out")"
-  [ ! -e "$state/.watch-arm-owner" ] || fail "failed owner cycle left a live ownership record behind"
-  ! grep -Eq '^(signal:|stale:|check:|heartbeat)' "$duplicate_out" \
-    || fail "duplicate ownership check absorbed or invented work during owner death"
-  pass "a verified duplicate returns, while an unexplained owned watcher death stays loud"
-}
-
-test_restart_supersedes_a_live_owner_with_a_hung_watcher() {
-  local dir state fakebin owner_out restart_out owner_arm restart_arm old_watcher new_watcher i
-  dir=$(make_case restart-supersedes-hung-owner)
-  state="$dir/state"
-  fakebin="$dir/fakebin"
-  owner_out="$dir/owner.out"
-  restart_out="$dir/restart.out"
-  mark_pr_check_migration_complete "$state"
-  printf 'project=test\nwindow=test:fm-restart-hung-owner\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
-  printf 'working: routine progress\n' > "$state/task.status"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$owner_out" &
-  owner_arm=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$owner_out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  old_watcher=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$old_watcher" "$owner_out" || fail "restart fixture owner did not start"
-  kill -STOP "$old_watcher" 2>/dev/null || fail "could not stop the restart fixture watcher"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$restart_out" &
-  restart_arm=$!
-  i=0
-  new_watcher=
-  while [ "$i" -lt 120 ]; do
-    new_watcher=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-    if [ -n "$new_watcher" ] && [ "$new_watcher" != "$old_watcher" ] \
-      && grep -qF "watcher: started pid=$new_watcher" "$restart_out" 2>/dev/null; then
-      break
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  [ -n "$new_watcher" ] && [ "$new_watcher" != "$old_watcher" ] \
-    || fail "--restart did not replace the hung owner watcher: $(cat "$restart_out")"
-  ! fm_test_pid_live_non_zombie "$old_watcher" || fail "--restart left the old hung watcher alive"
-  ! grep -qF '(duplicate returned)' "$restart_out" \
-    || fail "--restart returned duplicate success instead of superseding the hung owner"
-  fm_test_pid_live_non_zombie "$restart_arm" || fail "replacement arm was not live after restart repair"
-  ! fm_test_pid_live_non_zombie "$owner_arm" || fail "--restart left the superseded arm owner alive"
-  [ "$(sed -n 's/^pid=//p' "$state/.watch-arm-owner")" = "$restart_arm" ] \
-    || fail "--restart did not leave exactly the replacement as the arm owner"
-  fm_test_terminate_or_fail "$restart_arm" "restart replacement arm cleanup"
-  fm_test_wait_for_exit "$owner_arm" 20 >/dev/null 2>&1 || true
-  pass "--restart identity-scoped supersede repairs a live owner whose watcher is hung"
-}
-
-test_grok_coordinator_rearms_before_one_actionable_delivery() {
-  local dir state fakebin out duplicate_out duplicate_status coordinator initial_watcher successor_watcher wake_json generation sequence signal_count guard_out guard_status i
-  dir=$(make_case grok-coordinator-successor-first)
-  state="$dir/state"
-  fakebin="$dir/fakebin"
-  out="$dir/coordinator.out"
-  duplicate_out="$dir/duplicate.out"
-  mark_pr_check_migration_complete "$state"
-  printf '%s\n' "$$" > "$state/.lock"
-  printf 'project=test\nwindow=test:fm-grok-successor-first\nkind=ship\nharness=grok\nbackend=herdr\n' > "$state/task.meta"
-  printf 'working: routine progress\n' > "$state/task.status"
-
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" FM_POLL=0.2 FM_SIGNAL_GRACE=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 FM_WATCH_HANDLING_WAIT_ATTEMPTS=2 FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=500 node "$GROK_COORDINATOR" > "$out" &
-  coordinator=$!
-  i=0
-  while [ "$i" -lt 100 ]; do
-    grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null \
-    || fail "Grok coordinator did not verify its first watcher: $(cat "$out" 2>/dev/null)"
-  initial_watcher=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  fm_test_pid_live_non_zombie "$initial_watcher" || fail "Grok coordinator first watcher was not live"
-
-  duplicate_status=0
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" node "$GROK_COORDINATOR" > "$duplicate_out" || duplicate_status=$?
-  [ "$duplicate_status" -eq 0 ] || fail "duplicate Grok coordinator did not return cleanly"
-  grep -qF "FIRSTMATE_GROK_COORDINATOR_DUPLICATE {\"owner_pid\":$coordinator}" "$duplicate_out" \
-    || fail "duplicate Grok coordinator did not preserve the identity-matched owner: $(cat "$duplicate_out")"
-  [ "$(sed -n 's/^pid=//p' "$state/.grok-watch-coordinator")" = "$coordinator" ] \
-    || fail "duplicate Grok coordinator replaced the live owner"
-  [ "$(sed -n 's/^pid=//p' "$state/.watch-arm-owner" | wc -l | tr -d ' ')" -eq 1 ] \
-    || fail "duplicate Grok coordinator created another arm owner"
-
-  printf 'done: one actionable Grok close\n' > "$state/task.status"
-  i=0
-  while [ "$i" -lt 120 ]; do
-    grep -q '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  [ "$(grep -c '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null || true)" -eq 1 ] \
-    || fail "one signal did not produce exactly one Grok coordinator delivery: $(cat "$out" 2>/dev/null)"
-  wake_json=$(sed -n 's/^FIRSTMATE_GROK_WAKE //p' "$out")
-  successor_watcher=$(printf '%s\n' "$wake_json" | jq -r '.successor_watcher_pid')
-  generation=$(printf '%s\n' "$wake_json" | jq -r '.recovery_generation')
-  [ "$successor_watcher" != "$initial_watcher" ] || fail "Grok coordinator reused the predecessor watcher"
-  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_watcher" ] \
-    || fail "Grok completion arrived before its successor owned the watcher lock: wake=$wake_json current=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)"
-  fm_test_pid_live_non_zombie "$successor_watcher" || fail "Grok completion named a dead successor watcher"
-  ! fm_test_pid_live_non_zombie "$initial_watcher" || fail "Grok successor overlapped the predecessor watcher"
-  [ "$(sed -n 's/^pid=//p' "$state/.watch-arm-owner" | wc -l | tr -d ' ')" -eq 1 ] \
-    || fail "Grok coordinator did not retain exactly one arm owner"
-  sleep 0.5
-  [ "$(grep -c '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null || true)" -eq 1 ] \
-    || fail "the successor resurfaced pending work before Grok accepted the first delivery: $(cat "$out")"
-  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor_watcher" ] \
-    || fail "the identity-bound coordinator did not hold its successor through delayed Grok acceptance"
-
-  guard_status=0
-  guard_out=$(printf '%s' '{"sessionId":"grok-coordinator-test","stopHookActive":false}' \
-    | GROK_AGENT=1 FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" bash "$ROOT/bin/fm-turnend-guard.sh" 2>&1) || guard_status=$?
-  [ "$guard_status" -eq 0 ] || fail "successor-first Grok path still forced TURN WOULD END BLIND: $guard_out"
-  ! printf '%s\n' "$guard_out" | grep -qF 'TURN WOULD END BLIND' \
-    || fail "successor-first Grok path emitted a blind-turn continuation"
-
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" "$WATCH_ARM" --handling-delivered "$generation" --watcher-pid "$successor_watcher" \
-    || fail "Grok coordinator successor delivery could not begin handling: wake=$wake_json marker=$(cat "$state/.watcher-down" 2>/dev/null || true)"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
-    || fail "Grok coordinator actionable drain failed"
-  signal_count=$(grep -c "$(printf '\tsignal\t')" "$dir/drain.out" || true)
-  [ "$signal_count" -eq 1 ] || fail "Grok coordinator cycle produced $signal_count durable signal rows"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/drain.err")
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
-    || fail "Grok coordinator acknowledgement failed"
-  fm_test_terminate_or_fail "$coordinator" "Grok coordinator cleanup"
-  [ ! -e "$state/.grok-watch-coordinator" ] || fail "Grok coordinator cleanup left its owner record"
-  pass "Grok coordinator delivers one actionable wake only after one live successor, with no blind-turn continuation"
-}
-
-test_grok_coordinator_retains_one_unready_successor_without_retry_overlap() {
-  local dir repo state out attempts retained coordinator retained_pid i wake_json
-  dir=$(make_case grok-coordinator-unready-successor)
-  repo="$dir/repo"
-  state="$dir/state"
-  out="$dir/coordinator.out"
-  attempts="$dir/attempts"
-  retained="$dir/retained"
-  mkdir -p "$repo/bin"
-  cp "$LIB" "$repo/bin/fm-wake-lib.sh"
-  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
-#!/usr/bin/env bash
-set -u
-printf '%s:%s\n' "$$" "${1:-arm}" >> "$FM_COORDINATOR_ATTEMPTS"
-if [ "${1:-}" = --restart ]; then
-  trap '' TERM
-  printf '%s\n' "$$" > "$FM_COORDINATOR_RETAINED"
-  while :; do sleep 1; done
-fi
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-while [ ! -e "$FM_COORDINATOR_FIRE" ]; do sleep 0.05; done
-printf 'signal: coordinator-unready-fixture\n'
-SH
-  chmod +x "$repo/bin/fm-watch-arm.sh" "$repo/bin/fm-wake-lib.sh"
-  printf '%s\n' "$$" > "$state/.lock"
-  printf 'project=test\n' > "$state/task.meta"
-
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$repo" FM_COORDINATOR_ATTEMPTS="$attempts" FM_COORDINATOR_RETAINED="$retained" FM_COORDINATOR_FIRE="$dir/fire" FM_WATCH_ARM_READY_TIMEOUT_MS=1000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_LIMIT=2 node "$GROK_COORDINATOR" > "$out" &
-  coordinator=$!
-  i=0
-  while [ "$i" -lt 100 ]; do
-    grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null && break
-    sleep 0.05
-    i=$((i + 1))
-  done
-  grep -q '^FIRSTMATE_GROK_WATCH_READY ' "$out" 2>/dev/null \
-    || fail "unready-successor coordinator did not establish its first arm: $(cat "$out" 2>/dev/null)"
-  touch "$dir/fire"
-  i=0
-  while [ "$i" -lt 100 ]; do
-    grep -q '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null && break
-    sleep 0.05
-    i=$((i + 1))
-  done
-  [ "$(grep -c '^FIRSTMATE_GROK_WAKE ' "$out" 2>/dev/null || true)" -eq 1 ] \
-    || fail "unready successor did not yield exactly one typed Grok fallback: $(cat "$out" 2>/dev/null)"
-  wake_json=$(sed -n 's/^FIRSTMATE_GROK_WAKE //p' "$out")
-  printf '%s\n' "$wake_json" | jq -e '.successor_watcher_pid == null and (.continuity_failure | contains("no overlapping retry was started"))' >/dev/null \
-    || fail "unready successor fallback lost its typed single-flight failure: $wake_json"
-  [ "$(wc -l < "$attempts" | tr -d ' ')" -eq 2 ] \
-    || fail "unready successor overlapped a retry before fallback: $(cat "$attempts")"
-  sleep 0.5
-  [ "$(wc -l < "$attempts" | tr -d ' ')" -eq 2 ] \
-    || fail "unready successor overlapped a late retry after fallback: $(cat "$attempts")"
-  retained_pid=$(cat "$retained" 2>/dev/null || true)
-  fm_test_pid_live_non_zombie "$retained_pid" || fail "unready successor was abandoned instead of retained"
-  fm_test_terminate_or_fail "$coordinator" "unready-successor coordinator cleanup"
-  ! fm_test_pid_live_non_zombie "$retained_pid" || fail "coordinator cleanup left the retained successor alive"
-  pass "Grok coordinator retains one unready successor and emits one fallback without an overlapping retry"
-}
-
-test_arm_owner_rejects_a_reused_pid_identity() {
-  local dir state fakebin armout armpid watcher_pid i
-  dir=$(make_case arm-owner-reused-pid)
-  state="$dir/state"
-  fakebin="$dir/fakebin"
-  armout="$dir/arm.out"
-  mark_pr_check_migration_complete "$state"
-  printf 'pid=%s\nidentity=%s\nhome=%s\n' "$$" 'not-this-process' "$ROOT" > "$state/.watch-arm-owner"
-
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
-  armpid=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  grep -qF "watcher: started pid=$watcher_pid" "$armout" \
-    || fail "a reused owner pid was accepted without its recorded identity: $(cat "$armout")"
-  ! grep -qF "watcher: owner verified pid=$$" "$armout" \
-    || fail "a live reused pid was mistaken for the identity-bound arm owner"
-  fm_test_terminate_or_fail "$armpid" "reused owner-pid arm cleanup"
-  pass "arm ownership rejects a live pid whose recorded process identity does not match"
+  # A live but identity-mismatched replacement lock makes the owned watcher
+  # self-evict normally. With no verified successor, the arm must turn that
+  # otherwise clean empty close into the typed nonzero failure.
+  printf '%s\n' "$$" > "$state/.watch.lock/pid"
+  wait_for_exit "$armpid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "self-evicted arm did not fail nonzero (status $status)"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "self-evicted arm omitted the typed cycle-end failure"
+  grep -q "reason=unexpected-clean-exit" "$state/.watch-cycle-exits.log" || fail "self-evicted cycle was not classified in the lifecycle ledger"
+  pass "arm turns clean self-eviction without a successor into a typed failure"
 }
 
 test_arm_attaches_and_waits_for_live_fresh_watcher() {
@@ -1017,12 +591,9 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED for a healthy watcher"
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "arm disturbed the healthy watcher's lock"
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
-  # Crash counterfactual: the seed dies without a close receipt or successor,
-  # so the attached arm must still fail loudly.
-  # Use the suite's bounded process terminator: a shell with a pending trap can
-  # defer TERM while waiting on a child, and a raw wait would then hang this
-  # safety test instead of exercising the successor-gap assertion below.
-  fm_test_terminate_or_fail "$wpid" "attached seed watcher cleanup"
+  # After the seed dies without a successor, the attached arm must fail loudly.
+  kill "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
@@ -1062,7 +633,8 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*exit_code=143.*signal=TERM.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
     || fail "attached arm signal was not recorded in the lifecycle ledger"
   is_live_non_zombie "$wpid" || fail "signaling an attached arm terminated the peer watcher"
-  fm_test_terminate_or_fail "$wpid" "attached signal peer cleanup"
+  kill "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
   pass "attached arm signals record a classified lifecycle entry"
 }
 
@@ -1099,8 +671,14 @@ test_arm_starts_and_self_heals() {
       fi
       sleep 0.1; i=$((i + 1))
     done
-    is_live_non_zombie "$armpid" \
-      || fail "arm ($row) died before establishing its watcher: $(cat "$armout")"
+    if [ "$row" = dead-pid ]; then
+      is_live_non_zombie "$armpid" \
+        && fail "arm did not surface recovery after reclaiming a dead-pid lock"
+      wait "$armpid" 2>/dev/null || true
+      grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+        || fail "arm reclaimed dead-pid lock without surfacing recovery: $(cat "$armout")"
+      continue
+    fi
     grep -qF 'watcher: started pid=' "$armout" || fail "arm ($row) did not report a started watcher"
     ! grep -qE 'watcher: (healthy|attached)' "$armout" || fail "arm ($row) wrongly reported attached/healthy instead of starting a fresh watcher"
     lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
@@ -1109,18 +687,10 @@ test_arm_starts_and_self_heals() {
     grep -F "watcher: started pid=$lock_pid (beacon fresh)" "$armout" >/dev/null \
       || fail "arm ($row) started line did not name the confirmed live watcher (lock '$lock_pid')"
     kill -0 "$lock_pid" 2>/dev/null || fail "arm ($row) confirmed-started watcher is not actually alive"
-    if [ "$row" = dead-pid ]; then
-      ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
-        || fail "empty dead-pid recovery completed the tracked arm"
-      case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
-        pending:*) ;;
-        *) fail "dead-pid recovery did not retain its durable pending generation" ;;
-      esac
-    fi
     kill "$armpid" "$lock_pid" 2>/dev/null || true
-    fm_test_terminate_or_fail "$armpid" "started arm cleanup ($row)"
+    wait "$armpid" 2>/dev/null || true
   done
-  pass "arm starts cleanly and keeps empty dead-pid recovery pending without completing"
+  pass "arm starts cleanly and resurfaces recovery after a dead-pid lock"
 }
 
 test_arm_hup_cleans_child_and_temp_output() {
@@ -1221,7 +791,8 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm falsely reported FAILED during peer startup race"
   is_live_non_zombie "$armpid" || fail "arm exited while the peer was still healthy"
   # After the peer dies without a successor, the attached arm must fail loudly.
-  fm_test_terminate_or_fail "$peer" "peer startup-race cleanup"
+  kill "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
@@ -1254,7 +825,8 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   ! grep -qE 'watcher: (healthy|attached)' "$armout" || fail "arm reported attached/healthy off a stale beacon"
   ! grep -qF 'watcher: started' "$armout" || fail "arm falsely reported started"
   is_live_non_zombie "$live" || fail "arm killed the unrelated live lock holder"
-  fm_test_terminate_or_fail "$live" "unconfirmable live holder cleanup"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
   pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
 }
 
@@ -1276,10 +848,10 @@ SH
 
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=0 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
   first_arm=$!
-  fm_test_wait_or_fail "$first_arm" 600 "first ledger cycle"
-  [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "first ledger cycle did not surface its actionable wake"
+  wait "$first_arm" || fail "first ledger cycle did not surface its actionable wake"
   grep -q "arm_pid=$first_arm.*reason=actionable-check.*successor=none" "$state/.watch-cycle-exits.log" \
     || fail "first ledger record omitted its actionable classification"
+  drain_and_ack "$state" || fail "first ledger wake handling acknowledgement failed"
 
   rm -f "$check_file" "$state/task.check-trust"
   armout="$dir/successor-arm.out"
@@ -1295,31 +867,32 @@ SH
   grep -qF "watcher: started pid=$successor_pid" "$armout" || fail "successor ledger cycle did not start"
   grep -q "arm_pid=$first_arm.*successor=started:$successor_pid" "$state/.watch-cycle-exits.log" \
     || fail "predecessor ledger record was not linked to its verified successor"
-  kill "$successor_pid" 2>/dev/null || true
   kill -HUP "$successor_arm" 2>/dev/null || true
-  fm_test_terminate_or_fail "$successor_arm" "successor ledger arm cleanup"
-  # The arm's death does not imply its watcher's: a TERM'd watcher can linger in
-  # its cleanup under load while still holding the session lock with a fresh
-  # beacon, and the next bounded cycle's arm would then attach to it and poll
-  # until the wait bound fires instead of running its own cycle.
-  fm_test_terminate_or_fail "$successor_pid" "successor ledger watcher cleanup"
+  wait "$successor_arm" 2>/dev/null || true
+  # The forced interruption is a watcher-down interval. Consume the prior
+  # delivered wake before beginning independent ledger cycles, just as the
+  # recovery handling turn does, so this fixture does not intentionally carry a
+  # durable wake into the next arm.
+  drain_and_ack "$state" || fail "recovery drain after forced arm interruption failed"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
-  # Every earlier cycle's exit republished pending:downtime, so each armed
-  # watcher here resurfaces (check: rearm-resurface) and closes as actionable
-  # on its own - the arm then exits after finishing its ledger record. Wait for
-  # that natural close instead of killing mid-cycle, so a HUP can never land
-  # between the ledger append and its size-cap trim.
   iteration=0
   while [ "$iteration" -lt 6 ]; do
     armout="$dir/bounded-$iteration.out"
     PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_CYCLE_LOG_MAX_BYTES=1400 FM_WATCH_CYCLE_LOG_KEEP_LINES=2 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     successor_arm=$!
-    fm_test_wait_or_fail "$successor_arm" 600 "bounded ledger cycle $iteration"
-    [ "$FM_TEST_WAIT_STATUS" -eq 0 ] || fail "bounded ledger cycle $iteration did not close cleanly"
-    grep -qE 'watcher: started pid=|check: rearm-resurface' "$armout" \
-      || fail "bounded ledger cycle $iteration did not run"
+    i=0
+    while [ "$i" -lt 80 ]; do
+      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
+    kill -HUP "$successor_arm" 2>/dev/null || true
+    wait "$successor_arm" 2>/dev/null || true
+    drain_and_ack "$state" \
+      || fail "recovery drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
@@ -1406,7 +979,8 @@ SH
     real_first=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_ALL=C bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
     real_second=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_TIME=ko_KR.UTF-8 bash -c 'unset LC_ALL; . "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
   fi
-  fm_test_terminate_or_fail "$live" "locale identity process cleanup"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
   [ -n "$baseline" ] || fail "fm_pid_identity produced no baseline identity under LC_ALL=C"
   [ "$via_lc_all" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_ALL (got '$via_lc_all', want '$baseline')"
   [ "$via_lc_time" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_TIME (got '$via_lc_time', want '$baseline')"
@@ -1461,26 +1035,6 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
   pass "/proc process identity detects pid reuse"
 }
 
-test_msys_pid_identity_uses_proc() {
-  local live identity
-  case "$(uname)" in
-    MSYS*|MINGW*|CYGWIN*) ;;
-    *)
-      pass "MSYS /proc process identity regression skipped on non-Windows host"
-      return
-      ;;
-  esac
-  sleep 300 &
-  live=$!
-  identity=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
-  fm_test_terminate_or_fail "$live" "MSYS identity process cleanup"
-  case "$identity" in
-    proc-starttime=*" cmdline-hex="*) ;;
-    *) fail "MSYS process identity did not use compatible /proc fields ('$identity')" ;;
-  esac
-  pass "MSYS process identity uses compatible /proc fields"
-}
-
 test_stale_watch_reclaim_publishes_before_clear() {
   local dir state lockdir rc token
   dir=$(make_case stale-watch-publish-before-clear)
@@ -1501,17 +1055,49 @@ test_stale_watch_reclaim_publishes_before_clear() {
   ' _ "$LIB" "$lockdir" >/dev/null 2>&1
   rc=$?
   [ "$rc" -ne 0 ] || fail "interrupted stale watcher reclaim unexpectedly completed"
-  [ -e "$lockdir" ] || [ -L "$lockdir" ] || fail "stale watcher lock cleared before recovery publication"
+  [ -e "$lockdir" ] || [ -L "$lockdir" ] \
+    || fail "stale watcher lock cleared before recovery publication boundary"
   token=$(FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
     fm_recovery_marker_read "$2" || exit 1
     printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
-  ' _ "$LIB" "$state/.watcher-down") || fail "interrupted stale reclaim left no durable recovery evidence"
-  case "$token" in pending:downtime:*) ;; *) fail "invalid stale-reclaim recovery token: $token" ;; esac
-  pass "stale watcher reclaim publishes recovery before clearing lock evidence"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "stale watcher reclaim interruption left no durable recovery evidence"
+  case "$token" in
+    pending:downtime:*) ;;
+    *) fail "stale watcher reclaim published invalid recovery evidence: $token" ;;
+  esac
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2" || exit 1
+    fm_lock_release "$2"
+  ' _ "$LIB" "$lockdir" \
+    || fail "successor could not reclaim watcher lock after interrupted clear"
+  pass "stale watcher reclaim publishes durable recovery evidence before clear"
 }
 
-test_background_wait_is_bounded
+test_msys_pid_identity_uses_proc() {
+  local live identity
+  case "$(uname)" in
+    MSYS*|MINGW*|CYGWIN*) ;;
+    *)
+      pass "MSYS /proc process identity regression skipped on non-Windows host"
+      return
+      ;;
+  esac
+  sleep 300 &
+  live=$!
+  identity=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  case "$identity" in
+    proc-starttime=*" cmdline-hex="*) ;;
+    *) fail "MSYS process identity did not use compatible /proc fields ('$identity')" ;;
+  esac
+  pass "MSYS process identity uses compatible /proc fields"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
@@ -1520,7 +1106,6 @@ test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
-test_guard_handling_window_advisory
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
@@ -1532,13 +1117,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
-test_arm_all_absorbed_clean_close_rearms_without_failure
-test_duplicate_arm_returns_to_owner_and_preserves_one_actionable_completion
-test_duplicate_arm_does_not_silence_owner_cycle_death
-test_restart_supersedes_a_live_owner_with_a_hung_watcher
-test_grok_coordinator_rearms_before_one_actionable_delivery
-test_grok_coordinator_retains_one_unready_successor_without_retry_overlap
-test_arm_owner_rejects_a_reused_pid_identity
+test_arm_self_eviction_is_loud_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals

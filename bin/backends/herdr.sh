@@ -34,7 +34,7 @@
 # preserves focus exactly when the dying workspace sits behind the focused
 # one or the focused one is last (upstream issue #1621, fixed by PR #1912);
 # both fixes first shipped in Herdr 0.8.0, which is the version floor for
-# default-on projection. Projected cleanup
+# default-on projection (FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION). Projected cleanup
 # therefore serializes under the session lock, repositions a doomed workspace
 # behind the focused one when needed, and ends its verified lone idle shell
 # so Herdr removes the emptied workspace through the focus-preserving
@@ -77,11 +77,6 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # every backend so the decision cannot drift.
 # shellcheck source=bin/fm-composer-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-composer-lib.sh"
-# The rendered delivery-busy matcher is currently owned by fm-tmux-lib.sh even
-# when a non-tmux backend supplies the capture. Herdr reuses only that shared,
-# harness-scoped classifier; its capture and submit mechanics remain local.
-# shellcheck source=bin/fm-tmux-lib.sh
-. "$FM_BACKEND_HERDR_ROOT/bin/fm-tmux-lib.sh"
 
 # Shared, backend-neutral normalized-transition shape and the single-owner
 # status->action policy table (bin/fm-transition-lib.sh). This adapter's event
@@ -105,13 +100,27 @@ FM_BACKEND_HERDR_MIN_EVENTS_PROTOCOL=16
 # presentation path uses one narrowly whitelisted raw-socket request after
 # verifying the exact method and parameter schema.
 FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL=16
-# Projection turns every crewmate teardown into a workspace-emptying removal.
-# Herdr 0.8.0 is the first release carrying both upstream focus fixes, so a
-# home that configured nothing is projected only at or above that release.
-# Protocol 19 is the structural signal for the floor: measured 0.7.x releases
-# top out at protocol 17, while 0.8.0 reports protocol 19.
+# The version floor for DEFAULT-ON presentation projection. Projection turns
+# every crewmate teardown into a workspace-emptying removal, and the focus-safe
+# removal plan can only avoid Herdr's focus-stealing explicit close while the
+# doomed pane holds a provably lone idle childless shell; a persistent child of
+# that shell (gitstatusd, a zsh-async worker, direnv) makes the plan fall back
+# to the plain explicit close, which steals focus on every release without the
+# two upstream focus fixes (PR #1877 commit 165dca45, PR #1912 commit a979916).
+# Herdr 0.8.0 is the first release carrying both, so a home that configured
+# nothing is projected only at or above it. An explicit "on" is still honored
+# below the floor.
+# Protocol 19 is the structural signal for that floor, measured against the real
+# macOS aarch64 release binaries (docs/verification/runtime-backends.md
+# "Presentation version floor"): 0.7.3 and 0.7.4 report 16, 0.7.5 reports 17,
+# the first post-fix preview reports 18, and 0.8.0 reports 19. No build lacking
+# both fixes reaches 19, and the pre-fix builds top out at 17.
 FM_BACKEND_HERDR_MIN_PRESENTATION_PROTOCOL=19
 FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION=0.8.0
+# One-warning-per-release dedupe marker prefix, under the state dir. The
+# projection decision is remade on every spawn, so an undeduplicated
+# below-floor warning would repeat on every crewmate; the key is the detected
+# release, so an upgrade or a downgrade is announced again.
 FM_BACKEND_HERDR_PRESENTATION_FLOOR_MARKER_PREFIX=".herdr-presentation-floor-"
 # Per-pane escalation dedupe marker prefix, under the state dir. One marker per
 # window (keyed like the watcher's own .stale-<key>): set when a ->blocked edge
@@ -137,8 +146,17 @@ FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
 # projection.
 FM_BACKEND_HERDR_PRESENTATION_CONFIG="herdr-presentation-spaces"
 
-# fm_backend_herdr_presentation_preference <config-dir>: echoes exactly one of
-# off, on, or default. An empty file is the historical explicit opt-in.
+# fm_backend_herdr_presentation_preference <config-dir>: the single owner of
+# config/herdr-presentation-spaces parsing. Echoes exactly one of "off", "on"
+# (a deliberate opt-in, honored even below the version floor), or "default"
+# (this home configured nothing, so the floor decides).
+# Values are read with the whole-file whitespace-stripped convention the other
+# scalar config items already use (config/backlog-backend, config/crew-harness),
+# plus case folding. An empty file is the historical presence-based opt-in form
+# and still means an explicit "on", so no home that deliberately enabled the
+# projection can lose it. An unrecognized value warns and falls back to the
+# default rather than failing a spawn over a purely visual setting, so a typo is
+# visible instead of silently deciding anything.
 fm_backend_herdr_presentation_preference() {  # <config-dir>
   local config_dir=${1:-} file value
   [ -n "$config_dir" ] || { printf 'default\n'; return 0; }
@@ -155,8 +173,11 @@ fm_backend_herdr_presentation_preference() {  # <config-dir>
   esac
 }
 
-# Numeric dotted-release comparison. Return 0 when candidate >= floor, 1 when
-# candidate < floor, and 2 when candidate is not parseable.
+# fm_backend_herdr_version_at_least <candidate> <floor>: numeric dotted-release
+# comparison. Return codes: 0 candidate >= floor, 1 candidate < floor, 2 the
+# candidate is unparseable. Any prerelease or build suffix is stripped first, so
+# a 0.8.0-preview build compares as 0.8.0 (it is built from the 0.8.0 line and
+# carries its fixes) while a 0.7.5-preview build compares as 0.7.5.
 fm_backend_herdr_version_at_least() {  # <candidate> <floor>
   local candidate=${1:-} floor=${2:-} c f
   candidate=${candidate%%[-+]*}
@@ -173,9 +194,15 @@ fm_backend_herdr_version_at_least() {  # <candidate> <floor>
   return 0
 }
 
-# Pure release-floor classifier. Return 0 at or above the floor, 1 when
-# provably below it, and 2 when both signals are indeterminate. Either the
-# structural protocol or the version can carry a positive verdict.
+# fm_backend_herdr_release_floor_verdict <protocol> <version>: the pure
+# classifier for the presentation version floor. Return codes: 0 at or above the
+# floor, 1 provably below it, 2 indeterminate.
+# Two independent signals are read so no single field is load-bearing, and
+# either one can carry a positive verdict: the protocol number, which is the
+# structural signal this adapter already uses for every other capability gate,
+# and the release core of the version string. A signal that is unreadable or
+# unparseable simply cannot carry a verdict; a readable protocol below the floor
+# is decisive on its own, and only losing BOTH signals reports indeterminate.
 fm_backend_herdr_release_floor_verdict() {  # <protocol> <version>
   local protocol=${1:-} version=${2:-} protocol_known=0 version_status=0
   case "$protocol" in
@@ -192,8 +219,15 @@ fm_backend_herdr_release_floor_verdict() {  # <protocol> <version>
   return 2
 }
 
-# Classify the installed client and, when present, the selected session's
-# running server. Both applicable releases must meet the floor.
+# fm_backend_herdr_presentation_release_supported: run the floor classifier
+# against the installed client and, when one exists, the selected session's
+# running server. A running server and client compose conservatively: both must
+# be supported. When status positively reports no running server, only the
+# client that will start it is applicable. Same return codes as
+# fm_backend_herdr_release_floor_verdict, and sets
+# FM_BACKEND_HERDR_PRESENTATION_RELEASE to the identifier a caller's warning
+# names. An unreadable server-running state is indeterminate rather than
+# permission to substitute the client release.
 fm_backend_herdr_presentation_release_supported() {  # [<session>]
   local session=${1:-} status running client_protocol client_version client_verdict=0
   local server_protocol server_version server_verdict=0
@@ -242,10 +276,12 @@ fm_backend_herdr_presentation_release_supported() {  # [<session>]
   esac
 }
 
-# Warn once per detected release when a usable state directory is supplied.
+# fm_backend_herdr_presentation_floor_warn <state-dir> <verdict>: emit the one
+# clear below-floor warning, deduplicated per home per detected release when a
+# usable state dir is given. Without one the warning is emitted every call,
+# which is what a one-shot caller wants.
 fm_backend_herdr_presentation_floor_warn() {  # <state-dir> <verdict>
-  local state_dir=${1:-} verdict=${2:-2} release=${FM_BACKEND_HERDR_PRESENTATION_RELEASE:-an unreadable release}
-  local key marker reason tmp=""
+  local state_dir=${1:-} verdict=${2:-2} release=${FM_BACKEND_HERDR_PRESENTATION_RELEASE:-an unreadable release} key marker reason tmp=""
   if [ "$verdict" -eq 1 ]; then
     reason="herdr $release is older than the $FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION floor for presentation spaces, where projected cleanup can steal the active workspace"
   else
@@ -269,6 +305,9 @@ fm_backend_herdr_presentation_floor_warn() {  # <state-dir> <verdict>
   return 0
 }
 
+# fm_backend_herdr_presentation_default_supported <state-dir> [<session>]:
+# compose the applicable release verdict and the shared warning contract for
+# one unconfigured home.
 fm_backend_herdr_presentation_default_supported() {  # <state-dir> [<session>]
   local state_dir=${1:-} session=${2:-} verdict=0
   fm_backend_herdr_presentation_release_supported "$session" || verdict=$?
@@ -277,8 +316,14 @@ fm_backend_herdr_presentation_default_supported() {  # <state-dir> [<session>]
   return 1
 }
 
-# The single spawn-time projection gate. Explicit off and on are honored as
-# written; an unconfigured home projects only on a verified supported release.
+# fm_backend_herdr_presentation_enabled <config-dir> [<state-dir>]: the one gate
+# bin/fm-spawn.sh consults before projecting this home's children into
+# disposable one-task workspaces (docs/herdr-backend.md "Presentation spaces"
+# owns the full contract). An explicit "off" or "on" is obeyed as written; a
+# home that configured nothing is projected only at or above the version floor,
+# and otherwise falls back to the flat layout with one warning. Sets
+# FM_BACKEND_HERDR_PRESENTATION_PREFERENCE for the new-projection boundary to
+# distinguish an unconfigured default from an explicit opt-in.
 fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
   local config_dir=${1:-} state_dir=${2:-} preference
   preference=$(fm_backend_herdr_presentation_preference "$config_dir")
@@ -291,6 +336,7 @@ fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
   esac
   fm_backend_herdr_presentation_default_supported "$state_dir"
 }
+
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
 # label (docs/herdr-backend.md "Default task container shape"). The PRIMARY home (no
 # secondmate marker) resolves to the constant "firstmate", byte-identical to
@@ -743,7 +789,7 @@ fm_backend_herdr_projection_focus_snapshot() {  # <session>
 # explicit pane.close that empties a non-focused workspace moves focus to
 # that workspace's neighbor (upstream #1328/#1877), and a pane-death removal
 # before a non-last focused workspace moves focus to the focused workspace's
-# right neighbor (upstream #1621/#1912); both fixes shipped in Herdr 0.8.0.
+# right neighbor (upstream #1621/#1912); both fixes are unreleased.
 # A single tab.focus on the exact response-independent pre-operation tab id
 # restores both the workspace and tab atomically.
 fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation>
@@ -882,14 +928,32 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 #   sat behind it (or the focused workspace was last), and moves focus to the
 #   focused workspace's right neighbor otherwise (upstream issue #1621, fixed
 #   by PR #1912, commit a979916).
-# Both fixes first shipped in Herdr 0.8.0 (protocol 19).
+# Both fixes first shipped in Herdr 0.8.0 (protocol 19), verified 2026-08-05.
 # Firstmate therefore removes a doomed non-focused workspace by ending its
 # verified lone idle shell (the pane-death path), repositioning it behind the
 # focused workspace first when needed. Moving it to the end preserves every
 # other workspace's relative order, so no presentation ordering change
-# persists. Below the presentation floor this mitigation remains conditional
-# because its plain-close fallback still moves focus, which is why the
-# spawn-time presentation gate keeps an unconfigured home flat there.
+# persists.
+# That reasoning covers the pane-death route only. The plan's plain-close
+# FALLBACK is reachable exactly when the doomed pane's shell cannot be proved
+# lone, childless, and idle - a persistent gitstatusd, zsh-async worker, or
+# direnv fails that proof permanently - and on a release without both fixes the
+# fallback is the focus-stealing close itself, so the mitigation is conditional
+# rather than unconditional and a version gate IS required. Default-on
+# projection is therefore floored at FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION,
+# where every removal primitive preserves focus and the proof stops being
+# load-bearing. That floor has ONE owner, the spawn-time gate
+# fm_backend_herdr_presentation_enabled, so every new projection is either on a
+# supported release or is a home's deliberate below-floor opt-in. Session-start
+# cleanup deliberately retires a leftover projection husk on every release,
+# including below the floor. The accepted exposure is limited to the rare
+# downgrade path where a home projected on Herdr 0.8.0 or newer and then moved
+# to a 0.7.x release, and occurs once per leftover workspace at session start
+# rather than once per task teardown; the exact prior-tab restore bounds it.
+# Refusing that close below the floor would leak workspaces that nothing else
+# removes and block teardown because fm-teardown treats an unconfirmed close as
+# a hard stop. That cleanup is therefore authorized containment rather than a
+# second gate, and the spawn-time gate remains the floor's sole owner.
 
 # fm_backend_herdr_workspace_move_capable: verify that one guarded raw
 # workspace.move request is possible in <session>: python3 for the transport,
@@ -915,9 +979,10 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 
 # fm_backend_herdr_emptying_close_plan: choose the focus-safe removal for one
 # exact pane. The LAST echoed line is the plan: "plain" (use the ordinary
-# explicit close; the exact-tab restore backstop masks 0.7.5's focus move)
-# or "death <shell-pid>" (end the proved lone idle shell so Herdr removes
-# the emptied workspace through its focus-preserving pane-death path).
+# explicit close; below the presentation version floor the exact-tab restore
+# backstop masks the focus move it causes when it empties a non-focused
+# workspace) or "death <shell-pid>" (end the proved lone idle shell so Herdr
+# removes the emptied workspace through its focus-preserving pane-death path).
 # Whenever the repositioning mover was invoked, a preceding
 # "moved<TAB><ws><TAB><original-index><TAB><socket><TAB><focused><TAB><pre-move-order-json>"
 # record line is echoed first so the caller can hand it to
@@ -2493,6 +2558,9 @@ fm_backend_herdr_normalize_key() {  # <key>
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+C) printf 'ctrl+c' ;;
+    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
+    # drop the prompt muse restores into the composer after Escape.
+    C-u|c-u|ctrl+u|Ctrl+U) printf 'ctrl+u' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2539,27 +2607,40 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
   printf '%s' "$out" | tail -n "$lines"
 }
 
-# Thin adapter over the shared plain-text stripper (bin/fm-composer-lib.sh),
-# used only for STRUCTURAL row/shape detection where ghost text must be kept so
-# the box border or bare prompt glyph is still visible. Content extraction uses
-# the shared fm_composer_strip_ghost instead.
-fm_backend_herdr_strip_ansi() {  # <text>
-  printf '%s' "$1" | fm_composer_strip_ansi
-}
+# --- herdr composer capture and capability primitives -----------------------
+#
+# These functions are the ONLY herdr-specific composer knowledge left: the
+# ANSI pane capture (with its small-N workaround), the native `agent get`
+# identity probe, and the capability descriptor. Every shape - the bordered
+# box, the bare agent-glyph row, opencode's left-bar, and pi's
+# identity-gated separated pair (which this adapter pioneered) - now lives in
+# the shared owner (bin/fm-composer-lib.sh, fm_composer_classify_screen), so
+# a new harness shape is taught there once and every backend learns it in the
+# same commit. The muse `⟩` glyph this adapter's local bare-prompt pattern
+# silently omitted is exactly the drift class that consolidation removes.
 
-# Herdr contributes only ANSI/plain capture plus native identity facts to the
-# shared fleet-wide classifier in bin/fm-composer-lib.sh.
 fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   local out
   out=$(fm_backend_herdr_cli "$1" agent get "$2" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
+# fm_backend_herdr_composer_identity: the native agent identity/state probe
+# backing the shared classifier's separated (pi) shape - the genuine herdr
+# primitive no other backend has natively.
 fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
   fm_backend_herdr_parse_target "$1" || return 1
   fm_backend_herdr_agent_identity_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
 }
 
+# fm_backend_herdr_composer_state: thin adapter - capture plus capabilities
+# in, shared verdict out. The ANSI capture is preferred (styled=1 lets the
+# shared classifier strip ghost/placeholder text); when it fails on an older
+# herdr, the plain capture degrades the descriptor to styled=0 rather than
+# letting ghost text be misread as typed input. Identity is fetched lazily,
+# only when the classifier reports the verdict depends on it (a pi separator
+# pair below every other candidate), preserving this adapter's original
+# consult-only-when-needed behavior.
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
   local target=$1 cap caps verdict identity
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
@@ -2582,71 +2663,62 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
   printf '%s' "$verdict"
 }
 
-fm_backend_herdr_rendered_busy_state() {  # <target> <harness> -> busy|idle|unknown
-  local target=$1 harness=$2 tail40
-  [ -n "$harness" ] || { printf 'unknown'; return 0; }
-  tail40=$(fm_backend_herdr_capture "$target" 40 2>/dev/null) \
-    || { printf 'unknown'; return 0; }
-  printf '%s' "$tail40" | fm_busy_tail_state "$harness"
-}
-
-# fm_backend_herdr_rendered_turn_started: herdr's counterpart to the tmux
-# turn-started conversion. Only a rendered idle baseline may convert, and the
-# post-Enter read is POLLED across the remaining retry budget rather than
-# sampled once, because the turn takes a beat to render and a single early
-# sample would report a real submission as unconfirmed.
-fm_backend_herdr_rendered_turn_started() {  # <target> <harness> <baseline> <retries> <sleep> -> busy|unknown
-  local target=$1 harness=$2 baseline=$3 retries=$4 sleep_s=$5 j=0
-  if [ "$baseline" = idle ]; then
-    while [ "$j" -lt "$retries" ]; do
-      if [ "$(fm_backend_herdr_rendered_busy_state "$target" "$harness")" = busy ]; then
-        printf 'busy'
-        return 0
-      fi
-      j=$((j + 1))
-      [ "$j" -ge "$retries" ] || sleep "$sleep_s"
-    done
+# fm_backend_herdr_rendered_busy_state: busy|idle|unknown from the pane's
+# RENDERED busy footer, the same delivery-only signal bin/fm-tmux-lib.sh's
+# fm_pane_busy_state reads, scanning the same 40-line tail folded to its last
+# 12 non-blank rows. This is NOT a worker-state source: herdr's native
+# agent-state (fm_backend_herdr_busy_state) stays the semantic owner, and this
+# read exists only so the submit core below can confirm a delivery for a
+# harness whose native state never transitions. Without a harness argument the
+# shared matcher uses its union of verified tokens, which is what the submit
+# core wants: it has no recorded harness for the pane.
+fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unknown
+  local target=$1 harness=${2:-} cap visible
+  cap=$(fm_backend_herdr_capture "$target" 40) || { printf 'unknown'; return 0; }
+  visible=$(printf '%s' "$cap" | grep -v '^[[:space:]]*$' | tail -12)
+  [ -n "$visible" ] || { printf 'unknown'; return 0; }
+  if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
+    printf 'busy'
+  else
+    printf 'idle'
   fi
-  printf 'unknown'
 }
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
-# (Enter only, never retyped) until herdr's NATIVE agent-state (agent get)
-# confirms a real turn started. Verified hazard (herdr-verification-p2.md
-# "slash/$ autocomplete popup"): a `/`- or `$`-prefixed send opens a
-# completion popup within ~0.1s, exactly like tmux's claude/codex popups, so
-# the caller's <settle> before the first Enter matters here the same way it
-# does for tmux.
+# (Enter only, never retyped) until native agent-state, a cleared composer, or
+# fm_composer_queued_enter_verdict confirms delivery. Verified hazard
+# (herdr-verification-p2.md "slash/$ autocomplete popup"): a `/`- or
+# `$`-prefixed send opens a completion popup within ~0.1s, exactly like tmux's
+# claude/codex popups, so the caller's <settle> before the first Enter matters
+# here the same way it does for tmux.
 #
-# Confirmation signal (rewritten for the 2026-07-07 incident below;
-# superseded a composer-content read that itself replaced a delta-based check
-# for the 2026-07-03 incident): when the target is legibly idle before Enter,
+# Confirmation signal: when the target is legibly idle before Enter,
 # submission is confirmed by fm_backend_herdr_wait_for_working observing a
-# submit-active agent_status after Enter, NOT by reading the composer's own
-# row. This makes the normal confirmation path cross-agent: it is the same
-# semantic signal regardless of what text a harness's idle composer happens
-# to display.
+# submit-active agent_status after Enter. Live Claude on Herdr 0.8.0 can
+# keep agent_status idle for a whole landed turn, so an idle native result
+# falls through to the shared composer verdict: empty is positive delivery,
+# proven pending retries Enter, and retries-exhausted pending plus a
+# generating busy signal is a queued Enter via
+# fm_composer_queued_enter_verdict (bin/fm-composer-lib.sh).
 #
 # Incident (2026-07-07, followed up on 2026-07-08): a redelivery loop in the
 # away-mode daemon. Root cause: composer-content submit confirmation was too
 # sensitive to harness rendering details. Real claude/codex use bare prompt
 # rows, and real codex adds dynamic idle suggestions after `›`; the later
-# ANSI-aware composer classifier now handles the pre-injection guard for that
-# Codex shape, but idle-baseline submit confirmation deliberately stays on
-# native agent-state so delivery does not depend on composer text. Composer
-# content is retained for other callers (the away-mode daemon's PRE-injection
-# empty-box guard, still dispatched via fm_backend_composer_state /
-# fm_backend_herdr_composer_state) and for submit attempts whose pre-Enter
-# agent-state baseline is not legibly idle.
+# ANSI-aware composer classifier now handles that Codex shape, and idle-baseline
+# submit confirmation still prefers native agent-state so a faint idle tip
+# cannot block a landed send. Composer content is consulted only after native
+# state stays idle, as the empty/pending owner, and for submit attempts whose
+# pre-Enter agent-state baseline is not legibly idle.
 #
 # This also still correctly handles the earlier 2026-07-03 incident (a
 # slash-command popup selection/placeholder-fill on the FIRST Enter is not a
 # genuine submission) without any popup-specific logic at all: filling a
 # composer placeholder never starts a turn, so agent_status simply never
-# reports "working" for that Enter, and the retry loop below sends a second
-# Enter exactly as it did before - the fix generalizes instead of special-
-# casing the popup shape.
+# reports "working" for that Enter, the composer stays pending, and the retry
+# loop below sends a second Enter exactly as it did before - the fix
+# generalizes instead of special-casing the popup shape.
 #
 # Failure-mode analysis (the two directions the caller-facing contract must
 # not get wrong - see docs/herdr-backend.md "Native agent-state submit
@@ -2655,103 +2727,126 @@ fm_backend_herdr_rendered_turn_started() {  # <target> <harness> <baseline> <ret
 #     across herdr's per-attempt confirmation budget (not once at the end), so a
 #     transition landing partway through a window is still caught before this
 #     loop gives up and sends a needless extra Enter.
-#   - Instant round-trip (a turn starts AND returns to idle between two
-#     polls): unavoidable in the absolute, but bounded by how tightly polls
-#     are packed into the budget; real claude/codex measured first-working
-#     at 90-490ms, comfortably inside a several-hundred-ms, multiply-sampled
-#     window, so this has not been observed in practice. On the (unobserved)
-#     residual chance it happens, the verdict is "pending" and the caller
-#     never retypes - only re-sends Enter, which lands on an already-empty
-#     composer and is a no-op, not a duplicate delivery of <text> (see
-#     fm-send.sh/fm-supervise-daemon.sh: retyping only happens if a caller
-#     re-invokes this function from scratch with the same text after seeing
-#     an error, which is a human/escalation decision, not an automatic
-#     retry).
+#   - Instant round-trip or a native status that never leaves idle: bounded by
+#     the composer fallback. A cleared composer is delivery; a proven-pending
+#     composer on an idle pane is a swallow; extra Enter on an already-empty
+#     composer is a no-op, not a duplicate delivery of <text>.
+# Fallback path, for a harness whose native agent-state is never legibly idle
+# (measured live: herdr reports a cursor pane `blocked` in every state - idle,
+# mid-turn, and after - so the idle-baseline path above is structurally
+# unreachable for it). That harness always lands in the composer branch, and
+# cursor's mid-turn composer row renders its own placeholder beside a
+# right-aligned `ctrl+c to stop`, so the content verdict is `pending` on a
+# composer that holds no user text at all and every steer reported delivery
+# unconfirmed on a message that had actually landed.
+# The escape is the SAME semantic signal the idle-baseline path uses, read from
+# the pane's verified busy footer instead of native agent-state, and it is the
+# rendered-footer twin of the tmux submit core's turn-started confirmation
+# (bin/fm-tmux-lib.sh): an idle-to-busy transition ACROSS our Enter is proof the
+# harness accepted the submission. The baseline is taken before the first Enter
+# and only when the native baseline was not legibly idle, so the idle-baseline
+# path still never reads pane content until native stays idle. A pane already
+# mid-turn cannot use a rendered-footer transition as proof of this Enter;
+# only the separate retries-exhausted, proven-pending queued-Enter verdict can
+# confirm delivery from its native working state.
+# Queued-while-busy Enter (OpenCode 1.18.4, and any harness that keeps typed
+# text visible until the current turn ends): after the retry budget, a proven
+# pending composer plus native agent_status=working is delivered, not swallowed.
+# blocked is not working, so a Cursor pane that is blocked in every state does
+# not receive this conversion. On an idle native baseline, a rendered busy
+# footer may supply the same generating signal because live Claude never leaves
+# idle. The policy is fm_composer_queued_enter_verdict; this adapter only
+# supplies the busy primitive.
 # Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
 # submit vocabulary. Empty means confirmed submitted for every backend; how
-# each backend confirms it is an internal decision, and herdr's is no longer
-# literally "the composer read empty".
-fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness i=0 verdict baseline confirm_sleep
-  local rendered_baseline=unknown rendered_after observed_pending=0 typed_state
-  harness=$(fm_busy_harness_scope "${7:-}")
-  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
-  # Only the rendered busy baseline must predate our own typing (the typed
-  # text changes what the pane renders). The native agent-state baseline is
-  # read after the settle, so a turn that starts during the settle window
-  # reads as a non-idle baseline instead of arming a false idle-to-busy
-  # conversion.
-  if [ -n "$harness" ]; then
-    rendered_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
+# each backend confirms it is an internal decision.
+#
+# fm_backend_herdr_queued_enter_busy: delivery-busy for the shared queued-Enter
+# conversion. Native agent_status=working is generating; blocked is not (a
+# permission prompt, or Cursor's always-blocked native state, is not a queued
+# mid-turn). When <allow-rendered> is 1, an idle native baseline may also take
+# the pane's rendered busy footer, because live Claude keeps agent_status idle
+# through a whole turn.
+fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
+  local target=$1 allow_rendered=${2:-0} raw
+  raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  case "$raw" in
+    working) printf 'busy'; return 0 ;;
+  esac
+  if [ "$allow_rendered" = 1 ]; then
+    fm_backend_herdr_rendered_busy_state "$target"
+  else
+    printf 'idle'
   fi
+}
+
+fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local raw_status footer_baseline='' allow_rendered=0 enter_sent=0
+  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  baseline=$(fm_backend_herdr_classify_submit_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
-  [ "$baseline" = unknown ] || rendered_baseline=unknown
+  raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  baseline=$(fm_backend_herdr_classify_submit_agent_status "$raw_status")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
-  # The composer-evidence path (non-idle baseline) mirrors the tmux
-  # typed-text observation: seeing our own text pending before the first
-  # Enter is what lets a later positively classified clearance confirm. If
-  # rendering is delayed, the condition is polled within the existing retry
-  # budget rather than masked by a fixed sleep.
-  if [ "$baseline" != idle ]; then
-    while [ "$i" -lt "$retries" ]; do
-      typed_state=$(fm_backend_herdr_composer_state "$target")
-      case "$typed_state" in
-        pending|pending-unproven) observed_pending=1; break ;;
-        empty)
-          i=$((i + 1))
-          [ "$i" -ge "$retries" ] || sleep "$sleep_s"
-          ;;
-        *) break ;;
-      esac
-    done
-    i=0
+  # Typing never starts a turn, so a footer read taken after the literal send
+  # and before the first Enter is still a pre-submission baseline.
+  if [ "$baseline" = idle ]; then
+    allow_rendered=1
+  else
+    footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
   fi
   while :; do
-    fm_backend_herdr_send_key "$target" Enter || true
+    if fm_backend_herdr_send_key "$target" Enter; then
+      enter_sent=1
+    elif [ "$enter_sent" -eq 0 ]; then
+      i=$((i + 1))
+      if [ "$i" -ge "$retries" ]; then
+        printf 'send-failed'
+        return 0
+      fi
+      sleep "$sleep_s"
+      continue
+    fi
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+      case "$verdict" in
+        busy) printf 'empty'; return 0 ;;
+        unknown) printf 'unknown'; return 0 ;;
+      esac
+      # Native stayed idle. Composer empty is positive delivery (a landed
+      # Claude turn that never flipped agent_status). Proven pending retries.
+      verdict=$(fm_backend_herdr_composer_state "$target")
+      case "$verdict" in
+        empty) printf 'empty'; return 0 ;;
+        pending|pending-unproven) ;;
+        *) printf '%s' "$verdict"; return 0 ;;
+      esac
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
+        && [ "$footer_baseline" = idle ] \
+        && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
+        verdict=busy
+      fi
+      case "$verdict" in
+        busy) printf 'empty'; return 0 ;;
+        empty) printf 'empty'; return 0 ;;
+        unknown) printf 'unknown'; return 0 ;;
+      esac
     fi
-    case "$verdict" in
-      busy) printf 'empty'; return 0 ;;
-      pending|pending-unproven) observed_pending=1 ;;
-      empty)
-        # A composer that reads empty without this submit's own text ever
-        # having been observed in it may be a stale pre-typing frame, not a
-        # cleared composer; only the independent rendered turn-start may
-        # convert it, never a bare confirmation.
-        if [ "$observed_pending" = 1 ]; then
-          printf 'empty'
-          return 0
-        fi
-        rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
-          "$rendered_baseline" "$retries" "$sleep_s")
-        if [ "$rendered_after" = busy ]; then
-          printf 'empty'
-          return 0
-        fi
-        printf 'unknown'
-        return 0
-        ;;
-      unknown)
-        rendered_after=$(fm_backend_herdr_rendered_turn_started "$target" "$harness" \
-          "$rendered_baseline" "$retries" "$sleep_s")
-        if [ "$rendered_after" = busy ]; then
-          printf 'empty'
-          return 0
-        fi
-        printf 'unknown'
-        return 0
-        ;;
-    esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    if [ "$i" -ge "$retries" ]; then
+      if [ "$enter_sent" -eq 0 ]; then
+        printf 'send-failed'
+      else
+        fm_composer_queued_enter_verdict "$verdict" \
+          "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered")"
+      fi
+      return 0
+    fi
   done
 }
 
@@ -2918,28 +3013,18 @@ fm_backend_herdr_busy_state() {  # <target>
 #             text). Returned the INSTANT it is seen, without waiting out the
 #             rest of the budget.
 #   idle    - the target was legibly read at least once and never reported
-#             "busy" across the whole window - a genuine "not (yet)
-#             submitted" signal, not a read failure. The caller retries
-#             Enter on this verdict.
+#             "busy" across the whole window. This is readable but
+#             inconclusive: native state can remain idle for a landed turn,
+#             so the caller falls through to composer confirmation.
 #   unknown - EVERY poll in the window failed to read the target at all (a
 #             hard I/O failure - pane gone, socket error - not a timing
 #             race). The caller must not keep retrying Enter against a target
 #             it cannot even read.
 #
 # <polls> spread across <budget-seconds> (rather than one check at the end)
-# is what makes this robust against a SLOW transition: a caller now gets
-# several samples across that window instead of a single one, so a transition
-# that lands partway through is not missed just because it had not landed by
-# the FIRST sample.
-# Empirical evidence (docs/herdr-backend.md "Native agent-state submit
-# confirmation"): real claude and codex observed first-working at 90-490ms
-# after Enter, so a several-hundred-ms budget sampled repeatedly reliably
-# catches it. The remaining, inherent gap - a turn so fast it starts AND
-# returns to idle between two samples - is bounded by how tightly <polls> is
-# packed into <budget-seconds>; nothing observed in real testing has come
-# close to that, but it is a residual risk, not a mathematical impossibility
-# (see the doc section for the full characterization and the failure-mode
-# analysis for both directions this must guard).
+# lets the fast path catch a native transition that lands partway through the
+# window. A whole-window idle result remains inconclusive and is resolved by
+# the caller's shared composer fallback.
 # FM_BACKEND_HERDR_SUBMIT_POLLS (default 6): how many samples
 # fm_backend_herdr_send_text_submit spreads across each Enter attempt's
 # confirmation budget. Overridable for tests (a value of 1

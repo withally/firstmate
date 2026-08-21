@@ -24,11 +24,12 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-tangle-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
-# A fresh git repo on `main` with one commit. Echoes its path.
+# A fresh git repo on `main` with one commit and a local origin. Echoes its path.
 make_repo() {
   local dir=$1
   git init -q -b main "$dir"
   git -C "$dir" commit -q --allow-empty -m init
+  fm_git_add_origin "$dir" "$dir.origin.git"
   printf '%s\n' "$dir"
 }
 
@@ -214,46 +215,6 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
-# The identity primitive that every spawn same-directory comparison now routes
-# through. Load the real function out of the shipped script (fm-spawn.sh is a
-# top-level program, not a sourceable library, so eval its exact definition) and
-# exercise it: a device+inode pair is portable on BSD stat and GNU stat, two
-# textually distinct spellings of one directory must compare EQUAL, and two
-# distinct directories must compare UNEQUAL. A textual path comparison would call
-# the distinct spellings unequal, so this fails if the guard's comparison is
-# reverted to text - on both Linux and macOS, with no case-insensitive filesystem
-# required. `..`-traversal (not a symlink or leading //) is the distinct spelling,
-# because those collapse under canonicalization while stat still resolves inode.
-test_path_filesystem_identity() {
-  local fn dir dir_alias other id_dir id_alias id_other
-  fn=$(awk '/^path_filesystem_identity\(\)/{f=1} f{print} f&&/^}/{exit}' "$ROOT/bin/fm-spawn.sh")
-  [ -n "$fn" ] || fail "could not load path_filesystem_identity from bin/fm-spawn.sh"
-  eval "$fn"
-
-  mkdir -p "$TMP_ROOT/identity-dir" "$TMP_ROOT/identity-other"
-  dir="$TMP_ROOT/identity-dir"
-  dir_alias="$TMP_ROOT/identity-other/../identity-dir"
-  other="$TMP_ROOT/identity-other"
-  [ "$dir" != "$dir_alias" ] || fail "identity fixture spellings are not textually distinct"
-
-  id_dir=$(path_filesystem_identity "$dir") || fail "identity read failed for '$dir'"
-  id_alias=$(path_filesystem_identity "$dir_alias") || fail "identity read failed for '$dir_alias'"
-  id_other=$(path_filesystem_identity "$other") || fail "identity read failed for '$other'"
-
-  case "$id_dir" in
-    [0-9]*:[0-9]*) ;;
-    *) fail "identity is not a device:inode pair ('$id_dir')" ;;
-  esac
-  [ "$id_dir" = "$id_alias" ] \
-    || fail "same device+inode via distinct spellings compared unequal ('$id_dir' vs '$id_alias')"
-  [ "$id_dir" != "$id_other" ] \
-    || fail "distinct directories shared an identity ('$id_dir')"
-
-  path_filesystem_identity "$TMP_ROOT/identity-does-not-exist" >/dev/null 2>&1 \
-    && fail "identity read of a missing path should fail loudly, not succeed"
-  pass "path_filesystem_identity: distinct spellings of one dir identify equal; different dirs differ; missing path fails"
-}
-
 # The exact-path primary-copy refusal through the fm-spawn CLI: when the pane
 # settles at the primary checkout itself, the settle loop never leaves it and the
 # spawn refuses rather than tangling a hook into the primary.
@@ -366,6 +327,5 @@ test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
-test_path_filesystem_identity
 test_spawn_primary_copy_abort
 test_spawn_tmux_window_construction

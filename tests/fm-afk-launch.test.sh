@@ -41,7 +41,7 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
-# UNIT 1: fresh-session cleanup removes every delivery artifact.
+# UNIT 1: fm_afk_clear_stale_artifacts removes exactly the three stale artifacts.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
@@ -49,9 +49,7 @@ unit_clear_stale() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
-  : > "$st/state/.subsuper-escalations.unresolved"
   : > "$st/state/.subsuper-inject-wedged"
-  : > "$st/state/.subsuper-digest-inflight"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
   # Source fm-afk-start.sh inside a child bash (it sets `set -eu` and would
   # otherwise leak that into this test shell) and call the clear helper.
@@ -59,10 +57,8 @@ unit_clear_stale() {
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
   if [ ! -e "$st/state/.subsuper-escalations" ] \
      && [ ! -e "$st/state/.subsuper-escalations.since" ] \
-     && [ ! -e "$st/state/.subsuper-escalations.unresolved" ] \
-     && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
-     && [ ! -e "$st/state/.subsuper-digest-inflight" ]; then
-    pass "clear-stale: removes buffer, both sidecars, wedge marker, and in-flight identity"
+     && [ ! -e "$st/state/.subsuper-inject-wedged" ]; then
+    pass "clear-stale: removes escalations buffer, sidecar, and wedge marker"
   else
     fail "clear-stale: stale artifacts survived"
   fi
@@ -132,7 +128,6 @@ unit_fresh_vs_refresh() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-inject-wedged"
-  printf 'schema=fm-away-digest.v1\nphase=uncertain\n' > "$st/state/.subsuper-digest-inflight"
   # A live "daemon": a real process whose identity the lock records, so
   # daemon_lock_held_by_live_daemon returns true (a refresh).
   sleep 600 &
@@ -142,117 +137,14 @@ unit_fresh_vs_refresh() {
   printf '%s' "$sleep_pid" > "$lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleep_pid" > "$lock/pid-identity" 2>/dev/null ) || true
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
-  if [ -e "$st/state/.subsuper-escalations" ] \
-     && [ -e "$st/state/.subsuper-inject-wedged" ] \
-     && [ -e "$st/state/.subsuper-digest-inflight" ]; then
-    pass "refresh: daemon already alive - current buffer and in-flight identity preserved"
+  if [ -e "$st/state/.subsuper-escalations" ] && [ -e "$st/state/.subsuper-inject-wedged" ]; then
+    pass "refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)"
   else
     fail "refresh: incorrectly cleared the current session's buffered escalations"
   fi
   kill "$sleep_pid" 2>/dev/null || true
   wait "$sleep_pid" 2>/dev/null || true
   rm -rf "$st"
-}
-
-unit_dead_daemon_restart_preserves_inflight() {
-  local st
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-restart.XXXXXX")
-  mkdir -p "$st/state"
-  date +%s > "$st/state/.afk"
-  printf 'pending\n' > "$st/state/.subsuper-escalations"
-  printf 'schema=fm-away-digest.v1\nphase=uncertain\n' > "$st/state/.subsuper-digest-inflight"
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=0 bash -c '
-    . "$1"
-    FM_AFK_DAEMON=/bin/true
-    fm_afk_start_main
-  ' _ "$START" >/dev/null 2>&1
-  if [ "$(cat "$st/state/.subsuper-escalations" 2>/dev/null)" = pending ] \
-     && grep -F 'phase=uncertain' "$st/state/.subsuper-digest-inflight" >/dev/null 2>&1; then
-    pass "restart: existing away session preserves unresolved buffer and in-flight identity"
-  else
-    fail "restart: existing away session discarded unresolved delivery state"
-  fi
-  rm -rf "$st"
-}
-
-unit_native_capability_gate() {
-  local unsafe safe claude grok delayed plain out rc
-  unsafe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-unsafe.XXXXXX")
-  out=$(FM_HOME="$unsafe" FM_STATE_OVERRIDE="$unsafe/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE=0 \
-    "$LAUNCH" start-native 2>&1)
-  rc=$?
-  if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -F 'refusing away mode: Pi primary + Herdr requires durable digest identity' >/dev/null \
-     && [ ! -e "$unsafe/state/.afk" ]; then
-    pass "capability gate: unsafe Pi + Herdr entry refuses loudly before away state"
-  else
-    fail "capability gate: unsafe Pi + Herdr entry was not refused cleanly ($out)"
-  fi
-
-  safe=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-safe.XXXXXX")
-  if FM_HOME="$safe" FM_STATE_OVERRIDE="$safe/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi "$LAUNCH" start-native >/dev/null 2>&1 \
-    && [ -e "$safe/state/.afk" ]; then
-    pass "capability gate: shipped no-retype safety automatically permits Pi + Herdr"
-  else
-    fail "capability gate: safe Pi + Herdr entry remained blocked"
-  fi
-
-  claude=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-claude.XXXXXX")
-  out=$(FM_HOME="$claude" FM_STATE_OVERRIDE="$claude/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=claude "$LAUNCH" start-native 2>&1)
-  rc=$?
-  if [ "$rc" -ne 0 ] \
-    && printf '%s\n' "$out" | grep -F 'Claude native background jobs are not durable for away mode; use bin/fm-afk-launch.sh start' >/dev/null \
-    && [ ! -e "$claude/state/.afk" ]; then
-    pass "capability gate: Claude native entry refuses loudly before away state"
-  else
-    fail "capability gate: Claude native entry was not refused cleanly ($out)"
-  fi
-
-  grok=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-grok.XXXXXX")
-  out=$(FM_HOME="$grok" FM_STATE_OVERRIDE="$grok/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok "$LAUNCH" start-native 2>&1)
-  rc=$?
-  if [ "$rc" -ne 0 ] \
-    && printf '%s\n' "$out" | grep -F 'Grok native away-mode launch is unsafe across overlapping sessions; use bin/fm-afk-launch.sh start' >/dev/null \
-    && [ ! -e "$grok/state/.afk" ] \
-    && [ ! -e "$grok/state/.afk-daemon-terminal" ]; then
-    pass "capability gate: Grok native entry refuses before lifecycle state"
-  else
-    fail "capability gate: Grok native entry was not refused cleanly ($out)"
-  fi
-
-  delayed=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-grok-delayed.XXXXXX")
-  mkdir -p "$delayed/state"
-  date '+%s' > "$delayed/state/.afk"
-  printf 'none\t-\tnative\n' > "$delayed/state/.afk-daemon-terminal"
-  FM_HOME="$delayed" FM_STATE_OVERRIDE="$delayed/state" "$LAUNCH" stop >/dev/null 2>&1
-  out=$(FM_HOME="$delayed" FM_STATE_OVERRIDE="$delayed/state" FM_SUPERVISOR_BACKEND=herdr \
-    FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok "$LAUNCH" start-native 2>&1)
-  rc=$?
-  if [ "$rc" -ne 0 ] \
-    && [ ! -e "$delayed/state/.afk" ] \
-    && [ ! -e "$delayed/state/.afk-daemon-terminal" ]; then
-    pass "capability gate: delayed Grok native call after return cannot recreate away state"
-  else
-    fail "capability gate: delayed Grok native call recreated away state ($out)"
-  fi
-
-  # The gate only needs the RESOLVED backend. A plain terminal (no tmux, no
-  # herdr, no override) has always been able to enter native away mode on its
-  # printed tmux fallback; the ambiguity gate must not start refusing it.
-  plain=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-gate-plain.XXXXXX")
-  out=$(env -u FM_SUPERVISOR_BACKEND -u FM_SUPERVISOR_TARGET -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
-    FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi \
-    "$LAUNCH" start-native 2>&1)
-  rc=$?
-  if [ "$rc" -eq 0 ] && [ -e "$plain/state/.afk" ]; then
-    pass "capability gate: a plain-terminal primary still enters native away mode"
-  else
-    fail "capability gate: native entry now refuses an unresolved backend it used to accept ($out)"
-  fi
-  rm -rf "$unsafe" "$safe" "$claude" "$grok" "$delayed" "$plain"
 }
 
 # ---------------------------------------------------------------------------
@@ -596,8 +488,7 @@ unit_native_lifecycle() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi \
-    "$LAUNCH" start-native >/dev/null 2>&1 \
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
     && [ ! -e "$st/state/.subsuper-escalations" ]; then
@@ -850,7 +741,7 @@ unit_refresh_validates_record() {
   printf '%s' "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid-identity" )
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
-    FM_SUPERVISOR_BACKEND=tmux FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi bash -c '
+    FM_SUPERVISOR_BACKEND=tmux bash -c '
       . "$1"
       ! fm_afk_launch_start && ! fm_afk_launch_start_native
     ' _ "$LAUNCH" && [ ! -e "$st/state/.afk" ]; then
@@ -868,7 +759,7 @@ unit_clear_failure_aborts_entry() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear-fail.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi bash -c '
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_afk_launch_reconcile() { return 0; }
     fm_afk_clear_stale_artifacts() { return 1; }
@@ -921,7 +812,7 @@ unit_flag_write_failure_aborts() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-flag-fail.XXXXXX")
   mkdir -p "$st/state"
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_PRIMARY_HARNESS_OVERRIDE=pi bash -c '
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_afk_launch_flag_write() { return 1; }
     ! fm_afk_launch_start_native
@@ -971,8 +862,7 @@ e2e_herdr() {
   ws_before=$(fm_backend_herdr_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
-    FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
+    FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
     "$LAUNCH" start >/dev/null 2>&1
 
   during=$(fm_backend_herdr_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
@@ -982,7 +872,7 @@ e2e_herdr() {
 
   if [ "$before" = "$during" ]; then pass "herdr e2e: captain tab pane count unchanged after start (no split)"; else fail "herdr e2e: captain tab pane count changed ($before -> $during)"; fi
   if [ "$ws_during" -gt "$ws_before" ]; then pass "herdr e2e: daemon launched in a separate non-visible workspace"; else fail "herdr e2e: no separate daemon workspace created"; fi
-  if [ -n "$dtab" ] && [ "$dtab" != "$cap_tab" ]; then pass "herdr e2e: Grok daemon pane is NOT in the captain's tab"; else fail "herdr e2e: Grok daemon pane shares the captain tab ($dtab)"; fi
+  if [ -n "$dtab" ] && [ "$dtab" != "$cap_tab" ]; then pass "herdr e2e: daemon pane is NOT in the captain's tab"; else fail "herdr e2e: daemon pane shares the captain tab ($dtab)"; fi
   case "$dtgt" in "$SESSION":*) pass "herdr e2e: daemon terminal scoped to the lab session" ;; *) fail "herdr e2e: daemon terminal not in the lab session ($dtgt)" ;; esac
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
@@ -1012,15 +902,14 @@ e2e_tmux() {
   before=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_PRIMARY_HARNESS_OVERRIDE=grok \
-    FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
+    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
     "$LAUNCH" start >/dev/null 2>&1
 
   during=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
   rec=$(cut -f2 "$home_tmp/state/.afk-daemon-terminal" 2>/dev/null || true)
   TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
   if [ "$before" = "$during" ]; then pass "tmux e2e: captain window pane count unchanged after start (no split-window)"; else fail "tmux e2e: captain window pane count changed ($before -> $during)"; fi
-  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: Grok daemon launched in a separate detached session"; else fail "tmux e2e: no separate Grok daemon session ($rec)"; fi
+  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: daemon launched in a separate detached session"; else fail "tmux e2e: no separate daemon session ($rec)"; fi
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
     FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux "$LAUNCH" stop >/dev/null 2>&1
@@ -1037,8 +926,6 @@ e2e_tmux() {
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
-unit_dead_daemon_restart_preserves_inflight
-unit_native_capability_gate
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state

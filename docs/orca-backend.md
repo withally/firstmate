@@ -49,9 +49,7 @@ Spawn registers the repository, creates an independent worktree, reuses only the
 Exact command flags and response parsing are owned by `bin/backends/orca.sh` and script help.
 
 `fm-peek.sh` reads with `orca terminal read`.
-`fm-send.sh` types and drives the shared verify-and-retry-Enter loop through the fleet-wide classifier in `bin/fm-composer-lib.sh`, retrying Enter without retyping when a slash popup first fills an argument placeholder.
-Confirmed delivery requires positive evidence: a clearance is only confirmed when this submit's own text was first observed pending in the composer.
-Orca is an experimental backend with no typed-text observation of its own, so a cleared composer that never showed the submit's text reports the send as unverified (`unknown`) rather than confirmed - a known limitation kept in place to avoid growing this adapter's compatibility surface.
+`fm-send.sh` types and verifies composer clearance through the fleet-wide classifier in `bin/fm-composer-lib.sh`, retrying Enter without retyping when a slash popup first fills an argument placeholder.
 The composer read is one bounded tail of the live terminal and never pages backward into scrollback, so a stale startup banner cannot compete with the bottom-anchored composer.
 A bare shell row is `unknown`, not an empty agent composer, and plain-text captures degrade a glyph row carrying trailing text to `unknown` rather than a false `pending`.
 The watcher has no native Orca busy signal, so each harness adapter's semantic lifecycle supplies worker state.

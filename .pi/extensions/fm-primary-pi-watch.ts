@@ -1,14 +1,5 @@
 // Firstmate primary watcher bridge for Pi.
 //
-// Away-mode implementation invariant (contract: docs/watcher-continuity.md):
-// While the durable away-mode flag state/.afk exists, the sub-supervisor daemon is
-// the single supervision owner (AGENTS.md section 8). This extension therefore
-// arms nothing, retires any arm child it already owns, and injects no ordinary
-// watcher wake for as long as that flag is present. Nothing is lost: the daemon's
-// own watcher enqueues and triages every event, and it owns escalation to the
-// primary. The generation remembers that it owes a cycle (awayStandby) and its
-// away poll resumes exactly one extension-owned cycle once the flag clears.
-//
 // Session-generation ownership (stated once here):
 // Pi emits session_shutdown for ordinary same-process replacements (/new, /resume,
 // /fork, reload) as well as terminal quit. This extension binds one generation per
@@ -19,7 +10,7 @@
 // callbacks from a prior generation are no-ops against the active replacement.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -63,8 +54,6 @@ type SessionGeneration = {
   retryFailures: number;
   restoring: boolean;
   seq: number;
-  awayStandby: boolean;
-  awayPoll: ReturnType<typeof setInterval> | null;
 };
 
 function refreshWatchToolShell(
@@ -107,9 +96,6 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
-const awayFlag = `${state}/.afk`;
-const awayPollMs = positiveInteger("FM_PI_AWAY_POLL_MS", 2000);
-const awayStandbyMessage = "watcher: standby - away mode owns supervision while state/.afk exists; the away supervisor is the only cycle and this extension resumes one cycle automatically on return";
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -199,10 +185,6 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
   };
 }
 
-function awayModeActive(): boolean {
-  return existsSync(awayFlag);
-}
-
 function createGeneration(): SessionGeneration {
   return {
     id: ++nextGenerationId,
@@ -212,8 +194,6 @@ function createGeneration(): SessionGeneration {
     retryFailures: 0,
     restoring: false,
     seq: 0,
-    awayStandby: false,
-    awayPoll: null,
   };
 }
 
@@ -229,8 +209,6 @@ function stopGeneration(generation: SessionGeneration): void {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   generation.retryTimer = null;
-  if (generation.awayPoll) clearInterval(generation.awayPoll);
-  generation.awayPoll = null;
   if (generation.child) generation.child.kill("SIGTERM");
   generation.child = null;
 }
@@ -290,37 +268,6 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // Away mode is a durable filesystem flag another process owns, so the only
-  // honest way to observe it mid-cycle is to poll it. The poll starts with the
-  // first arm of a generation, costs one existsSync per tick, and is cleared when
-  // the generation stops.
-  function ensureAwayPoll(owner: SessionGeneration): void {
-    if (owner.awayPoll) return;
-    const timer = setInterval(() => syncAwayMode(owner), awayPollMs);
-    timer.unref();
-    owner.awayPoll = timer;
-  }
-
-  // Hand supervision to the away daemon while state/.afk exists, and take exactly
-  // one cycle back when it clears. Retiring the arm child loses nothing: the
-  // watcher enqueues durably and the daemon owns triage and escalation.
-  function syncAwayMode(owner: SessionGeneration): void {
-    if (!generationIsLive(owner)) return;
-    if (awayModeActive()) {
-      if (!owner.child && !owner.retryTimer) return;
-      owner.awayStandby = true;
-      if (owner.retryTimer) clearTimeout(owner.retryTimer);
-      owner.retryTimer = null;
-      const retiring = owner.child;
-      owner.child = null;
-      if (retiring) retiring.kill("SIGTERM");
-      return;
-    }
-    if (!owner.awayStandby || owner.child || owner.retryTimer || owner.restoring) return;
-    owner.awayStandby = false;
-    if (!startArm(owner).ok) owner.awayStandby = true;
-  }
-
   function retryDelay(attempt: number): number {
     return Math.min(retryMaxMs, retryBaseMs * 2 ** Math.max(0, attempt - 1));
   }
@@ -367,10 +314,6 @@ export default function (pi: ExtensionAPI) {
     let failure = "";
     for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
       if (!generationIsLive(owner)) return { failure: "" };
-      if (awayModeActive()) {
-        owner.awayStandby = true;
-        return { failure: "" };
-      }
       const replacement = startArm(owner, predecessorArmPid);
       const successorChild = owner.child;
       if (replacement.ok && successorChild && await waitForReadiness(successorChild)) {
@@ -397,10 +340,6 @@ export default function (pi: ExtensionAPI) {
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
     if (!generationIsLive(owner) || owner.child || owner.retryTimer) return;
-    if (awayModeActive()) {
-      owner.awayStandby = true;
-      return;
-    }
     const ownership = lockOwnership();
     if (ownership !== "owned") {
       surfaceFailure(owner, `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
@@ -434,11 +373,6 @@ export default function (pi: ExtensionAPI) {
       };
     }
     markLoaded();
-    ensureAwayPoll(owner);
-    if (awayModeActive()) {
-      owner.awayStandby = true;
-      return { ok: true, message: awayStandbyMessage };
-    }
     if (owner.child) {
       return {
         ok: true,
@@ -511,14 +445,6 @@ export default function (pi: ExtensionAPI) {
       settleReadiness(false);
       releaseChild();
       if (!generationIsLive(owner)) return;
-      // Away mode took ownership: this close is the hand-off, not a wake to
-      // deliver or a cycle to retry. The queued event stays durable for the
-      // daemon, and the away poll resumes one cycle when the flag clears.
-      if (awayModeActive()) {
-        owner.retryFailures = 0;
-        owner.awayStandby = true;
-        return;
-      }
       const classification = classifyClose(stdout, stderr, code, signal);
       const predecessor = String(armChild.pid ?? "");
       if (classification.kind === "actionable") {
@@ -528,10 +454,6 @@ export default function (pi: ExtensionAPI) {
           const restoration = await restoreAfterActionableClose(owner, predecessor);
           if (generationIsLive(owner)) owner.restoring = false;
           if (!generationIsLive(owner)) return;
-          if (awayModeActive()) {
-            owner.awayStandby = true;
-            return;
-          }
           const message = restoration.failure ? `${classification.message}\n\n${restoration.failure}` : classification.message;
           await sendWake(owner, message, restoration.recovery);
         })().catch(() => {

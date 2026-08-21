@@ -48,22 +48,11 @@ make_stubs() {  # <dir> -> echoes fakebin dir
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
-  send-keys)
-    case " $* " in
-      *' -l '*) printf 'pending\n' > "$FM_TMUX_STATE" ;;
-      *' Enter '*) printf 'empty\n' > "$FM_TMUX_STATE" ;;
-    esac
-    exit 0 ;;
+  send-keys) exit 0 ;;
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
-  capture-pane)
-    if [ "$(cat "$FM_TMUX_STATE" 2>/dev/null || true)" = pending ]; then
-      printf '╭────╮\n│ > typed │\n╰────╯\n'
-    else
-      printf '╭────╮\n│    │\n╰────╯\n'
-    fi
-    exit 0 ;;
+  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
@@ -111,9 +100,8 @@ first_settle() {  # <expected> <label> <harness|--explicit> <message> [selector-
     fm_write_meta "$home/state/$meta_id.meta" "window=sess:win" "harness=$harness"
   fi
   : > "$log"
-  : > "$dir/tmux.state"
   env FM_SEND_SETTLE=0 PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SLEEP_LOG="$log" FM_TMUX_STATE="$dir/tmux.state" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SLEEP_LOG="$log" \
     "$SEND" "$target" "$msg" 2>/dev/null; rc=$?
   expect_code 0 "$rc" "$label: send should succeed"
   first=$(head -1 "$log")

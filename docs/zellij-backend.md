@@ -76,10 +76,6 @@ There is a narrow visible race between those calls that no current Zellij flag c
 
 Literal send uses bracketed paste followed by a separate explicit Enter.
 Before sending Enter, the adapter proves that the selected composer's normalized content changed by exactly the pasted text; an unreadable composer, a paste that lands elsewhere, or unrelated pane output fails without submitting.
-A failure before the paste is issued reports `send-failed`, the one verdict that asserts nothing reached the pane.
-Once the paste has been issued, an unproven append reports `unknown` instead, because the harness may legitimately render the pasted text as something other than the literal bytes and the text may in fact be sitting in the composer.
-Neither verdict submits or confirms delivery.
-Composer reads on the send path require `dump-screen --ansi` and have no plain-dump fallback: the append proof compares content, and without styling an idle placeholder cannot be told from typed text.
 The adapter supports `Enter`, `Esc`, and the one-argument key expression `Ctrl c` through the shared key vocabulary.
 Zellij exposes no cursor-row or native agent-state signal, but `dump-screen --ansi` (verified at 0.44.0) preserves styling, so the composer is read through the same fleet-wide classifier as tmux and herdr (`bin/fm-composer-lib.sh`), with ghost and placeholder text stripped before the verdict.
 Submit acknowledgement requires a positively classified empty composer.

@@ -142,6 +142,7 @@ fm_backend_cmux_bin() {
   fi
   return 1
 }
+
 fm_backend_cmux_tool_check() {
   fm_backend_cmux_bin >/dev/null 2>&1 || { echo "error: backend=cmux selected but the 'cmux' CLI was not found on PATH or at $FM_BACKEND_CMUX_BUNDLE_BIN (https://cmux.com)" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "error: backend=cmux selected but 'jq' is not installed (required to parse cmux's JSON output)" >&2; return 1; }
@@ -487,6 +488,9 @@ fm_backend_cmux_normalize_key() {  # <key>
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+c|Ctrl+C|ctrl-c) printf 'ctrl-c' ;;
+    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
+    # drop the prompt muse restores into the composer after Escape.
+    C-u|c-u|ctrl+u|Ctrl+u|Ctrl+U|ctrl-u) printf 'ctrl-u' ;;
     *) printf '%s' "$1" ;;
   esac
 }

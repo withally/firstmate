@@ -6,8 +6,12 @@
 # bin/backends/{herdr,orca,cmux,zellij}.sh) and by fm-spawn.sh's kimi
 # launch-readiness check.
 #
-# WHY THIS EXISTS: the adapters each carried their own copy of composer shape
-# knowledge, and the copies drifted across backend and harness combinations.
+# WHY THIS EXISTS (tasks fm-composer-shellglyph-safety and
+# fm-composer-thin-adapter-refactor-r1): the adapters each carried their own
+# copy of composer shape knowledge, and every copy drifted. The audited result
+# (data/fm-composer-consolidation-audit-s1) was a 5-adapter x 6-harness matrix
+# in which no adapter was right about more than five harnesses, no two adapters
+# were wrong in the same places, and one harness was unreadable everywhere.
 # The consolidation rule that prevents a recurrence: an adapter CAPTURES a
 # screen and DESCRIBES its capabilities; it never classifies. A new harness
 # shape is taught to fm_composer_classify_screen below, once, and every backend
@@ -42,7 +46,8 @@
 # escalations into whatever it calls empty. Positive container proof means one
 # of the shapes in the catalogue below.
 #
-# THE SHAPE CATALOGUE (verified captures and refresh commands live in
+# THE SHAPE CATALOGUE (all verified against real harnesses; byte-level
+# captures in data/fm-composer-consolidation-audit-s1/report.md and
 # docs/verification/runtime-backends.md):
 #   bordered   - a complete boxed composer: a top border, side-bordered content
 #                rows of the same family, and a bottom border (grok, kimi,
@@ -51,7 +56,7 @@
 #                still starts and ends with the family's rule glyph is
 #                tolerated, not ambiguity.
 #   bare       - an agent prompt glyph row with no border at all (claude `❯`,
-#                codex `›`). The agent glyph is itself the container
+#                codex `›`, muse `⟩`, cursor `→`). The agent glyph is itself the container
 #                proof; a bare SHELL glyph (`>` `$` `%` `#`) never is.
 #   left-bar   - opencode: rows prefixed by a heavy left bar `┃` with no
 #                closing border, holding the idle hint, blank rows, and a
@@ -67,21 +72,25 @@
 # what a pane shows once its agent has exited to a plain login shell - is a
 # genuine empty agent composer ONLY inside a bordered container. On a bare row
 # it is a dead-shell prompt and classifies `unknown` (never a safe injection
-# target). The AGENT glyphs `❯` (claude) and `›` (codex) are a genuine empty
-# agent composer either way. Both glyph sets are declared
+# target). The AGENT glyphs `❯` (claude), `›` (codex), `⟩` (U+27E9, muse),
+# and `→` (U+2192, cursor) are a genuine empty agent composer either way.
+# Both glyph sets are declared
 # exactly once below; every decision reaches them through the declarations.
 #
 # GHOST/PLACEHOLDER TEXT (task afk-herdr-false-pending): a harness fills an
 # otherwise-empty composer with de-emphasized ghost text - claude's rotating
-# prompt suggestion, codex's idle suggestion, grok's placeholder - which a
+# prompt suggestion, codex's idle suggestion, grok's placeholder, or cursor's
+# idle placeholder - which a
 # plain capture cannot tell apart from text a human typed.
 # fm_composer_strip_ghost is the ONE ANSI-aware extractor of "real typed
 # content": it drops every de-emphasized run - dim/faint (SGR 2) AND a
 # dark/muted TRUECOLOR foreground - and keeps only normal-intensity,
 # normally-coloured text.
 #
-# UNICODE WHITESPACE: a harness may separate its prompt glyph from composer
-# content with a non-ASCII space. Real claude 2.x draws its EMPTY composer as exactly `❯`
+# UNICODE WHITESPACE (issue #1988; open PRs #1995/#2047 target the same
+# defect and #1995's naming is adopted here so the implementations converge):
+# a harness may separate its prompt glyph from composer content with a
+# non-ASCII space. Real claude 2.x draws its EMPTY composer as exactly `❯`
 # followed by U+00A0 NO-BREAK SPACE. POSIX `[[:space:]]` includes U+00A0 only
 # under some locales, so every trim used to be locale-dependent: the same live
 # pane read `empty` under a UTF-8 shell and `pending` under LC_ALL=C (a
@@ -180,6 +189,11 @@ fm_composer_normalize_trim_var() {  # <varname>
 #     no fleet harness uses it for ghost text, so it is kept (real text wins:
 #     under-stripping merely defers, which the max-defer alarm surfaces, while
 #     over-stripping would inject over real input).
+# Raising FM_COMPOSER_GHOST_LUMA_MAX is not free: muse draws its `⟩` prompt glyph
+# in truecolor 38;2;90;160;255, luminance ~149.9 (verified, muse 0.1.0-R708.1),
+# the tightest margin over the 128 default in the fleet. Above ~150 that glyph is
+# stripped as ghost text, which is why the bare-glyph fallback below must also
+# recognise every agent glyph from the UNSTRIPPED plain row.
 # The dim/faint and dark-foreground states are tracked together as "de-emphasis";
 # codes are processed left to right within a sequence, so "ESC[0;2m" reads as dim.
 # LC_ALL=C makes awk walk bytes, so multibyte glyphs (e.g. ❯) and de-emphasised
@@ -260,21 +274,102 @@ fm_composer_strip_ghost() {
   '
 }
 
+
+# --- Delivery-only rendered busy footers (backend-agnostic) -------------------
+#
+# These live here, in the ONE shared composer/delivery owner, rather than in any
+# single backend adapter, because every backend needs them for the SAME job:
+# proving a submitted Enter actually landed. Keeping them in bin/fm-tmux-lib.sh
+# made cursor's signature reachable only from tmux, even though herdr, zellij,
+# cmux, and orca run the same harnesses and face the same acknowledgement
+# problem.
+#
+# This is a DELIVERY guard, deliberately NOT a worker-state source. The semantic
+# busy contract - what firstmate records and supervises on - is owned by
+# bin/fm-busy-lib.sh, which forbids classifying a harness from rendered text.
+# Matching a footer to confirm a keystroke landed is a different question from
+# asking what a worker is doing, and the two must not be conflated.
+# Delivery-only rendered busy footers per harness. claude/codex: "esc to
+# interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel".
+# Claude's current spinner has a rotating glyph and word, but every active-turn
+# line has an ellipsis followed by a parenthesized elapsed duration. Keep this
+# signature separate from the shared default because that shape is not generic
+# enough to classify arbitrary harness output safely.
+# Kimi's anchored moon-phase spinner is separate because bare moon glyphs in
+# ordinary output must not classify another harness as busy. Leading whitespace is
+# OPTIONAL; whitespace on both sides of the separator is REQUIRED because every
+# captured spinner row had it. A zero-whitespace form has NEVER been observed and
+# is deliberately not matched. The line end is intentionally unanchored because
+# rotating tip text follows and is not required to be present. The idle status
+# bar's lowercase `thinking` label and independently rotating tip text are not
+# busy signals on their own.
+# The full moon-phase set remains locale- and emoji-font-sensitive because Kimi
+# exposes no stable ASCII busy token.
+# The harness-less default is the UNION of the per-harness tokens below, used
+# when a caller has no recorded harness for the pane (the submit cores read the
+# baseline and the post-Enter transition this way). cursor's `ctrl+c to stop` is
+# part of that union for the same reason the others are: without it a cursor
+# submit could never be acknowledged, because cursor parks its terminal cursor
+# outside its composer and the composer verdict is therefore always `unknown`.
+FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
+FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
+FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
+FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
+FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
+FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
+# cursor-agent's busy footer. The TOKEN is matched, not the spinner verb: the
+# same version rendered both `Working` and `Running` beside its braille spinner
+# in two consecutive turns, while `ctrl+c to stop` was present for the whole
+# turn and absent the instant it ended (verified live, 2026.08.11-e8db854).
+# This is a DELIVERY guard only - it acknowledges a submit and gates away-mode
+# injection. Cursor's recorded worker state comes from its transcript fold in
+# bin/fm-busy-lib.sh, never from this row.
+FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
+FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
+
+fm_busy_lines_match() {  # [harness]
+  local harness=${1:-} lines regex
+  IFS= read -r -d '' lines || true
+  if [ -n "${FM_BUSY_REGEX:-}" ]; then
+    regex=$FM_BUSY_REGEX
+  else
+    case "$harness" in
+      claude) regex=$FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT ;;
+      codex) regex=$FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT ;;
+      opencode) regex=$FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT ;;
+      pi|pi-signed) regex=$FM_DELIVERY_PI_BUSY_REGEX_DEFAULT ;;
+      grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
+      kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
+      cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
+      '') regex=$FM_DELIVERY_BUSY_REGEX_DEFAULT ;;
+      *)
+        # A supplied harness must never borrow another harness's signature.
+        # Register its verified signature explicitly before classifying it busy.
+        regex=
+        ;;
+    esac
+  fi
+  [ -n "$regex" ] && printf '%s' "$lines" | grep -qiE "$regex"
+}
+
 # The prompt glyphs, each declared exactly once (see THE SAFETY RULE above).
 # AGENT glyphs are a genuine empty agent composer on any row, bordered or bare.
 # SHELL glyphs are one only INSIDE a composer container; on a bare row they are
 # a dead-shell prompt and must never read `empty`. Newline-separated and
 # consumed by `read` rather than word splitting, so `$`, `%`, and `#` stay
 # literal and no entry is ever exposed to pathname expansion.
-FM_COMPOSER_AGENT_PROMPT_GLYPHS=$(printf '%s\n' '❯' '›')
+FM_COMPOSER_AGENT_PROMPT_GLYPHS=$(printf '%s\n' '❯' '›' '⟩' '→')
 FM_COMPOSER_SHELL_PROMPT_GLYPHS=$(printf '%s\n' '>' '$' '%' '#')
 
 # The ONE fleet-wide idle-placeholder set: composer text a harness renders in
 # an EMPTY composer that a plain capture cannot tell from typed text. Grok's
 # bordered placeholder and opencode's left-bar hint (which continues with a
-# rotating quoted suggestion, hence the unanchored tail). FM_COMPOSER_IDLE_RE
-# overrides for an unverified harness; matching is case-insensitive.
-FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything\.\.\.'
+# rotating quoted suggestion, hence the unanchored tail). cursor-agent renders
+# two, both anchored: `Plan, search, build anything` in a fresh session and
+# `Add a follow-up` once a turn has completed (verified live on cursor-agent
+# 2026.08.11-e8db854). FM_COMPOSER_IDLE_RE overrides for an unverified harness;
+# matching is case-insensitive.
+FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything\.\.\.|^Plan, search, build anything$|^Add a follow-up$'
 
 # Opencode draws a mode/model footer line INSIDE its left-bar composer
 # ("Build · GPT-5.5 Fast OpenAI · high"). It is composer furniture, not typed
@@ -380,15 +475,15 @@ fm_composer_idle_matches() {
 #              cannot shift underneath it.
 #   [idle_case] `sensitive` (default) or `insensitive`.
 #   [plain_content] the UNSTRIPPED plain row, consulted when ghost stripping
-#              emptied an unbordered row: the unstripped agent glyph is an
-#              independent structural signal that keeps the pane readable.
+#              emptied an unbordered row: muse's `⟩` sits at luminance ~150,
+#              close enough to the ghost threshold that a raised threshold
+#              strips it, and the plain row is what keeps that pane readable.
 # Content and plain_content are normalized and re-trimmed on entry, so the
 # verdict never depends on which whitespace alphabet the calling adapter
 # trimmed with.
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content] [placeholder-position] [styled]
   local bordered=$1 idle_re=${3:-} idle_case=${4:-sensitive} content plain_content glyph=''
-  local placeholder_position=${6:-0} styled=${7:-1} idle_collision=0 legacy_call=0
-  [ "$#" -ge 6 ] || legacy_call=1
+  local placeholder_position=${6:-0} styled=${7:-1} idle_collision=0
   content=$2
   fm_composer_normalize_trim_var content
   plain_content=${5:-$2}
@@ -414,10 +509,35 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
   fm_composer_normalize_trim_var content
   [ -n "$content" ] || { printf 'empty'; return 0; }
   fm_composer_idle_matches "$content" "$idle_re" "$idle_case" && idle_collision=1
-  if [ "$idle_collision" = 1 ]; then
-    if [ "$legacy_call" = 1 ]; then
-      printf 'empty'; return 0
+  # Ghost stripping can leave a REMNANT of an idle placeholder rather than
+  # emptying it, because a terminal draws the cell under its cursor in reverse
+  # video (SGR 7) - neither dim/faint nor a dark foreground, so that one
+  # character survives a stripper built for the other two. cursor-agent renders
+  # exactly this shape: a dim `Plan, search, build anything` whose first
+  # character is reverse-video, leaving a lone `P` (verified live on
+  # cursor-agent 2026.08.11-e8db854). Judging that remnant on its own reads
+  # `pending` on a genuinely idle pane.
+  # The plain row is the styling-independent signal, so consult it here. This
+  # stays safe in the false-EMPTY direction because it demands the remnant be a
+  # PROPER, strictly shorter substring of a plain row that matches a full
+  # anchored placeholder: real typed text is uniformly bright, so stripping
+  # leaves it EQUAL to the plain row and it falls through to `pending` below.
+  # Typing a strict substring of a placeholder is equally safe - the plain row
+  # is then that substring, which the anchored placeholder pattern cannot match.
+  if [ "$idle_collision" != 1 ] && [ "$styled" = 1 ] && [ -n "$plain_content" ]; then
+    local plain_body=$plain_content plain_glyph=''
+    if fm_composer_leading_prompt_glyph_var plain_glyph "$plain_body"; then
+      plain_body=${plain_body#*"$plain_glyph"}
     fi
+    fm_composer_normalize_trim_var plain_body
+    if [ "${#content}" -lt "${#plain_body}" ] \
+       && fm_composer_idle_matches "$plain_body" "$idle_re" "$idle_case"; then
+      case "$plain_body" in
+        *"$content"*) printf 'empty'; return 0 ;;
+      esac
+    fi
+  fi
+  if [ "$idle_collision" = 1 ]; then
     if [ "$placeholder_position" = 1 ] && [ "$bordered" = 1 ] && [ "$styled" != 1 ]; then
       printf 'empty'; return 0
     fi
@@ -464,17 +584,6 @@ _fm_composer_pi_separator_row() {  # <trimmed-row>
   return 1
 }
 
-# 0 when <side-family> is the side border a <bottom-family> border closes.
-# `+---+` is deliberately absent: an ascii border row is indistinguishable from
-# a top border, so the scan already reads it as one and an ascii box can never
-# be clipped.
-_fm_composer_clipped_side_family_ok() {  # <bottom-family> <side-family>
-  case "$1:$2" in
-    rounded:single|light:single|heavy:heavy|double:double) return 0 ;;
-  esac
-  return 1
-}
-
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
 # has no nameref); they are internal to this owner.
 _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
@@ -489,13 +598,6 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_BOX_BOTTOM=-1
   FM_COMPOSER_SCAN_BOX_AMBIG=0
   FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
-  # Clipped-box results: a bottom border closing a contiguous run of
-  # same-family side-bordered rows that reaches the FIRST captured row, i.e. a
-  # box whose top border sits above the bounded tail window rather than a
-  # malformed structure.
-  FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST=-1
-  FM_COMPOSER_SCAN_CLIPPED_BOX_LAST=-1
-  FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM=-1
   FM_COMPOSER_SCAN_UNSAFE=0
   FM_COMPOSER_SCAN_CURSOR_EDGE=0
   FM_COMPOSER_SCAN_BARE_ROW=-1
@@ -507,7 +609,6 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_PI_OPEN=-1
   FM_COMPOSER_SCAN_PI_CLOSE=-1
   FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=-1
-  local clip_start=-1 clip_family='' clip_indent='' row_side_family
   local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max
   pi_max=$FM_COMPOSER_PI_MAX_LINES
   case "$pi_max" in ''|*[!0-9]*|0) pi_max=8 ;; esac
@@ -633,13 +734,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
         fi
         FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
       else
-        if [ "$clip_start" -eq 0 ] && [ "$row" -gt 0 ] && [ "$indent" = "$clip_indent" ] \
-           && _fm_composer_clipped_side_family_ok "$family" "$clip_family"; then
-          FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST=0
-          FM_COMPOSER_SCAN_CLIPPED_BOX_LAST=$((row - 1))
-          FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM=$row
-          FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
-        elif [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -lt 0 ]; then
+        if [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -lt 0 ]; then
           FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=$row
         fi
         if [ -n "$cy" ]; then
@@ -684,38 +779,6 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
         *) valid=0 ;;
       esac
     fi
-    # Clipped-box run tracking, independent of the complete-box state machine
-    # and updated AFTER it so a bottom border still sees the run that ended on
-    # the row above it. Any non-side-bordered row, a family change, or an
-    # indent change restarts the run, so a run that still starts at row 0 is
-    # contiguous from the first captured row.
-    case "$trimmed" in
-      '│'*'│') row_side_family=single ;;
-      '┃'*'┃') row_side_family=heavy ;;
-      '║'*'║') row_side_family=double ;;
-      '|'*'|') row_side_family=ascii ;;
-      *) row_side_family= ;;
-    esac
-    if [ -z "$row_side_family" ]; then
-      clip_start=-1
-      clip_family=
-      clip_indent=
-    elif [ "$clip_start" -lt 0 ] || [ "$row_side_family" != "$clip_family" ] \
-         || [ "$indent" != "$clip_indent" ]; then
-      clip_start=$row
-      clip_family=$row_side_family
-      clip_indent=$indent
-    fi
-    # Any side-bordered row BELOW a clipped box withdraws it: the container it
-    # belongs to is newer, so the clipped candidate is stale exactly as a lower
-    # incomplete box makes an earlier complete box stale. A lower COMPLETE box
-    # still wins on its own; only the clipped candidate is withdrawn here.
-    if [ -n "$row_side_family" ] && [ "$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM" -ge 0 ] \
-       && [ "$row" -gt "$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM" ]; then
-      FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST=-1
-      FM_COMPOSER_SCAN_CLIPPED_BOX_LAST=-1
-      FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM=-1
-    fi
     row=$((row + 1))
   done <<EOF
 $pane
@@ -752,6 +815,12 @@ _fm_composer_titled_bottom_ok() {  # <family> <bottom-inner> <top-spaces>
 
 # fm_composer_row_has_edge: 0 when the trimmed row starts or ends with a
 # box-drawing/edge glyph - a structural row, never an input row.
+# The half-block glyphs are edges too. Herdr draws a composer's top and bottom
+# rules with ▄ and ▀ instead of the box-drawing family, so without them a bare
+# composer's WRAP region walks straight through its own closing rule and
+# swallows the footer below it - which reads as real typed text and turns an
+# idle pane into a false `pending`. Measured live on a herdr cursor pane, where
+# the wrap region ran from the composer row through the model and path rows.
 fm_composer_row_has_edge() {  # <trimmed-row>
   local row=$1
   fm_composer_normalize_trim_var row
@@ -759,7 +828,8 @@ fm_composer_row_has_edge() {  # <trimmed-row>
     '│'*|*'│'|'┃'*|*'┃'|'║'*|*'║'|'╭'*|*'╭'|'╮'*|*'╮'|\
     '┌'*|*'┌'|'┐'*|*'┐'|'╔'*|*'╔'|'╗'*|*'╗'|'┏'*|*'┏'|'┓'*|*'┓'|\
     '╰'*|*'╰'|'╯'*|*'╯'|'└'*|*'└'|'┘'*|*'┘'|'╚'*|*'╚'|'╝'*|*'╝'|\
-    '┗'*|*'┗'|'┛'*|*'┛'|'─'*|*'─'|'━'*|*'━'|'═'*|*'═'|'|'*|*'|'|'+'*|*'+')
+    '┗'*|*'┗'|'┛'*|*'┛'|'─'*|*'─'|'━'*|*'━'|'═'*|*'═'|'|'*|*'|'|'+'*|*'+'|\
+    '▀'*|*'▀'|'▄'*|*'▄'|'▁'*|*'▁'|'▔'*|*'▔')
       return 0
       ;;
   esac
@@ -954,32 +1024,17 @@ _fm_composer_leftbar_floor_row() {  # <trimmed-row>
 }
 
 _fm_composer_select_cursorless() {
-  local plain=$1 generic=-1 next boundary raw trimmed box_bottom=-1
+  local plain=$1 generic=-1 next boundary raw trimmed
   FM_COMPOSER_SELECTED_KIND=
   FM_COMPOSER_SELECTED_FIRST=-1
   FM_COMPOSER_SELECTED_LAST=-1
   FM_COMPOSER_SELECTED_AMBIG=0
   if [ "$FM_COMPOSER_SCAN_BOX_BOTTOM" -ge 0 ]; then
     generic=$FM_COMPOSER_SCAN_BOX_BOTTOM
-    box_bottom=$FM_COMPOSER_SCAN_BOX_BOTTOM
     FM_COMPOSER_SELECTED_KIND=box
     FM_COMPOSER_SELECTED_FIRST=$((FM_COMPOSER_SCAN_BOX_TOP + 1))
     FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_BOX_BOTTOM - 1))
     FM_COMPOSER_SELECTED_AMBIG=$FM_COMPOSER_SCAN_BOX_AMBIG
-  fi
-  # A composer taller than the bounded tail window keeps only its content rows
-  # and its bottom border in view. The side borders still carry the SAME
-  # container proof a complete box has, so the shape is a box - but its top
-  # border, and with it the whole geometry proof, is out of window, so it is
-  # always AMBIGUOUS: typed text reads pending-unproven (which still earns its
-  # Enter retries) and blank rows read unknown, never a positive empty.
-  if [ "$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM" -gt "$generic" ]; then
-    generic=$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM
-    box_bottom=$FM_COMPOSER_SCAN_CLIPPED_BOX_BOTTOM
-    FM_COMPOSER_SELECTED_KIND=box
-    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_CLIPPED_BOX_FIRST
-    FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_CLIPPED_BOX_LAST
-    FM_COMPOSER_SELECTED_AMBIG=1
   fi
   if [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$generic" ]; then
     generic=$FM_COMPOSER_SCAN_BARE_ROW
@@ -1030,7 +1085,7 @@ _fm_composer_select_cursorless() {
      || [ "$FM_COMPOSER_SELECTED_KIND" = leftbar ]; then
     boundary=$FM_COMPOSER_SELECTED_LAST
     if [ "$FM_COMPOSER_SELECTED_KIND" = box ]; then
-      boundary=$box_bottom
+      boundary=$FM_COMPOSER_SCAN_BOX_BOTTOM
     else
       next=$((boundary + 1))
       raw=$(_fm_composer_screen_row "$next" "$plain")
@@ -1244,33 +1299,42 @@ EOF
 # retyping would duplicate it. Proven pending (and pending-unproven) retries
 # consume the budget; any other verdict returns immediately, so `unknown`
 # stays a loud refusal rather than a blind retry into an unreadable pane.
-# tmux keeps its own richer core (bin/fm-tmux-lib.sh: the busy-queued-Enter
-# and idle-baseline turn-started conversions its busy primitive enables), and
-# herdr confirms through native agent-state; both consume the same shared
-# verdict, so no shape knowledge lives in any of the three loops.
-# <observed> declares whether the caller positively observed this submit's
-# own typed text in the composer before entering the loop (zellij's
-# observed-append precheck). Without that evidence - and until a loop read
-# proves it via pending - a post-Enter 'empty' may be a stale pre-typing
-# frame rather than a cleared composer, so it degrades to 'unknown' instead
-# of confirming delivery.
-fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label] [observed]
-  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} observed=${7:-0} i=0 state
+# tmux and herdr keep richer cores that consume this same shared verdict plus
+# fm_composer_queued_enter_verdict; no shape knowledge lives in any loop.
+fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label]
+  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} i=0 state
   while :; do
     "$send_key_fn" "$target" Enter "$expected_label" || true
     sleep "$sleep_s"
     state=$("$state_fn" "$target" "$expected_label")
     case "$state" in
-      pending|pending-unproven) observed=1 ;;
-      empty)
-        if [ "$observed" = 1 ]; then printf 'empty'; else printf 'unknown'; fi
-        return 0
-        ;;
+      pending|pending-unproven) ;;
       *) printf '%s' "$state"; return 0 ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || { printf '%s' "$state"; return 0; }
   done
+}
+
+# fm_composer_queued_enter_verdict: the ONE busy-queued-Enter policy.
+# After Enter retries are spent, convert a structurally proven pending
+# composer given a delivery-busy signal from the adapter:
+#   pending + busy  -> empty   (Enter was accepted and queued; do not re-send)
+#   pending + idle  -> pending (genuine swallow; caller must not assume delivery)
+#   pending + unknown -> pending (unreadable busy is not proof of a queue)
+# Every other composer verdict is returned unchanged, so pending-unproven,
+# empty, and unknown never receive this conversion.
+# Adapters supply their own busy primitive (tmux: fm_pane_is_busy; herdr:
+# native agent_status=working, or a rendered busy footer on an idle native
+# baseline). This function does not read a pane.
+fm_composer_queued_enter_verdict() {  # <composer-state> <busy|idle|unknown>
+  local state=$1 busy=${2:-}
+  [ "$state" = pending ] || { printf '%s' "$state"; return 0; }
+  if [ "$busy" = busy ]; then
+    printf 'empty'
+  else
+    printf 'pending'
+  fi
 }
 
 _fm_composer_classify_pi_rows() {  # <screen> <styled>

@@ -2,7 +2,7 @@ Mode: Pi extension background wake.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
-   After handling all emitted wakes and reconciling open decisions, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
+   After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
 2. Confirm the Pi primary auto-loaded both project extensions (plain `pi` or `pi-signed`, after approving project trust once per clone); if not, restart the selected executable with `-e __FM_PI_TURNEND_EXT__ -e __FM_PI_EXT__` as a trust-free fallback.
 3. First cycle only: make the one required `fm_watch_arm_pi` call.
    Use `/fm-watch-arm-pi` only as a human-entered fallback.
@@ -18,8 +18,6 @@ When this session owns supervision and away mode is not active:
    A redundant call while the extension owns an arm child or scheduled retry is an ownership-based `watcher: unchanged` no-op, not an independent health claim.
 11. Never use shell `&` for watcher supervision.
    The arm mechanism above is extension-owned, not a model tool call, but a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at `__FM_PI_TURNEND_EXT__`).
-
-While away mode is active, the away supervisor owns the only supervision cycle: `fm_watch_arm_pi` reports standby instead of arming, the extension retires any arm child it already holds, and it resumes exactly one cycle after away mode clears (`docs/watcher-continuity.md`).
 
 The turn-end guard extension lives at `__FM_PI_TURNEND_EXT__`.
 The watcher extension lives at `__FM_PI_EXT__`.

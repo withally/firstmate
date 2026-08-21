@@ -14,7 +14,11 @@
 # OpenCode and pi adapters use the same predicate and force one bounded
 # follow-up because their turn-end events are passive. Grok delegates native
 # blocking when its running Stop payload advertises that capability, with one
-# bounded resume fallback for payloads from pre-native processes.
+# bounded resume fallback for payloads from pre-native processes. Cursor calls
+# this guard back with --cursor from bin/fm-turnend-guard-cursor.sh and renders
+# exit 2 as one bounded follow-up, because exit 2 is a silent no-op on Cursor's
+# stop step; without that flag a Cursor-shaped payload is the Claude-settings
+# duplicate Cursor also loads, and this guard stands down.
 # See docs/turnend-guard.md for the per-harness mechanics, validation evidence,
 # and fail-open tradeoffs.
 #
@@ -68,6 +72,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
+CURSOR_MODE=0
 SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
@@ -78,7 +83,8 @@ case "$BLOCK_BUDGET" in ''|*[!0-9]*|0) BLOCK_BUDGET=3 ;; esac
 for arg in "$@"; do
   case "$arg" in
     --claude) CLAUDE_MODE=1 ;;
-    *) echo "usage: $(basename "$0") [--claude]" >&2; exit 2 ;;
+    --cursor) CURSOR_MODE=1 ;;
+    *) echo "usage: $(basename "$0") [--claude|--cursor]" >&2; exit 2 ;;
   esac
 done
 
@@ -86,6 +92,8 @@ done
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+# shellcheck source=bin/fm-hook-host-lib.sh
+. "$SCRIPT_DIR/fm-hook-host-lib.sh"
 
 # Read the whole turn-end hook payload once; never block on unreadable/absent
 # stdin.
@@ -96,6 +104,15 @@ PAYLOAD=$(cat 2>/dev/null || true)
 # "missing jq -> silent no-op" degrade). Without it we cannot safely read the
 # loop-guard field, so we must never block - fail open, not noisy.
 command -v jq >/dev/null 2>&1 || exit 0
+
+# A Cursor primary also loads the tracked Claude settings, and Cursor's own
+# registration owns its turn boundary through bin/fm-turnend-guard-cursor.sh,
+# which calls this guard back with --cursor. Without that flag a Cursor-delivered
+# payload is the Claude-compatibility duplicate and must not create a second
+# continuation path (docs/turnend-guard.md "Harness integrations").
+if [ "$CURSOR_MODE" -eq 0 ] && fm_hook_payload_is_foreign_host "$PAYLOAD"; then
+  exit 0
+fi
 
 STOP_HOOK_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '
   if type != "object" then error("payload")
@@ -146,18 +163,6 @@ if [ "$FM_SUP_NEEDED" = false ]; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
-# Away mode: the supervise daemon owns the watcher and deliberately runs it
-# one-shot, so state/.watch.lock is legitimately absent between wakes and cannot
-# prove supervision here. The identity-matched daemon lock can, and it is the
-# same boundary bin/fm-session-start.sh reports from. A live daemon allows the
-# turn to end in every mode, decided ahead of the watcher-health and auto-arm
-# bookkeeping below so neither can block on it; a missing one blocks with
-# away-mode recovery guidance and never engages the ordinary Claude auto-arm or
-# its degraded-allow budget.
-if [ "$FM_SUP_AFK" = true ] && fm_daemon_lock_alive "$STATE" "$SCRIPT_DIR/fm-supervise-daemon.sh"; then
-  budget_reset
-  exit 0
-fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
@@ -167,7 +172,7 @@ fi
 block_stop() {
   local afk x_mode reason rule
   afk=0
-  [ "$FM_SUP_AFK" = true ] && afk=1
+  [ -e "$STATE/.afk" ] && afk=1
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
   reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
@@ -180,12 +185,10 @@ block_stop() {
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"
-    elif [ "$FM_SUP_AFK" = true ]; then
-      printf '●  Away mode needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     else
       printf '●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     fi
-    if [ "$CLAUDE_MODE" -eq 1 ] && [ "$FM_SUP_AFK" != true ]; then
+    if [ "$CLAUDE_MODE" -eq 1 ]; then
       printf '●  The Stop-owned auto-arm did not claim this home either, so recovery is NOT already under way.\n'
     fi
     printf '●  %s\n' "$reason"
@@ -193,10 +196,6 @@ block_stop() {
   } >&2
   exit 2
 }
-
-if [ "$FM_SUP_AFK" = true ]; then
-  block_stop
-fi
 
 if [ "$CLAUDE_MODE" -eq 0 ]; then
   block_stop

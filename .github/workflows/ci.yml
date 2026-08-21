@@ -1,36 +1,17 @@
 name: CI
 
-# A no-mistakes PR arrives as a rapid push + open + amend/force-push (and
-# sometimes an automated close/reopen) sequence, and GitHub intermittently
-# creates zero workflow runs for the pull_request `opened` and `reopened`
-# events in that flow - the drop hits every pull_request-triggered workflow
-# equally, so only the git push that raises `synchronize` fires reliably.
-# Trigger CI on the working-branch push too so every head is validated by that
-# reliable push webhook, independent of opened/reopened delivery. The `main`
-# push trigger keeps validating every landed commit.
-# See docs/verification/ci-trigger.md.
 on:
   push:
-    branches:
-      - main
-      - 'fm/**'
+    branches: [main]
   pull_request:
     branches: [main]
-
-# Collapse the push run and the pull_request run for the same feature-branch
-# head into one run (no double-run), and supersede an in-flight feature-branch
-# run when a newer commit is pushed. `main` pushes get a unique per-commit group
-# so every landed commit is still validated on its own, exactly as before.
-concurrency:
-  group: "ci-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && github.sha || github.head_ref || github.ref_name }}"
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    name: Lint shell scripts
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -39,8 +20,15 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      # Single owner of the lint definition (file set + config + version). Do not
-      # re-spell the shellcheck command here; keep CI and the pre-push gate on it.
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Single owner of the lint definition (shell file set, config, version,
+      # and GitHub workflow lint). Do not re-spell the checks here; keep CI
+      # and the pre-push gate on this script so a self-broken ci.yml still
+      # fails locally before merge.
       - run: bin/fm-lint.sh
 
   # Deterministic proof that portable parallel shards + portable serial + Herdr
@@ -70,6 +58,11 @@ jobs:
         run: |
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Install tasks-axi
         run: |
@@ -102,6 +95,11 @@ jobs:
         run: |
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Install tasks-axi
         run: |
@@ -149,6 +147,11 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Require tmux for e2e tests
         run: |
           set -eu
@@ -189,10 +192,11 @@ jobs:
   tests-herdr:
     name: Behavior tests (Herdr)
     runs-on: ubuntu-latest
-    # The family-run step owns the tighter hang tripwire so a wedged suite
-    # fails with time left for always() cleanup and timing-artifact upload.
-    # This job cap remains the last-resort backstop for the complete lane.
-    timeout-minutes: 40
+    # Healthy runs finish around 7 minutes. This job cap is a last-resort hang
+    # tripwire, not the expected end of the lane. The family-run step owns the
+    # tighter bound so a wedged suite fails fast with always() cleanup and
+    # timing artifacts still uploaded (docs/fm-test-portable-shards.md).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
         with:
@@ -272,10 +276,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-herdr"
           bin/fm-herdr-ci-cleanup.sh snapshot "$RUNNER_TEMP/fm-herdr/sessions-before.json"
       - name: Run real-Herdr family (serial, required)
-        # Five recent healthy fork runs finished in 6.3-6.8 minutes. Fifteen
-        # minutes leaves over 2x margin while reserving 25 minutes below the
-        # job backstop for cleanup and artifact collection.
-        timeout-minutes: 15
+        # Comfortably above the ~7 min healthy wall and far below the 75 min
+        # job backstop. A hang must fail this step so cleanup still runs.
+        timeout-minutes: 20
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
@@ -392,10 +395,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Symlinks must stay intact
+      - name: Compatibility pointers must stay intact
         run: |
           set -eu
-          [ "$(readlink CLAUDE.md)" = "AGENTS.md" ] || { echo "::error::CLAUDE.md must be a symlink to AGENTS.md"; exit 1; }
+          [ ! -L CLAUDE.md ] || { echo "::error::CLAUDE.md must be a real @AGENTS.md pointer file, not a symlink"; exit 1; }
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          printf '%s\n' \
+            '<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->' \
+            '@AGENTS.md' >"$tmp"
+          cmp -s CLAUDE.md "$tmp" || { echo "::error::CLAUDE.md must be the canonical @AGENTS.md pointer"; exit 1; }
           [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
       - name: Personal fleet paths must not be tracked
         run: |

@@ -157,10 +157,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/lavish-review/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": ".agents/skills/process-event-sources/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -170,10 +166,6 @@
     },
     {
       "path": ".agents/skills/quota-array-dispatch/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/running-gauntlet-loops/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -205,7 +197,15 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "GROK_BOT.md",
+      "audience": "public-product"
+    },
+    {
       "path": "README.md",
+      "audience": "public-product"
+    },
+    {
+      "path": "VISION.md",
       "audience": "public-product"
     },
     {
@@ -305,6 +305,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "docs/supervision-protocols/cursor.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/supervision-protocols/grok.md",
       "audience": "agent-runtime"
     },
@@ -333,15 +337,11 @@
       "audience": "operator-current"
     },
     {
-      "path": "docs/verification/brief-shape-ab.md",
-      "audience": "maintainer-verification"
-    },
-    {
-      "path": "docs/verification/ci-trigger.md",
-      "audience": "maintainer-verification"
-    },
-    {
       "path": "docs/verification/dispatch-auth.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/muse.md",
       "audience": "maintainer-verification"
     },
     {

@@ -57,8 +57,7 @@ ack_return() {  # <case-dir> <return-output>
   local dir=$1 output=$2 sequence generation
   sequence=$(printf '%s\n' "$output" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' | tail -1)
   generation=$(printf '%s\n' "$output" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' | tail -1)
-  [ -n "$sequence" ] && [ -n "$generation" ] \
-    || fail "return output lacked a generation-bound post-handling acknowledgement: $output"
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "return output lacked a generation-bound post-handling acknowledgement: $output"
   FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
     "$dir/bin/fm-wake-drain.sh" --ack-through "$sequence" --recovery-generation "$generation"
 }
@@ -85,7 +84,6 @@ test_return_gate_orders_catchup_before_bearings() {
   date +%s > "$dir/home/state/.afk"
   printf 'repair-task.status: blocked synthetic dependency\n' > "$dir/home/state/.subsuper-escalations"
   printf 'fm away-mode inject WEDGED: 4555s undelivered\n' > "$dir/home/state/.subsuper-inject-wedged"
-  printf 'schema=fm-away-digest.v1\nid=digest-fixture\nphase=uncertain\nverdict=pending\n' > "$dir/home/state/.subsuper-digest-inflight"
   {
     printf '1784074271\t2\tsignal\trepair-task.status\tsignal: synthetic status\n'
     printf 'wake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked synthetic dependency\n'
@@ -104,7 +102,6 @@ test_return_gate_orders_catchup_before_bearings() {
     || fail "the separate drain annotation was not retained as away-return evidence"
   grep -F $'evidence\twedge\tfm away-mode inject WEDGED: 4555s undelivered' "$gate" >/dev/null || fail "wedge evidence was not retained in the durable gate"
   grep -F $'evidence\tescalation\trepair-task.status: blocked synthetic dependency' "$gate" >/dev/null || fail "buffered escalation evidence was not retained in the durable gate"
-  grep -F $'evidence\tdelivery-uncertain\tid=digest-fixture' "$gate" >/dev/null || fail "in-flight digest identity was not retained in the durable gate"
   [ "$(wc -l < "$dir/home/stop.log" | tr -d ' ')" -eq 1 ] || fail "return begin did not stop away mode exactly once"
   [ -s "$dir/home/state/.fake-drain" ] || fail "blocked return acknowledged its emitted wake before handling completed"
   [ ! -e "$dir/home/state/.fake-drain-acks" ] || fail "blocked return crossed the post-handling acknowledgement boundary"
@@ -130,7 +127,6 @@ test_return_gate_orders_catchup_before_bearings() {
   [ "$wake_count" -eq 1 ] || fail "repeated begin duplicated retained wake evidence ($wake_count copies)"
   [ "$(grep -c $'^evidence\twedge\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated retained wedge evidence"
   [ "$(grep -c $'^evidence\tescalation\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated retained escalation evidence"
-  [ "$(grep -c $'^evidence\tdelivery-uncertain\tid=digest-fixture' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated retained digest evidence"
 
   printf 'resolved [key=synthetic-dependency]: refreshed the synthetic token and resumed the task\n' >> "$dir/home/state/repair-task.status"
   out=$(run_return "$dir" check) || fail "resolved blocker did not clear return catch-up: $out"
@@ -138,7 +134,6 @@ test_return_gate_orders_catchup_before_bearings() {
   [ ! -e "$gate" ] || fail "successful check left the return gate behind"
   [ ! -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check left delivered escalation state behind"
   [ ! -e "$dir/home/state/.subsuper-inject-wedged" ] || fail "successful check left the wedge marker behind"
-  [ ! -e "$dir/home/state/.subsuper-digest-inflight" ] || fail "successful check left in-flight digest state behind"
   [ -s "$dir/home/state/.fake-drain" ] || fail "successful return consumed its wake before handling completed"
   [ ! -e "$dir/home/state/.fake-drain-acks" ] || fail "successful return acknowledged its wake inside evidence publication"
   assert_contains "$out" 'WAKE_ACK_REQUIRED: after handling completes' "successful return did not hand acknowledgement to the handling turn"
@@ -277,47 +272,7 @@ test_check_retries_recorded_terminal_teardown() {
   pass "check retries recorded terminal teardown and keeps catch-up gated until success"
 }
 
-# A `queued` record means the digest was never typed at all - the opposite of
-# delivery-uncertain. Telling the captain it MAY have landed changes whether
-# they must re-read those escalations as new, so the catch-up must label the
-# two cases distinctly and split the buffer at the daemon's unresolved prefix.
-test_catchup_labels_queued_and_uncertain_delivery_distinctly() {
-  local dir gate out
-  dir="$TMP_ROOT/delivery-labels"
-  install_runner "$dir"
-  seed_live_blocker "$dir" herdr synthetic-dependency
-  gate="$dir/home/state/.afk-return-catchup"
-  date +%s > "$dir/home/state/.afk"
-  printf 'schema=fm-away-digest.v1\nid=queued-fixture\nphase=queued\nretired=0\nverdict=not-attempted\n' \
-    > "$dir/home/state/.subsuper-digest-inflight"
-  {
-    printf 'repair-task.status: possibly delivered item\n'
-    printf 'repair-task.status: provably undelivered item\n'
-  } > "$dir/home/state/.subsuper-escalations"
-  printf '1\n' > "$dir/home/state/.subsuper-escalations.unresolved"
-
-  set +e
-  out=$(run_return "$dir" begin)
-  set -e
-  grep -F $'evidence\tdelivery-not-attempted\tid=queued-fixture' "$gate" >/dev/null \
-    || fail "a queued (never typed) record was not labeled distinctly from delivery-uncertain: $out"
-  grep -F $'evidence\tdelivery-uncertain\trepair-task.status: possibly delivered item' "$gate" >/dev/null \
-    || fail "the unresolved buffer prefix was not surfaced as delivery-uncertain evidence"
-  grep -F $'evidence\tescalation\trepair-task.status: provably undelivered item' "$gate" >/dev/null \
-    || fail "the still-deliverable buffer tail was not surfaced as ordinary escalation evidence"
-  grep -F $'evidence\tdelivery-uncertain\trepair-task.status: provably undelivered item' "$gate" >/dev/null \
-    && fail "an item that never left the daemon was reported as possibly delivered"
-
-  printf 'resolved [key=synthetic-dependency]: refreshed the synthetic token\n' \
-    >> "$dir/home/state/repair-task.status"
-  out=$(run_return "$dir" check) || fail "resolved blocker did not clear return catch-up: $out"
-  [ ! -e "$dir/home/state/.subsuper-escalations.unresolved" ] \
-    || fail "successful check left the unresolved prefix count behind"
-  pass "catch-up labels queued, uncertain, and still-deliverable delivery evidence distinctly"
-}
-
 test_return_gate_orders_catchup_before_bearings
-test_catchup_labels_queued_and_uncertain_delivery_distinctly
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_evidence_publication_failure_preserves_wake_for_redrain

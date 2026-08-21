@@ -61,7 +61,7 @@ The recorded `terminal=` and `orca_worktree_id=` fields are what backend helpers
 
 If `fm-send` fails to submit, do not immediately repeat the same long instruction.
 Peek first, then decide whether the target is busy, waiting on a prompt, stuck behind a popup, or genuinely wedged.
-Interrupts and exits go through `bin/fm-control.sh <task-id> interrupt|exit`, which refuses on Orca whenever its terminal API cannot deliver the adapter's interrupt key or prove the agent stopped ([`docs/agent-control.md`](../../../docs/agent-control.md)); on that refusal use the recovery steps below rather than improvising a key.
+For harness-specific interrupts or exits, load `harness-adapters`.
 
 ## Recovery
 

@@ -2428,9 +2428,6 @@ SH
   ack_watcher_cycle "$state" || fail "registered custom check wake acknowledgement failed"
   printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' custom-replacement-ran" > "$state/b-custom.check.sh"
   chmod 0700 "$state/b-custom.check.sh"
-  # Keep this rejection case bounded with an authenticated actionable control.
-  # Empty recovery now remains inside the live watcher instead of completing it.
-  add_stop_custom_check "$dir"
   rm -f "$state/.last-check" "$x_poll_marker"
   set +e
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_TEST_X_POLL_MARKER="$x_poll_marker" \
@@ -3294,8 +3291,9 @@ test_retirement_queue_failure_and_receipt_tampering() {
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/8
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/8
-  # Fail sequence publication without making the queue itself look non-empty;
-  # a directory at .wake-queue now correctly triggers recovery before polling.
+  # Fail sequence publication without making the queue itself look non-empty:
+  # a directory at .wake-queue would now (correctly) trigger re-arm recovery
+  # before the poll runs, so it no longer exercises the terminal append path.
   mkdir "$state/.wake-queue.seq"
   before=$(poll_artifact_snapshot "$state" task-a)
   set +e

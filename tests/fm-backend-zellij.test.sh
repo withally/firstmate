@@ -969,11 +969,12 @@ test_send_text_submit_detects_swallowed_enter() {
 }
 
 test_send_text_submit_unrelated_change_is_not_delivery() {
-  # A pane whose content changes for reasons unrelated to submission - a
-  # clock, a spinner, streaming output - must NOT
+  # THE false-positive regression (audit fm-composer-consolidation-audit-s1,
+  # section 3.5, verified live): a pane whose content changes for reasons
+  # unrelated to submission - a clock, a spinner, streaming output - must NOT
   # read as delivered while the typed text still sits in the composer. The
   # deleted content-diff heuristic reported `empty` here and let fm-send close
-  # a delivery for a message the crew never received.
+  # --resolve-key decision records for a message the crew never received.
   local dir fb out
   dir="$TMP_ROOT/submit-false-positive"; mkdir -p "$dir/responses"
   zellij_pane_response "$dir" 1 7 3
@@ -1008,39 +1009,10 @@ test_send_text_submit_rejects_unobserved_paste() {
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
     bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_send_text_submit firstmate:7 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = unknown ] || fail "an unobserved paste should report unknown (the paste was already issued), got '$out'"
+  [ "$out" = send-failed ] || fail "an unobserved paste should report send-failed, got '$out'"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''send-keys' \
     "send_text_submit should not send Enter when the pasted text was not observed"
   pass "fm_backend_zellij_send_text_submit: refuses confirmation when paste exits successfully without typing"
-}
-
-# The verdict boundary itself: once the bracketed paste has been issued, this
-# adapter can no longer assert that nothing reached the pane, so an unproven
-# append is `unknown` (fm-send: "delivery unconfirmed") and never `send-failed`
-# (fm-send: "text not sent"). Claude collapsing a multi-line paste into
-# `[Pasted text #1 +N lines]` is the canonical case: the text IS in the
-# composer, it just does not render as the literal bytes.
-test_send_text_submit_collapsed_paste_is_unknown_not_send_failed() {
-  local dir fb out
-  dir="$TMP_ROOT/submit-collapsed-paste"; mkdir -p "$dir/responses"
-  zellij_pane_response "$dir" 1 7 3
-  printf '%s' $'transcript line\n❯ ' > "$dir/responses/2.out"
-  zellij_pane_response "$dir" 3 7 3
-  zellij_pane_response "$dir" 5 7 3
-  printf '%s' $'transcript line\n❯ [Pasted text #1 +2 lines]' > "$dir/responses/6.out"
-  fb=$(make_zellij_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
-    FM_ZELLIJ_SESSION_LIST="firstmate" \
-    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_send_text_submit firstmate:7 "$1" 2 0.01 0.01' \
-    "$ROOT" $'first line\nsecond line' )
-  [ "$out" != send-failed ] \
-    || fail "a paste the harness rendered differently must not claim the text was never sent"
-  [ "$out" = unknown ] || fail "an issued-but-unproven paste should report unknown, got '$out'"
-  assert_contains "$(cat "$dir/log")" $'\x1f''paste' \
-    "the test should have reached the paste before the verdict"
-  assert_not_contains "$(cat "$dir/log")" $'\x1f''send-keys' \
-    "send_text_submit must still not submit without an observed append"
-  pass "fm_backend_zellij_send_text_submit: an issued paste it cannot prove is 'unknown', never 'send-failed'"
 }
 
 test_send_text_submit_rejects_transcript_echo_with_unrelated_draft() {
@@ -1055,7 +1027,7 @@ test_send_text_submit_rejects_transcript_echo_with_unrelated_draft() {
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
     bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_send_text_submit firstmate:7 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = unknown ] || fail "a transcript echo outside an unrelated draft should report unknown, got '$out'"
+  [ "$out" = send-failed ] || fail "a transcript echo outside an unrelated draft should report send-failed, got '$out'"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''send-keys' \
     "send_text_submit should not send Enter when only a transcript echo matches the intended text"
   pass "fm_backend_zellij_send_text_submit: transcript echoes outside the selected composer cannot prove typing"
@@ -1073,7 +1045,7 @@ test_send_text_submit_rejects_existing_intended_text_after_noop_paste() {
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
     bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_send_text_submit firstmate:7 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = unknown ] || fail "pre-existing intended text after a no-op paste should report unknown, got '$out'"
+  [ "$out" = send-failed ] || fail "pre-existing intended text after a no-op paste should report send-failed, got '$out'"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''send-keys' \
     "send_text_submit should not send Enter without an observed composer delta"
   pass "fm_backend_zellij_send_text_submit: pre-existing text cannot prove a no-op paste landed"
@@ -1091,7 +1063,7 @@ test_send_text_submit_rejects_furniture_match_after_noop_paste() {
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
     bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_send_text_submit firstmate:7 "high" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = unknown ] || fail "footer furniture matching a short steer should report unknown, got '$out'"
+  [ "$out" = send-failed ] || fail "footer furniture matching a short steer should report send-failed, got '$out'"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''send-keys' \
     "send_text_submit should not send Enter when only furniture matches the steer"
   pass "fm_backend_zellij_send_text_submit: unrelated drafts and furniture cannot prove typing"
@@ -1162,39 +1134,6 @@ test_send_text_submit_preserves_agent_glyph_within_wrapped_content() {
   pass "fm_backend_zellij_send_text_submit: preserves agent glyphs within wrapped content"
 }
 
-# A draft taller than the bounded tail capture leaves its top border out of
-# window. The visible side borders still prove the container, so a swallowed
-# Enter must keep spending the retry budget instead of returning `unknown` on
-# the first read - the long-message case the Enter-only retry contract exists
-# for.
-test_send_text_submit_retries_enter_for_a_clipped_composer() {
-  local dir fb out enter_count before after
-  dir="$TMP_ROOT/submit-clipped-box"; mkdir -p "$dir/responses"
-  before=$'│                              │\n│                              │\n╰──────────────────────────────╯'
-  after=$'│ hello captain                │\n│                              │\n╰──────────────────────────────╯'
-  zellij_pane_response "$dir" 1 7 3
-  printf '%s' "$before" > "$dir/responses/2.out"
-  zellij_pane_response "$dir" 3 7 3
-  zellij_pane_response "$dir" 5 7 3
-  printf '%s' "$after" > "$dir/responses/6.out"
-  zellij_pane_response "$dir" 7 7 3
-  zellij_pane_response "$dir" 9 7 3
-  printf '%s' "$after" > "$dir/responses/10.out"
-  zellij_pane_response "$dir" 11 7 3
-  zellij_pane_response "$dir" 13 7 3
-  printf '%s' "$after" > "$dir/responses/14.out"
-  fb=$(make_zellij_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
-    FM_ZELLIJ_SESSION_LIST="firstmate" \
-    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_send_text_submit firstmate:7 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = pending-unproven ] \
-    || fail "a clipped composer still holding the text should report pending-unproven, got '$out'"
-  enter_count=$(grep -cF -- $'\x1f''send-keys' "$dir/log")
-  [ "$enter_count" -eq 2 ] \
-    || fail "a clipped composer should spend its full Enter-retry budget, sent $enter_count Enter(s)"
-  pass "fm_backend_zellij_send_text_submit: a composer clipped by the capture window keeps its Enter retries"
-}
-
 test_send_text_submit_rejects_stale_composer_above_live_shell() {
   local dir fb out
   dir="$TMP_ROOT/submit-live-shell"; mkdir -p "$dir/responses"
@@ -1214,7 +1153,7 @@ test_composer_state_reads_styled_dump() {
   local dir fb out
   dir="$TMP_ROOT/composer-styled"; mkdir -p "$dir/responses"
   zellij_pane_response "$dir" 1 7 3
-  # Real claude-in-zellij capture shape: ESC[m ❯ U+00A0.
+  # Real claude-in-zellij capture shape (audit section 3.5): ESC[m ❯ U+00A0.
   printf 'transcript line\n\033[m\342\235\257\302\240' > "$dir/responses/2.out"
   fb=$(make_zellij_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
@@ -1405,14 +1344,12 @@ test_send_text_submit_detects_landed_send
 test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_unrelated_change_is_not_delivery
 test_send_text_submit_rejects_unobserved_paste
-test_send_text_submit_collapsed_paste_is_unknown_not_send_failed
 test_send_text_submit_rejects_transcript_echo_with_unrelated_draft
 test_send_text_submit_rejects_existing_intended_text_after_noop_paste
 test_send_text_submit_rejects_furniture_match_after_noop_paste
 test_send_text_submit_accepts_wrapped_boxed_text
 test_send_text_submit_accepts_wrapped_bare_text
 test_send_text_submit_preserves_agent_glyph_within_wrapped_content
-test_send_text_submit_retries_enter_for_a_clipped_composer
 test_send_text_submit_rejects_stale_composer_above_live_shell
 test_composer_state_reads_styled_dump
 test_composer_state_dead_pane_is_unknown

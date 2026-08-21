@@ -76,12 +76,10 @@ LOG_FILE="$STATE_DIR/submitted.log"
 "$REAL_TMUX" -L "$SOCKET" new-session -d -s supervisor -x 200 -y 50
 SUPERVISOR_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t supervisor '#{pane_id}')
 
-# Supervisor pane loop: a small deterministic agent composer that logs each
-# submitted line verbatim (hex + text + classification). It draws the verified
-# agent glyph before the in-progress input, giving the strict classifier
-# positive container proof while remaining borderless. It draws the input
-# itself instead of relying on the terminal driver's canonical-mode echo,
-# because tmux cursor placement for that echo varies across CI environments.
+# Supervisor pane loop: a small deterministic composer that logs each submitted
+# line verbatim (hex + text + classification). It draws the in-progress input
+# itself instead of relying on the terminal driver's canonical-mode echo, because
+# tmux cursor placement for that echo varies across CI environments.
 LOOP_SCRIPT="$STATE_DIR/supervisor-loop.sh"
 cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
@@ -95,8 +93,15 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 _buf=
+# The drawn composer row carries a real agent prompt glyph, matching the
+# production supervisor pane this daemon injects into: under the strict
+# container-proof rule (captain decision blank-row-injection-posture) a bare
+# unidentified row is never a safe injection target, so the fixture must
+# render the shape the classifier positively proves - "❯ " when idle,
+# "❯ <buffer>" while input is pending. The glyph is rendering only; it never
+# enters the buffer, so submitted-content assertions are unchanged.
 redraw() {
-  printf '\r\033[K❯ %s' "$_buf"
+  printf '\r\033[K\xe2\x9d\xaf %s' "$_buf"
 }
 submit_line() {
   local _line=$_buf _c _hex

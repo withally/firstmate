@@ -28,8 +28,6 @@
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
-#   watcher: owner verified pid=<N> (duplicate returned) - a separate identity-matched arm owns
-#                                                          this home's tracked wait
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
@@ -38,18 +36,13 @@
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
 # returns the FAILED line. On started it waits the child and propagates the wake
-# reason; on attached it stays live across identity-matched successors, and the
-# tracked arm also stays live across an empty recovery episode. Only a recovery
-# episode with a durable row or open decision returns a typed reason. A cycle
-# that ends with no reason line and no healthy successor is resolved first
-# against the watcher's identity-bound clean-close receipt, then against its
-# identity-bound delivery record, then against its identity-bound actionable
-# close receipt. A clean receipt silently continues with a new cycle; a matching
-# delivery reports that wake and exits 0; an actionable receipt proves the cycle
-# delivered its wake on its own stdout and silently continues with a new cycle;
-# only a cycle that proves none of them is the typed nonzero failure. On FAILED
-# it exits non-zero so the failure is loud. A live cycle with no verified arm
-# owner means recovery attaches; a duplicate behind a verified owner returns.
+# reason; on attached it stays live across identity-matched successors. A cycle
+# that ends with no reason line and no healthy successor is resolved against the
+# watcher's identity-bound delivery record: a matching record reports that wake
+# and exits 0, and only a cycle that delivered nothing is the typed nonzero
+# failure. Neither is ever a clean empty completion. On FAILED it exits non-zero
+# so the failure is loud. A live cycle already present means re-arm attaches - do
+# not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -58,11 +51,11 @@
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
-# --restart: explicitly supersede ONLY this FM_HOME's identity-matched arm owner
-# and watcher, then own a fresh cycle, or attach if a verified live peer wins the
-# singleton while the duplicate child stands down. It resolves and signals only
-# the exact pids recorded in THIS home's owner and watcher records, so it can
-# never touch another home's watcher. NEVER `pkill -f
+# --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
+# state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
+# wins the singleton while the duplicate child stands down. It
+# resolves and signals exactly that pid, so it can never touch another home's
+# watcher. NEVER `pkill -f
 # bin/fm-watch.sh`: that pattern matches every firstmate home's watcher
 # (secondmate homes run the same script) and would kill siblings.
 set -u
@@ -90,122 +83,9 @@ CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
-ARM_OWNER_RECORD="$STATE/.watch-arm-owner"
-ARM_OWNER_LOCK="$STATE/.watch-arm-owner.lock"
 ARM_PID=${BASHPID:-$$}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
-
-# The owner record chooses exactly one harness-tracked waiter for this home.
-# Its lock is held only while reading or replacing the record; the long-lived
-# ownership proof is the recorded pid plus its process identity and FM_HOME.
-# A crashed owner therefore leaves only stale evidence that the next arm can
-# replace, while a duplicate can prove a live owner and return immediately.
-ARM_OWNER_PID=
-ARM_OWNER_IDENTITY=
-ARM_OWNER_HOME=
-ARM_OWNER_OWNED=0
-
-arm_owner_read() {
-  local line key value
-  ARM_OWNER_PID=
-  ARM_OWNER_IDENTITY=
-  ARM_OWNER_HOME=
-  [ -f "$ARM_OWNER_RECORD" ] || return 0
-  while IFS= read -r line; do
-    key=${line%%=*}
-    [ "$key" != "$line" ] || continue
-    value=${line#*=}
-    case "$key" in
-      pid) ARM_OWNER_PID=$value ;;
-      identity) ARM_OWNER_IDENTITY=$value ;;
-      home) ARM_OWNER_HOME=$value ;;
-    esac
-  done < "$ARM_OWNER_RECORD"
-}
-
-arm_owner_lock_acquire() {
-  local i=0
-  while ! fm_lock_try_acquire "$ARM_OWNER_LOCK"; do
-    [ "$i" -lt 100 ] || return 1
-    sleep 0.02
-    i=$((i + 1))
-  done
-}
-
-arm_owner_write_current() {
-  local identity tmp
-  identity=$(fm_pid_identity "$ARM_PID") || return 1
-  identity=$(printf '%s' "$identity" | tr '\r\n' '  ')
-  tmp=$(mktemp "$STATE/.watch-arm-owner.tmp.XXXXXX") || return 1
-  if ! printf 'pid=%s\nidentity=%s\nhome=%s\n' "$ARM_PID" "$identity" "$FM_HOME" > "$tmp" \
-    || ! chmod 0600 "$tmp" \
-    || ! mv -f "$tmp" "$ARM_OWNER_RECORD"; then
-    rm -f "$tmp" 2>/dev/null || true
-    return 1
-  fi
-  ARM_OWNER_PID=$ARM_PID
-  ARM_OWNER_IDENTITY=$identity
-  ARM_OWNER_HOME=$FM_HOME
-  ARM_OWNER_OWNED=1
-}
-
-arm_owner_claim() {
-  local current_identity
-  if ! arm_owner_lock_acquire; then
-    echo "watcher: FAILED - arm owner state could not be serialized"
-    return 1
-  fi
-  arm_owner_read
-  if [ "$ARM_OWNER_PID" = "$ARM_PID" ] && [ "$ARM_OWNER_HOME" = "$FM_HOME" ]; then
-    if ! arm_owner_write_current; then
-      fm_lock_release "$ARM_OWNER_LOCK"
-      echo "watcher: FAILED - arm owner identity could not be published"
-      return 1
-    fi
-    fm_lock_release "$ARM_OWNER_LOCK"
-    return 0
-  fi
-  if fm_pid_alive "$ARM_OWNER_PID" && [ -n "$ARM_OWNER_IDENTITY" ]; then
-    current_identity=$(fm_pid_identity "$ARM_OWNER_PID" 2>/dev/null || true)
-    current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
-    if [ -n "$current_identity" ] && [ "$current_identity" = "$ARM_OWNER_IDENTITY" ]; then
-      if [ "$ARM_OWNER_HOME" != "$FM_HOME" ]; then
-        fm_lock_release "$ARM_OWNER_LOCK"
-        echo "watcher: FAILED - live arm owner belongs to another home"
-        return 1
-      fi
-      fm_lock_release "$ARM_OWNER_LOCK"
-      echo "watcher: owner verified pid=$ARM_OWNER_PID (duplicate returned)"
-      return 10
-    fi
-  fi
-  if ! arm_owner_write_current; then
-    fm_lock_release "$ARM_OWNER_LOCK"
-    echo "watcher: FAILED - arm owner identity could not be published"
-    return 1
-  fi
-  fm_lock_release "$ARM_OWNER_LOCK"
-  return 0
-}
-
-# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
-arm_owner_release() {
-  local current_identity
-  [ "$ARM_OWNER_OWNED" -eq 1 ] || return 0
-  arm_owner_lock_acquire || return 0
-  arm_owner_read
-  current_identity=$(fm_pid_identity "$ARM_PID" 2>/dev/null || true)
-  current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
-  if [ "$ARM_OWNER_PID" = "$ARM_PID" ] \
-    && [ -n "$current_identity" ] \
-    && [ "$ARM_OWNER_IDENTITY" = "$current_identity" ] \
-    && [ "$ARM_OWNER_HOME" = "$FM_HOME" ]; then
-    rm -f "$ARM_OWNER_RECORD" 2>/dev/null || true
-  fi
-  fm_lock_release "$ARM_OWNER_LOCK"
-  ARM_OWNER_OWNED=0
-}
 
 # The lifecycle ledger is diagnostic evidence, not a supervision dependency.
 # Writes are bounded and best-effort so an observability failure cannot stall an
@@ -246,41 +126,6 @@ cycle_refresh_lock_before() {
     cycle_watcher_identity=$HEALTHY_IDENTITY
   fi
   cycle_lock_before=$(lock_snapshot)
-}
-
-# The fork's intentional-close receipt complements upstream's actionable-delivery
-# ledger. A clean receipt covers a watcher that self-evicts after absorbing every
-# event and therefore has no actionable reason to publish; an actionable receipt
-# covers a watcher that printed and delivered its wake but whose best-effort
-# ledger append never landed. Both are bound to one cycle: the receipt resolves
-# nothing unless it names this cycle's pid AND its identity, so a stale or
-# foreign receipt can never silence a genuinely unexplained cycle.
-watch_close_kind() {  # <pid> - prints clean|actionable for THIS cycle's receipt
-  local pid=$1 receipt key value receipt_pid='' receipt_kind='' receipt_identity=''
-  receipt="$STATE/.watch-close"
-  [ -f "$receipt" ] || return 1
-  while IFS='=' read -r key value; do
-    case "$key" in
-      pid) receipt_pid=$value ;;
-      kind) receipt_kind=$value ;;
-      identity) receipt_identity=$value ;;
-    esac
-  done < "$receipt"
-  [ "$receipt_pid" = "$pid" ] || return 1
-  [ -n "$cycle_watcher_identity" ] || return 1
-  [ "$receipt_identity" = "$cycle_watcher_identity" ] || return 1
-  case "$receipt_kind" in
-    clean|actionable) printf '%s' "$receipt_kind" ;;
-    *) return 1 ;;
-  esac
-}
-
-continue_after_intentional_close() {
-  trap - HUP TERM INT
-  export FM_WATCH_PREDECESSOR_ARM_PID="$ARM_PID"
-  exec "$SCRIPT_DIR/fm-watch-arm.sh"
-  echo "watcher: FAILED - could not continue after an intentional watcher close"
-  return 1
 }
 
 cycle_signal_name() {
@@ -388,72 +233,6 @@ clear_stale_recorded_watcher_lock() {
   fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime
 }
 
-wait_for_pid_exit() {
-  local pid=$1 i=0
-  while [ "$i" -lt 50 ] && fm_pid_alive "$pid"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  ! fm_pid_alive "$pid"
-}
-
-restart_stop_recorded_watcher() {
-  local lock_pid
-  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
-  fm_pid_alive "$lock_pid" || return 0
-  if ! fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-    clear_stale_recorded_watcher_lock || {
-      echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
-      return 1
-    }
-    return 0
-  fi
-  kill -TERM "$lock_pid" 2>/dev/null || true
-  kill -CONT "$lock_pid" 2>/dev/null || true
-  # A stopped watcher receives its pending TERM after CONT and retires. A live,
-  # TERM-resistant peer remains eligible for the established attach path below;
-  # restart never escalates a merely resistant verified watcher to KILL.
-  wait_for_pid_exit "$lock_pid" || true
-}
-
-restart_supersede_arm_owner() {
-  local owner_pid owner_identity owner_home current_identity
-  if ! arm_owner_lock_acquire; then
-    echo "watcher: FAILED - arm owner state could not be serialized" >&2
-    return 1
-  fi
-  arm_owner_read
-  owner_pid=$ARM_OWNER_PID
-  owner_identity=$ARM_OWNER_IDENTITY
-  owner_home=$ARM_OWNER_HOME
-  fm_lock_release "$ARM_OWNER_LOCK"
-  [ "$owner_pid" != "$ARM_PID" ] || return 0
-  [ "$owner_home" = "$FM_HOME" ] || {
-    if fm_pid_alive "$owner_pid"; then
-      echo "watcher: FAILED - live arm owner belongs to another home" >&2
-      return 1
-    fi
-    return 0
-  }
-  fm_pid_alive "$owner_pid" && [ -n "$owner_identity" ] || return 0
-  current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
-  current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
-  [ "$current_identity" = "$owner_identity" ] || return 0
-  kill -TERM "$owner_pid" 2>/dev/null || true
-  kill -CONT "$owner_pid" 2>/dev/null || true
-  if ! wait_for_pid_exit "$owner_pid"; then
-    current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
-    current_identity=$(printf '%s' "$current_identity" | tr '\r\n' '  ')
-    if [ "$current_identity" = "$owner_identity" ]; then
-      kill -KILL "$owner_pid" 2>/dev/null || true
-      wait_for_pid_exit "$owner_pid" || {
-        echo "watcher: FAILED - home arm owner did not retire for restart" >&2
-        return 1
-      }
-    fi
-  fi
-}
-
 # A watcher is "healthy" iff the lock names a live process that is genuinely THIS
 # home's watcher (the identity match guards against a recycled/reused pid) AND the
 # liveness beacon is fresh within GRACE. Sets HEALTHY_PID on success. This is the
@@ -495,48 +274,31 @@ fail_unexplained_cycle() {
   return 1
 }
 
-# How the last close_unobserved_cycle call resolved: `ledger` printed the wake
-# the cycle durably delivered, `receipt` proved the delivery from the cycle's own
-# actionable close receipt without a reason line to replay.
-CLOSE_UNOBSERVED_OUTCOME=
-
 # Close a cycle whose reason line this arm could not read against the bounded
-# terminal-delivery ledger the watcher publishes before releasing its lock, and
-# then against the cycle's identity-bound actionable close receipt. The ledger
-# append is best-effort and gives up silently under lock contention, so the
-# receipt is what keeps a genuinely delivered wake from reading as a failure.
+# terminal-delivery ledger the watcher publishes before releasing its lock.
 close_unobserved_cycle() {
-  local i locked reason clean_identity record_pid record_identity record_reason
-  CLOSE_UNOBSERVED_OUTCOME=
+  local i reason clean_identity record_pid record_identity record_reason
   clean_identity=$(printf '%s' "$cycle_watcher_identity" | tr '\t\r\n' '   ')
-  locked=0
   i=0
-  while [ "$i" -le 20 ]; do
-    if fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; then
-      locked=1
-      break
-    fi
+  while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
+    [ "$i" -lt 20 ] || {
+      fail_unexplained_cycle
+      return 1
+    }
     sleep 0.02
     i=$((i + 1))
   done
   reason=
-  if [ "$locked" -eq 1 ]; then
-    if [ -f "$WATCH_DELIVERY_LOG" ]; then
-      while IFS=$'\t' read -r record_pid record_identity record_reason; do
-        if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
-          reason=$record_reason
-        fi
-      done < "$WATCH_DELIVERY_LOG"
-    fi
-    fm_lock_release "$WATCH_DELIVERY_LOCK"
+  if [ -f "$WATCH_DELIVERY_LOG" ]; then
+    while IFS=$'\t' read -r record_pid record_identity record_reason; do
+      if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
+        reason=$record_reason
+      fi
+    done < "$WATCH_DELIVERY_LOG"
   fi
+  fm_lock_release "$WATCH_DELIVERY_LOCK"
   if [ -n "$reason" ]; then
-    CLOSE_UNOBSERVED_OUTCOME=ledger
     printf '%s\n' "$reason"
-    return 0
-  fi
-  if [ "$(watch_close_kind "$cycle_watcher_pid" 2>/dev/null || true)" = actionable ]; then
-    CLOSE_UNOBSERVED_OUTCOME=receipt
     return 0
   fi
   fail_unexplained_cycle
@@ -544,10 +306,9 @@ close_unobserved_cycle() {
 }
 
 # Stay alive across identity-matched healthy holders. If one cycle ends, attach
-# to a verified successor. With no successor, continue after an identity-bound
-# clean close, report the wake that cycle durably delivered, continue after an
-# identity-bound actionable close whose ledger append was lost, or fail loudly -
-# never a clean empty completion that an adapter could mistake for a no-op.
+# to a verified successor. With no successor, report the wake that cycle durably
+# delivered, or fail loudly - never a clean empty completion that an adapter could
+# mistake for a no-op.
 attach_and_wait() {
   local attached_pid=$1
   while :; do
@@ -568,17 +329,7 @@ attach_and_wait() {
       report_attached
       continue
     fi
-    if [ "$(watch_close_kind "$attached_pid" 2>/dev/null || true)" = clean ]; then
-      cycle_log_append 0 none clean-close none
-      continue_after_intentional_close
-      return $?
-    fi
     if close_unobserved_cycle; then
-      if [ "$CLOSE_UNOBSERVED_OUTCOME" = receipt ]; then
-        cycle_log_append 0 none observed-actionable-close none
-        continue_after_intentional_close
-        return $?
-      fi
       cycle_log_append unknown unknown attached-delivered-wake none
       return 0
     fi
@@ -657,17 +408,27 @@ if [ "$mode" = handling-delivered ]; then
 fi
 
 if [ "$mode" = restart ]; then
-  restart_stop_recorded_watcher || exit 1
-  restart_supersede_arm_owner || exit 1
+  # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
+  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  if fm_pid_alive "$lock_pid"; then
+    if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
+      kill -TERM "$lock_pid" 2>/dev/null || true
+      # Wait for it to actually exit before relaunching, so the fresh watcher
+      # either takes a released lock or reclaims a now-dead-pid stale lock instead
+      # of seeing the dying one as a live holder and no-opping.
+      i=0
+      while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+    else
+      if ! clear_stale_recorded_watcher_lock; then
+        echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
+        exit 1
+      fi
+    fi
+  fi
 fi
-
-arm_owner_status=0
-arm_owner_claim || arm_owner_status=$?
-case "$arm_owner_status" in
-  0) trap 'arm_owner_release' EXIT ;;
-  10) exit 0 ;;
-  *) exit "$arm_owner_status" ;;
-esac
 
 # If a genuinely live+fresh watcher already holds the lock, do not start a second
 # one - attach to that cycle and wait until it ends so the harness notify fires
@@ -756,17 +517,7 @@ owned_child_finished() {
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=
-    if [ "$(watch_close_kind "$cycle_watcher_pid" 2>/dev/null || true)" = clean ]; then
-      cycle_log_append "$rc" "$signal" clean-close none
-      continue_after_intentional_close
-      return $?
-    fi
     if close_unobserved_cycle; then
-      if [ "$CLOSE_UNOBSERVED_OUTCOME" = receipt ]; then
-        cycle_log_append "$rc" "$signal" observed-actionable-close none
-        continue_after_intentional_close
-        return $?
-      fi
       cycle_log_append "$rc" "$signal" clean-exit-delivered-wake none
       return 0
     fi

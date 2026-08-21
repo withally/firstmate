@@ -87,7 +87,7 @@ SH
 
 # Install a hermetic fake fm-crew-state.sh into <fakebin> and echo its path. The
 # watcher's absorb-only-when-provably-working triage calls this (via
-# FM_CREW_STATE_BIN) to read a crew's current state on ambiguous signal and stale
+# FM_CREW_STATE_BIN) to read a crew's current state on no-verb signal and stale
 # paths; the fake returns a canned "state: <s> · source: <src> · <detail>"
 # verdict line so a test can fix the provably-working decision without a real
 # worktree or no-mistakes.
@@ -108,6 +108,29 @@ exit 0
 SH
   chmod +x "$fakebin/fm-crew-state.sh"
   printf '%s\n' "$fakebin/fm-crew-state.sh"
+}
+
+# Prime <file>'s .seen-* marker to its CURRENT signature through the production
+# signature owner (bin/fm-wake-lib.sh), so a test can declare "everything in
+# this file was already surfaced or deliberately absorbed" before exercising
+# the next wake, self-announced append, or annotation decision.
+prime_status_seen() {  # <state> <file>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    . "$1"
+    sig=$(fm_wake_signal_sig "$3") || exit 1
+    [ -n "$sig" ] || exit 1
+    printf "%s" "$sig" > "$(fm_wake_signal_seen_path "$2" "$3")"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$2"
+}
+
+# Acknowledge a drain from its captured stderr (the WAKE_ACK_REQUIRED line).
+ack_drain_err() {  # <state> <stderr-file>
+  local state=$1 err=$2 sequence generation
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-wake-drain.sh" \
+    --ack-through "$sequence" --recovery-generation "$generation"
 }
 
 make_supercase() {
@@ -161,24 +184,8 @@ case "${1:-}" in
         -l) shift; [ "$#" -gt 0 ] && {
           printf '%s\n' "$1" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
           # Reflect sent text into capture so pane_input_pending sees it as
-          # pending input (text in the composer). Preserve the pre-typing
-          # capture so Enter can restore the exact empty surface.
-          if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ]; then
-            cp "$FM_FAKE_TMUX_CAPTURE" "$FM_FAKE_TMUX_CAPTURE.before-submit"
-            _last=$(tail -n 1 "$FM_FAKE_TMUX_CAPTURE" 2>/dev/null || true)
-            case "$_last" in
-              '❯ '*|'❯'|'>'|'>'\ *)
-                _tmp=$(mktemp 2>/dev/null) || _tmp="${FM_FAKE_TMUX_CAPTURE}.tmp"
-                sed '$d' "$FM_FAKE_TMUX_CAPTURE" > "$_tmp" 2>/dev/null || true
-                case "$_last" in
-                  '❯ '*|'❯') printf '❯ %s\n' "$1" >> "$_tmp" ;;
-                  *) printf '> %s\n' "$1" >> "$_tmp" ;;
-                esac
-                mv -f "$_tmp" "$FM_FAKE_TMUX_CAPTURE"
-                ;;
-              *) printf '%s\n' "$1" >> "$FM_FAKE_TMUX_CAPTURE" ;;
-            esac
-          fi
+          # pending input (text in the composer).
+          [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && printf '%s\n' "$1" >> "$FM_FAKE_TMUX_CAPTURE"
         } ;;
         Enter)
           # Optionally swallow Enter (file-based flag) to test the retry path.
@@ -186,11 +193,12 @@ case "${1:-}" in
             rm -f "$FM_FAKE_TMUX_SWALLOW_FILE"
           else
             printf '[ENTER]\n' >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
-            # Enter submits: restore the exact empty composer captured before
-            # literal typing.
-            if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] \
-               && [ -f "$FM_FAKE_TMUX_CAPTURE.before-submit" ]; then
-              mv -f "$FM_FAKE_TMUX_CAPTURE.before-submit" "$FM_FAKE_TMUX_CAPTURE"
+            # Enter submits: clear the last line (the typed text) from the
+            # capture, simulating the composer being cleared on submit.
+            if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && [ -s "$FM_FAKE_TMUX_CAPTURE" ]; then
+              _tmp=$(mktemp 2>/dev/null) || _tmp="${FM_FAKE_TMUX_CAPTURE}.tmp"
+              sed '$d' "$FM_FAKE_TMUX_CAPTURE" > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$FM_FAKE_TMUX_CAPTURE"
+              rm -f "$_tmp" 2>/dev/null
             fi
           fi
           ;;
@@ -267,7 +275,18 @@ SH
 }
 
 wait_for_exit() {
-  fm_test_wait_for_exit "$@"
+  local pid=$1 limit=${2:-50} i=0
+  while [ "$i" -lt "$limit" ]; do
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid"
+      return "$?"
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  return 124
 }
 
 is_live_non_zombie() {

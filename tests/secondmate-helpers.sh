@@ -15,39 +15,19 @@
 # treehouse (durable lease of FM_FAKE_TREEHOUSE_HOME, recording the lease holder
 # to FM_FAKE_TREEHOUSE_LEASE_FILE; `return` removes the target and lease unless
 # FM_FAKE_TREEHOUSE_RETURN_FAIL is set). Echoes the fakebin dir.
-#
-# The pane renders like a real composer: text typed via `send-keys -l` appears
-# on the prompt row until Enter clears it, so fm-send's verified submit can
-# observe its own typed text before believing a post-Enter empty composer
-# (an unobserved clear no longer counts as delivery proof).
 make_fake_tmux() {
   local dir=$1 fakebin capture
   fakebin=$(fm_fakebin "$dir")
   capture="$dir/pane.txt"
-  printf 'idle prompt\n' > "$capture"
+  # A real, positively identified empty agent composer. A blank capture is
+  # deliberately unknown under the fleet-wide strict blank-row posture.
+  printf '❯\n' > "$capture"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
   has-session|new-session|new-window|send-keys|kill-window)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
-    if [ "$1" = send-keys ] && [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ]; then
-      shift
-      literal=0 last=
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          -l) literal=1 ;;
-          -t) shift ;;
-          *) last=$1 ;;
-        esac
-        shift
-      done
-      if [ "$literal" = 1 ]; then
-        printf '%s' "$last" > "$FM_FAKE_TMUX_CAPTURE.typed"
-      elif [ "$last" = Enter ]; then
-        rm -f "$FM_FAKE_TMUX_CAPTURE.typed"
-      fi
-    fi
     exit 0
     ;;
   list-windows)
@@ -65,11 +45,7 @@ case "${1:-}" in
     ;;
   capture-pane)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
-    if [ -s "$FM_FAKE_TMUX_CAPTURE.typed" ]; then
-      printf '\342\235\257 %s\n' "$(cat "$FM_FAKE_TMUX_CAPTURE.typed")"
-    else
-      cat "$FM_FAKE_TMUX_CAPTURE"
-    fi
+    cat "$FM_FAKE_TMUX_CAPTURE"
     exit 0
     ;;
 esac

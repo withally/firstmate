@@ -47,13 +47,12 @@ agent  subagent  task  workflow  cron  schedul  worktree
 delegate  spawn  dispatch  handoff  remote  sendmessage  monitor
 ```
 
-Three general exclusions and one command-scoped supervision exception keep the shape test from producing false positives without opening a delegation route.
+Three exclusions keep the shape test from producing false positives.
 
 - A name beginning `mcp__` is never classified.
   An MCP server chooses its own tool names, a task or agent noun there is common, and it has no bearing on fleet dispatch.
-- `OBSERVE_ONLY_TOOLS`: the exact names `taskoutput`, `taskstop`, `taskget`, `tasklist`, `cronlist`, `bashoutput`, `killshell`, and `getcommandorsubagentoutput` are allowed.
+- `OBSERVE_ONLY_TOOLS`: the exact names `taskoutput`, `taskstop`, `taskget`, `tasklist`, `cronlist`, `bashoutput`, and `killshell` are allowed.
   These observe or stop work that already exists rather than creating it, and denying them at this layer could strand already-running work with no way to inspect or end it.
-  `getcommandorsubagentoutput` is Grok's observe-only fetch for an already-running command or subagent (see `docs/supervision-protocols/grok.md`); allowing exactly this normalized name lets the Grok primary consume an auto-backgrounded `bin/fm-wake-drain.sh` in its initiating turn while genuine delegation-shaped names and near misses stay denied.
   A Claude primary's optional local deny list may still remove them from the schema.
   The shipped guard stays narrower on purpose so it can never be the reason a runaway task cannot be stopped.
 - `PLAN_ONLY_TOOLS`: the exact names `taskcreate` and `taskupdate` are allowed.
@@ -64,10 +63,6 @@ Three general exclusions and one command-scoped supervision exception keep the s
 
 Both exclusion lists match the whole normalized name, never a substring, so neither can widen by accident: `TaskCreateAgent` and `RemoteTaskCreate` stay denied.
 Folding the two lists together would be the drift risk, because the observe-or-stop rationale is not true of a tool that writes.
-
-Grok's `monitor` tool remains delegation-shaped by default.
-The one exception is a stdin-verified call with `persistent=true` and the exact command `exec bin/fm-grok-watch-coordinator.mjs`.
-That process is the home-scoped watcher supervision owner documented in [`watcher-continuity.md`](watcher-continuity.md), not untracked project work; any argument, prefix, suffix, non-persistent call, or name-only classification remains denied.
 
 The shipped guard fires on every delegation-shaped name that reaches it, including future names that no deny list knows about yet.
 That future-name behavior is the reason the tracked matcher must match all tools and let the script filter.
@@ -139,7 +134,7 @@ It costs one line and removes the failure mode where a rename or a rollback sile
 ## Scope
 
 The shipped hook fires only in a genuine firstmate primary home, using the shared predicate `fm_primary_scope_matches` from `bin/fm-primary-scope-lib.sh`.
-This is the same predicate the session-start adapters and `bin/fm-turnend-guard.sh` use, so the tracked primary-scoped hooks cannot drift apart.
+This is the same predicate `bin/fm-sessionstart-nudge.sh` and `bin/fm-turnend-guard.sh` use, so the three tracked primary-scoped hooks cannot drift apart.
 
 A home is in scope when it has `AGENTS.md`, a `bin/` directory, an existing state directory, and either a plain checkout where git-dir equals git-common-dir or a valid `.fm-secondmate-home` marker.
 A marked secondmate home is in scope on purpose: it operates its own fleet and must dispatch through it for the same durability reasons.
@@ -370,15 +365,17 @@ tests/fm-subagent-pretool-check.test.sh
 
 ## Known residual gap
 
-The other tracked Claude hook entries in `.claude/settings.json` refuse to run under Grok's Claude-compatible settings loading because Grok already covers each of those events through `.grok/hooks/` registrations and running both creates duplicate paths.
-This entry is the deliberate exception and stays unguarded: Grok is "inspected but not wired" above, so no `.grok/hooks/` registration covers the subagent-spawn event and guarding it would remove the guard from Grok rather than deduplicate it.
-The coverage it leaves is partial rather than correct because the tracked entry passes `--claude`, which suppresses the stdout decision object Grok consumes; treat this as incidental reach, not as Grok being wired.
-Wiring Grok properly still requires the matcher-token verification described above, which is what closes this exception.
+The other tracked Claude hook entries in `.claude/settings.json` refuse to run under Grok's Claude-compatible settings loading (docs/turnend-guard.md "Harness integrations"), because Grok already covers each of those events through its own `.grok/hooks/` registration and running both creates a duplicate path.
+This entry is the deliberate exception and stays unguarded: Grok is "inspected but not wired" above, so no `.grok/hooks/` registration covers the subagent-spawn event at all, and guarding it would remove the guard from Grok entirely rather than deduplicate it.
+The coverage it leaves is partial rather than correct - the tracked entry passes `--claude`, which suppresses exactly the stdout decision object Grok consumes - so treat this as incidental reach, not as Grok being wired.
+Wiring Grok properly still requires the matcher-token verification described above, and that is what closes this exception.
+The same exception now also covers Cursor, which loads the tracked Claude settings as well: `.cursor/hooks.json` registers no subagent-spawn matcher, so this entry stays unguarded there for the same reason, and its `--claude` rendering leaves Cursor the exit-2 and stderr path rather than Cursor's own decision object.
+Cursor's subagent tool name has not been verified, and registering an unverified matcher would be a guess rather than coverage, so closing it needs the same verification step.
 
 This change does not close the deeper harness-agnostic defect.
 Every firstmate guard's in-flight-work branch keys off `state/<id>.meta`, and only `bin/fm-spawn.sh` writes that record.
-`bin/fm-supervision-lib.sh` also recognizes an X-mode relay poll as supervision need, but unaccounted primary work still contributes nothing to that predicate.
-Without an independent X-mode need, unaccounted primary work therefore reads as idle rather than suspicious.
+`bin/fm-supervision-lib.sh` also recognizes a Relay poll as supervision need, but unaccounted primary work still contributes nothing to that predicate.
+Without an independent Relay need, unaccounted primary work therefore reads as idle rather than suspicious.
 
 The durable fix for that class is to make the guards treat "the primary is doing project-shaped work with zero `state/*.meta` files" as a suspicious state rather than an idle one.
 That would catch this class on any harness, including work created through `Bash`.

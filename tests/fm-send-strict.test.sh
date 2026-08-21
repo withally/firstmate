@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# fm-send strict target resolution.
+# fm-send strict target resolution and key delivery reporting.
 #
 # A send that cannot be tied to a recorded task/lane or to an explicit
 # well-formed backend target must fail loudly. These tests pin the historical
 # silent-fallback failures: missing FM_HOME, unresolved selectors, prefixless
 # herdr pane ids, dead explicit endpoints, and the healthy exact/fm-id paths.
+# They also verify that a key send reports whether delivery actually succeeded.
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-classify-lib.sh
-. "$ROOT/bin/fm-classify-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
 TMP_ROOT=$(fm_test_tmproot fm-send-strict)
@@ -34,12 +33,11 @@ case "${1:-}" in
       esac
     done
     printf 'send-keys target=%s literal=%s arg=%s\n' "$target" "$literal" "${1:-}" >> "$FM_TMUX_LOG"
-    if [ -z "${FM_FAKE_TMUX_CAPTURE_FILE:-}" ]; then
-      if [ "$literal" -eq 1 ]; then
-        printf 'pending\n' > "$FM_TMUX_LOG.state"
-      elif [ "${1:-}" = Enter ]; then
-        printf 'empty\n' > "$FM_TMUX_LOG.state"
-      fi
+    # FM_FAKE_TMUX_SEND_KEY_FAIL names one key whose delivery fails, so the
+    # --key exit contract can be driven both ways from the same stub.
+    if [ "$literal" = 0 ] && [ -n "${FM_FAKE_TMUX_SEND_KEY_FAIL:-}" ] \
+      && [ "${1:-}" = "$FM_FAKE_TMUX_SEND_KEY_FAIL" ]; then
+      exit 1
     fi
     exit 0 ;;
   display-message)
@@ -59,13 +57,7 @@ case "${1:-}" in
     printf '%%1\n'
     exit 0 ;;
   capture-pane)
-    if [ -n "${FM_FAKE_TMUX_CAPTURE_FILE:-}" ]; then
-      cat "$FM_FAKE_TMUX_CAPTURE_FILE"
-    elif [ "$(cat "$FM_TMUX_LOG.state" 2>/dev/null || true)" = pending ]; then
-      printf '╭────╮\n│ > typed │\n╰────╯\n'
-    else
-      printf '╭────╮\n│    │\n╰────╯\n'
-    fi
+    printf '╭────╮\n│    │\n╰────╯\n'
     exit 0 ;;
   list-windows)
     printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
@@ -205,133 +197,39 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
-test_codex_pending_composer_never_false_confirms_from_stale_busy_footer() {
-  local dir fb home err log pane rc got
-  dir="$TMP_ROOT/codex-pending"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); home=$(setup_home codexpending); err="$dir/send.err"; log="$dir/tmux.log"; pane="$dir/pane"; : > "$log"
-  fm_write_meta "$home/state/lane-pending.meta" "window=sess:fm-lane-pending" "kind=ship" "harness=codex"
-  printf 'esc to interrupt\n› Read and execute the dated brief now.\n' > "$pane"
-
-  rc=0
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
-    FM_FAKE_TMUX_CAPTURE_FILE="$pane" FM_SEND_RETRIES=2 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-pending "Read and execute the dated brief now." >/dev/null 2>"$err" || rc=$?
-  [ "$rc" -ne 0 ] || fail "Codex text retained in the composer was falsely reported delivered"
-  assert_contains "$(cat "$err")" "Enter swallowed; text left in composer" "swallowed-Enter failure did not use fm-send's documented signal"
-  got=$(cat "$log")
-  [ "$(printf '%s\n' "$got" | grep -c 'literal=1' || true)" -eq 1 ] \
-    || fail "Codex swallowed-Enter handling must type the text exactly once"
-  [ "$(printf '%s\n' "$got" | grep -c 'arg=Enter' || true)" -eq 2 ] \
-    || fail "Codex swallowed-Enter handling must retry only Enter to the configured bound"
-  pass "fm-send strict: Codex pending text cannot be confirmed by a stale busy footer"
-}
-
-test_successful_keyed_decision_send_records_only_an_open_task_key() {
+# A --key send is how firstmate interrupts a worker, so its exit status is the
+# only signal that the interrupt actually landed.
+# Reporting success for a key that was never delivered would leave supervision
+# believing a runaway worker had been stopped, so the failing case must exit
+# nonzero and name the key.
+# Both directions are asserted from one stub so the failing case cannot go
+# quietly vacuous if the key ever stops being delivered at all.
+test_key_send_exit_status_follows_delivery() {
   local dir fb home err log rc
-  dir="$TMP_ROOT/decision"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); home=$(setup_home decision); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
-  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
-  printf 'needs-decision [key=route]: choose A or B\n' > "$home/state/lane-ok.status"
+  dir="$TMP_ROOT/key-exit"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home keyexit); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-key.meta" "window=sess:fm-lane-key" "kind=ship"
 
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok 'Proceed with A [key=route]' >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "a keyed decision send should succeed"
-  decision_delivery_is_recorded "$home/state" lane-ok route \
-    || fail "a confirmed keyed answer to an open decision was not recorded"
+    "$SEND" lane-key --key Escape >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a delivered --key interrupt should report success"
+  assert_contains "$(cat "$log")" "target=sess:fm-lane-key literal=0 arg=Escape" "the delivered case should send the named key"
 
+  : > "$log"
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok 'Mention an unopened key [key=unknown]' >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "an ordinary keyed send should still succeed"
-  ! decision_delivery_is_recorded "$home/state" lane-ok unknown \
-    || fail "a key with no open decision created a delivered-decision record"
-  pass "fm-send records only confirmed answers whose task+key decision is open"
-}
-
-test_resolve_key_closes_only_after_confirmed_answer_delivery() {
-  local dir fb home err log rc status seen sig current
-  dir="$TMP_ROOT/resolve-key"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); home=$(setup_home resolve-key); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
-  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
-  status="$home/state/lane-ok.status"
-  seen="$home/state/.seen-lane-ok_status"
-  printf 'needs-decision [key=route]: choose A or B\n' > "$status"
-  if [ "$(uname -s)" = Darwin ]; then sig=$(stat -f '%z:%Fm' "$status"); else sig=$(stat -c '%s:%Y' "$status"); fi
-  printf '%s' "$sig" > "$seen"
-
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok --resolve-key route 'Proceed with A' >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "a confirmed answer with --resolve-key should succeed"
-  ! status_decision_is_open "$home/state/lane-ok.status" route \
-    || fail "a confirmed answer with --resolve-key left the decision open"
-  decision_delivery_is_recorded "$home/state" lane-ok route \
-    || fail "answer-time closure bypassed the delivered-decision receipt safeguard"
-  if [ "$(uname -s)" = Darwin ]; then current=$(stat -f '%z:%Fm' "$status"); else current=$(stat -c '%s:%Y' "$status"); fi
-  [ "$(cat "$seen")" = "$current" ] \
-    || fail "the self-announced answer close did not advance through its exact append"
-  printf 'working: later worker append\n' >> "$status"
-  if [ "$(uname -s)" = Darwin ]; then current=$(stat -f '%z:%Fm' "$status"); else current=$(stat -c '%s:%Y' "$status"); fi
-  [ "$(cat "$seen")" != "$current" ] \
-    || fail "a later worker line after the self-announced close was swallowed"
-
-  printf 'needs-decision [key=unanswered]: choose C or D\n' >> "$status"
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok 'Routine nudge only' >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "a routine steer should still succeed"
-  status_decision_is_open "$home/state/lane-ok.status" unanswered \
-    || fail "a routine steer without --resolve-key closed an unanswered decision"
-
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_FAKE_TMUX_DEAD_TARGET='sess:fm-lane-ok' FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok --resolve-key unanswered 'Proceed with C' >/dev/null 2>"$err"; rc=$?
-  [ "$rc" -ne 0 ] || fail "an unconfirmed answer delivery should fail"
-  status_decision_is_open "$home/state/lane-ok.status" unanswered \
-    || fail "an unconfirmed answer delivery closed an unanswered decision"
-  pass "fm-send closes answered decisions only after confirmed delivery and preserves receipts"
-}
-
-test_resolve_key_closes_each_named_key_and_no_others() {
-  local dir fb home err log rc
-  dir="$TMP_ROOT/resolve-multiple"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); home=$(setup_home resolve-multiple); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
-  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
-  printf 'needs-decision [key=source]: choose source\nneeds-decision: [key=rollout] choose rollout\nneeds-decision: choose timing [key=untouched]\n' \
-    > "$home/state/lane-ok.status"
-
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok --resolve-key source --resolve-key rollout 'Use local, then stage' >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "one confirmed answer should resolve each named key"
-  ! status_decision_is_open "$home/state/lane-ok.status" source || fail "the answered source key stayed open"
-  ! status_decision_is_open "$home/state/lane-ok.status" rollout || fail "the answered rollout key stayed open"
-  status_decision_is_open "$home/state/lane-ok.status" untouched || fail "an unnamed unanswered key was closed"
-  pass "fm-send resolves every named key and leaves every unnamed key open"
-}
-
-test_resolve_key_closes_when_the_answer_text_carries_a_key_token() {
-  local dir fb home err log rc
-  dir="$TMP_ROOT/resolve-keyed-answer"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); home=$(setup_home resolve-keyed-answer); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
-  fm_write_meta "$home/state/lane-ok.meta" "window=sess:fm-lane-ok" "kind=ship" "harness=codex"
-  printf 'needs-decision [key=route]: choose A or B\nneeds-decision [key=other]: choose C or D\n' \
-    > "$home/state/lane-ok.status"
-
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-ok --resolve-key route '[key=route] Go with A' >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "an answer that already carries its key token should still succeed"
-  ! status_decision_is_open "$home/state/lane-ok.status" route \
-    || fail "an answer carrying a key token left its decision open"
-  status_decision_is_open "$home/state/lane-ok.status" other \
-    || fail "a key token embedded in the answer text closed an unnamed decision"
-  pass "fm-send closes answered decisions even when the answer text carries a key token"
+    FM_FAKE_TMUX_SEND_KEY_FAIL=Escape \
+    "$SEND" lane-key --key Escape >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an undelivered --key interrupt reported success"
+  assert_contains "$(cat "$err")" "key 'Escape' not sent" "the undelivered case should name the key that failed"
+  assert_contains "$(cat "$log")" "target=sess:fm-lane-key literal=0 arg=Escape" "the undelivered case should still have attempted the send"
+  pass "fm-send --key: exit status follows delivery, and an undelivered key never reports success"
 }
 
 test_exact_lane_id_send_still_works
+test_key_send_exit_status_follows_delivery
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
-test_codex_pending_composer_never_false_confirms_from_stale_busy_footer
-test_successful_keyed_decision_send_records_only_an_open_task_key
-test_resolve_key_closes_only_after_confirmed_answer_delivery
-test_resolve_key_closes_each_named_key_and_no_others
-test_resolve_key_closes_when_the_answer_text_carries_a_key_token

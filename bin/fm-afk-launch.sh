@@ -5,10 +5,9 @@
 #
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
-# terminal it is already in. Claude's native background jobs are not durable
-# enough for away mode, and overlapping Grok sessions can issue delayed native
-# starts after return, so both use this launcher's tracked terminal path.
-# A harness with NO native background mechanism (pi) has to manufacture a terminal, and doing that
+# terminal it is already in. Harnesses with a native in-pane tracked-background
+# tool (claude, grok) run it there directly and it is fine. A harness with NO
+# native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
 # workspace with --no-focus, or a detached tmux session) that never touches the
@@ -30,7 +29,6 @@
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
-#                              Refuses Claude and Grok before writing state.
 #   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
 #                              cleanup flushes WHILE state/.afk is still present,
 #                              wait for it, close the recorded terminal by exact
@@ -45,9 +43,6 @@
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
 # placeholder instead of a real daemon. FM_SUPERVISOR_TARGET/FM_SUPERVISOR_BACKEND
 # override the captured captain pane/backend (an isolated lab pane in tests).
-# FM_AFK_PRIMARY_HARNESS_OVERRIDE and FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE feed
-# the capability gate below its two inputs, so a test can exercise the refusal
-# without a real Pi primary or an older build.
 set -u
 
 FM_AFK_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,7 +74,6 @@ FM_AFK_LAUNCH_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 FM_AFK_LAUNCH_RECORD="$FM_AFK_LAUNCH_STATE/.afk-daemon-terminal"
 FM_AFK_LAUNCH_LOCK="$FM_AFK_LAUNCH_STATE/.afk-launch.lock"
 FM_AFK_LAUNCH_WS_LABEL="firstmate-afk-daemon"
-FM_AFK_DIGEST_SAFETY_VERSION=1
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_AFK_LAUNCH_DIR/fm-backend.sh"
@@ -94,33 +88,6 @@ FM_AFK_DIGEST_SAFETY_VERSION=1
 set +e
 
 fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
-
-fm_afk_launch_capability_gate() {  # <captain-backend> <terminal|native>
-  local backend=$1 launch_mode=$2 harness version
-  harness=${FM_AFK_PRIMARY_HARNESS_OVERRIDE:-$("$FM_AFK_LAUNCH_DIR/fm-harness.sh")}
-  version=${FM_AFK_DIGEST_SAFETY_VERSION_OVERRIDE:-$FM_AFK_DIGEST_SAFETY_VERSION}
-  case "$version" in ''|*[!0-9]*) version=0 ;; esac
-  if [ "$launch_mode" = native ]; then
-    case "$harness" in
-      claude)
-        fm_afk_launch_log "refusing native away-mode launch: Claude native background jobs are not durable for away mode; use bin/fm-afk-launch.sh start"
-        return 1
-        ;;
-      grok)
-        fm_afk_launch_log "refusing native away-mode launch: Grok native away-mode launch is unsafe across overlapping sessions; use bin/fm-afk-launch.sh start"
-        return 1
-        ;;
-    esac
-  fi
-  case "$harness:$backend" in
-    pi:herdr|pi-signed:herdr)
-      if [ "$version" -lt 1 ]; then
-        fm_afk_launch_log "refusing away mode: Pi primary + Herdr requires durable digest identity and cross-restart no-retype safety (available safety version=$version, required=1)"
-        return 1
-      fi
-      ;;
-  esac
-}
 
 fm_afk_launch_lock_owned() {
   local pid expected actual
@@ -197,9 +164,7 @@ fm_afk_launch_record_write() {  # <backend> <target> <extra>
 }
 
 fm_afk_launch_flag_write() {
-  local pending="$FM_AFK_LAUNCH_STATE/.afk.pending.$$"
-  date '+%s' > "$pending" || { rm -f "$pending"; return 1; }
-  mv "$pending" "$FM_AFK_LAUNCH_STATE/.afk" || { rm -f "$pending"; return 1; }
+  fm_afk_flag_write "$FM_AFK_LAUNCH_STATE"
 }
 
 # Read the recorded terminal into FM_AFK_REC_BACKEND/FM_AFK_REC_TARGET. The third
@@ -395,14 +360,11 @@ fm_afk_launch_restore_backup() {  # <backup> <had-afk>
   rm -f "$FM_AFK_LAUNCH_STATE/.afk" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.since" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.unresolved" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-inject-wedged" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-digest-inflight" || result=1
+    "$FM_AFK_LAUNCH_STATE/.subsuper-inject-wedged" || result=1
   if [ "$had_afk" -eq 1 ]; then
     cp "$backup/.afk" "$FM_AFK_LAUNCH_STATE/.afk" || result=1
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.unresolved \
-    .subsuper-inject-wedged .subsuper-digest-inflight; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
     if [ -e "$backup/$artifact" ]; then
       cp -p "$backup/$artifact" "$FM_AFK_LAUNCH_STATE/$artifact" || result=1
     fi
@@ -507,7 +469,6 @@ fm_afk_launch_start() {
     fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
   captain_backend=$(discover_supervisor_backend) || {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
-  fm_afk_launch_capability_gate "$captain_backend" terminal || return 1
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 
@@ -526,8 +487,7 @@ fm_afk_launch_start() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.unresolved \
-    .subsuper-inject-wedged .subsuper-digest-inflight; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -535,7 +495,7 @@ fm_afk_launch_start() {
   if ! fm_afk_launch_reconcile; then
     result=1
   else
-    if [ "$had_afk" -eq 1 ] || fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
+    if fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
       result=0
     else
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
@@ -568,18 +528,12 @@ fm_afk_launch_start() {
 }
 
 fm_afk_launch_start_native() {
-  local backup artifact had_afk=0 result=0 captain_backend
+  local backup artifact had_afk=0 result=0
+  mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
-  # The native path never required a resolvable backend and must not start
-  # requiring one: an unresolved discovery still prints the usable tmux fallback,
-  # exactly as the daemon itself accepts it. Only the resolved value matters
-  # here, purely so the Pi+Herdr ambiguity gate can see it.
-  captain_backend=$(discover_supervisor_backend) || true
-  fm_afk_launch_capability_gate "$captain_backend" native || return 1
-  mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
     fm_afk_launch_flag_write || return 1
@@ -591,15 +545,14 @@ fm_afk_launch_start_native() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.unresolved \
-    .subsuper-inject-wedged .subsuper-digest-inflight; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
   done
   fm_afk_launch_reconcile || result=1
   if [ "$result" -eq 0 ]; then
-    if [ "$had_afk" -eq 0 ] && ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
+    if ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
       result=1
     elif ! fm_afk_launch_flag_write; then

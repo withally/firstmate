@@ -12,7 +12,11 @@ set -u
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
+# shellcheck source=tests/cutover-state-fixture-helpers.sh
+. "$ROOT/tests/cutover-state-fixture-helpers.sh"
+
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
+CLASSIFY="$ROOT/bin/fm-classify-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-wake-drain-unread-status-tests)
 
@@ -308,6 +312,96 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
   pass "routine working/done lines still print nothing on an empty-queue drain"
 }
 
+test_version_5_decision_cursor_bounds_first_presentation() {
+  local dir state out status payload i=1 bytes cursor
+  dir=$(make_case version-5-migrated-cursor)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task-v5.status"
+  cursor="$state/.task-v5.open-decisions-cursor"
+  payload=$(printf '%0110d' 0)
+  while [ "$i" -le 1200 ]; do
+    printf 'note: version-5 historical status %04d %s\n' "$i" "$payload" >> "$status"
+    i=$((i + 1))
+  done
+  STATE="$state" CLASSIFY="$CLASSIFY" bash -c \
+    '. "$CLASSIFY"; status_open_decisions_incremental "$STATE/task-v5.status" >/dev/null' \
+    || fail "priming the secure decision cursor failed"
+  sed -i.bak 's/^version=.*/version=5/' "$cursor"
+  printf 'note: one newly appended version-5 line\n' >> "$status"
+  append_wake "$state" signal task-v5.status "signal: copied version-5 corpus" \
+    || fail "queueing the representative version-5 signal failed"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "first version-5 presentation migration failed"
+  grep -F 'task-v5 note: one newly appended version-5 line' "$out" >/dev/null \
+    || fail "the post-cursor version-5 note was not presented"
+  if grep -F 'version-5 historical status' "$out" >/dev/null; then
+    fail "the first presentation bulk-replayed version-5 decision-cursor history"
+  fi
+  bytes=$(LC_ALL=C wc -c < "$out" | tr -d '[:space:]')
+  [ "$bytes" -lt 4096 ] \
+    || fail "one new version-5 line produced a $bytes-byte presentation instead of bounded output"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "warm presentation after version-5 migration failed"
+  if grep -F 'one newly appended version-5 line' "$out" >/dev/null; then
+    fail "the migrated presentation cursor replayed the new line"
+  fi
+  pass "a valid version-5 decision cursor seeds first presentation without history replay"
+}
+
+test_invalid_version_5_decision_cursor_cannot_hide_history() {
+  local dir state out status cursor
+  dir=$(make_case invalid-version-5-migration)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task-v5-invalid.status"
+  cursor="$state/.task-v5-invalid.open-decisions-cursor"
+  printf 'note: authoritative version-5 history\n' > "$status"
+  printf 'version=5\noffset=999999\nident=0:0\ngeneration=0\nanchor=0:0\n' > "$cursor"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "invalid version-5 cursor presentation failed"
+  grep -F 'task-v5-invalid note: authoritative version-5 history' "$out" >/dev/null \
+    || fail "an invalid version-5 seed cursor hid authoritative history"
+  pass "an invalid version-5 decision cursor falls back to byte zero"
+}
+
+test_copied_version_5_presentation_cursors_preserve_unread_boundaries() {
+  local dir fixture state task key status out note spec
+  dir=$(make_case copied-version-5-presentation-home-shapes)
+  for spec in \
+    'main-home|main-home/state|main-copy|main-choice' \
+    'local-secondmate|local-secondmate-home/state|local-copy|local-choice' \
+    'remote-home|remote-host/fm-homes/remote-copy/state|remote-copy|remote-choice'; do
+    IFS='|' read -r fixture state task key <<EOF
+$spec
+EOF
+    state="$dir/$state"
+    status="$state/$task.status"
+    out="$dir/$task.out"
+    note="$fixture newly unread after copied presentation state"
+    fm_cutover_render_fixture "$fixture" "$state" "$task"
+    printf 'note: %s\n' "$note" >> "$status"
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+      || fail "$fixture copied presentation drain failed"
+    grep -F "$task [key=$key]" "$out" >/dev/null \
+      || fail "$fixture copied state hid its open decision: $(cat "$out")"
+    grep -F "$task note: $note" "$out" >/dev/null \
+      || fail "$fixture copied presentation cursor hid its new note: $(cat "$out")"
+    if grep -F 'historical note already presented before cutover' "$out" >/dev/null; then
+      fail "$fixture copied presentation cursor replayed historical notes: $(cat "$out")"
+    fi
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+      || fail "$fixture warm copied presentation drain failed"
+    if grep -F "$note" "$out" >/dev/null; then
+      fail "$fixture copied presentation cursor replayed its new note: $(cat "$out")"
+    fi
+  done
+  pass "copied version-5 presentation state preserves unread boundaries across main, local-secondmate, and remote-home shapes"
+}
+
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced
@@ -319,3 +413,6 @@ test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
 test_routine_working_lines_stay_silent_on_the_empty_queue
+test_version_5_decision_cursor_bounds_first_presentation
+test_invalid_version_5_decision_cursor_cannot_hide_history
+test_copied_version_5_presentation_cursors_preserve_unread_boundaries

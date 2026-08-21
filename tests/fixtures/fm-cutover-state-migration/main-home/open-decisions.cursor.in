@@ -1,0 +1,6 @@
+version=5
+offset={{OFFSET}}
+ident={{IDENT}}
+generation={{GENERATION}}
+anchor={{ANCHOR}}
+main-choice	needs-decision	preserve the copied main-home decision

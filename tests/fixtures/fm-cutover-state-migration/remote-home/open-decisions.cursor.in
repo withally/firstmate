@@ -1,0 +1,6 @@
+version=5
+offset={{OFFSET}}
+ident={{IDENT}}
+generation={{GENERATION}}
+anchor={{ANCHOR}}
+remote-choice	needs-decision	preserve the copied remote-home decision

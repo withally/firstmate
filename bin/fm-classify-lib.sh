@@ -396,29 +396,21 @@ EOF
 # persisted open-set carries every still-open key forward across calls
 # regardless of how much new unrelated log content has since been folded in.
 #
-# The cursor format is `version`, `offset`, `ident`, then the folded open set.
-# FM_OPEN_DECISIONS_FOLD_VERSION must be bumped whenever
-# _fm_decision_fold_line semantics change, so persisted state from an older
-# interpretation is discarded and rebuilt from byte 0.
+# The current cursor format is `version`, `offset`, `ident`, `generation`,
+# `anchor`, then the folded open set. Version 5 is the frozen fork import schema;
+# version 6 is the same safety envelope under upstream's current fold semantics.
+# A valid fork cursor is imported without a full refold, while an upstream
+# version-4 cursor is refolded once under the current grammar. A mismatch in
+# version, size, device/inode, generation, or the bounded prefix anchor rebuilds
+# from byte zero. Incomplete final lines contribute to current output but never
+# advance the committed offset, so the next scan folds the completed record as
+# one line. FM_OPEN_DECISIONS_FOLD_VERSION must be bumped whenever either the
+# fold meaning or this persisted safety envelope changes.
 #
-# Cursor invalidation is deliberately minimal, matching how status files are
-# ACTUALLY used in this repo: every one is created once (`>`) and only ever
-# appended to (`>>`) - never replaced, renamed, or rewritten in place. So the
-# ways a cursor can go stale are a fold-version mismatch, a shrink (truncated),
-# or the file at this path being a different file than before
-# (replaced/rotated/recreated), which a changed device+inode makes an O(1) check
-# via a single `stat` call - no content hashing, no re-reading the consumed
-# prefix. Any signal falls back to a full re-fold of the whole current file from
-# byte 0 - byte for byte what status_open_decisions itself would compute - and
-# rewrites the cursor from that clean baseline. A same-inode, same-size,
-# in-place byte edit is NOT detected; that is a deliberately accepted gap
-# because no code path in this repo ever does that to a status file.
-#
-# The other real failure mode is OUR OWN read failing (a stat/wc/tail I/O
-# error), not a malformed writer: every such read here is checked, and on
-# failure this reports the already-trusted persisted set unchanged rather than
-# risking a silent invalidation that would wipe it - never a bare "empty" as if
-# nothing were open.
+# Every stat, size, and span read is checked. A failed incremental size or span
+# read uses a direct authoritative refold without mutating the cursor; a failure
+# that also prevents that proof returns the already-trusted open set or fails the
+# snapshot rather than treating the decision set as empty.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
 # side effect (state/.<task>.open-decisions-cursor), the library's second
@@ -437,7 +429,10 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
-FM_OPEN_DECISIONS_FOLD_VERSION=4
+FM_OPEN_DECISIONS_FOLD_VERSION=6
+FM_OPEN_DECISIONS_IMPORT_VERSION=5
+FM_OPEN_DECISIONS_LEGACY_VERSION=4
+FM_OPEN_DECISIONS_ANCHOR_BYTES=256
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
@@ -449,21 +444,118 @@ _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
   fi
 }
 
+_fm_open_decisions_file_generation() {  # <file>
+  local f=$1
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    LC_ALL=C stat -f '%B' "$f" 2>/dev/null
+  else
+    LC_ALL=C stat -c '%W' "$f" 2>/dev/null
+  fi
+}
+
+_fm_open_decisions_set_valid() {  # <open-set>
+  local set=$1 key verb note seen=''
+  while IFS=$(printf '\t') read -r key verb note || [ -n "$key$verb$note" ]; do
+    [ -n "$key$verb$note" ] || continue
+    _fm_decision_slug_ok "$key" || return 1
+    case "$verb" in needs-decision|blocked) ;; *) return 1 ;; esac
+    case "$seen" in *$'\n'"$key"$'\n'*) return 1 ;; esac
+    seen="${seen}"$'\n'"${key}"$'\n'
+  done <<EOF
+$set
+EOF
+}
+
+_fm_open_decisions_numeric_pair() {  # <left:right>
+  local value=$1 left right
+  case "$value" in *:*) ;; *) return 1 ;; esac
+  left=${value%%:*}
+  right=${value#*:}
+  case "$left" in ''|*[!0-9]*) return 1 ;; esac
+  case "$right" in ''|*[!0-9]*) return 1 ;; esac
+}
+
+_fm_open_decisions_anchor() {  # <status-file> <offset>
+  local f=$1 offset=$2 start length tmp value
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$offset" -eq 0 ]; then
+    printf '0:0'
+    return 0
+  fi
+  length=$FM_OPEN_DECISIONS_ANCHOR_BYTES
+  [ "$offset" -ge "$length" ] || length=$offset
+  start=$((offset - length))
+  tmp="$(_fm_open_decisions_cursor_path "$f").anchor.$$"
+  _fm_status_read_span "$f" "$start" "$length" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  value=$(LC_ALL=C cksum < "$tmp" 2>/dev/null) || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  value=${value//[[:space:]]/:}
+  printf '%s' "$value"
+}
+
+# Validate and normalize a secure cursor without trusting any field until its
+# file identity, generation, bounded prefix anchor, and folded open set all agree
+# with the current status file. Version 5 is the fork import schema; version 6 is
+# the upstream-current schema written after import.
+_fm_normalize_secure_open_decisions_cursor() {  # <status-file> <cursor-data> <version>
+  local f=$1 cursor_data=$2 expected_version=$3 first rest offset_line='' ident_line=''
+  local generation_line='' anchor_line='' open='' offset ident generation anchor
+  local cur_ident cur_generation size current_anchor
+  case "$cursor_data" in
+    *$'\n'*) first=${cursor_data%%$'\n'*}; rest=${cursor_data#*$'\n'} ;;
+    *) return 1 ;;
+  esac
+  [ "$first" = "version=$expected_version" ] || return 1
+  case "$rest" in *$'\n'*) offset_line=${rest%%$'\n'*}; rest=${rest#*$'\n'} ;; *) return 1 ;; esac
+  case "$rest" in *$'\n'*) ident_line=${rest%%$'\n'*}; rest=${rest#*$'\n'} ;; *) return 1 ;; esac
+  case "$rest" in *$'\n'*) generation_line=${rest%%$'\n'*}; rest=${rest#*$'\n'} ;; *) return 1 ;; esac
+  case "$rest" in
+    *$'\n'*) anchor_line=${rest%%$'\n'*}; open=${rest#*$'\n'} ;;
+    *) anchor_line=$rest ;;
+  esac
+  offset=${offset_line#offset=}
+  ident=${ident_line#ident=}
+  generation=${generation_line#generation=}
+  anchor=${anchor_line#anchor=}
+  [ "$offset_line" = "offset=$offset" ] \
+    && [ "$ident_line" = "ident=$ident" ] \
+    && [ "$generation_line" = "generation=$generation" ] \
+    && [ "$anchor_line" = "anchor=$anchor" ] \
+    || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  case "$generation" in ''|*[!0-9]*) return 1 ;; esac
+  _fm_open_decisions_numeric_pair "$ident" || return 1
+  _fm_open_decisions_numeric_pair "$anchor" || return 1
+  _fm_open_decisions_set_valid "$open" || return 1
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  cur_generation=$(_fm_open_decisions_file_generation "$f") || return 1
+  size=$(_fm_status_file_size "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$ident" = "$cur_ident" ] && [ "$generation" = "$cur_generation" ] \
+    && [ "$offset" -le "$size" ] || return 1
+  current_anchor=$(_fm_open_decisions_anchor "$f" "$offset") || return 1
+  [ "$anchor" = "$current_anchor" ] || return 1
+  printf 'offset=%s\nident=%s\ngeneration=%s\nanchor=%s\n' \
+    "$offset" "$ident" "$generation" "$anchor"
+  [ -z "$open" ] || printf '%s' "$open"
+}
+
 _fm_status_file_size() {  # <status-file>
   local f=$1
   if [ -n "${FM_STATUS_SIZE_READER:-}" ]; then
     "$FM_STATUS_SIZE_READER" "$f"
     return
   fi
-  LC_ALL=C wc -c < "$f" 2>/dev/null
+  _fm_status_file_size_direct "$f"
 }
 
-_fm_status_read_span() {  # <status-file> <start-offset> <byte-length>
-  local f=$1 start=$2 length=$3
-  if [ -n "${FM_STATUS_SPAN_READER:-}" ]; then
-    "$FM_STATUS_SPAN_READER" "$f" "$start" "$length"
-    return
-  fi
+_fm_status_file_size_direct() {  # <status-file>
+  LC_ALL=C wc -c < "$1" 2>/dev/null
+}
+
+_fm_status_read_span_direct() {  # <status-file> <start-offset> <byte-length>
   perl -MFcntl=:DEFAULT -e '
     my ($path, $start, $length) = @ARGV;
     sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
@@ -475,13 +567,54 @@ _fm_status_read_span() {  # <status-file> <start-offset> <byte-length>
       print $chunk or exit 1;
       $length -= $read;
     }
-  ' "$f" "$start" "$length"
+  ' "$1" "$2" "$3"
 }
 
-status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
-  local f=$1 captured_end=${2:-} cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
-  local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0
-  local target_cursor
+_fm_status_read_span() {  # <status-file> <start-offset> <byte-length>
+  if [ -n "${FM_STATUS_SPAN_READER:-}" ]; then
+    "$FM_STATUS_SPAN_READER" "$1" "$2" "$3"
+    return
+  fi
+  _fm_status_read_span_direct "$1" "$2" "$3"
+}
+
+_fm_open_decisions_complete_bytes() {  # <chunk-file>
+  perl -0777 -e '
+    local $/;
+    my $data = <>;
+    my $last = rindex($data, "\n");
+    print $last < 0 ? 0 : $last + 1;
+  ' "$1" 2>/dev/null
+}
+
+_fm_open_decisions_full_refold() {  # <status-file> [<captured-end>] [<captured-ident>]
+  local f=$1 captured_end=${2:-} captured_ident=${3:-} current size tmp folded post_ident
+  if [ -z "$captured_end" ]; then
+    status_open_decisions "$f"
+    return
+  fi
+  case "$captured_end" in ''|*[!0-9]*) return 1 ;; esac
+  current=$(_fm_open_decisions_file_ident "$f") || return 1
+  [ -z "$captured_ident" ] || [ "$current" = "$captured_ident" ] || return 1
+  size=$(_fm_status_file_size_direct "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$captured_end" -le "$size" ] || return 1
+  tmp="$(_fm_open_decisions_cursor_path "$f").refold.$$"
+  _fm_status_read_span_direct "$f" 0 "$captured_end" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  post_ident=$(_fm_open_decisions_file_ident "$f") || { rm -f "$tmp"; return 1; }
+  [ "$post_ident" = "$current" ] || { rm -f "$tmp"; return 1; }
+  folded=$(status_open_decisions "$tmp") || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  printf '%s' "$folded"
+}
+
+status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>] [<captured-ident>]
+  local f=$1 captured_end=${2:-} captured_ident=${3:-} cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
+  local version='' generation='' anchor='' size actual_size cur_ident cur_generation current_anchor resolve held chunk_file chunk_size line cursor_dirty=0
+  local complete_size tail_size stable_open display_open
+  local target_cursor imported generation_line anchor_line post_ident post_generation post_size
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   cf=$(_fm_open_decisions_cursor_path "$f")
   offset=0
@@ -492,6 +625,25 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   if [ -n "${cursor_data:-}" ]; then
       first=${cursor_data%%$'\n'*}
       case "$first" in
+        "version=$FM_OPEN_DECISIONS_IMPORT_VERSION"|"version=$FM_OPEN_DECISIONS_FOLD_VERSION")
+          if imported=$(_fm_normalize_secure_open_decisions_cursor "$f" "$cursor_data" "${first#version=}"); then
+            version=$FM_OPEN_DECISIONS_FOLD_VERSION
+            offset_line=${imported%%$'\n'*}
+            offset=${offset_line#offset=}
+            rest=${imported#*$'\n'}
+            ident_line=${rest%%$'\n'*}
+            ident=${ident_line#ident=}
+            rest=${rest#*$'\n'}
+            generation_line=${rest%%$'\n'*}
+            generation=${generation_line#generation=}
+            rest=${rest#*$'\n'}
+            anchor_line=${rest%%$'\n'*}
+            anchor=${anchor_line#anchor=}
+            case "$rest" in *$'\n'*) open=${rest#*$'\n'} ;; esac
+            trusted_open=$open
+            [ "$first" = "version=$FM_OPEN_DECISIONS_FOLD_VERSION" ] || cursor_dirty=1
+          fi
+          ;;
         version=*)
           version=${first#version=}
           [ "$version" = "$FM_OPEN_DECISIONS_FOLD_VERSION" ] || version=''
@@ -532,10 +684,16 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   # silent invalidation that would wipe it.
   cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; return 0; }
   [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; return 0; }
-  actual_size=$(_fm_status_file_size "$f") \
+  cur_generation=$(_fm_open_decisions_file_generation "$f") \
     || { printf '%s' "$trusted_open"; return 0; }
+  case "$cur_generation" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
+  [ -z "$captured_ident" ] || [ "$captured_ident" = "$cur_ident" ] || return 1
+  actual_size=$(_fm_status_file_size "$f") \
+    || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
+  case "$actual_size" in
+    ''|*[!0-9]*) _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return ;;
+  esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
       ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;;
@@ -546,17 +704,25 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
     size=$actual_size
   fi
 
-  if [ -z "$version" ] || [ -z "$ident" ] || [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$actual_size" ]; then
+  if [ -n "$version" ]; then
+    current_anchor=$(_fm_open_decisions_anchor "$f" "$offset") \
+      || { _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
+  fi
+  if [ -z "$version" ] || [ -z "$ident" ] || [ "$ident" != "$cur_ident" ] \
+    || [ "$generation" != "$cur_generation" ] || [ "$anchor" != "$current_anchor" ] \
+    || [ "$offset" -gt "$actual_size" ]; then
     offset=0
     open=''
     trusted_open=''
     cursor_dirty=1
   fi
 
+  stable_open=$open
+  display_open=$open
   if [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_full_refold "$f" "$captured_end" "$captured_ident"; return; }
     chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) \
       || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
     chunk_size=${chunk_size//[[:space:]]/}
@@ -571,24 +737,46 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
       && printf '%s\t%s\n' "$f" "$chunk_size" >> "$FM_OPEN_DECISIONS_READ_PROBE"
     resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
     held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-    while IFS= read -r line || [ -n "$line" ]; do
-      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    complete_size=$(_fm_open_decisions_complete_bytes "$chunk_file") \
+      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+    case "$complete_size" in
+      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0 ;;
+    esac
+    while IFS= read -r line; do
+      stable_open=$(_fm_decision_fold_line "$stable_open" "$line" "$resolve" "$held")
     done < "$chunk_file"
+    display_open=$stable_open
+    tail_size=$((chunk_size - complete_size))
+    if [ "$tail_size" -gt 0 ]; then
+      line=$(_fm_status_read_span_direct "$chunk_file" "$complete_size" "$tail_size") \
+        || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      display_open=$(_fm_decision_fold_line "$display_open" "$line" "$resolve" "$held")
+    fi
     rm -f "$chunk_file"
-    offset=$size
-    cursor_dirty=1
+    offset=$((offset + complete_size))
+    [ "$complete_size" -eq 0 ] || cursor_dirty=1
   fi
+  post_ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  post_generation=$(_fm_open_decisions_file_generation "$f") || return 1
+  post_size=$(_fm_status_file_size_direct "$f") || return 1
+  post_size=${post_size//[[:space:]]/}
+  case "$post_size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$post_ident" = "$cur_ident" ] && [ "$post_generation" = "$cur_generation" ] \
+    && [ "$post_size" -ge "$size" ] || return 1
   if [ "$cursor_dirty" -eq 1 ]; then
+    current_anchor=$(_fm_open_decisions_anchor "$f" "$offset") || return 1
     target_cursor="$cf.tmp.$$"
     {
       printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
       printf 'offset=%s\n' "$offset"
       printf 'ident=%s\n' "$cur_ident"
-      if [ -n "$open" ]; then printf '%s' "$open"; fi
+      printf 'generation=%s\n' "$cur_generation"
+      printf 'anchor=%s\n' "$current_anchor"
+      if [ -n "$stable_open" ]; then printf '%s' "$stable_open"; fi
     } > "$target_cursor" || return 1
     mv -f "$target_cursor" "$cf" || return 1
   fi
-  printf '%s' "$open"
+  printf '%s' "$display_open"
 }
 
 # Incremental sibling of scan_open_decisions: same fleet-wide directory walk and
@@ -799,7 +987,7 @@ scan_open_decisions_snapshot() {  # <state> <task-and-endpoint-snapshot>
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
-    open=$(status_open_decisions_incremental "$f" "$endpoint") || return 1
+    open=$(status_open_decisions_incremental "$f" "$endpoint" "$ident") || return 1
     [ -n "$open" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -838,48 +1026,41 @@ EOF
 # mismatch, or offset past the current size falls back to 0. Never writes unless
 # a caller explicitly requests a migration snapshot.
 status_open_decisions_cursor_offset() {  # <status-file>
-  local f=$1 cf offset=0 ident='' version='' cursor_data first rest open=''
-  local offset_line ident_line cur_ident size
+  local f=$1 cf offset=0 ident='' version='' cursor_data first='' rest='' open=''
+  local offset_line='' ident_line='' cur_ident size imported generation anchor
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
   cf=$(_fm_open_decisions_cursor_path "$f")
   if [ -e "$cf" ] || [ -L "$cf" ]; then
     [ -f "$cf" ] && [ -r "$cf" ] && [ ! -L "$cf" ] || return 1
-    if cursor_data=$(LC_ALL=C command cat "$cf" 2>/dev/null); then
-      first=${cursor_data%%$'\n'*}
-      case "$first" in
-        version=*)
-          version=${first#version=}
-          [ "$version" = "$FM_OPEN_DECISIONS_FOLD_VERSION" ] || version=''
-          rest=${cursor_data#*$'\n'}
-          offset_line=${rest%%$'\n'*}
-          case "$offset_line" in
-            offset=*) offset=${offset_line#offset=} ;;
-            *) offset=0; version='' ;;
-          esac
-          case "$offset" in
-            ''|*[!0-9]*) offset=0; version='' ;;
-            *)
-              case "$rest" in
-                *$'\n'*)
-                  rest=${rest#*$'\n'}
-                  ident_line=${rest%%$'\n'*}
-                  case "$ident_line" in
-                    ident=*)
-                      ident=${ident_line#ident=}
-                      case "$rest" in *$'\n'*) open=${rest#*$'\n'} ;; esac
-                      ;;
-                    *) offset=0; version='' ;;
-                  esac
-                  ;;
-                *) offset=0; version='' ;;
-              esac
-              ;;
-          esac
-          ;;
-      esac
-    else
-      return 1
-    fi
+    cursor_data=$(LC_ALL=C command cat "$cf" 2>/dev/null) || return 1
+    first=${cursor_data%%$'\n'*}
+    case "$first" in
+      "version=$FM_OPEN_DECISIONS_IMPORT_VERSION"|"version=$FM_OPEN_DECISIONS_FOLD_VERSION")
+        if imported=$(_fm_normalize_secure_open_decisions_cursor "$f" "$cursor_data" "${first#version=}"); then
+          version=$FM_OPEN_DECISIONS_FOLD_VERSION
+          offset_line=${imported%%$'\n'*}; offset=${offset_line#offset=}
+          rest=${imported#*$'\n'}
+          ident_line=${rest%%$'\n'*}; ident=${ident_line#ident=}
+          rest=${rest#*$'\n'}; generation=${rest%%$'\n'*}; generation=${generation#generation=}
+          rest=${rest#*$'\n'}; anchor=${rest%%$'\n'*}; anchor=${anchor#anchor=}
+          case "$rest" in *$'\n'*) open=${rest#*$'\n'} ;; esac
+        fi
+        ;;
+      "version=$FM_OPEN_DECISIONS_LEGACY_VERSION")
+        rest=${cursor_data#*$'\n'}
+        case "$rest" in *$'\n'*) offset_line=${rest%%$'\n'*}; rest=${rest#*$'\n'} ;; *) rest='' ;; esac
+        case "$rest" in
+          *$'\n'*) ident_line=${rest%%$'\n'*}; open=${rest#*$'\n'} ;;
+          *) ident_line=$rest ;;
+        esac
+        offset=${offset_line#offset=}
+        ident=${ident_line#ident=}
+        if [ "$offset_line" = "offset=$offset" ] && [ "$ident_line" = "ident=$ident" ] \
+          && _fm_open_decisions_numeric_pair "$ident" && _fm_open_decisions_set_valid "$open"; then
+          case "$offset" in ''|*[!0-9]*) version='' ;; *) version=$FM_OPEN_DECISIONS_LEGACY_VERSION ;; esac
+        fi
+        ;;
+    esac
   fi
   cur_ident=$(_fm_open_decisions_file_ident "$f") || return 1
   [ -n "$cur_ident" ] || return 1
@@ -891,10 +1072,14 @@ status_open_decisions_cursor_offset() {  # <status-file>
     open=''
   fi
   if [ -n "${FM_STATUS_CURSOR_SNAPSHOT_FILE:-}" ]; then
+    generation=$(_fm_open_decisions_file_generation "$f") || return 1
+    anchor=$(_fm_open_decisions_anchor "$f" "$offset") || return 1
     {
       printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
       printf 'offset=%s\n' "$offset"
       printf 'ident=%s\n' "$cur_ident"
+      printf 'generation=%s\n' "$generation"
+      printf 'anchor=%s\n' "$anchor"
       if [ -n "$open" ]; then printf '%s' "$open"; fi
     } > "$FM_STATUS_CURSOR_SNAPSHOT_FILE" || return 1
   fi

@@ -719,6 +719,10 @@ test_self_announced_append_guards() {
 # live hold exactly as before.
 test_self_held_lock_reclaims_instead_of_deadlocking() {
   local dir state rc
+  if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || [ -z "${BASHPID:-}" ]; then
+    echo "skip - self-held lock subshell identity requires bash 4+ BASHPID"
+    return 0
+  fi
   dir=$(make_case self-held-lock)
   state="$dir/state"
   rc=0

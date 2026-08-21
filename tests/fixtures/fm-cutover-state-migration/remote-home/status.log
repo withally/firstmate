@@ -1,0 +1,3 @@
+needs-decision [key=remote-choice]: preserve the copied remote-home decision
+note: remote-home historical note already presented before cutover
+working: remote-home historical work continues

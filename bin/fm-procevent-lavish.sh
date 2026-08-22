@@ -3,6 +3,7 @@
 #
 # Usage:
 #   fm-procevent-lavish.sh arm <artifact.html>
+#   fm-procevent-lavish.sh poll <artifact.html>
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
@@ -16,10 +17,18 @@
 #            keeps it armed. This is the generic adapter contract bin/fm-procevent.sh
 #            calls, and the only place Lavish's notion of "ended" is decided.
 #
+# poll       Run the registered blocking listen. The exact two-line
+#            "poll response was interrupted" SERVER_ERROR is retried up to 12
+#            times, waiting five seconds between attempts. Every other result
+#            returns immediately, and the final exact interrupt returns after
+#            exhaustion so the runner captures and announces it. The wait may
+#            be set to a nonnegative integer with
+#            FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS for deterministic tests.
+#
 # This adapter is deliberately thin. It owns only what is specific to Lavish:
-# canonical source identity, the argv for the currently published poll command,
-# and how to read a completed result. Ownership, durable capture, publication,
-# and restart recovery all belong to bin/fm-procevent.sh.
+# canonical source identity, the registered blocking listen and its bounded
+# interrupt retry, and how to read a completed result. Ownership, durable
+# capture, publication, and restart recovery all belong to bin/fm-procevent.sh.
 #
 # `answers` is this adapter's half of the generic keyed-answer contract in
 # bin/fm-procevent.sh. It reports what the captain actually chose, as
@@ -59,7 +68,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -86,10 +95,47 @@ cmd_arm() {
   id=$(cmd_source_id "$artifact") || exit 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
     || die "cannot resolve the artifact path: $artifact"
-  # The plain blocking form: no --timeout-ms, so completion is a server event.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- lavish-axi poll "$real" || exit 1
+  # The adapter keeps exact transient interrupts inside this blocking process;
+  # the generic runner still sees every real completion unchanged.
+  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- \
+    "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
+}
+
+poll_was_interrupted() {  # <output-file>
+  awk '
+    NR == 1 { first = ($0 == "error: Lavish Editor poll response was interrupted") }
+    NR == 2 { second = ($0 == "code: SERVER_ERROR") }
+    END { exit !(NR == 2 && first && second) }
+  ' "$1"
+}
+
+cmd_poll() {
+  local artifact=${1-} delay=${FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS:-5}
+  local output rc retries=0 retry_limit=12
+  [ -n "$artifact" ] || usage
+  [ "$#" -eq 1 ] || usage
+  [ -f "$artifact" ] || die "artifact does not exist: $artifact"
+  case "$delay" in ''|*[!0-9]*) die "FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS must be a nonnegative integer" ;; esac
+  [ "$delay" -le 60 ] || die "FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS must be at most 60"
+  output=$(mktemp "${TMPDIR:-/tmp}/fm-procevent-lavish-poll.XXXXXX") \
+    || die "cannot create poll output file"
+  trap 'rm -f -- "$output"' EXIT
+  while :; do
+    : > "$output" || die "cannot reset poll output file"
+    lavish-axi poll "$artifact" > "$output" 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ] && poll_was_interrupted "$output" && [ "$retries" -lt "$retry_limit" ]; then
+      retries=$((retries + 1))
+      sleep "$delay"
+      continue
+    fi
+    cat "$output"
+    rm -f -- "$output"
+    trap - EXIT
+    return "$rc"
+  done
 }
 
 cmd_retire() {
@@ -241,6 +287,7 @@ cmd_answers() {
 
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
+  poll)      shift; cmd_poll "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
   source-id) shift; cmd_source_id "$@" ;;
   classify)  shift; cmd_classify "$@" ;;

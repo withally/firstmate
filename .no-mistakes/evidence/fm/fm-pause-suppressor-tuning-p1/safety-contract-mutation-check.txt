@@ -1,0 +1,6 @@
+### Safety contract non-vacuity: swallow mutant of bin/fm-watch.sh
+Mutation: (a) removed the 'a non-declaring latest line drops .paused-<key>' clear in the stale loop,
+          (b) routed any key with an armed .paused-<key> into handle_paused_stale before stale_is_terminal.
+Result of test_captain_relevant_line_breaks_an_armed_pause_cadence against that mutant:
+not ok - an armed pause cadence swallowed a needs-decision line on the stale path
+exit=1

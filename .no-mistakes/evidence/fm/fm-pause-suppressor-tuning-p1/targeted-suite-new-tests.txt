@@ -1,0 +1,2 @@
+ok - a current declared wait holds its long cadence across pane churn, declaring appends and watcher restarts
+ok - needs-decision, blocked and done still wake immediately through an armed declared-wait cadence

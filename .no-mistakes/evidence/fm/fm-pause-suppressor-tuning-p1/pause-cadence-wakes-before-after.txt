@@ -1,0 +1,20 @@
+### PRE-FIX (base 096e5dd bin/fm-watch.sh)
+--- captain-visible wakes after five watcher rounds over a still-paused crew (/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0N9Y3DHNGEZYT2ZS23T1T13/bin/fm-watch-prefix.sh) ---
+    stale: test:fm-churn
+    stale: test:fm-churn
+    stale: test:fm-churn
+    stale: test:fm-churn
+    stale: test:fm-churn
+--- stale wakes: 5 ---
+not ok - a churning declared pause surfaced 5 stale wakes across five restarts (expected the single live-agent inspection)
+exit=1
+
+### POST-FIX (90d2924 bin/fm-watch.sh)
+--- captain-visible wakes after five watcher rounds over a still-paused crew (/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0N9Y3DHNGEZYT2ZS23T1T13/bin/fm-watch.sh) ---
+    stale: test:fm-churn
+    check: rearm-resurface
+    check: rearm-resurface
+--- stale wakes: 1 ---
+ok - a current declared wait holds its long cadence across pane churn, declaring appends and watcher restarts
+ok - needs-decision, blocked and done still wake immediately through an armed declared-wait cadence
+exit=0

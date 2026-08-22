@@ -215,26 +215,6 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
-# The exact-path primary-copy refusal through the fm-spawn CLI: when the pane
-# settles at the primary checkout itself, the settle loop never leaves it and the
-# spawn refuses rather than tangling a hook into the primary.
-test_spawn_primary_copy_abort() {
-  local home proj fakebin out status
-  home="$TMP_ROOT/spawn-identity-home"
-  mkdir -p "$home/data"
-  proj=$(make_repo "$TMP_ROOT/spawn-identity-proj")
-  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-identity-fake")
-  fm_fake_exit0 "$fakebin" sleep
-
-  out=$(run_spawn "$home" abort-identity-gg7 "$proj" "$proj" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn should refuse the primary checkout itself"
-  assert_contains "$out" "treehouse get did not enter a worktree" \
-    "primary checkout did not produce the settle-loop refusal"
-  assert_not_contains "$out" "spawned abort-identity-gg7" \
-    "primary checkout was wrongly launched"
-  pass "fm-spawn: settle loop refuses the primary checkout through the CLI"
-}
-
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
 
 # The prevention guard also depends on fm-spawn building robust tmux commands
@@ -327,5 +307,4 @@ test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
-test_spawn_primary_copy_abort
 test_spawn_tmux_window_construction

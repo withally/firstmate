@@ -3,7 +3,6 @@
 #
 # Usage:
 #   fm-procevent-lavish.sh arm <artifact.html>
-#   fm-procevent-lavish.sh poll <artifact.html>
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
@@ -17,26 +16,18 @@
 #            keeps it armed. This is the generic adapter contract bin/fm-procevent.sh
 #            calls, and the only place Lavish's notion of "ended" is decided.
 #
-# poll       Run the registered blocking listen. The exact two-line
-#            "poll response was interrupted" SERVER_ERROR is retried up to 12
-#            times, waiting five seconds between attempts. Every other result
-#            returns immediately, and the final exact interrupt returns after
-#            exhaustion so the runner captures and announces it. The wait may
-#            be set to a nonnegative integer with
-#            FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS for deterministic tests.
-#
 # This adapter is deliberately thin. It owns only what is specific to Lavish:
-# canonical source identity, the registered blocking listen and its bounded
-# interrupt retry, and how to read a completed result. Ownership, durable
-# capture, publication, and restart recovery all belong to bin/fm-procevent.sh.
+# canonical source identity, the argv for the currently published poll command,
+# and how to read a completed result. Ownership, durable capture, publication,
+# and restart recovery all belong to bin/fm-procevent.sh.
 #
 # `answers` is this adapter's half of the generic keyed-answer contract in
 # bin/fm-procevent.sh. It reports what the captain actually chose, as
-# `<decision-key>\t<answer>\t<label>` lines, and stops there. It maps nothing to a
-# hold, records no decision, and closes nothing: a captain answer is not special to
-# Lavish, so every rule about what a keyed answer DOES belongs to the one intake in
-# bin/fm-decision-hold.sh, which the runner feeds. A Lavish review is just an
-# ephemeral discussion format that happens to carry answers.
+# `<task-id>\t<answer>\t<label>` lines, and stops there. It maps nothing to a
+# task, records no decision, and closes nothing: a captain answer is not special
+# to Lavish, so every rule about what a keyed answer DOES belongs to the one
+# intake in bin/fm-captain-hold.sh, which the runner feeds. A Lavish review is
+# just an ephemeral discussion format that happens to carry answers.
 #
 # Only rows tagged `choice` are read. A freeform captain message is prose that may
 # contain anything, and must never be able to forge a decision key.
@@ -68,7 +59,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -95,47 +86,10 @@ cmd_arm() {
   id=$(cmd_source_id "$artifact") || exit 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
     || die "cannot resolve the artifact path: $artifact"
-  # The adapter keeps exact transient interrupts inside this blocking process;
-  # the generic runner still sees every real completion unchanged.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- \
-    "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  # The plain blocking form: no --timeout-ms, so completion is a server event.
+  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- lavish-axi poll "$real" || exit 1
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
-}
-
-poll_was_interrupted() {  # <output-file>
-  awk '
-    NR == 1 { first = ($0 == "error: Lavish Editor poll response was interrupted") }
-    NR == 2 { second = ($0 == "code: SERVER_ERROR") }
-    END { exit !(NR == 2 && first && second) }
-  ' "$1"
-}
-
-cmd_poll() {
-  local artifact=${1-} delay=${FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS:-5}
-  local output rc retries=0 retry_limit=12
-  [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
-  [ -f "$artifact" ] || die "artifact does not exist: $artifact"
-  case "$delay" in ''|*[!0-9]*) die "FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS must be a nonnegative integer" ;; esac
-  [ "$delay" -le 60 ] || die "FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS must be at most 60"
-  output=$(mktemp "${TMPDIR:-/tmp}/fm-procevent-lavish-poll.XXXXXX") \
-    || die "cannot create poll output file"
-  trap 'rm -f -- "$output"' EXIT
-  while :; do
-    : > "$output" || die "cannot reset poll output file"
-    lavish-axi poll "$artifact" > "$output" 2>&1
-    rc=$?
-    if [ "$rc" -ne 0 ] && poll_was_interrupted "$output" && [ "$retries" -lt "$retry_limit" ]; then
-      retries=$((retries + 1))
-      sleep "$delay"
-      continue
-    fi
-    cat "$output"
-    rm -f -- "$output"
-    trap - EXIT
-    return "$rc"
-  done
 }
 
 cmd_retire() {
@@ -204,8 +158,9 @@ cmd_terminal() {
   return 1
 }
 
-# Print `key<TAB>answer<TAB>label` for every structured choice the captain
-# submitted in a captured result. The published response frames queued feedback as
+# Print `key<TAB>answer<TAB>label[<TAB>mode]` for every structured choice the
+# captain submitted in a captured result; the optional mode column relays the
+# card's declared close mode (`done` or `release`) to the keyed-answer intake. The published response frames queued feedback as
 # a `prompts[N]{field,...}:` header followed by exactly N indented CSV rows whose
 # quoted fields carry JSON-style escapes, so this reads the declared field ORDER
 # rather than assuming a fixed column, and takes only rows whose `tag` field is
@@ -213,14 +168,14 @@ cmd_terminal() {
 # source of decision keys. A row that does not carry both a slug-shaped `question`
 # and an `answer` inside its `Context data:` block is skipped, so a deck that does
 # not key its forms by decision key simply yields nothing.
-# The question cap is 128 so a FULL hold identity (<origin>-decision-<key>) fits
-# for an any-origin bound deck such as the bearings board; the security property
-# is the slug SHAPE, which is unchanged.
+# The question cap is 128 so any task id fits, including the long legacy
+# `<origin>-decision-<key>` identities pre-collapse decks still carry; the
+# security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
   local file=${1-}
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
-  perl -e '
+  perl -MJSON::PP -e '
     use strict; use warnings;
     my ($path) = @ARGV;
     open my $fh, "<", $path or exit 1;
@@ -259,11 +214,17 @@ cmd_answers() {
       my $prompt = $f{prompt};
       next unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
       my $ctx = $1;
-      next unless $ctx =~ /"question"\s*:\s*"((?:[^"\\]|\\.)*)"/;
-      my $key = $1;
-      next unless $ctx =~ /"answer"\s*:\s*"((?:[^"\\]|\\.)*)"/;
-      my $answer = $1;
-      $_ =~ s/\\(.)/$1/g for ($key, $answer);
+      my $data = eval { decode_json($ctx) };
+      next unless ref($data) eq "HASH";
+      my $key = $data->{question};
+      my $answer = $data->{answer};
+      next if !defined($key) || ref($key) || !defined($answer) || ref($answer);
+      my $mode = "";
+      if (exists $data->{close}) {
+        next if !defined($data->{close}) || ref($data->{close})
+          || ($data->{close} ne "done" && $data->{close} ne "release");
+        $mode = $data->{close};
+      }
       next unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
       next unless length $answer && length($answer) <= 512;
       my $label = defined $f{text} ? $f{text} : "";
@@ -272,7 +233,7 @@ cmd_answers() {
       # A re-answered form appears again later in the queue; the last submission wins.
       if (defined $seen{$key}) { $out[$seen{$key}] = undef }
       $seen{$key} = scalar @out;
-      push @out, "$key\t$answer\t$label";
+      push @out, length $mode ? "$key\t$answer\t$label\t$mode" : "$key\t$answer\t$label";
     }
     print "$_\n" for grep { defined } @out;
   ' "$file"
@@ -280,7 +241,6 @@ cmd_answers() {
 
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
-  poll)      shift; cmd_poll "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
   source-id) shift; cmd_source_id "$@" ;;
   classify)  shift; cmd_classify "$@" ;;

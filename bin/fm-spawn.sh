@@ -370,7 +370,7 @@ else
       exit 1
     }
     [ "$YOLO_SET" -eq 1 ] || {
-      echo "error: ship spawns require --yolo <on|off>; it is this task's routine approval authority, not a project lookup" >&2
+      echo "error: ship spawns require --yolo <on|off>; it is this task's merge authority, not a project lookup" >&2
       exit 1
     }
     case "$MODE" in
@@ -1701,39 +1701,6 @@ real_path_or_raw() {  # <path>
   fi
 }
 
-path_filesystem_identity() {  # <path> -> "device:inode"
-  local identity device inode
-  case $(uname -s 2>/dev/null) in
-    Darwin) identity=$(LC_ALL=C stat -f '%d:%i' "$1" 2>/dev/null) || return 1 ;;
-    Linux) identity=$(LC_ALL=C stat -c '%d:%i' -- "$1" 2>/dev/null) || return 1 ;;
-    *)
-      identity=$(LC_ALL=C stat -c '%d:%i' -- "$1" 2>/dev/null) \
-        || identity=$(LC_ALL=C stat -f '%d:%i' "$1" 2>/dev/null) \
-        || return 1
-      ;;
-  esac
-  case "$identity" in
-    *:*)
-      device=${identity%%:*}
-      inode=${identity#*:}
-      case "$device:$inode" in
-        *:*:*|:*|*:|*[!0-9:]*) return 1 ;;
-      esac
-      printf '%s:%s\n' "$device" "$inode"
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-path_identity_or_refuse() {  # <path> <context>
-  local identity
-  identity=$(path_filesystem_identity "$1") || {
-    echo "error: cannot read filesystem identity for '$1' while $2 on platform '$(uname -s 2>/dev/null || echo unknown)'; refusing to launch" >&2
-    return 1
-  }
-  printf '%s\n' "$identity"
-}
-
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -1744,7 +1711,6 @@ path_identity_or_refuse() {  # <path> <context>
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
-  local wt_identity proj_identity wt_top_identity
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1755,14 +1721,7 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   if ! wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P); then
     wt_top_real=
   fi
-  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ]; then
-    echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
-    exit 1
-  fi
-  wt_identity=$(path_identity_or_refuse "$wt_real" "validating $source's resolved worktree") || exit 1
-  proj_identity=$(path_identity_or_refuse "$proj_real" "validating $source's primary checkout") || exit 1
-  wt_top_identity=$(path_identity_or_refuse "$wt_top_real" "validating $source's git worktree root") || exit 1
-  if [ "$wt_identity" != "$wt_top_identity" ] || [ "$wt_identity" = "$proj_identity" ]; then
+  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
@@ -2241,19 +2200,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # that worktree, so the replacement agent starts where the work is rather
   # than wherever the pane happened to drift.
   relaunch_wt_real=$(real_path_or_raw "$WT")
-  relaunch_wt_identity=$(path_identity_or_refuse "$relaunch_wt_real" "validating task $ID's recorded relaunch worktree") || exit 1
   relaunch_seen=
-  relaunch_seen_identity=
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$relaunch_seen" ]; then
-      relaunch_seen_real=$(real_path_or_raw "$relaunch_seen")
-      relaunch_seen_identity=$(path_identity_or_refuse "$relaunch_seen_real" "validating task $ID's relaunch endpoint") || exit 1
-      [ "$relaunch_seen_identity" != "$relaunch_wt_identity" ] || break
-    fi
+    [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
     sleep 0.5
   done
-  if [ -z "$relaunch_seen" ] || [ "$relaunch_seen_identity" != "$relaunch_wt_identity" ]; then
+  if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1
   fi
@@ -2266,42 +2219,37 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # automatic-rename slips through), display-message -t <bad-name> falls back to the
   # active client's window, which would misread firstmate's OWN pane path as the
   # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare filesystem identities rather than path text. Physical path spelling
-  # can still retain caller-supplied capitalization on case-insensitive macOS,
-  # and POSIX permits the same directory to retain a distinct leading // form.
+  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
+  # prefix would otherwise make the pane's OS-level cwd read differ from
+  # PROJ_ABS on the very first poll, before the pane has actually moved.
   #
-  # A single read whose identity already differs from the primary checkout is
-  # not proof the pane settled there: on some tmux/WSL setups a brand-new
-  # window's pane_current_path
+  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
+  # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
   # transiently reports an unrelated stale path (seen live as another real git
   # checkout entirely) before the shell catches up with treehouse get's cd. That
-  # stale path still passes the primary-checkout identity comparison and
-  # validate_spawn_worktree
+  # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
   # below (it resolves to a real, distinct worktree top-level too), so accepting it
   # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
-  # two consecutive reads to identify the same non-project directory before
-  # accepting it;
+  # two consecutive reads to agree on the same non-project path before accepting it;
   # a mismatch just becomes the new candidate rather than resetting the wait, so a
   # pane that is already settled by the first real read only costs the one existing
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
-  candidate_identity=""
-  project_identity=$(path_identity_or_refuse "$PROJ_ABS_REAL" "waiting for treehouse get to leave the primary checkout") || exit 1
+  candidate=""
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     if [ -n "$p" ]; then
       p_real=$(real_path_or_raw "$p")
-      p_identity=$(path_identity_or_refuse "$p_real" "waiting for treehouse get to settle") || exit 1
-      if [ "$p_identity" != "$project_identity" ]; then
-        if [ -n "$candidate_identity" ] && [ "$p_identity" = "$candidate_identity" ]; then
+      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
+        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
           WT="$p"
           break
         fi
-        candidate_identity="$p_identity"
+        candidate="$p_real"
       else
-        candidate_identity=""
+        candidate=""
       fi
     else
-      candidate_identity=""
+      candidate=""
     fi
     sleep 1
   done

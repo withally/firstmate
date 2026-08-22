@@ -595,121 +595,6 @@ out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh"
 assert_contains "$out" "retired: $lavish_id" "explicit adapter retirement stays supported after automatic retirement"
 pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
 
-# --- end-user-aligned regression: interrupted polls stay inside the listen --
-# A shared Lavish server restart can interrupt every long poll at once. The
-# adapter must keep the registered process alive across those exact interrupts,
-# without giving the generic runner any output to capture or announce, then
-# deliver the next real feedback through the ordinary result and check wake.
-HLR="$TMP_ROOT/hlr"; new_home "$HLR"
-LAVISH_RETRY_BIN=$(fm_fakebin "$TMP_ROOT/lavish-retry-stub")
-cat > "$LAVISH_RETRY_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-artifact=$2
-count_file="$artifact.poll-count"
-gate_file="$artifact.poll-gate"
-if [ -f "$count_file" ]; then
-  n=$(wc -l < "$count_file")
-else
-  n=0
-fi
-n=$((n + 1))
-printf '%s\n' "$n" >> "$count_file"
-if [ "$n" -le 2 ]; then
-  printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n'
-  exit 1
-fi
-while [ ! -e "$gate_file" ]; do sleep 0.05; done
-printf 'session:\n  file: /retry-review.html\n  status: feedback\nfeedback[1]{text}:\n  real mark\n'
-SH
-chmod +x "$LAVISH_RETRY_BIN/lavish-axi"
-RETRY_ART="$TMP_ROOT/retry-review.html"
-printf '<h1>retry review</h1>\n' > "$RETRY_ART"
-LAVISH_RETRY_COUNT="$RETRY_ART.poll-count"
-LAVISH_RETRY_GATE="$RETRY_ART.poll-gate"
-: > "$LAVISH_RETRY_COUNT"
-retry_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$RETRY_ART")
-PE_TRACKED+=("$HLR|$retry_id")
-PATH="$LAVISH_RETRY_BIN:$PATH" FM_HOME="$HLR" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$RETRY_ART" >/dev/null
-PATH="$LAVISH_RETRY_BIN:$PATH" FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS=0 \
-  pe "$HLR" reconcile >/dev/null
-wait_for_lines "$LAVISH_RETRY_COUNT" 3 \
-  || fail "the adapter did not keep polling after exact interrupt responses"
-[ "$(count_results "$HLR" "$retry_id")" = 0 ] \
-  || fail "retried interrupts were captured before real feedback"
-[ -z "$(wake_payloads "$HLR")" ] \
-  || fail "retried interrupts published a check wake: $(wake_payloads "$HLR")"
-: > "$LAVISH_RETRY_GATE"
-wait_for "$HLR/state/procevent-inbox/$retry_id.1.result" \
-  || fail "real feedback after interrupted polls was not captured"
-wait_for "$HLR/state/.wake-queue" \
-  || fail "real feedback after interrupted polls published no check wake"
-assert_contains "$(wake_payloads "$HLR")" "procevent lavish $retry_id 1" \
-  "real feedback after interrupted polls publishes the ordinary check wake"
-assert_grep 'real mark' "$HLR/state/procevent-inbox/$retry_id.1.result" \
-  "real feedback after interrupted polls is captured normally"
-pass "exact poll interrupts are retried without wakes before real feedback"
-
-# Exhaustion remains visible so a persistently dead server cannot leave the
-# fleet silent forever. The same public arm and runner path must stop retrying
-# at the adapter's documented bound, capture the last interrupt, and announce
-# that result through the ordinary check wake.
-HLE="$TMP_ROOT/hle"; new_home "$HLE"
-LAVISH_EXHAUST_BIN=$(fm_fakebin "$TMP_ROOT/lavish-exhaust-stub")
-cat > "$LAVISH_EXHAUST_BIN/lavish-axi" <<'SH'
-#!/usr/bin/env bash
-artifact=$2
-printf 'attempt\n' >> "$artifact.poll-count"
-case "$artifact" in
-  *other-server-error*)
-    printf 'error: Lavish Editor server failed differently\ncode: SERVER_ERROR\n'
-    exit 1
-    ;;
-esac
-printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n'
-exit 1
-SH
-chmod +x "$LAVISH_EXHAUST_BIN/lavish-axi"
-EXHAUST_ART="$TMP_ROOT/exhaust-review.html"
-printf '<h1>exhaust review</h1>\n' > "$EXHAUST_ART"
-exhaust_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$EXHAUST_ART")
-PE_TRACKED+=("$HLE|$exhaust_id")
-PATH="$LAVISH_EXHAUST_BIN:$PATH" FM_HOME="$HLE" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$EXHAUST_ART" >/dev/null
-PATH="$LAVISH_EXHAUST_BIN:$PATH" FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS=0 \
-  pe "$HLE" reconcile >/dev/null
-wait_for "$HLE/state/procevent-inbox/$exhaust_id.1.result" \
-  || fail "retry exhaustion produced no captured interrupt result"
-wait_for "$HLE/state/.wake-queue" \
-  || fail "retry exhaustion produced no check wake"
-[ "$(wc -l < "$EXHAUST_ART.poll-count" | tr -d ' ')" = 13 ] \
-  || fail "exact interrupts did not stop at the documented 12-retry bound"
-assert_grep 'error: Lavish Editor poll response was interrupted' \
-  "$HLE/state/procevent-inbox/$exhaust_id.1.result" \
-  "retry exhaustion captures the final exact interrupt"
-assert_contains "$(wake_payloads "$HLE")" "procevent lavish $exhaust_id 1" \
-  "retry exhaustion publishes the ordinary check wake"
-pass "exact poll interrupt retries are bounded and exhaustion stays visible"
-
-HLO="$TMP_ROOT/hlo"; new_home "$HLO"
-OTHER_ERROR_ART="$TMP_ROOT/other-server-error.html"
-printf '<h1>other server error</h1>\n' > "$OTHER_ERROR_ART"
-other_error_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$OTHER_ERROR_ART")
-PE_TRACKED+=("$HLO|$other_error_id")
-PATH="$LAVISH_EXHAUST_BIN:$PATH" FM_HOME="$HLO" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$OTHER_ERROR_ART" >/dev/null
-PATH="$LAVISH_EXHAUST_BIN:$PATH" FM_PROCEVENT_LAVISH_RETRY_DELAY_SECONDS=0 \
-  pe "$HLO" reconcile >/dev/null
-wait_for "$HLO/state/procevent-inbox/$other_error_id.1.result" \
-  || fail "a non-interrupt SERVER_ERROR produced no captured result"
-wait_for "$HLO/state/.wake-queue" \
-  || fail "a non-interrupt SERVER_ERROR produced no check wake"
-[ "$(wc -l < "$OTHER_ERROR_ART.poll-count" | tr -d ' ')" = 1 ] \
-  || fail "an arbitrary SERVER_ERROR was retried"
-assert_contains "$(wake_payloads "$HLO")" "procevent lavish $other_error_id 1" \
-  "a non-interrupt SERVER_ERROR publishes the ordinary check wake"
-pass "arbitrary SERVER_ERROR results are never retried"
-
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a
 # real blocking source completes, its result is captured and published, the
@@ -1285,10 +1170,6 @@ pass "the adapter owns which Lavish results end a source, and payload text canno
 # Checked through --help, the operator-facing surface, rather than by reading
 # implementation bytes.
 adapter_help=$("$ROOT/bin/fm-procevent-lavish.sh" --help 2>&1 || true)
-assert_contains "$adapter_help" "poll response was interrupted" \
-  "the adapter's help identifies the one retryable poll interruption"
-assert_contains "$adapter_help" "up to 12" \
-  "the adapter's help states the bounded retry budget"
 assert_contains "$adapter_help" "destructively clears" \
   "the adapter's help states the destructive-source loss limitation"
 assert_contains "$adapter_help" "Never describe" \

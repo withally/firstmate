@@ -259,8 +259,124 @@ test_arm_is_idempotent_and_disarm_stops_singleton() {
   pass "arm is idempotent and disarm cleanly stops the one per-home recorder"
 }
 
+test_fsync_helper_commits_the_containing_directory() {
+  local home out rc
+  home="$TMP_ROOT/dirsync-home"
+  mkdir -p "$home/logs"
+  printf 'durable payload\n' > "$home/logs/telemetry.log"
+
+  FM_HOME="$home" "$TELEMETRY" fsync "$home/logs/telemetry.log" ||
+    fail "durable flush helper failed on a real file"
+
+  if [ "$(id -u)" -eq 0 ]; then
+    pass "the durable flush helper commits the file (directory check skipped as root)"
+    return 0
+  fi
+
+  chmod 0111 "$home/logs"
+  out=$(FM_HOME="$home" "$TELEMETRY" fsync "$home/logs/telemetry.log" 2>&1)
+  rc=$?
+  chmod 0755 "$home/logs"
+  [ "$rc" -ne 0 ] ||
+    fail "durable flush helper reported success without committing the containing directory"
+  pass "the durable flush helper commits the log's containing directory too"
+}
+
+test_tokenless_record_is_visible_to_status_and_disarm() {
+  local home fakebin pid tries out
+  home="$TMP_ROOT/tokenless-home"
+  fakebin="$TMP_ROOT/tokenless-fakebin"
+  mkdir -p "$home/state"
+  write_fake_samplers "$fakebin"
+  rm -f "$fakebin/ps"
+  DAEMON_HOME=$home
+
+  FM_HOME="$home" FM_TELEMETRY_INTERVAL=30 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" record >/dev/null 2>&1 &
+  pid=$!
+  tries=0
+  while [ ! -L "$home/state/telemetry/.record.lock" ] && [ "$tries" -lt 50 ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  [ -L "$home/state/telemetry/.record.lock" ] || fail "token-less record did not publish a lock"
+
+  out=$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status) ||
+    fail "status reported a token-less recorder as not running"
+  assert_contains "$out" "running pid=$pid" "status did not identify the token-less recorder"
+
+  out=$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" disarm) ||
+    fail "disarm failed against a token-less recorder"
+  assert_contains "$out" "stopped pid=$pid" "disarm did not stop the token-less recorder"
+  kill -0 "$pid" 2>/dev/null && fail "disarm left token-less recorder pid $pid alive"
+  wait "$pid" 2>/dev/null || true
+  DAEMON_HOME=
+  pass "a token-less recorder is reported by status and stopped by disarm"
+}
+
+test_arm_refuses_to_detach_without_a_working_durability_helper() {
+  local home fakebin out rc
+  home="$TMP_ROOT/probe-home"
+  fakebin="$TMP_ROOT/probe-fakebin"
+  mkdir -p "$home/state"
+  write_fake_samplers "$fakebin"
+  rm -f "$fakebin/ps"
+
+  out=$(FM_HOME="$home" FM_TELEMETRY_PYTHON="$fakebin/failing-python" \
+    PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" arm 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "arm detached a recorder without a working durability helper"
+  assert_contains "$out" 'durable-flush helper' "arm did not name the broken durability helper"
+  [ ! -L "$home/state/telemetry/.record.lock" ] || fail "failed arm published a lock"
+  FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status >/dev/null 2>&1 &&
+    fail "status reported a recorder after arm refused to detach"
+  pass "arm refuses to detach when the durable-flush helper does not work"
+}
+
+test_detached_recorder_diagnostics_are_persisted_and_bounded() {
+  local home fakebin diagnostics tries out bytes
+  home="$TMP_ROOT/diagnostics-home"
+  fakebin="$TMP_ROOT/diagnostics-fakebin"
+  diagnostics="$home/state/telemetry/recorder.err"
+  mkdir -p "$home/state/telemetry"
+  write_fake_samplers "$fakebin"
+  rm -f "$fakebin/ps"
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  *.sample.*) exit 1 ;;
+esac
+exec /usr/bin/mktemp "$@"
+SH
+  chmod +x "$fakebin/mktemp"
+  head -c 200000 /dev/zero | tr '\0' 'x' > "$diagnostics"
+  DAEMON_HOME=$home
+
+  FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" arm >/dev/null || fail "arm failed"
+  tries=0
+  while [ "$tries" -lt 100 ]; do
+    grep -q 'snapshot failed' "$diagnostics" 2>/dev/null && break
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  grep -q 'snapshot failed' "$diagnostics" 2>/dev/null ||
+    fail "the detached recorder's diagnostics were discarded instead of persisted"
+
+  bytes=$(wc -c < "$diagnostics")
+  [ "$bytes" -le 65536 ] || fail "recorder diagnostics grew to $bytes bytes without being trimmed"
+
+  out=$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status)
+  assert_contains "$out" 'newest diagnostic' "status did not surface the recorder's diagnostics"
+
+  FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" disarm >/dev/null ||
+    fail "disarm failed"
+  DAEMON_HOME=
+  pass "a detached recorder persists bounded diagnostics that status surfaces"
+}
+
 test_concurrent_arms_over_a_stale_lock_keep_one_recorder() {
-  local home fakebin before after fresh count stale_pid tries i survivor
+  local home fakebin before after fresh count stale_pid tries i survivor rc_file
   home="$TMP_ROOT/race-home"
   fakebin="$TMP_ROOT/race-fakebin"
   mkdir -p "$home/state/telemetry"
@@ -279,11 +395,24 @@ test_concurrent_arms_over_a_stale_lock_keep_one_recorder() {
   recorder_pids > "$before"
   i=0
   while [ "$i" -lt 4 ]; do
-    FM_HOME="$home" FM_TELEMETRY_INTERVAL=30 PATH="$fakebin:/usr/bin:/bin" \
-      "$TELEMETRY" arm >/dev/null 2>&1 &
+    (
+      out=$(FM_HOME="$home" FM_TELEMETRY_INTERVAL=30 PATH="$fakebin:/usr/bin:/bin" \
+        "$TELEMETRY" arm 2>&1)
+      printf '%s\n' "$?" > "$home/arm.$i.rc"
+      printf '%s\n' "$out" > "$home/arm.$i.out"
+    ) &
     i=$((i + 1))
   done
   wait
+
+  for rc_file in "$home"/arm.*.rc; do
+    [ "$(cat "$rc_file")" = 0 ] ||
+      fail "a concurrent cold arm failed with rc $(cat "$rc_file"): $(cat "${rc_file%.rc}.out")"
+    case "$(cat "${rc_file%.rc}.out")" in
+      *'fm-telemetry: running pid='*|*'fm-telemetry: already running pid='*) ;;
+      *) fail "a concurrent cold arm did not report the live recorder: $(cat "${rc_file%.rc}.out")" ;;
+    esac
+  done
 
   count=0
   fresh=
@@ -312,9 +441,13 @@ test_concurrent_arms_over_a_stale_lock_keep_one_recorder() {
 
 test_record_writes_parseable_durable_snapshot
 test_fsync_helper_flushes_the_named_file
+test_fsync_helper_commits_the_containing_directory
 test_record_surfaces_durability_failure
 test_record_cleans_up_after_partial_temp_failure
 test_interval_is_restricted_to_the_supported_cadence
 test_rotation_prunes_oldest_daily_logs_to_cap
 test_arm_is_idempotent_and_disarm_stops_singleton
+test_tokenless_record_is_visible_to_status_and_disarm
+test_arm_refuses_to_detach_without_a_working_durability_helper
+test_detached_recorder_diagnostics_are_persisted_and_bounded
 test_concurrent_arms_over_a_stale_lock_keep_one_recorder

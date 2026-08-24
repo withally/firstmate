@@ -50,19 +50,51 @@ lab_pid_is_safe() {
   esac
 }
 
+wait_lab_pid_exit() {
+  local pid=$1 i=0
+  [ -n "$pid" ] || return 0
+  while lab_pid_is_safe "$pid" && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if lab_pid_is_safe "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    kill -CONT "$pid" 2>/dev/null || true
+  fi
+  i=0
+  while lab_pid_is_safe "$pid" && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! lab_pid_is_safe "$pid"
+}
+
 cleanup() {
-  local watcher_pid arm_pid
+  local coordinator_pid watcher_pid arm_pid pid cleanup_failed=0
+  coordinator_pid=$(sed -n 's/^pid=//p' "$HOME_DIR/state/.grok-watch-coordinator" 2>/dev/null || true)
   watcher_pid=$(cat "$HOME_DIR/state/.watch.lock/pid" 2>/dev/null || true)
   arm_pid=$(ps -p "$watcher_pid" -o ppid= 2>/dev/null | tr -d ' ' || true)
   "$TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
-  sleep 0.1
-  if [ -n "$watcher_pid" ] && lab_pid_is_safe "$watcher_pid"; then
-    kill -TERM "$watcher_pid" 2>/dev/null || true
-  fi
-  if [ -n "$arm_pid" ] && lab_pid_is_safe "$arm_pid"; then
-    kill -TERM "$arm_pid" 2>/dev/null || true
+  for pid in "$coordinator_pid" "$watcher_pid" "$arm_pid"; do
+    if [ -n "$pid" ] && lab_pid_is_safe "$pid"; then
+      kill -TERM "$pid" 2>/dev/null || true
+      kill -CONT "$pid" 2>/dev/null || true
+    fi
+  done
+  for pid in "$coordinator_pid" "$watcher_pid" "$arm_pid"; do
+    wait_lab_pid_exit "$pid" || cleanup_failed=1
+  done
+  if [ "$cleanup_failed" -ne 0 ]; then
+    trap - EXIT
+    printf 'not ok - Grok live E2E cleanup could not retire every lab-owned coordinator, watcher, and arm\n' >&2
+    exit 1
   fi
   rm -rf "$LAB"
+  if [ -e "$LAB" ]; then
+    trap - EXIT
+    printf 'not ok - Grok live E2E cleanup could not remove the retired lab\n' >&2
+    exit 1
+  fi
 }
 trap cleanup EXIT
 

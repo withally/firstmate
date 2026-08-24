@@ -331,7 +331,7 @@ fm_lock_owner_dir() {
 fm_lock_prepare_owner() {
   local ownerdir=$1 mypid back
   mypid=${BASHPID:-$$}
-  printf '%s\n' "$mypid" > "$ownerdir/pid" 2>/dev/null || return 1
+  printf '%s\n' "$mypid" 2>/dev/null > "$ownerdir/pid" || return 1
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
   [ "$back" = "$mypid" ]
 }
@@ -404,17 +404,18 @@ fm_lock_claim() {
 }
 
 fm_lock_try_create() {
-  local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
+  local lockdir=$1 allowed_steal_owner=${2:-} ownerdir rc
   FM_LOCK_OWNER_DIR=
-  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
+  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 2
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
   if ! fm_lock_prepare_owner "$ownerdir"; then
     fm_lock_discard_owner "$ownerdir"
-    return 1
+    return 2
   fi
+  rc=2
   if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
       FM_LOCK_OWNER_DIR=$ownerdir
@@ -426,8 +427,49 @@ fm_lock_try_create() {
   else
     fm_lock_remove_stray_owner_link "$lockdir" "$ownerdir"
   fi
+  if [ -e "$lockdir" ] || [ -L "$lockdir" ] \
+    || [ -e "$lockdir.steal" ] || [ -L "$lockdir.steal" ]; then
+    rc=1
+  fi
   fm_lock_discard_owner "$ownerdir"
-  return 1
+  return "$rc"
+}
+
+# Acquire a stale-recovery mutex without requesting a second mutex. Status 1
+# means contended; status 2 means the parent or owner record could not be
+# created. A dead symlink owner is serialized inside its unique owner directory,
+# so interrupted recovery remains reclaimable without creating .steal.steal.
+fm_lock_try_acquire_steal_mutex() {
+  local steal=$1 rc pid ownerdir reclaim
+  case "$steal" in
+    *.steal) : ;;
+    *) return 2 ;;
+  esac
+  rc=0
+  fm_lock_try_create "$steal" || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -ne 2 ] || return 2
+  [ ! -e "$steal.steal" ] && [ ! -L "$steal.steal" ] || return 1
+  pid=$(cat "$steal/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" && return 1
+  fm_lock_mid_acquire_is_fresh "$steal" "$pid" && return 1
+  [ -L "$steal" ] || return 1
+  ownerdir=$(fm_lock_link_owner "$steal" 2>/dev/null) || return 1
+  reclaim="$ownerdir/reclaim"
+  mkdir "$reclaim" 2>/dev/null || return 1
+  if [ -e "$steal.steal" ] || [ -L "$steal.steal" ] \
+    || ! fm_lock_recheck_stale_owner "$steal" "$ownerdir" "$pid"; then
+    rmdir "$reclaim" 2>/dev/null || true
+    return 1
+  fi
+  if ! rm -f "$steal" 2>/dev/null; then
+    rmdir "$reclaim" 2>/dev/null || true
+    return 1
+  fi
+  fm_lock_clean_known_files "$ownerdir"
+  rmdir "$reclaim" 2>/dev/null || true
+  rmdir "$ownerdir" 2>/dev/null || true
+  fm_lock_try_create "$steal"
 }
 
 fm_lock_remove_path() {
@@ -788,14 +830,18 @@ fm_lock_try_acquire() {
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
 
-  if fm_lock_try_create "$lockdir"; then
-    return 0
-  fi
+  rc=0
+  fm_lock_try_create "$lockdir" || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -ne 2 ] || return 2
 
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:
   # $() forks a subshell whose BASHPID is not this frame's pid.
+  # Bash 3 lacks BASHPID and preserves $$ in subshells, so BASH_SUBSHELL keeps
+  # a child frame from being mistaken for the parent that owns the lock.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-  if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ]; then
+  if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ] \
+    && { [ -n "${BASHPID:-}" ] || [ "${BASH_SUBSHELL:-0}" -eq 0 ]; }; then
     # The recorded holder is THIS very process. Single-threaded bash can only
     # observe that when an interrupting trap abandoned the frame that held the
     # lock mid-critical-section (e.g. TERM inside a recovery-marker section,
@@ -805,11 +851,11 @@ fm_lock_try_acquire() {
     # - the hang reproduced by the self-held reclaim regression in
     # tests/fm-wake-queue.test.sh - so reclaim the abandoned hold instead.
     fm_lock_remove_path "$lockdir" || true
-    if fm_lock_try_create "$lockdir"; then
-      return 0
-    fi
+    rc=0
+    fm_lock_try_create "$lockdir" || rc=$?
+    [ "$rc" -ne 0 ] || return 0
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
-    return 1
+    return "$rc"
   fi
   if fm_pid_alive "$pid"; then
     FM_LOCK_HELD_PID=$pid
@@ -820,11 +866,20 @@ fm_lock_try_acquire() {
     return 1
   fi
 
+  case "$lockdir" in
+    *.steal)
+      FM_LOCK_HELD_PID=$pid
+      return 1
+      ;;
+  esac
+
   steal="$lockdir.steal"
-  if ! fm_lock_try_acquire "$steal"; then
+  rc=0
+  fm_lock_try_acquire_steal_mutex "$steal" || rc=$?
+  if [ "$rc" -ne 0 ]; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
-    return 1
+    return "$rc"
   fi
   steal_owner=${FM_LOCK_OWNER_DIR:-}
 
@@ -868,9 +923,9 @@ fm_lock_try_acquire() {
     return 1
   fi
   fm_lock_remove_path "$lockdir" || true
-  rc=1
-  if fm_lock_try_create "$lockdir" "$steal_owner"; then
-    rc=0
+  rc=0
+  fm_lock_try_create "$lockdir" "$steal_owner" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
   fi
@@ -884,8 +939,12 @@ fm_lock_try_acquire() {
 }
 
 fm_lock_acquire_wait() {
-  local lockdir=$1
-  while ! fm_lock_try_acquire "$lockdir"; do
+  local lockdir=$1 rc
+  while :; do
+    rc=0
+    fm_lock_try_acquire "$lockdir" || rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    [ "$rc" -ne 2 ] || return 2
     sleep 0.1
   done
 }

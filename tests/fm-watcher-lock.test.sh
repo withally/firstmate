@@ -220,6 +220,155 @@ test_lock_single_winner_under_concurrency() {
   pass "concurrent fm_lock_try_acquire yields exactly one winner"
 }
 
+test_lock_missing_parent_returns_typed_failure_with_bounded_launches() {
+  local dir state missing fakebin count pidfile command_name real_command out rc elapsed result wait_result launches attempt_pid
+  dir=$(make_case lock-missing-parent)
+  state="$dir/state"
+  missing="$dir/absent/demo.lock"
+  fakebin="$dir/countbin"
+  count="$dir/helper-launches"
+  pidfile="$dir/attempt-pid"
+  mkdir -p "$fakebin"
+  for command_name in basename cat date dirname ln mkdir mktemp readlink rm rmdir stat uname; do
+    real_command=$(command -v "$command_name")
+    cat > "$fakebin/$command_name" <<SH
+#!/usr/bin/env bash
+count=0
+read -r count < "\${FM_TEST_LAUNCH_COUNT:?}" 2>/dev/null || true
+count=\$((count + 1))
+printf '%s\n' "\$count" > "\$FM_TEST_LAUNCH_COUNT"
+if [ "\$count" -gt "\${FM_TEST_LAUNCH_BUDGET:?}" ]; then
+  kill -TERM "\${FM_TEST_ROOT_PID:?}" 2>/dev/null || true
+  exit 97
+fi
+exec "$real_command" "\$@"
+SH
+    chmod +x "$fakebin/$command_name"
+  done
+
+  rc=0
+  SECONDS=0
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_LAUNCH_COUNT="$count" \
+    FM_TEST_LAUNCH_BUDGET=18 bash -c '
+      FM_TEST_ROOT_PID=${BASHPID:-$$}
+      export FM_TEST_ROOT_PID
+      . "$1"
+      printf "0\n" > "$3"
+      printf "%s\n" "$FM_TEST_ROOT_PID" > "$4"
+      trap "exit 97" TERM
+      i=0
+      while [ "$i" -lt 5 ]; do
+        fm_lock_try_acquire "$2"
+        result=$?
+        [ "$result" -eq 2 ] || exit 20
+        i=$((i + 1))
+      done
+      fm_lock_acquire_wait "$2"
+      wait_result=$?
+      [ "$wait_result" -eq 2 ] || exit 21
+      read -r launches < "$3"
+      printf "result=%s wait_result=%s launches=%s\n" "$result" "$wait_result" "$launches"
+    ' _ "$LIB" "$missing" "$count" "$pidfile" 2>&1) || rc=$?
+  elapsed=$SECONDS
+
+  [ "$rc" -eq 0 ] || fail "missing-parent lock attempt did not return typed invalid-path status within its launch fuse (rc=$rc): $out"
+  result=${out#*result=}; result=${result%% *}
+  wait_result=${out#*wait_result=}; wait_result=${wait_result%% *}
+  launches=${out#*launches=}; launches=${launches%%[!0-9]*}
+  [ "$result" -eq 2 ] || fail "missing-parent lock attempt returned '$result' instead of typed invalid-path status 2: $out"
+  [ "$wait_result" -eq 2 ] || fail "missing-parent lock wait returned '$wait_result' instead of propagating status 2: $out"
+  [ "$launches" -le 18 ] || fail "five missing-parent failures plus one wait exceeded the helper-launch budget ($launches): $out"
+  [ "$elapsed" -lt 3 ] || fail "missing-parent lock attempts did not return promptly (${elapsed}s): $out"
+  attempt_pid=$(cat "$pidfile")
+  [ -z "$(pgrep -P "$attempt_pid" 2>/dev/null || true)" ] \
+    || fail "missing-parent lock attempt left a spawned descendant alive"
+  pass "missing-parent lock failure is typed, prompt, descendant-free, and launch-bounded"
+}
+
+test_lock_owner_record_failure_returns_typed_failure() {
+  local dir state lockdir fakebin count real_mktemp out rc
+  dir=$(make_case lock-owner-record-failure)
+  state="$dir/state"
+  lockdir="$state/.owner-failure.lock"
+  fakebin="$dir/countbin"
+  count="$dir/mktemp-launches"
+  real_mktemp=$(command -v mktemp)
+  mkdir -p "$fakebin"
+  cat > "$fakebin/mktemp" <<SH
+#!/usr/bin/env bash
+count=0
+read -r count < "\${FM_TEST_LAUNCH_COUNT:?}" 2>/dev/null || true
+count=\$((count + 1))
+printf '%s\n' "\$count" > "\$FM_TEST_LAUNCH_COUNT"
+if [ "\$count" -gt 4 ]; then
+  kill -TERM "\${FM_TEST_ROOT_PID:?}" 2>/dev/null || true
+  exit 97
+fi
+ownerdir=\$("$real_mktemp" "\$@") || exit \$?
+chmod 0500 "\$ownerdir" || exit 1
+printf '%s\n' "\$ownerdir"
+SH
+  chmod +x "$fakebin/mktemp"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_LAUNCH_COUNT="$count" bash -c '
+    . "$1"
+    printf "0\n" > "$3"
+    FM_TEST_ROOT_PID=${BASHPID:-$$}
+    export FM_TEST_ROOT_PID
+    trap "exit 97" TERM
+    fm_lock_try_acquire "$2"
+    rc=$?
+    printf "rc=%s\n" "$rc"
+    [ "$rc" -eq 2 ]
+  ' _ "$LIB" "$lockdir" "$count" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "owner-record creation failure did not return typed status 2 promptly (rc=$rc): $out"
+  [ "$out" = "rc=2" ] || fail "owner-record creation failure returned an unexpected result: $out"
+  pass "owner-record creation failure returns typed invalid-create status promptly"
+}
+
+test_stale_or_malformed_steal_mutex_never_claims_nested_mutex() {
+  local kind dir state lockdir steal ownerdir fakebin log real_ln dead out rc
+  for kind in stale malformed; do
+    dir=$(make_case "lock-no-nested-steal-$kind")
+    state="$dir/state"
+    lockdir="$state/.contend.lock"
+    steal="$lockdir.steal"
+    fakebin="$dir/logbin"
+    log="$dir/ln-targets"
+    real_ln=$(command -v ln)
+    dead=$(dead_pid)
+    mkdir "$lockdir" "$fakebin"
+    printf '%s\n' "$dead" > "$lockdir/pid"
+    if [ "$kind" = stale ]; then
+      ownerdir="$state/.stale-steal-owner"
+      mkdir "$ownerdir"
+      printf '%s\n' "$dead" > "$ownerdir/pid"
+      ln -s "$ownerdir" "$steal"
+    else
+      ln -s "$state/.missing-steal-owner" "$steal"
+    fi
+    cat > "$fakebin/ln" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do target=\$arg; done
+printf '%s\n' "\$target" >> "\${FM_TEST_LN_LOG:?}"
+exec "$real_ln" "\$@"
+SH
+    chmod +x "$fakebin/ln"
+
+    rc=0
+    out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_LN_LOG="$log" bash -c '
+      . "$1"
+      fm_lock_try_acquire "$2"
+      printf "rc=%s\n" "$?"
+    ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || fail "$kind steal-mutex fixture shell failed (rc=$rc): $out"
+    ! grep -F "$lockdir.steal.steal" "$log" >/dev/null 2>&1 \
+      || fail "$kind steal mutex attempted a nested .steal.steal claim: $(cat "$log")"
+  done
+  pass "stale and malformed steal mutexes never claim .steal.steal"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -321,7 +470,8 @@ test_lock_does_not_steal_live_lock() {
   printf '%s\n' "$live" > "$lockdir/pid"
   out=$(FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
-    if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
+    rc=0
+    fm_lock_try_acquire "$2" || rc=$?
     printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
   ' _ "$LIB" "$lockdir")
   kill "$live" 2>/dev/null || true
@@ -1107,6 +1257,9 @@ test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
+test_lock_missing_parent_returns_typed_failure_with_bounded_launches
+test_lock_owner_record_failure_returns_typed_failure
+test_stale_or_malformed_steal_mutex_never_claims_nested_mutex
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

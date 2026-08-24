@@ -751,6 +751,48 @@ SH
   pass "arm propagates an immediate watcher wake before confirmation"
 }
 
+test_watcher_surfaces_fseventsd_warning_on_slow_check_path() {
+  local dir state fakebin out drain_out
+  dir=$(make_case fseventsd-warning-wake)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  drain_out="$dir/drain.out"
+  mark_pr_check_migration_complete "$state"
+  cat > "$fakebin/pgrep" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = -x ] && [ "${2:-}" = fseventsd ] || exit 1
+printf '342\n'
+SH
+  cat > "$fakebin/top" <<'SH'
+#!/usr/bin/env bash
+printf 'PID COMMAND MEM RPRVT CMPRS %%CPU TIME #TH\n'
+printf '342 fseventsd 600M 600M 2M 0.0 00:01.00 10\n'
+SH
+  cat > "$fakebin/sysctl" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  '-n kern.memorystatus_vm_pressure_level') printf '0\n' ;;
+  '-n vm.swapusage') printf 'total = 16384.00M  used = 0.00M  free = 16384.00M\n' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/pgrep" "$fakebin/top" "$fakebin/sysctl"
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_TELEMETRY_NOW=1000 \
+    PATH="$fakebin:$PATH" "$ROOT/bin/fm-telemetry.sh" fseventsd-check >/dev/null \
+    || fail "could not establish the fseventsd warning baseline"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_TELEMETRY_NOW=1300 \
+    PATH="$fakebin:$PATH" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 \
+    FM_HEARTBEAT=999999 "$WATCH" > "$out" || fail "watcher did not surface the fseventsd warning"
+  grep -F 'check: fseventsd: WARNING: fseventsd' "$out" >/dev/null \
+    || fail "watcher omitted the fseventsd warning reason: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after fseventsd warning failed"
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F 'fseventsd' | grep -F 'WARNING' >/dev/null \
+    || fail "fseventsd warning was not queued through the durable wake path"
+  pass "watcher surfaces fseventsd warnings through its existing slow-check wake path"
+}
+
 test_arm_waits_for_peer_beacon_after_child_stands_down() {
   local dir state fakebin armout peer identity armpid status i
   dir=$(make_case arm-peer-startup-race)
@@ -1123,6 +1165,7 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output
 test_arm_propagates_immediate_wake_before_confirmation
+test_watcher_surfaces_fseventsd_warning_on_slow_check_path
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded

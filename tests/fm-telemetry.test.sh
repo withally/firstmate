@@ -59,6 +59,44 @@ SH
   chmod +x "$fakebin"/*
 }
 
+write_fake_fseventsd_samplers() {
+  local fakebin=$1
+  mkdir -p "$fakebin"
+  cat > "$fakebin/pgrep" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = -x ] && [ "${2:-}" = fseventsd ] || exit 1
+printf '342\n'
+SH
+  cat > "$fakebin/top" <<'SH'
+#!/usr/bin/env bash
+printf 'PID COMMAND MEM RPRVT CMPRS %%CPU TIME #TH\n'
+printf '342 fseventsd %s %s 2M 0.0 00:01.00 10\n' \
+  "${FM_FAKE_FSEVENTSD_MEM:-5M}" "${FM_FAKE_FSEVENTSD_MEM:-5M}"
+SH
+  cat > "$fakebin/sysctl" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  '-n kern.memorystatus_vm_pressure_level')
+    printf '%s\n' "${FM_FAKE_PRESSURE_LEVEL:-0}"
+    ;;
+  '-n vm.swapusage')
+    printf 'total = 16384.00M  used = %s  free = 8192.00M  (encrypted)\n' \
+      "${FM_FAKE_SWAP_USED:-0.00M}"
+    ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin"/*
+}
+
+fseventsd_check() {
+  local home=$1 fakebin=$2 now=$3 mem=$4 pressure=$5 swap=$6
+  FM_HOME="$home" FM_TELEMETRY_NOW="$now" \
+    FM_FAKE_FSEVENTSD_MEM="$mem" FM_FAKE_PRESSURE_LEVEL="$pressure" \
+    FM_FAKE_SWAP_USED="$swap" PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" fseventsd-check
+}
+
 record_once() {
   local home=$1 fakebin=$2
   FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 \
@@ -137,6 +175,89 @@ test_record_writes_parseable_durable_snapshot() {
   [ ! -e "$home/state/telemetry/.record.lock" ] && [ ! -L "$home/state/telemetry/.record.lock" ] ||
     fail "one-shot record left its lock behind"
   pass "record writes one bounded, parseable snapshot dated in UTC and releases its lock"
+}
+
+test_fseventsd_check_enforces_five_minute_sampling_and_consecutive_warning() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-cadence-home"
+  fakebin="$TMP_ROOT/fseventsd-cadence-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  out=$(fseventsd_check "$home" "$fakebin" 1000 600M 0 0.00M)
+  [ -z "$out" ] || fail "the first high fseventsd sample warned without a consecutive sample: $out"
+  out=$(fseventsd_check "$home" "$fakebin" 1100 5M 0 0.00M)
+  [ -z "$out" ] || fail "a fseventsd sample inside five minutes produced output: $out"
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 0 0.00M)
+  assert_contains "$out" 'WARNING: fseventsd' "two consecutive samples above 512 MiB did not warn"
+  assert_contains "$out" 'two consecutive samples above 512 MiB' "the warning did not identify its threshold"
+  out=$(fseventsd_check "$home" "$fakebin" 1600 600M 0 0.00M)
+  [ -z "$out" ] || fail "an unchanged warning episode re-alerted: $out"
+  pass "fseventsd warning samples at most every five minutes, requires two high samples, and dedupes the episode"
+}
+
+test_fseventsd_check_warns_after_two_hours_of_fast_growth() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-growth-home"
+  fakebin="$TMP_ROOT/fseventsd-growth-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  out=$(fseventsd_check "$home" "$fakebin" 1000 100M 0 0.00M)
+  [ -z "$out" ] || fail "the growth baseline produced an alert: $out"
+  out=$(fseventsd_check "$home" "$fakebin" 8200 700M 0 0.00M)
+  assert_contains "$out" 'WARNING: fseventsd' "growth above 256 MiB/hour for two hours did not warn"
+  assert_contains "$out" '300.00 MiB/hour for 2h' "the growth warning did not report its measured rate"
+  pass "fseventsd warns when two-hour growth exceeds 256 MiB per hour"
+}
+
+test_fseventsd_check_surfaces_action_thresholds() {
+  local fakebin out home
+  fakebin="$TMP_ROOT/fseventsd-action-fakebin"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  home="$TMP_ROOT/fseventsd-action-size-home"
+  mkdir -p "$home/state"
+  out=$(fseventsd_check "$home" "$fakebin" 1000 2049M 0 0.00M)
+  assert_contains "$out" 'ACTION: fseventsd' "MEM above 2 GiB did not surface action"
+  assert_contains "$out" 'MEM above 2 GiB' "the action did not identify the 2 GiB boundary"
+
+  home="$TMP_ROOT/fseventsd-action-double-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 100M 0 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 201M 0 0.00M)
+  assert_contains "$out" 'ACTION: fseventsd' "doubling within one hour did not surface action"
+  assert_contains "$out" 'doubling within one hour' "the doubling action did not identify its threshold"
+
+  home="$TMP_ROOT/fseventsd-action-pressure-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 0 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 1 0.00M)
+  assert_contains "$out" 'ACTION: fseventsd' "warning plus yellow memory pressure did not surface action"
+  assert_contains "$out" 'warning plus yellow memory pressure' "the pressure action did not identify its threshold"
+
+  home="$TMP_ROOT/fseventsd-action-swap-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 0 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 0 8193M)
+  assert_contains "$out" 'ACTION: fseventsd' "warning plus more than 8 GiB swap did not surface action"
+  assert_contains "$out" 'warning plus more than 8 GiB swap' "the swap action did not identify its threshold"
+  pass "fseventsd action surfaces size, doubling, and warning-plus-pressure thresholds"
+}
+
+test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-emergency-home"
+  fakebin="$TMP_ROOT/fseventsd-emergency-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  fseventsd_check "$home" "$fakebin" 1000 2500M 0 0.00M >/dev/null
+  fseventsd_check "$home" "$fakebin" 1300 3000M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1600 3500M 3 0.00M)
+  assert_contains "$out" 'EMERGENCY: fseventsd' "sustained growth toward 4 GiB with worsening pressure did not surface emergency"
+  assert_contains "$out" 'stop launching new work, save state, and reduce workload' "the emergency omitted the accepted operational response"
+  pass "fseventsd emergency requires sustained growth toward 4 GiB plus worsening pressure"
 }
 
 test_fsync_helper_flushes_the_named_file() {
@@ -595,6 +716,10 @@ test_concurrent_arms_over_a_stale_lock_keep_one_recorder() {
 }
 
 test_record_writes_parseable_durable_snapshot
+test_fseventsd_check_enforces_five_minute_sampling_and_consecutive_warning
+test_fseventsd_check_warns_after_two_hours_of_fast_growth
+test_fseventsd_check_surfaces_action_thresholds
+test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure
 test_fsync_helper_flushes_the_named_file
 test_fsync_helper_commits_the_containing_directory
 test_record_surfaces_durability_failure

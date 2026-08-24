@@ -45,7 +45,7 @@
 # 2 GiB, a doubling within one hour once already above 512 MiB, or a warning
 # combined with warning-or-worse memory pressure or more than 8 GiB swap;
 # emergency for sustained growth from the action range toward 4 GiB while memory
-# pressure is sustained at warning-or-worse or is still rising.
+# pressure is at warning-or-worse.
 # Memory-pressure levels use the kernel's dispatch encoding, where 1 is normal,
 # 2 is warning and 4 is critical, so only 2 or above counts as pressure here.
 #
@@ -425,7 +425,7 @@ fseventsd_publish_alert() {
 
 fseventsd_check() {
   local now last last_epoch previous='' preprevious='' previous_count=0
-  local prev_epoch=0 prev_mem=0 prev_pressure=-1
+  local prev_epoch=0 prev_mem=0
   local preprev_epoch=0 preprev_mem=0
   local growth_rate_mib='' doubling=0 warning=0
   local severity=none reasons='' message mem_mib swap_gib
@@ -455,7 +455,7 @@ fseventsd_check() {
 
   fseventsd_sample || return 0
   if [ -n "$previous" ]; then
-    read -r prev_epoch prev_mem prev_pressure _ <<EOF
+    read -r prev_epoch prev_mem _ <<EOF
 $previous
 EOF
   fi
@@ -493,10 +493,12 @@ EOF
 
   if [ "$FSEVENTSD_MEM_BYTES" -gt "$action_bytes" ]; then
     severity=action
-    reasons='MEM above 2 GiB'
+    [ -z "$reasons" ] || reasons="$reasons; "
+    reasons="${reasons}MEM above 2 GiB"
   elif [ "$doubling" -eq 1 ]; then
     severity=action
-    reasons='doubling within one hour'
+    [ -z "$reasons" ] || reasons="$reasons; "
+    reasons="${reasons}doubling within one hour"
   elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
     severity=action
     reasons="${reasons}; warning plus yellow memory pressure"
@@ -512,9 +514,7 @@ EOF
     && [ "$((now - prev_epoch))" -le 600 ] && [ "$preprev_mem" -lt "$prev_mem" ] \
     && [ "$prev_mem" -lt "$FSEVENTSD_MEM_BYTES" ] \
     && [ "$FSEVENTSD_MEM_BYTES" -gt "$action_bytes" ] \
-    && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ] \
-    && { [ "$prev_pressure" -ge "$pressure_warn_level" ] \
-      || [ "$FSEVENTSD_PRESSURE_LEVEL" -gt "$prev_pressure" ]; }; then
+    && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
     severity=emergency
     reasons='sustained growth toward 4 GiB plus worsening memory pressure'
   fi

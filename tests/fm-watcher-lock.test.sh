@@ -772,7 +772,7 @@ SH
   cat > "$fakebin/sysctl" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-  '-n kern.memorystatus_vm_pressure_level') printf '0\n' ;;
+  '-n kern.memorystatus_vm_pressure_level') printf '1\n' ;;
   '-n vm.swapusage') printf 'total = 16384.00M  used = 0.00M  free = 16384.00M\n' ;;
   *) exit 1 ;;
 esac

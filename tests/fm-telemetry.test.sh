@@ -245,6 +245,29 @@ test_fseventsd_check_surfaces_action_thresholds() {
   pass "fseventsd action surfaces size, doubling, and warning-plus-pressure thresholds"
 }
 
+test_fseventsd_action_retains_the_warning_evidence_it_measured() {
+  local home fakebin out
+  fakebin="$TMP_ROOT/fseventsd-action-evidence-fakebin"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  home="$TMP_ROOT/fseventsd-action-evidence-doubling-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 1300M 1 0.00M)
+  assert_contains "$out" 'ACTION: fseventsd' "a doubling above the warning floor did not surface action"
+  assert_contains "$out" 'two consecutive samples above 512 MiB' "the doubling action dropped the sustained 512 MiB breach it measured"
+  assert_contains "$out" 'doubling within one hour' "the doubling action did not identify its own threshold"
+
+  home="$TMP_ROOT/fseventsd-action-evidence-size-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 2500M 1 0.00M)
+  assert_contains "$out" 'ACTION: fseventsd' "MEM above 2 GiB did not surface action"
+  assert_contains "$out" 'two consecutive samples above 512 MiB' "the 2 GiB action dropped the sustained 512 MiB breach it measured"
+  assert_contains "$out" 'MEM above 2 GiB' "the 2 GiB action did not identify its own threshold"
+  pass "fseventsd action alerts keep every warning reason measured in the same sample"
+}
+
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure() {
   local home fakebin out
   home="$TMP_ROOT/fseventsd-emergency-home"
@@ -784,6 +807,7 @@ test_record_writes_parseable_durable_snapshot
 test_fseventsd_check_enforces_five_minute_sampling_and_consecutive_warning
 test_fseventsd_check_warns_after_two_hours_of_fast_growth
 test_fseventsd_check_surfaces_action_thresholds
+test_fseventsd_action_retains_the_warning_evidence_it_measured
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure
 test_fseventsd_check_reads_the_kernel_memory_pressure_encoding
 test_fseventsd_check_ignores_doubling_below_the_warning_floor

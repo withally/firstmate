@@ -26,6 +26,9 @@
 # state/*.meta remains reserved for workers the secondmate supervises.
 # Retirement closes only this secondmate's panes or workspace and never
 # stops fm-remote or removes a sibling secondmate's workspace or panes.
+# A retry after remote removal treats an absent home, or a home recreated only
+# from hash-bound inherited-material residue, as already retired. Any other
+# unseeded directory remains unsafe and is refused without deletion.
 #
 # The optional launch traceparent is the per-task W3C trace-context carrier the
 # PARENT home resolved for this secondmate; this host only delivers it to the
@@ -44,6 +47,8 @@ REMOTE_HERDR_SESSION=fm-remote
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-config-inherit-lib.sh
+. "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 
@@ -51,10 +56,94 @@ die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 validate_id() { case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid secondmate id: $1" ;; esac; }
 
+retired_inheritance_generation_valid() { # <path>
+  local path=$1 generation bytes hash command
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  {
+    IFS= read -r generation \
+      && IFS= read -r bytes \
+      && IFS= read -r hash \
+      && IFS= read -r command \
+      && ! IFS= read -r
+  } < "$path" || return 1
+  case "$generation" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#generation}" -le 18 ] && [ "$generation" -ge 1 ] || return 1
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  case "$hash" in ''|*[!A-Fa-f0-9]*) return 1 ;; esac
+  [ "${#hash}" -eq 64 ] || return 1
+  case "$command" in put|absent) ;; *) return 1 ;; esac
+  RETIRED_INHERIT_BYTES=$bytes
+  RETIRED_INHERIT_HASH=$(printf '%s' "$hash" | tr 'A-F' 'a-f')
+  RETIRED_INHERIT_COMMAND=$command
+}
+
+retired_inheritance_residue_valid() {
+  local path rel item base generation material actual_bytes actual_hash generation_count=0
+  [ -d "$TARGET_HOME" ] && [ ! -L "$TARGET_HOME" ] || return 1
+  for path in "$TARGET_HOME"/* "$TARGET_HOME"/.[!.]* "$TARGET_HOME"/..?*; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    case "${path##*/}" in
+      config|data) [ -d "$path" ] && [ ! -L "$path" ] || return 1 ;;
+      *) return 1 ;;
+    esac
+  done
+  for path in "$TARGET_HOME/config"/* "$TARGET_HOME/config"/.[!.]* "$TARGET_HOME/config"/..?* \
+    "$TARGET_HOME/data"/* "$TARGET_HOME/data"/.[!.]* "$TARGET_HOME/data"/..?*; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    rel=${path#"$TARGET_HOME"/}
+    case "$rel" in
+      data/captain-shared.md.remote-quarantine-*) continue ;;
+    esac
+    while IFS= read -r item; do
+      if [ "$rel" = "$item" ]; then
+        item=
+        break
+      fi
+      base=${item##*/}
+      if [ "$rel" = "${item%/*}/.fm-inherit-$base.generation" ]; then
+        item=
+        break
+      fi
+    done <<EOF
+$(fm_config_inherit_items)
+EOF
+    [ -z "$item" ] || return 1
+  done
+  while IFS= read -r item; do
+    material="$TARGET_HOME/$item"
+    base=${item##*/}
+    generation="$TARGET_HOME/${item%/*}/.fm-inherit-$base.generation"
+    if [ ! -e "$material" ] && [ ! -L "$material" ] \
+      && [ ! -e "$generation" ] && [ ! -L "$generation" ]; then
+      continue
+    fi
+    retired_inheritance_generation_valid "$generation" || return 1
+    generation_count=$((generation_count + 1))
+    case "$RETIRED_INHERIT_COMMAND" in
+      put)
+        [ -f "$material" ] && [ ! -L "$material" ] || return 1
+        actual_bytes=$(LC_ALL=C wc -c < "$material" | tr -d ' ')
+        [ "$actual_bytes" = "$RETIRED_INHERIT_BYTES" ] || return 1
+        actual_hash=$(fm_inherit_sha256 "$material") || return 1
+        [ "$actual_hash" = "$RETIRED_INHERIT_HASH" ] || return 1
+        ;;
+      absent)
+        [ "$RETIRED_INHERIT_BYTES" -eq 0 ] || return 1
+        [ ! -e "$material" ] && [ ! -L "$material" ] || return 1
+        ;;
+    esac
+  done <<EOF
+$(fm_config_inherit_items)
+EOF
+  [ "$generation_count" -gt 0 ]
+}
+
 validate_home() { # <id> [allow-absent]
   local id=$1 allow_absent=${2:-no} marker
   if [ ! -e "$TARGET_HOME" ] && [ ! -L "$TARGET_HOME" ] && [ "$allow_absent" = yes ]; then return 2; fi
   [ -d "$TARGET_HOME" ] && [ ! -L "$TARGET_HOME" ] || die "remote secondmate home is unavailable or unsafe"
+  if [ "$allow_absent" = yes ] && retired_inheritance_residue_valid; then return 2; fi
   [ -f "$TARGET_HOME/.fm-secondmate-home" ] && [ ! -L "$TARGET_HOME/.fm-secondmate-home" ] \
     || die "remote home is not a seeded secondmate home"
   marker=$(cat "$TARGET_HOME/.fm-secondmate-home")

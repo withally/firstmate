@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tests/fm-telemetry.test.sh - public recorder, rotation, and singleton behavior.
+# tests/fm-telemetry.test.sh - public recorder, rotation, durability, and
+# singleton behavior.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -50,34 +51,39 @@ SH
 #!/usr/bin/env bash
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/fake 100000 25000 75000 25%% /\n'
 SH
-  cat > "$fakebin/sync" <<'SH'
+  cat > "$fakebin/failing-python" <<'SH'
 #!/usr/bin/env bash
-[ "${FM_TEST_SYNC_FAIL:-0}" = 1 ] && exit 1
-[ "${1:-}" = -f ] && [ -f "${2:-}" ] || exit 2
-[ -z "${FM_TEST_SYNC_RECEIPT:-}" ] || printf '%s\n' "$2" > "$FM_TEST_SYNC_RECEIPT"
-exit 0
+printf 'fake interpreter refuses to flush\n' >&2
+exit 1
 SH
   chmod +x "$fakebin"/*
 }
 
 record_once() {
   local home=$1 fakebin=$2
-  FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 FM_TEST_SYNC_RECEIPT="$home/sync.receipt" \
+  FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 \
     PATH="$fakebin:/usr/bin:/bin" \
     "$TELEMETRY" record
 }
 
+recorder_pids() {
+  pgrep -f 'fm-telemetry.sh record' 2>/dev/null | sort || true
+}
+
 test_record_writes_parseable_durable_snapshot() {
-  local home fakebin log
+  local home fakebin log expected_day offset
   home="$TMP_ROOT/record-home"
   fakebin="$TMP_ROOT/record-fakebin"
   mkdir -p "$home/state"
   write_fake_samplers "$fakebin"
 
+  expected_day=$(date -u '+%Y-%m-%d')
+  offset=$(date '+%z')
   record_once "$home" "$fakebin" || fail "record mode failed"
-  log=$(find "$home/state/telemetry" -name 'telemetry-*.log' -type f | head -1)
-  [ -n "$log" ] || fail "record mode did not create a daily log"
+  log="$home/state/telemetry/telemetry-$expected_day.log"
+  [ -f "$log" ] || fail "record mode did not key its daily log on the UTC date"
   assert_contains "$(cat "$log")" 'SNAPSHOT_BEGIN schema=fm-telemetry-v1' "snapshot begin marker is missing"
+  assert_contains "$(cat "$log")" "local_utc_offset=$offset" "snapshot did not record the local UTC offset"
   assert_contains "$(cat "$log")" 'MEMORY_PRESSURE' "memory-pressure section is missing"
   assert_contains "$(cat "$log")" 'System-wide memory free percentage: 42%' "memory-pressure summary mode was not captured"
   assert_contains "$(cat "$log")" 'vm.swapusage: total = 4096.00M' "swap sampler output is missing"
@@ -87,13 +93,35 @@ test_record_writes_parseable_durable_snapshot() {
   assert_contains "$(cat "$log")" 'PROCESS_COUNTS_BY_PARENT' "per-parent counts are missing"
   assert_contains "$(cat "$log")" 'PROCESS_COUNTS_BY_PGID_COALITION_APPROX' "coalition approximation is missing"
   assert_contains "$(cat "$log")" 'SNAPSHOT_END' "snapshot end marker is missing"
-  assert_contains "$(cat "$home/sync.receipt")" "$log" "record mode did not file-sync the appended daily log"
   case "$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status 2>&1)" in
     *'not running newest_snapshot_age='[0-9]*s*) ;;
     *) fail "status did not report the newest completed snapshot age" ;;
   esac
-  [ ! -d "$home/state/telemetry/.record.lock" ] || fail "one-shot record left its lock behind"
-  pass "record writes one bounded, parseable snapshot and releases its lock"
+  [ ! -e "$home/state/telemetry/.record.lock" ] && [ ! -L "$home/state/telemetry/.record.lock" ] ||
+    fail "one-shot record left its lock behind"
+  pass "record writes one bounded, parseable snapshot dated in UTC and releases its lock"
+}
+
+test_fsync_helper_flushes_the_named_file() {
+  local home out rc
+  home="$TMP_ROOT/fsync-home"
+  mkdir -p "$home"
+  printf 'durable payload\n' > "$home/telemetry.log"
+
+  FM_HOME="$home" "$TELEMETRY" fsync "$home/telemetry.log" ||
+    fail "durable flush helper failed on a real file"
+  [ "$(cat "$home/telemetry.log")" = 'durable payload' ] ||
+    fail "durable flush helper altered the file it flushed"
+
+  out=$(FM_HOME="$home" "$TELEMETRY" fsync "$home/absent.log" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "durable flush helper accepted a missing target"
+  assert_contains "$out" 'is not a file' "durable flush helper did not identify the bad target"
+
+  out=$(FM_HOME="$home" "$TELEMETRY" fsync "$home" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "durable flush helper accepted a directory target"
+  pass "the durable flush helper flushes real files and rejects non-files"
 }
 
 test_record_surfaces_durability_failure() {
@@ -103,13 +131,75 @@ test_record_surfaces_durability_failure() {
   mkdir -p "$home/state"
   write_fake_samplers "$fakebin"
 
-  out=$(FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 FM_TEST_SYNC_FAIL=1 \
+  out=$(FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 \
+    FM_TELEMETRY_PYTHON="$fakebin/failing-python" \
     PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" record 2>&1)
   rc=$?
-  [ "$rc" -ne 0 ] || fail "one-shot record hid a failed durability sync"
-  assert_contains "$out" 'sync -f failed' "one-shot record did not identify the durability failure"
-  [ ! -d "$home/state/telemetry/.record.lock" ] || fail "failed one-shot record left its lock behind"
-  pass "one-shot record returns failure when its durability sync fails"
+  [ "$rc" -ne 0 ] || fail "one-shot record hid a failed durability flush"
+  assert_contains "$out" 'durability flush failed' "one-shot record did not identify the durability failure"
+  [ ! -e "$home/state/telemetry/.record.lock" ] && [ ! -L "$home/state/telemetry/.record.lock" ] ||
+    fail "failed one-shot record left its lock behind"
+  pass "one-shot record returns failure when its durability flush fails"
+}
+
+test_record_cleans_up_after_partial_temp_failure() {
+  local home fakebin telemetry leftovers pid tries
+  home="$TMP_ROOT/tempfail-home"
+  fakebin="$TMP_ROOT/tempfail-fakebin"
+  telemetry="$home/state/telemetry"
+  mkdir -p "$telemetry"
+  write_fake_samplers "$fakebin"
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  *.sample.*) exit 1 ;;
+esac
+exec /usr/bin/mktemp "$@"
+SH
+  chmod +x "$fakebin/mktemp"
+
+  # The leak is only observable while the loop lives: a one-shot run's EXIT trap
+  # would sweep the orphan that a long-running recorder abandons every tick.
+  FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" record "fmtelemetry-tempfail-$$" >/dev/null 2>"$home/record.err" &
+  pid=$!
+  tries=0
+  while [ "$tries" -lt 100 ]; do
+    grep -q 'snapshot failed' "$home/record.err" 2>/dev/null && break
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  grep -q 'snapshot failed' "$home/record.err" 2>/dev/null ||
+    fail "recorder did not report the failed temp-file allocation"
+  leftovers=$(find "$telemetry" \( -name '.snapshot.*' -o -name '.processes.*' -o -name '.sample.*' \) | wc -l)
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  [ "$leftovers" -eq 0 ] || fail "recorder leaked $leftovers temp files outside the retention cap"
+  pass "the running recorder removes every temp file it created when a later allocation fails"
+}
+
+test_interval_is_restricted_to_the_supported_cadence() {
+  local home fakebin out rc
+  home="$TMP_ROOT/interval-home"
+  fakebin="$TMP_ROOT/interval-fakebin"
+  mkdir -p "$home/state"
+  write_fake_samplers "$fakebin"
+
+  out=$(FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 FM_TELEMETRY_INTERVAL=31 \
+    PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" record 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "record accepted a 31-second cadence"
+  assert_contains "$out" 'from 15 to 30' "record did not state the supported cadence range"
+
+  FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 FM_TELEMETRY_INTERVAL=14 \
+    PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" record >/dev/null 2>&1 &&
+    fail "record accepted a 14-second cadence"
+
+  FM_HOME="$home" FM_TELEMETRY_RECORD_ONCE=1 FM_TELEMETRY_INTERVAL=30 \
+    PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" record >/dev/null 2>&1 ||
+    fail "record rejected the supported 30-second cadence"
+  pass "record accepts only whole cadences from 15 through 30 seconds"
 }
 
 test_rotation_prunes_oldest_daily_logs_to_cap() {
@@ -143,16 +233,18 @@ test_arm_is_idempotent_and_disarm_stops_singleton() {
   FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
     "$TELEMETRY" arm >/dev/null || fail "first arm failed"
   tries=0
-  while [ ! -s "$home/state/telemetry/.record.lock/pid" ] && [ "$tries" -lt 50 ]; do
+  while [ ! -L "$home/state/telemetry/.record.lock" ] && [ "$tries" -lt 50 ]; do
     sleep 0.1
     tries=$((tries + 1))
   done
-  [ -s "$home/state/telemetry/.record.lock/pid" ] || fail "arm did not publish its singleton owner"
-  first_pid=$(cat "$home/state/telemetry/.record.lock/pid")
+  [ -L "$home/state/telemetry/.record.lock" ] || fail "arm did not publish its singleton owner"
+  first_pid=$(readlink "$home/state/telemetry/.record.lock")
+  first_pid=${first_pid%%:*}
 
   FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
     "$TELEMETRY" arm >/dev/null || fail "idempotent arm failed"
-  second_pid=$(cat "$home/state/telemetry/.record.lock/pid")
+  second_pid=$(readlink "$home/state/telemetry/.record.lock")
+  second_pid=${second_pid%%:*}
   [ "$first_pid" = "$second_pid" ] || fail "second arm replaced the live recorder ($first_pid -> $second_pid)"
 
   out=$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status) || fail "status did not report the live recorder"
@@ -167,7 +259,62 @@ test_arm_is_idempotent_and_disarm_stops_singleton() {
   pass "arm is idempotent and disarm cleanly stops the one per-home recorder"
 }
 
+test_concurrent_arms_over_a_stale_lock_keep_one_recorder() {
+  local home fakebin before after fresh count stale_pid tries i survivor
+  home="$TMP_ROOT/race-home"
+  fakebin="$TMP_ROOT/race-fakebin"
+  mkdir -p "$home/state/telemetry"
+  write_fake_samplers "$fakebin"
+  rm -f "$fakebin/ps"
+  DAEMON_HOME=$home
+
+  sleep 0 &
+  stale_pid=$!
+  wait "$stale_pid" 2>/dev/null || true
+  ln -s "$stale_pid:20:fmtelemetry-stale-token" "$home/state/telemetry/.record.lock" ||
+    fail "could not stage a stale lock"
+
+  before="$home/recorders.before"
+  after="$home/recorders.after"
+  recorder_pids > "$before"
+  i=0
+  while [ "$i" -lt 4 ]; do
+    FM_HOME="$home" FM_TELEMETRY_INTERVAL=30 PATH="$fakebin:/usr/bin:/bin" \
+      "$TELEMETRY" arm >/dev/null 2>&1 &
+    i=$((i + 1))
+  done
+  wait
+
+  count=0
+  fresh=
+  tries=0
+  while [ "$tries" -lt 50 ]; do
+    recorder_pids > "$after"
+    fresh=$(comm -13 "$before" "$after")
+    count=$(printf '%s' "$fresh" | grep -c . || true)
+    [ "$count" -le 1 ] && break
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  [ "$count" -eq 1 ] || fail "concurrent arms left $count recorders running for one FM_HOME"
+
+  survivor=$(readlink "$home/state/telemetry/.record.lock")
+  survivor=${survivor%%:*}
+  [ "$survivor" = "$fresh" ] ||
+    fail "the published lock ($survivor) does not name the surviving recorder ($fresh)"
+
+  FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" disarm >/dev/null ||
+    fail "disarm could not stop the surviving recorder"
+  kill -0 "$survivor" 2>/dev/null && fail "disarm left recorder pid $survivor alive"
+  DAEMON_HOME=
+  pass "concurrent arms over a stale lock converge on exactly one live recorder"
+}
+
 test_record_writes_parseable_durable_snapshot
+test_fsync_helper_flushes_the_named_file
 test_record_surfaces_durability_failure
+test_record_cleans_up_after_partial_temp_failure
+test_interval_is_restricted_to_the_supported_cadence
 test_rotation_prunes_oldest_daily_logs_to_cap
 test_arm_is_idempotent_and_disarm_stops_singleton
+test_concurrent_arms_over_a_stale_lock_keep_one_recorder

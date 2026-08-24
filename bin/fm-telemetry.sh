@@ -6,31 +6,38 @@
 #   fm-telemetry.sh disarm
 #   fm-telemetry.sh status
 #   fm-telemetry.sh record [owner-token]   internal detached recorder mode
+#   fm-telemetry.sh fsync <file>           internal durable-flush helper
 #
 # The recorder writes append-only daily logs under state/telemetry/.
 # Each bounded snapshot contains macOS memory pressure, VM and swap summaries,
 # one process-table sample reused for RSS/CPU rankings and parent/PGID counts,
 # and root-volume free space.
-# After every append, `sync -f` makes that log durable before the loop sleeps.
+# After every append the log is flushed with fsync(2) plus Darwin's
+# F_FULLFSYNC, so a forced power-cycle loses at most the final interval.
 # Oldest daily logs are pruned until their total size is no more than
 # FM_TELEMETRY_MAX_BYTES (default 209715200, or 200 MiB).
 #
 # `arm` is idempotent and starts one detached recorder per FM_HOME.
-# A directory lock contains both a PID and a unique launch token,
-# so stale PID reuse is not trusted by status or disarm.
+# The lock is one symlink whose target carries the PID, the cadence and a
+# unique launch token, so it is published in a single atomic step and is never
+# observable half-initialized; stale PID reuse is not trusted by status or
+# disarm.
 # `disarm` sends TERM and waits for the recorder's trap to release that lock.
 # Nothing auto-arms this tool and it never installs a launch agent.
 #
 # FM_TELEMETRY_INTERVAL controls the cadence in whole seconds from 15 through
-# 3600 (default 20).
+# 30 (default 20).
 # FM_HOME and FM_STATE_OVERRIDE select the home and state root normally used by
 # Firstmate scripts.
+# FM_TELEMETRY_PYTHON selects the interpreter used for the durable flush
+# (default /usr/bin/python3).
 # FM_TELEMETRY_RECORD_ONCE=1 is a test seam that makes internal record mode take
 # one snapshot and exit.
 #
 # Steady-state overhead is one sleeping Bash process.
 # Each tick launches samplers sequentially, never recursively or on overlapping
-# schedules, and reuses one `ps` result for every process-derived section.
+# schedules, reuses one `ps` result for every process-derived section, and
+# adds one short-lived interpreter process for the durable flush.
 set -u
 export LC_ALL=C
 
@@ -39,9 +46,10 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 TELEMETRY_DIR="$STATE/telemetry"
-LOCK_DIR="$TELEMETRY_DIR/.record.lock"
+LOCK_LINK="$TELEMETRY_DIR/.record.lock"
 INTERVAL=${FM_TELEMETRY_INTERVAL:-20}
 MAX_BYTES=${FM_TELEMETRY_MAX_BYTES:-209715200}
+FSYNC_PYTHON="${FM_TELEMETRY_PYTHON:-/usr/bin/python3}"
 TOP_COUNT=15
 SNAPSHOT_SCHEMA=fm-telemetry-v1
 SNAPSHOT_TMP=
@@ -57,7 +65,7 @@ Usage:
   fm-telemetry.sh status    report running state and newest snapshot age
 
 Configuration:
-  FM_TELEMETRY_INTERVAL     seconds between snapshots (15..3600, default 20)
+  FM_TELEMETRY_INTERVAL     seconds between snapshots (15..30, default 20)
   FM_TELEMETRY_MAX_BYTES    total daily-log cap (default 209715200)
   FM_HOME                   Firstmate home (defaults to this repository)
 
@@ -72,29 +80,36 @@ fail() {
 
 validate_configuration() {
   case "$INTERVAL" in
-    ''|*[!0-9]*) fail "FM_TELEMETRY_INTERVAL must be a whole number from 15 to 3600" ;;
+    ''|*[!0-9]*) fail "FM_TELEMETRY_INTERVAL must be a whole number from 15 to 30" ;;
   esac
-  if [ "$INTERVAL" -lt 15 ] || [ "$INTERVAL" -gt 3600 ]; then
-    fail "FM_TELEMETRY_INTERVAL must be a whole number from 15 to 3600"
+  if [ "$INTERVAL" -lt 15 ] || [ "$INTERVAL" -gt 30 ]; then
+    fail "FM_TELEMETRY_INTERVAL must be a whole number from 15 to 30"
   fi
   case "$MAX_BYTES" in
     ''|*[!0-9]*|0) fail "FM_TELEMETRY_MAX_BYTES must be a positive whole number" ;;
   esac
 }
 
+lock_exists() {
+  [ -L "$LOCK_LINK" ] || [ -e "$LOCK_LINK" ]
+}
+
 read_lock_owner() {
+  local target rest
   LOCK_PID=
   LOCK_TOKEN=
-  LOCK_INTERVAL=
-  [ -r "$LOCK_DIR/pid" ] && IFS= read -r LOCK_PID < "$LOCK_DIR/pid"
-  [ -r "$LOCK_DIR/token" ] && IFS= read -r LOCK_TOKEN < "$LOCK_DIR/token"
-  [ -r "$LOCK_DIR/interval" ] && IFS= read -r LOCK_INTERVAL < "$LOCK_DIR/interval"
+  LOCK_INTERVAL=unknown
+  target=$(readlink "$LOCK_LINK" 2>/dev/null) || return 1
+  LOCK_PID=${target%%:*}
+  rest=${target#*:}
+  LOCK_INTERVAL=${rest%%:*}
+  LOCK_TOKEN=${rest#*:}
   [ -n "$LOCK_INTERVAL" ] || LOCK_INTERVAL=unknown
 }
 
 lock_owner_is_live() {
   local command_line
-  read_lock_owner
+  read_lock_owner || return 1
   case "$LOCK_PID" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -108,20 +123,20 @@ lock_owner_is_live() {
 }
 
 remove_stale_lock() {
-  rm -f "$LOCK_DIR/pid" "$LOCK_DIR/token" "$LOCK_DIR/interval" 2>/dev/null || return 1
-  rmdir "$LOCK_DIR" 2>/dev/null
+  local observed
+  lock_exists || return 0
+  if ! observed=$(readlink "$LOCK_LINK" 2>/dev/null); then
+    rm -rf "$LOCK_LINK" 2>/dev/null || return 1
+    return 0
+  fi
+  [ "$observed" = "$(readlink "$LOCK_LINK" 2>/dev/null)" ] || return 1
+  rm -f "$LOCK_LINK" 2>/dev/null || return 1
 }
 
 acquire_lock() {
   local attempt=0
   while [ "$attempt" -lt 2 ]; do
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-      if ! printf '%s\n' "$OWNER_TOKEN" > "$LOCK_DIR/token" ||
-        ! printf '%s\n' "$INTERVAL" > "$LOCK_DIR/interval" ||
-        ! printf '%s\n' "$$" > "$LOCK_DIR/pid"; then
-        remove_stale_lock >/dev/null 2>&1 || true
-        return 1
-      fi
+    if ln -s "$$:$INTERVAL:$OWNER_TOKEN" "$LOCK_LINK" 2>/dev/null; then
       return 0
     fi
     lock_owner_is_live && return 2
@@ -131,16 +146,14 @@ acquire_lock() {
   return 1
 }
 
+owns_lock() {
+  read_lock_owner || return 1
+  [ "$LOCK_PID" = "$$" ] && [ "$LOCK_TOKEN" = "$OWNER_TOKEN" ]
+}
+
 release_lock() {
-  local pid token
-  [ -d "$LOCK_DIR" ] || return 0
-  pid=
-  token=
-  [ -r "$LOCK_DIR/pid" ] && IFS= read -r pid < "$LOCK_DIR/pid"
-  [ -r "$LOCK_DIR/token" ] && IFS= read -r token < "$LOCK_DIR/token"
-  if [ "$pid" = "$$" ] && [ "$token" = "$OWNER_TOKEN" ]; then
-    remove_stale_lock >/dev/null 2>&1 || true
-  fi
+  owns_lock || return 0
+  rm -f "$LOCK_LINK" 2>/dev/null || true
 }
 
 cleanup_snapshot_temps() {
@@ -197,18 +210,58 @@ capture_processes() {
   } >> "$SNAPSHOT_TMP"
 }
 
+fsync_file() {
+  local target=${1:-}
+  if [ -z "$target" ] || [ ! -f "$target" ]; then
+    printf 'fm-telemetry: fsync target %s is not a file\n' "${target:-<missing>}" >&2
+    return 1
+  fi
+  "$FSYNC_PYTHON" - "$target" <<'FSYNC_PY'
+import errno
+import fcntl
+import os
+import sys
+
+F_FULLFSYNC = 51
+
+path = sys.argv[1]
+fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+try:
+    os.fsync(fd)
+    if sys.platform == "darwin":
+        try:
+            fcntl.fcntl(fd, F_FULLFSYNC)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTSUP, errno.ENOTTY, errno.EINVAL):
+                raise
+            sys.stderr.write("fm-telemetry: F_FULLFSYNC unsupported for %s\n" % path)
+finally:
+    os.close(fd)
+FSYNC_PY
+}
+
 append_snapshot() {
-  local timestamp epoch day log_file
+  local timestamp epoch day utc_offset log_file
   timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
   epoch=$(date '+%s') || return 1
-  day=$(date '+%Y-%m-%d') || return 1
+  day=$(date -u '+%Y-%m-%d') || return 1
+  utc_offset=$(date '+%z') || return 1
   log_file="$TELEMETRY_DIR/telemetry-$day.log"
-  SNAPSHOT_TMP=$(mktemp "$TELEMETRY_DIR/.snapshot.XXXXXX") || return 1
-  SAMPLE_TMP=$(mktemp "$TELEMETRY_DIR/.sample.XXXXXX") || return 1
-  PROCESS_TMP=$(mktemp "$TELEMETRY_DIR/.processes.XXXXXX") || return 1
+  SNAPSHOT_TMP=$(mktemp "$TELEMETRY_DIR/.snapshot.XXXXXX") || {
+    cleanup_snapshot_temps
+    return 1
+  }
+  SAMPLE_TMP=$(mktemp "$TELEMETRY_DIR/.sample.XXXXXX") || {
+    cleanup_snapshot_temps
+    return 1
+  }
+  PROCESS_TMP=$(mktemp "$TELEMETRY_DIR/.processes.XXXXXX") || {
+    cleanup_snapshot_temps
+    return 1
+  }
 
-  printf 'SNAPSHOT_BEGIN schema=%s timestamp=%s epoch=%s recorder_pid=%s\n' \
-    "$SNAPSHOT_SCHEMA" "$timestamp" "$epoch" "$$" > "$SNAPSHOT_TMP"
+  printf 'SNAPSHOT_BEGIN schema=%s timestamp=%s epoch=%s local_utc_offset=%s recorder_pid=%s\n' \
+    "$SNAPSHOT_SCHEMA" "$timestamp" "$epoch" "$utc_offset" "$$" > "$SNAPSHOT_TMP"
   capture_bounded MEMORY_PRESSURE 20 memory_pressure -Q
   capture_bounded VM_STAT 80 vm_stat
   capture_bounded SWAP_USAGE 10 sysctl vm.swapusage
@@ -220,8 +273,8 @@ append_snapshot() {
     cleanup_snapshot_temps
     return 1
   fi
-  if ! sync -f "$log_file" >/dev/null 2>&1; then
-    printf 'fm-telemetry: sync -f failed for %s\n' "$log_file" >&2
+  if ! fsync_file "$log_file"; then
+    printf 'fm-telemetry: durability flush failed for %s\n' "$log_file" >&2
     cleanup_snapshot_temps
     return 1
   fi
@@ -241,7 +294,7 @@ daily_log_bytes() {
 prune_daily_logs() {
   local total file removed current_log
   total=$(daily_log_bytes) || return 1
-  current_log="telemetry-$(date '+%Y-%m-%d').log"
+  current_log="telemetry-$(date -u '+%Y-%m-%d').log"
   while [ "$total" -gt "$MAX_BYTES" ]; do
     removed=0
     for file in "$TELEMETRY_DIR"/telemetry-*.log; do
@@ -267,12 +320,16 @@ record() {
   case $? in
     0) ;;
     2) fail "recorder already running" ;;
-    *) fail "could not acquire $LOCK_DIR" ;;
+    *) fail "could not acquire $LOCK_LINK" ;;
   esac
   trap 'cleanup_record; exit 0' TERM INT
   trap cleanup_record EXIT
 
   while :; do
+    if ! owns_lock; then
+      printf 'fm-telemetry: lock owner changed, standing down\n' >&2
+      return 0
+    fi
     tick_rc=0
     if ! append_snapshot; then
       printf 'fm-telemetry: snapshot failed\n' >&2
@@ -298,7 +355,7 @@ arm() {
     printf 'fm-telemetry: already running pid=%s interval=%ss\n' "$LOCK_PID" "$LOCK_INTERVAL"
     return 0
   fi
-  [ ! -d "$LOCK_DIR" ] || remove_stale_lock || fail "could not remove stale lock $LOCK_DIR"
+  ! lock_exists || remove_stale_lock || fail "could not remove stale lock $LOCK_LINK"
   token="fmtelemetry-$(date '+%s')-$$"
   nohup "$SCRIPT_PATH" record "$token" </dev/null >/dev/null 2>&1 &
   child_pid=$!
@@ -320,7 +377,7 @@ disarm() {
   local pid tries=0
   mkdir -p "$TELEMETRY_DIR" || fail "could not create $TELEMETRY_DIR"
   if ! lock_owner_is_live; then
-    [ ! -d "$LOCK_DIR" ] || remove_stale_lock || fail "could not remove stale lock $LOCK_DIR"
+    ! lock_exists || remove_stale_lock || fail "could not remove stale lock $LOCK_LINK"
     printf 'fm-telemetry: not running\n'
     return 0
   fi
@@ -333,7 +390,7 @@ disarm() {
   if kill -0 "$pid" 2>/dev/null; then
     fail "recorder pid $pid did not stop cleanly"
   fi
-  [ ! -d "$LOCK_DIR" ] || remove_stale_lock || fail "could not retire $LOCK_DIR"
+  ! lock_exists || remove_stale_lock || fail "could not retire $LOCK_LINK"
   printf 'fm-telemetry: stopped pid=%s\n' "$pid"
 }
 
@@ -377,6 +434,7 @@ case "${1:-}" in
   disarm) disarm ;;
   status) status ;;
   record) shift; record "${1:-}" ;;
+  fsync) shift; fsync_file "${1:-}" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

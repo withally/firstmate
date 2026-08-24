@@ -268,6 +268,24 @@ test_fseventsd_action_retains_the_warning_evidence_it_measured() {
   pass "fseventsd action alerts keep every warning reason measured in the same sample"
 }
 
+test_fseventsd_action_reports_every_condition_that_holds() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-action-cooccurring-home"
+  fakebin="$TMP_ROOT/fseventsd-action-cooccurring-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  fseventsd_check "$home" "$fakebin" 1000 600M 4 9000M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 2500M 4 9000M)
+  assert_contains "$out" 'ACTION: fseventsd' "co-occurring action conditions did not surface action"
+  assert_contains "$out" 'two consecutive samples above 512 MiB' "the alert dropped the sustained 512 MiB breach"
+  assert_contains "$out" 'MEM above 2 GiB' "the alert dropped the 2 GiB threshold it crossed"
+  assert_contains "$out" 'doubling within one hour' "the alert dropped the doubling it measured"
+  assert_contains "$out" 'warning plus red critical memory pressure' "the alert dropped the critical memory pressure it measured"
+  assert_contains "$out" 'warning plus more than 8 GiB swap' "the alert dropped the swap breach it measured"
+  pass "fseventsd action reports every threshold that holds in the same sample"
+}
+
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure() {
   local home fakebin out
   home="$TMP_ROOT/fseventsd-emergency-home"
@@ -838,6 +856,7 @@ test_fseventsd_check_enforces_five_minute_sampling_and_consecutive_warning
 test_fseventsd_check_warns_after_two_hours_of_fast_growth
 test_fseventsd_check_surfaces_action_thresholds
 test_fseventsd_action_retains_the_warning_evidence_it_measured
+test_fseventsd_action_reports_every_condition_that_holds
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure
 test_fseventsd_emergency_retains_the_evidence_it_measured
 test_fseventsd_check_reads_the_kernel_memory_pressure_encoding

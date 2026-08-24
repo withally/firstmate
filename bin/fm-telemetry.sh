@@ -495,11 +495,13 @@ EOF
     severity=action
     [ -z "$reasons" ] || reasons="$reasons; "
     reasons="${reasons}MEM above 2 GiB"
-  elif [ "$doubling" -eq 1 ]; then
+  fi
+  if [ "$doubling" -eq 1 ]; then
     severity=action
     [ -z "$reasons" ] || reasons="$reasons; "
     reasons="${reasons}doubling within one hour"
-  elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
+  fi
+  if [ "$warning" -eq 1 ] && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
     severity=action
     if [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_critical_level" ]; then
       pressure_label='red critical'
@@ -508,11 +510,13 @@ EOF
     fi
     [ -z "$reasons" ] || reasons="$reasons; "
     reasons="${reasons}warning plus ${pressure_label} memory pressure"
-  elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_SWAP_BYTES" -gt "$swap_action_bytes" ]; then
+  fi
+  if [ "$warning" -eq 1 ] && [ "$FSEVENTSD_SWAP_BYTES" -gt "$swap_action_bytes" ]; then
     severity=action
     [ -z "$reasons" ] || reasons="$reasons; "
     reasons="${reasons}warning plus more than 8 GiB swap"
-  elif [ "$warning" -eq 1 ]; then
+  fi
+  if [ "$severity" = none ] && [ "$warning" -eq 1 ]; then
     severity=warning
   fi
 

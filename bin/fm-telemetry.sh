@@ -283,6 +283,13 @@ capture_bounded() {
   fi
 }
 
+# Emit at most TOP_COUNT leading lines while still draining stdin, so the
+# upstream `sort` never takes SIGPIPE and never writes a broken-pipe
+# diagnostic into the recorder's error stream.
+take_top() {
+  awk -v limit="$TOP_COUNT" 'NR <= limit { print }'
+}
+
 capture_processes() {
   printf 'PROCESS_TABLE\n' >> "$SNAPSHOT_TMP"
   if ! command -v ps >/dev/null 2>&1 ||
@@ -295,15 +302,15 @@ capture_processes() {
   {
     awk 'NF { count++ } END { print "PROCESS_TOTAL " count + 0 }' "$PROCESS_TMP"
     printf 'TOP_RSS_KIB pid ppid pgid cpu rss_kib etime command\n'
-    sort -k5,5nr -k1,1n "$PROCESS_TMP" | head -n "$TOP_COUNT"
+    sort -k5,5nr -k1,1n "$PROCESS_TMP" | take_top
     printf 'TOP_CPU_PERCENT pid ppid pgid cpu rss_kib etime command\n'
-    sort -k4,4nr -k1,1n "$PROCESS_TMP" | head -n "$TOP_COUNT"
+    sort -k4,4nr -k1,1n "$PROCESS_TMP" | take_top
     printf 'PROCESS_COUNTS_BY_PARENT count ppid\n'
     awk 'NF { count[$2]++ } END { for (id in count) print count[id], id }' "$PROCESS_TMP" \
-      | sort -k1,1nr -k2,2n | head -n "$TOP_COUNT"
+      | sort -k1,1nr -k2,2n | take_top
     printf 'PROCESS_COUNTS_BY_PGID_COALITION_APPROX count pgid\n'
     awk 'NF { count[$3]++ } END { for (id in count) print count[id], id }' "$PROCESS_TMP" \
-      | sort -k1,1nr -k2,2n | head -n "$TOP_COUNT"
+      | sort -k1,1nr -k2,2n | take_top
   } >> "$SNAPSHOT_TMP"
 }
 

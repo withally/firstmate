@@ -42,9 +42,12 @@
 # bounded three-hour history under state/telemetry/, and emits only a newly
 # reached warning, action, or emergency level. The accepted thresholds are:
 # warning above 512 MiB twice or above 256 MiB/hour for two hours; action above
-# 2 GiB, a doubling within one hour, or a warning combined with warning-or-worse
-# memory pressure or more than 8 GiB swap; emergency for sustained growth from
-# the action range toward 4 GiB plus worsening memory pressure.
+# 2 GiB, a doubling within one hour once already above 512 MiB, or a warning
+# combined with warning-or-worse memory pressure or more than 8 GiB swap;
+# emergency for sustained growth from the action range toward 4 GiB while memory
+# pressure is sustained at warning-or-worse or is still rising.
+# Memory-pressure levels use the kernel's dispatch encoding, where 1 is normal,
+# 2 is warning and 4 is critical, so only 2 or above counts as pressure here.
 #
 # FM_TELEMETRY_INTERVAL controls the cadence in whole seconds from 15 through
 # 30 (default 20).
@@ -54,6 +57,8 @@
 # (default /usr/bin/python3).
 # FM_TELEMETRY_RECORD_ONCE=1 is a test seam that makes internal record mode take
 # one snapshot and exit.
+# FM_TELEMETRY_NOW is a test seam that overrides the whole-second clock used by
+# `fseventsd-check` for its cadence, history and growth windows.
 # Internal record mode without an owner token re-execs itself with a synthesized
 # one, so every recorder carries its token in argv and status and disarm have a
 # single liveness rule.
@@ -425,6 +430,7 @@ fseventsd_check() {
   local growth_rate_mib='' doubling=0 warning=0
   local severity=none reasons='' message mem_mib swap_gib
   local warning_bytes=536870912 action_bytes=2147483648 swap_action_bytes=8589934592
+  local pressure_warn_level=2
 
   now=${FM_TELEMETRY_NOW:-$(date '+%s' 2>/dev/null || true)}
   case "$now" in ''|*[!0-9]*) return 0 ;; esac
@@ -466,7 +472,7 @@ EOF
   fi
   if [ -f "$FSEVENTSD_HISTORY" ]; then
     growth_rate_mib=$(awk -v now="$now" -v mem="$FSEVENTSD_MEM_BYTES" '
-      $1 >= now - 7500 && $1 <= now - 7200 { epoch = $1; bytes = $2 }
+      $1 >= now - 10800 && $1 <= now - 7200 { epoch = $1; bytes = $2 }
       END {
         if (epoch > 0 && mem > bytes) {
           rate = (mem - bytes) * 3600 / (now - epoch) / 1048576
@@ -478,7 +484,7 @@ EOF
       [ -z "$reasons" ] || reasons="$reasons; "
       reasons="${reasons}growth ${growth_rate_mib} MiB/hour for 2h"
     fi
-    if awk -v now="$now" -v mem="$FSEVENTSD_MEM_BYTES" '
+    if [ "$FSEVENTSD_MEM_BYTES" -gt "$warning_bytes" ] && awk -v now="$now" -v mem="$FSEVENTSD_MEM_BYTES" '
       $1 >= now - 3600 && $1 < now && $2 > 0 && mem >= 2 * $2 { found = 1 }
       END { exit(found ? 0 : 1) }' "$FSEVENTSD_HISTORY"; then
       doubling=1
@@ -491,7 +497,7 @@ EOF
   elif [ "$doubling" -eq 1 ]; then
     severity=action
     reasons='doubling within one hour'
-  elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge 1 ]; then
+  elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
     severity=action
     reasons="${reasons}; warning plus yellow memory pressure"
   elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_SWAP_BYTES" -gt "$swap_action_bytes" ]; then
@@ -506,8 +512,9 @@ EOF
     && [ "$((now - prev_epoch))" -le 600 ] && [ "$preprev_mem" -lt "$prev_mem" ] \
     && [ "$prev_mem" -lt "$FSEVENTSD_MEM_BYTES" ] \
     && [ "$FSEVENTSD_MEM_BYTES" -gt "$action_bytes" ] \
-    && [ "$FSEVENTSD_PRESSURE_LEVEL" -gt "$prev_pressure" ] \
-    && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge 1 ]; then
+    && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ] \
+    && { [ "$prev_pressure" -ge "$pressure_warn_level" ] \
+      || [ "$FSEVENTSD_PRESSURE_LEVEL" -gt "$prev_pressure" ]; }; then
     severity=emergency
     reasons='sustained growth toward 4 GiB plus worsening memory pressure'
   fi

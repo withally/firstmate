@@ -77,7 +77,7 @@ SH
 #!/usr/bin/env bash
 case "$*" in
   '-n kern.memorystatus_vm_pressure_level')
-    printf '%s\n' "${FM_FAKE_PRESSURE_LEVEL:-0}"
+    printf '%s\n' "${FM_FAKE_PRESSURE_LEVEL:-1}"
     ;;
   '-n vm.swapusage')
     printf 'total = 16384.00M  used = %s  free = 8192.00M  (encrypted)\n' \
@@ -184,14 +184,14 @@ test_fseventsd_check_enforces_five_minute_sampling_and_consecutive_warning() {
   mkdir -p "$home/state"
   write_fake_fseventsd_samplers "$fakebin"
 
-  out=$(fseventsd_check "$home" "$fakebin" 1000 600M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M)
   [ -z "$out" ] || fail "the first high fseventsd sample warned without a consecutive sample: $out"
-  out=$(fseventsd_check "$home" "$fakebin" 1100 5M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 1100 5M 1 0.00M)
   [ -z "$out" ] || fail "a fseventsd sample inside five minutes produced output: $out"
-  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 1 0.00M)
   assert_contains "$out" 'WARNING: fseventsd' "two consecutive samples above 512 MiB did not warn"
   assert_contains "$out" 'two consecutive samples above 512 MiB' "the warning did not identify its threshold"
-  out=$(fseventsd_check "$home" "$fakebin" 1600 600M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 1600 600M 1 0.00M)
   [ -z "$out" ] || fail "an unchanged warning episode re-alerted: $out"
   pass "fseventsd warning samples at most every five minutes, requires two high samples, and dedupes the episode"
 }
@@ -203,9 +203,9 @@ test_fseventsd_check_warns_after_two_hours_of_fast_growth() {
   mkdir -p "$home/state"
   write_fake_fseventsd_samplers "$fakebin"
 
-  out=$(fseventsd_check "$home" "$fakebin" 1000 100M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 1000 100M 1 0.00M)
   [ -z "$out" ] || fail "the growth baseline produced an alert: $out"
-  out=$(fseventsd_check "$home" "$fakebin" 8200 700M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 8200 700M 1 0.00M)
   assert_contains "$out" 'WARNING: fseventsd' "growth above 256 MiB/hour for two hours did not warn"
   assert_contains "$out" '300.00 MiB/hour for 2h' "the growth warning did not report its measured rate"
   pass "fseventsd warns when two-hour growth exceeds 256 MiB per hour"
@@ -218,28 +218,28 @@ test_fseventsd_check_surfaces_action_thresholds() {
 
   home="$TMP_ROOT/fseventsd-action-size-home"
   mkdir -p "$home/state"
-  out=$(fseventsd_check "$home" "$fakebin" 1000 2049M 0 0.00M)
+  out=$(fseventsd_check "$home" "$fakebin" 1000 2049M 1 0.00M)
   assert_contains "$out" 'ACTION: fseventsd' "MEM above 2 GiB did not surface action"
   assert_contains "$out" 'MEM above 2 GiB' "the action did not identify the 2 GiB boundary"
 
   home="$TMP_ROOT/fseventsd-action-double-home"
   mkdir -p "$home/state"
-  fseventsd_check "$home" "$fakebin" 1000 100M 0 0.00M >/dev/null
-  out=$(fseventsd_check "$home" "$fakebin" 1300 201M 0 0.00M)
+  fseventsd_check "$home" "$fakebin" 1000 300M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 601M 1 0.00M)
   assert_contains "$out" 'ACTION: fseventsd' "doubling within one hour did not surface action"
   assert_contains "$out" 'doubling within one hour' "the doubling action did not identify its threshold"
 
   home="$TMP_ROOT/fseventsd-action-pressure-home"
   mkdir -p "$home/state"
-  fseventsd_check "$home" "$fakebin" 1000 600M 0 0.00M >/dev/null
-  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 1 0.00M)
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 2 0.00M)
   assert_contains "$out" 'ACTION: fseventsd' "warning plus yellow memory pressure did not surface action"
   assert_contains "$out" 'warning plus yellow memory pressure' "the pressure action did not identify its threshold"
 
   home="$TMP_ROOT/fseventsd-action-swap-home"
   mkdir -p "$home/state"
-  fseventsd_check "$home" "$fakebin" 1000 600M 0 0.00M >/dev/null
-  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 0 8193M)
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 1 8193M)
   assert_contains "$out" 'ACTION: fseventsd' "warning plus more than 8 GiB swap did not surface action"
   assert_contains "$out" 'warning plus more than 8 GiB swap' "the swap action did not identify its threshold"
   pass "fseventsd action surfaces size, doubling, and warning-plus-pressure thresholds"
@@ -252,12 +252,77 @@ test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure(
   mkdir -p "$home/state"
   write_fake_fseventsd_samplers "$fakebin"
 
-  fseventsd_check "$home" "$fakebin" 1000 2500M 0 0.00M >/dev/null
-  fseventsd_check "$home" "$fakebin" 1300 3000M 1 0.00M >/dev/null
-  out=$(fseventsd_check "$home" "$fakebin" 1600 3500M 3 0.00M)
+  fseventsd_check "$home" "$fakebin" 1000 2500M 1 0.00M >/dev/null
+  fseventsd_check "$home" "$fakebin" 1300 3000M 2 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1600 3500M 4 0.00M)
   assert_contains "$out" 'EMERGENCY: fseventsd' "sustained growth toward 4 GiB with worsening pressure did not surface emergency"
   assert_contains "$out" 'stop launching new work, save state, and reduce workload' "the emergency omitted the accepted operational response"
   pass "fseventsd emergency requires sustained growth toward 4 GiB plus worsening pressure"
+}
+
+test_fseventsd_check_reads_the_kernel_memory_pressure_encoding() {
+  local home fakebin out
+  fakebin="$TMP_ROOT/fseventsd-encoding-fakebin"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  home="$TMP_ROOT/fseventsd-encoding-normal-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 1 0.00M)
+  assert_contains "$out" 'WARNING: fseventsd' "steady-state normal pressure did not stay at the warning tier"
+  case "$out" in
+    *ACTION*) fail "normal pressure level 1 was treated as yellow memory pressure: $out" ;;
+  esac
+
+  home="$TMP_ROOT/fseventsd-encoding-critical-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 4 0.00M)
+  assert_contains "$out" 'ACTION: fseventsd' "critical pressure level 4 did not escalate the warning"
+  pass "fseventsd pressure escalation follows the kernel normal/warn/critical encoding"
+}
+
+test_fseventsd_check_ignores_doubling_below_the_warning_floor() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-doubling-floor-home"
+  fakebin="$TMP_ROOT/fseventsd-doubling-floor-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  out=$(fseventsd_check "$home" "$fakebin" 1000 2M 1 0.00M)
+  [ -z "$out" ] || fail "a healthy post-boot baseline alerted: $out"
+  out=$(fseventsd_check "$home" "$fakebin" 1300 5M 1 0.00M)
+  [ -z "$out" ] || fail "a healthy daemon settling from 2 MiB to 5 MiB alerted: $out"
+  pass "fseventsd doubling only counts once the footprint is above 512 MiB"
+}
+
+test_fseventsd_check_emergency_accepts_sustained_pressure_without_a_rise() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-emergency-sustained-home"
+  fakebin="$TMP_ROOT/fseventsd-emergency-sustained-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  fseventsd_check "$home" "$fakebin" 1000 2600M 2 0.00M >/dev/null
+  fseventsd_check "$home" "$fakebin" 1300 3000M 2 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1600 3500M 2 0.00M)
+  assert_contains "$out" 'EMERGENCY: fseventsd' "sustained warn-or-worse pressure did not surface emergency"
+  pass "fseventsd emergency treats sustained warn-or-worse pressure as worsening"
+}
+
+test_fseventsd_check_measures_two_hour_growth_across_irregular_spacing() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-growth-spacing-home"
+  fakebin="$TMP_ROOT/fseventsd-growth-spacing-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  fseventsd_check "$home" "$fakebin" 1100 100M 1 0.00M >/dev/null
+  fseventsd_check "$home" "$fakebin" 1600 150M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 8700 800M 1 0.00M)
+  assert_contains "$out" 'WARNING: fseventsd' "growth was missed when no sample landed in a narrow two-hour window"
+  assert_contains "$out" 'MiB/hour for 2h' "the growth warning did not report its measured rate"
+  pass "fseventsd two-hour growth uses the newest sample at least two hours old"
 }
 
 test_fsync_helper_flushes_the_named_file() {
@@ -720,6 +785,10 @@ test_fseventsd_check_enforces_five_minute_sampling_and_consecutive_warning
 test_fseventsd_check_warns_after_two_hours_of_fast_growth
 test_fseventsd_check_surfaces_action_thresholds
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure
+test_fseventsd_check_reads_the_kernel_memory_pressure_encoding
+test_fseventsd_check_ignores_doubling_below_the_warning_floor
+test_fseventsd_check_emergency_accepts_sustained_pressure_without_a_rise
+test_fseventsd_check_measures_two_hour_growth_across_irregular_spacing
 test_fsync_helper_flushes_the_named_file
 test_fsync_helper_commits_the_containing_directory
 test_record_surfaces_durability_failure

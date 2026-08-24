@@ -404,7 +404,7 @@ fm_lock_claim() {
 }
 
 fm_lock_try_create() {
-  local lockdir=$1 allowed_steal_owner=${2:-} ownerdir rc
+  local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
   ownerdir=$(fm_lock_owner_dir "$lockdir") || return 2
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
@@ -415,7 +415,6 @@ fm_lock_try_create() {
     fm_lock_discard_owner "$ownerdir"
     return 2
   fi
-  rc=1
   if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
       FM_LOCK_OWNER_DIR=$ownerdir
@@ -428,7 +427,7 @@ fm_lock_try_create() {
     fm_lock_remove_stray_owner_link "$lockdir" "$ownerdir"
   fi
   fm_lock_discard_owner "$ownerdir"
-  return "$rc"
+  return 1
 }
 
 # Acquire a stale-recovery mutex without requesting a second mutex. Status 1
@@ -483,9 +482,14 @@ fm_lock_try_acquire_steal_mutex() {
   fi
   fm_lock_reclaim_marker_held "$reclaim" || return 1
   if [ "$ownerdir" = "$steal" ]; then
-    fm_lock_reclaim_marker_release "$reclaim" || return 1
+    if [ ! -d "$steal" ] || [ -L "$steal" ]; then
+      fm_lock_reclaim_marker_release "$reclaim"
+      return 1
+    fi
+    fm_lock_clean_known_files "$steal"
     fm_lock_clean_known_debris "$steal"
-    fm_lock_remove_path "$steal" || return 1
+    fm_lock_reclaim_marker_release "$reclaim" || return 1
+    rmdir "$steal" 2>/dev/null || return 1
   else
     if ! rm -f "$steal" 2>/dev/null; then
       fm_lock_reclaim_marker_release "$reclaim"
@@ -527,7 +531,8 @@ fm_lock_reclaim_marker_claim() {
   if [ "$took_over" -eq 1 ]; then
     retired_pid=$(cat "$retired/pid" 2>/dev/null || true)
     rm -rf "$retired" 2>/dev/null || true
-    if [ "$retired_pid" != "$abandoned_pid" ] || fm_pid_alive "$retired_pid"; then
+    if [ "$retired_pid" != "$abandoned_pid" ] \
+      || { [ "$retired_pid" != "$mypid" ] && fm_pid_alive "$retired_pid"; }; then
       if fm_pid_alive "$retired_pid"; then
         printf '%s\n' "$retired_pid" 2>/dev/null > "$reclaim/pid" || true
       else
@@ -546,6 +551,10 @@ fm_lock_reclaim_marker_is_abandoned() {
   FM_LOCK_RECLAIM_OBSERVED_PID=
   [ -d "$reclaim" ] || return 1
   pid=$(cat "$reclaim/pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ]; then
+    FM_LOCK_RECLAIM_OBSERVED_PID=$pid
+    return 0
+  fi
   fm_pid_alive "$pid" && return 1
   stale=$FM_LOCK_STALE_AFTER
   [ "$stale" -lt 2 ] && stale=2

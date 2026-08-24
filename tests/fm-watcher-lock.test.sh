@@ -690,6 +690,76 @@ test_legacy_directory_steal_mutex_survives_known_recovery_debris() {
   pass "legacy steal-dir reclaim retires known debris and stays fail-closed on unowned content"
 }
 
+test_legacy_directory_reclaim_never_deletes_a_racer_mutex() {
+  local dir state lockdir steal reclaim racer_owner fakebin real_rmdir dead out rc
+  dir=$(make_case lock-legacy-steal-dir-racer)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  reclaim="$steal/reclaim"
+  racer_owner="$state/.racer-owner"
+  fakebin="$dir/racebin"
+  real_rmdir=$(command -v rmdir)
+  dead=$(dead_pid)
+  mkdir "$lockdir" "$steal" "$fakebin"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$steal/pid"
+  cat > "$fakebin/rmdir" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = "\${FM_TEST_RECLAIM:?}" ]; then
+  "$real_rmdir" "\$@"
+  rc=\$?
+  "$real_rmdir" "\${FM_TEST_STEAL:?}" 2>/dev/null || true
+  mkdir -p "\${FM_TEST_RACER_OWNER:?}"
+  printf '%s\n' "\${FM_TEST_RACER_PID:?}" > "\$FM_TEST_RACER_OWNER/pid"
+  ln -s "\$FM_TEST_RACER_OWNER" "\$FM_TEST_STEAL" 2>/dev/null || true
+  exit \$rc
+fi
+exec "$real_rmdir" "\$@"
+SH
+  chmod +x "$fakebin/rmdir"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_RECLAIM="$reclaim" \
+    FM_TEST_STEAL="$steal" FM_TEST_RACER_OWNER="$racer_owner" FM_TEST_RACER_PID="$$" bash -c '
+      . "$1"
+      fm_lock_try_acquire "$2"
+      printf "rc=%s\n" "$?"
+    ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "legacy steal-dir racer fixture shell failed (rc=$rc): $out"
+  [ -L "$steal" ] \
+    || fail "the legacy directory reclaim deleted the live steal mutex a racer created: $out"
+  [ "$(readlink "$steal")" = "$racer_owner" ] \
+    || fail "the racer's steal mutex no longer points at its own owner record: $(readlink "$steal")"
+  [ "$out" = "rc=1" ] \
+    || fail "the losing reclaimer reported success after a racer took the steal mutex: $out"
+  pass "legacy directory reclaim never deletes a steal mutex another reclaimer created"
+}
+
+test_self_orphaned_reclaim_marker_is_reclaimable_by_its_owner() {
+  local dir state ownerdir reclaim out rc
+  dir=$(make_case lock-reclaim-marker-self-orphan)
+  state="$dir/state"
+  ownerdir="$state/.owner"
+  reclaim="$ownerdir/reclaim"
+  mkdir -p "$ownerdir"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    mkdir "$2"
+    printf "%s\n" "${BASHPID:-$$}" > "$2/pid"
+    fm_lock_reclaim_marker_claim "$2"
+    claim=$?
+    if [ "$(cat "$2/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ]; then owned=self; else owned=other; fi
+    printf "claim=%s owned=%s\n" "$claim" "$owned"
+  ' _ "$LIB" "$reclaim" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "self-orphaned marker fixture shell failed (rc=$rc): $out"
+  [ "$out" = "claim=0 owned=self" ] \
+    || fail "a process could not reclaim the marker it orphaned itself, so it would spin forever: $out"
+  pass "a reclaim marker orphaned by the caller itself stays reclaimable by that caller"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -1589,6 +1659,8 @@ test_reclaim_marker_takeover_is_bound_to_the_marker_it_inspected
 test_reclaim_marker_takeover_never_vacates_the_marker_slot
 test_legacy_directory_steal_mutex_is_reclaimed_without_recursion
 test_legacy_directory_steal_mutex_survives_known_recovery_debris
+test_legacy_directory_reclaim_never_deletes_a_racer_mutex
+test_self_orphaned_reclaim_marker_is_reclaimable_by_its_owner
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

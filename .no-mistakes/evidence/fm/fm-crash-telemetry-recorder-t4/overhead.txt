@@ -1,0 +1,23 @@
+# per-tick cost of one full snapshot (real macOS samplers), FM_HOME=/tmp/fm-tel-tick.AQqHTo
+tick1 real 0.13
+tick1 user 0.04
+tick1 sys 0.06
+tick2 real 0.13
+tick2 user 0.04
+tick2 sys 0.06
+tick3 real 0.13
+tick3 user 0.04
+tick3 sys 0.06
+
+# steady-state recorder process (armed at 15s cadence)
+ 8092 01:07   0:00.05   0.0   2368 bash /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0SEQZ2XYDGD2MD4G1WSKNQY/bin/fm-telemetry.sh record fmtelemetry-1787563494-7975
+snapshots written so far: 5
+live child processes of recorder: 1 (the sleep)
+
+# 65s steady-state window on the armed recorder
+recorder pid=8092 window=65s cputime_start=0:00.01 cputime_end=0:00.05
+ 8092     1   0.0   2368 01:13 bash /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0SEQZ2XYDGD2MD4G1WSKNQY/bin/fm-telemetry.sh record fmtelemetry-1787563494-7975
+snapshots so far: 5
+descendant processes right now: 1
+# => ~0.04s CPU per 65s in the loop process itself; ~0.10s CPU per full snapshot including samplers
+# => ~0.5% of one core at the default 20s cadence, one sleeping bash + one sleep child between ticks

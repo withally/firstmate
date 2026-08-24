@@ -1,0 +1,112 @@
+SNAPSHOT_BEGIN schema=fm-telemetry-v1 timestamp=2026-08-24T09:24:54Z epoch=1787563494 local_utc_offset=+0800 recorder_pid=8092
+MEMORY_PRESSURE
+The system has 25769803776 (1572864 pages with a page size of 16384).
+System-wide memory free percentage: 40%
+VM_STAT
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                     3983.
+Pages active:                                 307475.
+Pages inactive:                               305173.
+Pages speculative:                              1358.
+Pages throttled:                                   0.
+Pages wired down:                             208968.
+Pages purgeable:                                   6.
+"Translation faults":                     5893038263.
+Pages copy-on-write:                      1615632183.
+Pages zero filled:                         747029964.
+Pages reactivated:                          54114234.
+Pages purged:                               15311150.
+File-backed pages:                            192475.
+Anonymous pages:                              421531.
+Pages stored in compressor:                  2133626.
+Pages occupied by compressor:                 685705.
+Decompressions:                             47200356.
+Compressions:                               56595105.
+Pageins:                                    17806461.
+Pageouts:                                     122076.
+Swapins:                                       76986.
+Swapouts:                                     562040.
+Pages tagged:                                  97968.
+Pages tagged resident:                         73573.
+Pages tagged compressed:                       24395.
+Pages tag-storage:                             49152.
+Pages tag-storage holding tags:                 3870.
+Pages tag-storage free:                          310.
+Pages tag-storage non-tag pageable:            44882.
+Pages tag-storage non-tag wired:                  90.
+Bytes of compressed tags:                    3885120.
+Tagged compressions:                         1068202.
+Tagged decompressions:                        971890.
+SWAP_USAGE
+vm.swapusage: total = 8192.00M  used = 7605.69M  free = 586.31M  (encrypted)
+PROCESS_TABLE
+PROCESS_TOTAL 798
+TOP_RSS_KIB pid ppid pgid cpu rss_kib etime command
+53378  1135 53378   8.4 478160    01:55 claude
+28358 28144 28358   3.9 439744    56:10 pi
+73938  1135 73938   0.2 437312    05:46 claude
+75647   715   715   0.0 378320 02:46:50 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/151.0.7922.170/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)
+  715     1   715   2.6 372688 06:21:20 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+50035 49993 49993   0.1 297248 02:21:21 /Users/ivan/.local/share/claude/versions/2.1.241
+11068 10145 11068   0.0 253648 06:19:22 claude
+ 9273   715   715   0.0 246032 03:05:03 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/151.0.7922.170/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)
+  719     1   719   0.0 240816 06:21:20 /Applications/WhatsApp.app/Contents/MacOS/WhatsApp
+22344 22274 22274   0.5 210816    44:21 /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+99426 99320 99320   0.0 199680 01:54:13 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/151.0.7922.170/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer)
+99320     1 99320   0.0 189296 01:54:16 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+ 2609  1715  2609   0.0 186768 06:19:30 claude
+ 4269   715   715   0.1 183520 01:45:57 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/151.0.7922.170/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)
+ 9651  8857  9651   0.0 182544    23:52 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+TOP_CPU_PERCENT pid ppid pgid cpu rss_kib etime command
+  702     1   702 100.9 119744 06:21:20 /Applications/cmux.app/Contents/MacOS/cmux
+  338     1   338  49.7  15408 06:21:37 /usr/libexec/logd
+ 6021 61825 61817  16.2   6096    03:49 bash
+53378  1135 53378   8.4 478160    01:55 claude
+28358 28144 28358   3.9 439744    56:10 pi
+ 7855 12951 12494   3.6   3600    00:00 bash
+ 1065   715   715   3.0 108480 06:21:12 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/151.0.7922.170/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper
+  519     1   519   2.7  17216 06:21:36 /usr/libexec/syspolicyd
+  715     1   715   2.6 372688 06:21:20 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+ 2474     1  2474   2.5  94528 06:19:57 /Applications/NordVPN.app/Contents/MacOS/NordVPN
+ 7940 53378  7940   1.9   2608    00:00 /bin/zsh
+  411     1   411   1.0  38048 06:21:36 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 2439     1  2439   1.0  35600 06:19:58 /Library/PrivilegedHelperTools/com.nordvpn.macos.helper
+  420     1   420   0.9  27360 06:21:36 /usr/sbin/coreaudiod
+ 1472  1169  1169   0.8  57040 06:21:03 /Applications/Wispr Flow.app/Contents/Frameworks/Wispr Flow Helper (Renderer).app/Contents/MacOS/Wispr Flow Helper (Renderer)
+PROCESS_COUNTS_BY_PARENT count ppid
+445 1
+64 715
+12 99320
+10 721
+10 1171
+10 1713
+9 1169
+8 51679
+7 13245
+7 15351
+7 22344
+7 22801
+6 99420
+5 1192
+5 9651
+PROCESS_COUNTS_BY_PGID_COALITION_APPROX count pgid
+65 715
+14 99320
+11 721
+11 1171
+10 1169
+8 51679
+7 7940
+6 1192
+6 9651
+6 12494
+6 35299
+5 61817
+4 30639
+4 35598
+4 38867
+DISK_FREE_KIB
+Filesystem     1024-blocks      Used Available Capacity iused      ifree %iused  Mounted on
+/dev/disk3s1s1   971298980  12277016 391739644     4%  458725 3917396440    0%   /
+SNAPSHOT_END timestamp=2026-08-24T09:24:54Z
+

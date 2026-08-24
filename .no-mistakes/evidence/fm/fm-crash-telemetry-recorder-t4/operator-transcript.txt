@@ -1,0 +1,53 @@
+$ FM_HOME=/tmp/fm-telemetry-e2e.PpvEfK FM_TELEMETRY_INTERVAL=15 bin/fm-telemetry.sh arm
+fm-telemetry: running pid=8092 interval=15s directory=/tmp/fm-telemetry-e2e.PpvEfK/state/telemetry
+
+$ bin/fm-telemetry.sh arm   # idempotent, same pid
+fm-telemetry: already running pid=8092 interval=15s
+
+$ bin/fm-telemetry.sh status
+fm-telemetry: running pid=8092 interval=15s newest_snapshot_age=0s directory=/tmp/fm-telemetry-e2e.PpvEfK/state/telemetry
+== simulate a hard power-cycle: SIGKILL the recorder (no trap, no clean shutdown) ==
+$ kill -9 8092
+
+$ tail -c 400 telemetry-$(date -u +%F).log   # last durable snapshot survived intact
+OCESS_COUNTS_BY_PGID_COALITION_APPROX count pgid
+63 715
+14 99320
+11 721
+11 1171
+10 1169
+8 51679
+6 1192
+6 9651
+6 35299
+5 61817
+5 97851
+4 12494
+4 30639
+4 35598
+4 38867
+DISK_FREE_KIB
+Filesystem     1024-blocks      Used Available Capacity iused      ifree %iused  Mounted on
+/dev/disk3s1s1   971298980  12277016 391747212     4%  458725 3917472120    0%   /
+SNAPSHOT_END timestamp=2026-08-24T09:26:10Z
+
+
+$ bin/fm-telemetry.sh status   # stale lock is not trusted
+fm-telemetry: not running newest_snapshot_age=3s directory=/tmp/fm-telemetry-e2e.PpvEfK/state/telemetry
+(exit 1)
+
+== post-crash recovery ==
+$ bin/fm-telemetry.sh arm
+fm-telemetry: running pid=5214 interval=15s directory=/tmp/fm-telemetry-e2e.PpvEfK/state/telemetry
+$ bin/fm-telemetry.sh disarm
+fm-telemetry: stopped pid=5214
+$ bin/fm-telemetry.sh status
+fm-telemetry: not running newest_snapshot_age=1s directory=/tmp/fm-telemetry-e2e.PpvEfK/state/telemetry
+(exit 1)
+
+== retained snapshots and their parse structure ==
+7
+7
+total 88
+-rw-r--r--@ 1 ivan  wheel      0 Aug 24 17:24 recorder.err
+-rw-r--r--@ 1 ivan  wheel  43667 Aug 24 17:26 telemetry-2026-08-24.log

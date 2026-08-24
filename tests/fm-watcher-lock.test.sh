@@ -347,6 +347,7 @@ test_stale_or_malformed_steal_mutex_never_claims_nested_mutex() {
       ln -s "$ownerdir" "$steal"
     else
       ln -s "$state/.missing-steal-owner" "$steal"
+      touch -h -t 202001010000 "$steal"
     fi
     cat > "$fakebin/ln" <<SH
 #!/usr/bin/env bash
@@ -363,10 +364,40 @@ SH
       printf "rc=%s\n" "$?"
     ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
     [ "$rc" -eq 0 ] || fail "$kind steal-mutex fixture shell failed (rc=$rc): $out"
+    [ "$out" = "rc=0" ] \
+      || fail "$kind steal mutex was never reclaimed, so the dead-owner lock stayed unacquirable: $out"
     ! grep -F "$lockdir.steal.steal" "$log" >/dev/null 2>&1 \
       || fail "$kind steal mutex attempted a nested .steal.steal claim: $(cat "$log")"
   done
-  pass "stale and malformed steal mutexes never claim .steal.steal"
+  pass "stale and malformed steal mutexes are reclaimed without ever claiming .steal.steal"
+}
+
+test_abandoned_reclaim_marker_does_not_wedge_stale_steal_recovery() {
+  local dir state lockdir steal ownerdir dead out rc
+  dir=$(make_case lock-abandoned-reclaim-marker)
+  state="$dir/state"
+  lockdir="$state/.wedged.lock"
+  steal="$lockdir.steal"
+  ownerdir="$state/.stale-steal-owner"
+  dead=$(dead_pid)
+  mkdir "$lockdir" "$ownerdir"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$ownerdir/pid"
+  ln -s "$ownerdir" "$steal"
+  mkdir "$ownerdir/reclaim"
+  touch -t 202001010000 "$ownerdir/reclaim"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "abandoned-reclaim-marker fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=0" ] \
+    || fail "a reclaim marker left behind by a killed reclaimer permanently blocked stale steal recovery: $out"
+  [ ! -d "$ownerdir/reclaim" ] || fail "the reclaimed marker was not released"
+  pass "a reclaim marker abandoned by a killed reclaimer does not wedge stale steal recovery"
 }
 
 test_lock_steals_dead_pid_lock() {
@@ -1260,6 +1291,7 @@ test_lock_single_winner_under_concurrency
 test_lock_missing_parent_returns_typed_failure_with_bounded_launches
 test_lock_owner_record_failure_returns_typed_failure
 test_stale_or_malformed_steal_mutex_never_claims_nested_mutex
+test_abandoned_reclaim_marker_does_not_wedge_stale_steal_recovery
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

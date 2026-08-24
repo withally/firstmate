@@ -366,7 +366,8 @@ FM_SECONDMATE_CHARTER='Failing seed charter.' FM_SECONDMATE_SCOPE='failed seed' 
 seed_fail_pid=$!
 seed_wait=0
 while [ ! -f "$TMP_ROOT/seed.entered" ]; do
-  kill -0 "$seed_fail_pid" 2>/dev/null || fail "failing seed exited before remote provisioning"
+  kill -0 "$seed_fail_pid" 2>/dev/null \
+    || fail "failing seed exited before remote provisioning"$'\n'"$(cat "$TMP_ROOT/seed-fail.out")"
   seed_wait=$((seed_wait + 1))
   [ "$seed_wait" -le 250 ] || fail "failing seed never reached remote provisioning"
   sleep 0.02
@@ -449,19 +450,34 @@ pass "remote seeding proceeds once the repair closes every gap"
 # Seeding must not need a copy of the project in this home: firstmate names the
 # origin it already resolved, the seed validates and transports it, and the
 # primary project tree is left exactly as it was found.
-projects_snapshot() { # <dir>
+# Shared unchanged-tree comparison for every assertion below that a directory
+# survived an operation byte-identical. It records each entry's own type - a
+# symlink by its literal target, a regular file by its digest - so the
+# comparison never depends on how `cp -R` and `diff -ru` treat links or
+# non-regular entries, and it fails closed when the directory is missing so a
+# deleted tree can never read as an unchanged one.
+tree_snapshot() { # <dir>
   local dir=$1 path
+  if [ ! -d "$dir" ]; then
+    printf 'tree_snapshot: %s is not a directory\n' "$dir" >&2
+    return 1
+  fi
   (
-    cd "$dir" 2>/dev/null || exit 0
+    cd "$dir" || exit 1
     find . -print | LC_ALL=C sort | while IFS= read -r path; do
-      if [ -f "$path" ] && [ ! -L "$path" ]; then
-        printf '%s %s\n' "$path" "$(sha256_file "$path")"
+      if [ -L "$path" ]; then
+        printf 'link %s -> %s\n' "$path" "$(readlink "$path")"
+      elif [ -f "$path" ]; then
+        printf 'file %s %s\n' "$path" "$(sha256_file "$path")"
+      elif [ -d "$path" ]; then
+        printf 'dir %s\n' "$path"
       else
-        printf '%s\n' "$path"
+        printf 'other %s\n' "$path"
       fi
     done
   )
 }
+projects_snapshot() { tree_snapshot "$1"; }
 mkdir -p "$TMP_ROOT/seed-parent/projects"
 fm_git_init_commit "$TMP_ROOT/seed-parent/projects/resident"
 git init -q --bare "$TMP_ROOT/beta.git"
@@ -474,7 +490,8 @@ cat > "$TMP_ROOT/seed-parent/data/projects.md" <<'EOF'
 - delta [local-only] - delta project (added 2026-08-06)
 EOF
 BETA_ORIGIN="file://$TMP_ROOT/beta.git"
-PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects")
+PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "the primary project tree was missing before seeding"
 
 if FM_SECONDMATE_CHARTER='Unsupplied origin charter.' FM_SECONDMATE_SCOPE='unsupplied origin' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noorigin remote-mac "$REMOTE_ROOT" \
@@ -530,7 +547,9 @@ assert_grep '- beta [direct-PR]' "$TMP_ROOT/seed-noclone-home/data/projects.md" 
   "the remote home did not publish the project's registered posture"
 assert_absent "$TMP_ROOT/seed-parent/projects/beta" \
   "seeding cloned the project into the primary project tree"
-[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+PROJECTS_AFTER=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "seeding removed the primary project tree"
+[ "$PROJECTS_AFTER" = "$PROJECTS_BEFORE" ] \
   || fail "seeding changed the primary project tree"
 pass "remote seeding provisions a supplied origin without touching the primary project tree"
 
@@ -634,7 +653,9 @@ done
 [ "$(cat "$FORGE_HOME/projects/scp-app/ORIGIN.txt")" = \
   'served from git@host.internal:group/scp-app.git' ] \
   || fail "the scp-like route did not clone its own origin"
-[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+PROJECTS_AFTER=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "seeding non-GitHub projects removed the primary project tree"
+[ "$PROJECTS_AFTER" = "$PROJECTS_BEFORE" ] \
   || fail "seeding non-GitHub projects changed the primary project tree"
 assert_grep '- seed-forge ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
   "the multi-forge route was not registered"

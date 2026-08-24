@@ -516,7 +516,8 @@ EOF
     && [ "$FSEVENTSD_MEM_BYTES" -gt "$action_bytes" ] \
     && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
     severity=emergency
-    reasons='sustained growth toward 4 GiB plus worsening memory pressure'
+    [ -z "$reasons" ] || reasons="$reasons; "
+    reasons="${reasons}sustained growth toward 4 GiB plus worsening memory pressure"
   fi
 
   fseventsd_record_sample "$now" "$FSEVENTSD_MEM_BYTES" \
@@ -532,7 +533,7 @@ EOF
     warning) message="WARNING: fseventsd MEM=${mem_mib} MiB; $reasons" ;;
     action) message="ACTION: fseventsd MEM=${mem_mib} MiB; $reasons; pressure_level=$FSEVENTSD_PRESSURE_LEVEL swap_used=${swap_gib} GiB" ;;
     emergency)
-      message="EMERGENCY: fseventsd MEM=${mem_mib} MiB; $reasons; stop launching new work, save state, and reduce workload before the machine wedges"
+      message="EMERGENCY: fseventsd MEM=${mem_mib} MiB; $reasons; pressure_level=$FSEVENTSD_PRESSURE_LEVEL swap_used=${swap_gib} GiB; stop launching new work, save state, and reduce workload before the machine wedges"
       ;;
   esac
   fseventsd_publish_alert "$severity" "$message"

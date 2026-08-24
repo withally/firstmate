@@ -283,6 +283,25 @@ test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure(
   pass "fseventsd emergency requires sustained growth toward 4 GiB plus worsening pressure"
 }
 
+test_fseventsd_emergency_retains_the_evidence_it_measured() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-emergency-evidence-home"
+  fakebin="$TMP_ROOT/fseventsd-emergency-evidence-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  fseventsd_check "$home" "$fakebin" 1000 2600M 2 9000M >/dev/null
+  fseventsd_check "$home" "$fakebin" 1300 3000M 2 9000M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1600 3500M 2 9000M)
+  assert_contains "$out" 'EMERGENCY: fseventsd' "the sustained climb did not surface emergency"
+  assert_contains "$out" 'two consecutive samples above 512 MiB' "the emergency dropped the sustained 512 MiB breach it measured"
+  assert_contains "$out" 'MEM above 2 GiB' "the emergency dropped the 2 GiB action reason it measured"
+  assert_contains "$out" 'sustained growth toward 4 GiB plus worsening memory pressure' "the emergency did not identify its own threshold"
+  assert_contains "$out" 'pressure_level=2' "the emergency omitted the memory-pressure level"
+  assert_contains "$out" 'swap_used=8.79 GiB' "the emergency omitted the swap figure"
+  pass "fseventsd emergency reports every reason and telemetry the action tier carries"
+}
+
 test_fseventsd_check_reads_the_kernel_memory_pressure_encoding() {
   local home fakebin out
   fakebin="$TMP_ROOT/fseventsd-encoding-fakebin"
@@ -809,6 +828,7 @@ test_fseventsd_check_warns_after_two_hours_of_fast_growth
 test_fseventsd_check_surfaces_action_thresholds
 test_fseventsd_action_retains_the_warning_evidence_it_measured
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure
+test_fseventsd_emergency_retains_the_evidence_it_measured
 test_fseventsd_check_reads_the_kernel_memory_pressure_encoding
 test_fseventsd_check_ignores_doubling_below_the_warning_floor
 test_fseventsd_check_emergency_accepts_sustained_pressure_without_a_rise

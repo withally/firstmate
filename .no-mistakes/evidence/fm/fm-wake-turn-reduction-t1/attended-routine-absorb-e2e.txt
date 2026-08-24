@@ -1,0 +1,39 @@
+
+=== SCENARIO A: routine 'working:' status from a provably-live worker (attended, absorb default on) ===
+worker wrote:      working: compiling step 2
+live-work proof:   state: working · source: run-step · validating (running)
+watcher:           still blocking -> NO LLM turn spent
+watcher stdout:    ''
+durable wake queue: ''
+triage log:        [2026-08-24T22:39:32+0800] absorbed benign signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-absorb/state/task.status
+delayed-presentation receipt on disk (survives a crash):
+  /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-absorb/state/.status-absorbed-task -> 16777234:108892383	26
+(the watcher process was then SIGKILLed - the drain below runs against a crashed watcher)
+
+=== SCENARIO A cont.: the next GENUINE model turn (unrelated check wake) drains ===
+  | 1787582390	1	check	unrelated.check.sh	check: unrelated genuine model turn
+  | UNREAD STATUS (new since last drain, not re-printed after this presentation):
+  | task working: compiling step 2
+receipt after presentation: removed
+
+=== SCENARIO A cont.: a second drain must NOT replay the same line ===
+  | 1787582390	1	check	unrelated.check.sh	check: unrelated genuine model turn
+
+=== SCENARIO B: terminal 'done:' status, same live worker -> must still wake immediately ===
+watcher:           EXITED -> model turn taken (correct)
+watcher stdout:    signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-terminal/state/task.status
+durable wake queue: 1787582392	1	signal	task.status	signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-terminal/state/task.status
+1787582392	2	signal	task.status	signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-terminal/state/task.status
+
+=== SCENARIO C: unparseable status line, same live worker -> must still wake ===
+watcher:           EXITED -> model turn taken (correct)
+watcher stdout:    signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-unparseable/state/task.status
+
+=== SCENARIO D: home-local off switch (config/attended-routine-status-absorb = off) ===
+home config:       /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-off/config/attended-routine-status-absorb = off
+watcher:           EXITED -> model turn taken (absorption disabled, correct)
+watcher stdout:    signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-absorb-e2e.hJ8r9y/demo-off/state/task.status
+
+=== SCENARIO E: absorbed worker then goes quiet -> stale detection still wedge-escalates ===
+(covered by tests/fm-watch-triage.test.sh::test_nonterminal_stale_provably_working_absorbed_then_escalated,
+ which now enters via the attended signal-absorb path)

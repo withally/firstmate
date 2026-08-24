@@ -438,9 +438,12 @@ doctor-fixable --fix
 doctor-fixable -' ] || fail "the repaired seed did not re-check after its repair"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "remote seeding proceeds once the repair closes every gap"
 
-# Seeding must not need a copy of the project in this home: firstmate names the
-# origin it already resolved, the seed validates and transports it, and the
-# primary project tree is left exactly as it was found.
+# Shared unchanged-tree comparison for every assertion below that a directory
+# survived an operation byte-identical. It records each entry's own type - a
+# symlink by its literal target, a regular file by its digest - so the
+# comparison never depends on how `cp -R` and `diff -ru` treat links or
+# non-regular entries, and it fails closed when the directory is missing so a
+# deleted tree can never read as an unchanged one.
 tree_snapshot() { # <dir>
   local dir=$1 path
   if [ ! -d "$dir" ]; then
@@ -462,6 +465,9 @@ tree_snapshot() { # <dir>
     done
   )
 }
+# Seeding must not need a copy of the project in this home: firstmate names the
+# origin it already resolved, the seed validates and transports it, and the
+# primary project tree is left exactly as it was found.
 projects_snapshot() { tree_snapshot "$1"; }
 mkdir -p "$TMP_ROOT/seed-parent/projects"
 fm_git_init_commit "$TMP_ROOT/seed-parent/projects/resident"

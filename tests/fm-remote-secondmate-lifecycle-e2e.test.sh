@@ -1212,26 +1212,56 @@ assert_no_grep 'server stop' "$HERDR_LOG" "remote retirement stopped the shared 
 pass "remote retirement refuses child work, then removes only its own endpoint while a shared-session sibling survives"
 
 # A prior remote retirement can finish before the primary removes its route.
-# Inherited-material propagation may then recreate only its allowlisted config
-# and data residue. A plain retry must finish primary-side unregistration
-# without deleting that residue or accepting an unrelated directory.
+# Inherited-material propagation may then recreate only its own residue: the
+# propagated allowlist files, their generation records, an interrupted
+# receiver's lock owner and staging artifacts, shared-preference quarantine
+# siblings, and contentless operational directories. A plain retry must finish
+# primary-side unregistration without deleting that residue, while any extra
+# name in the same directories remains an unseeded home and is refused.
 restore_ios_primary_route() {
   cp "$TMP_ROOT/ios-route-before-retirement.meta" "$PARENT/state/ios.meta"
   cat "$TMP_ROOT/ios-route-before-retirement.registry" >> "$PARENT/data/secondmates.md"
 }
 
+write_inherited_residue() { # <home-relative-path> <generation> <content>
+  local rel=$1 generation=$2 content=$3 dir base bytes hash
+  dir=$(dirname "$REMOTE_HOME/$rel")
+  base=$(basename "$rel")
+  printf '%s' "$content" > "$REMOTE_HOME/$rel"
+  bytes=$(LC_ALL=C wc -c < "$REMOTE_HOME/$rel" | tr -d ' ')
+  hash=$(sha256_file "$REMOTE_HOME/$rel")
+  printf '%s\n%s\n%s\nput\n' "$generation" "$bytes" "$hash" > "$dir/.fm-inherit-$base.generation"
+}
+
+assert_retirement_refused() { # <label>
+  local label=$1
+  rm -rf "$TMP_ROOT/refused-home-before"
+  cp -R "$REMOTE_HOME" "$TMP_ROOT/refused-home-before"
+  if remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-refused.out" 2>&1; then
+    fail "remote retirement accepted $label"
+  fi
+  assert_present "$PARENT/state/ios.meta" "$label refusal removed parent metadata"
+  assert_grep '- ios ' "$PARENT/data/secondmates.md" "$label refusal removed the registry route"
+  diff -ru "$TMP_ROOT/refused-home-before" "$REMOTE_HOME" >/dev/null \
+    || fail "$label refusal changed the remote directory"
+  rm -rf "$TMP_ROOT/refused-home-before"
+}
+
 restore_ios_primary_route
-mkdir -p "$REMOTE_HOME/config" "$REMOTE_HOME/data"
-printf 'codex\n' > "$REMOTE_HOME/config/crew-harness"
-residue_bytes=$(LC_ALL=C wc -c < "$REMOTE_HOME/config/crew-harness" | tr -d ' ')
-residue_hash=$(sha256_file "$REMOTE_HOME/config/crew-harness")
-printf '3\n%s\n%s\nput\n' "$residue_bytes" "$residue_hash" \
-  > "$REMOTE_HOME/config/.fm-inherit-crew-harness.generation"
-printf 'shared preferences\n' > "$REMOTE_HOME/data/captain-shared.md"
-residue_bytes=$(LC_ALL=C wc -c < "$REMOTE_HOME/data/captain-shared.md" | tr -d ' ')
-residue_hash=$(sha256_file "$REMOTE_HOME/data/captain-shared.md")
-printf '4\n%s\n%s\nput\n' "$residue_bytes" "$residue_hash" \
-  > "$REMOTE_HOME/data/.fm-inherit-captain-shared.md.generation"
+mkdir -p "$REMOTE_HOME/config" "$REMOTE_HOME/data" "$REMOTE_HOME/state"
+write_inherited_residue config/crew-harness 3 'codex
+'
+write_inherited_residue data/captain-shared.md 4 'shared preferences
+'
+printf 'diverged preferences\n' \
+  > "$REMOTE_HOME/data/captain-shared.md.remote-quarantine-20260101T000000Z-4242"
+# An inherit job killed mid-write leaves the receiver's lock owner directory,
+# its lock symlink, and an atomic staging file behind in the same directories.
+mkdir "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9Z"
+printf '4242\n' > "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9Z/pid"
+ln -s "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9Z" \
+  "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock"
+printf 'partial payload\n' > "$REMOTE_HOME/data/.inherit.Qz71xW"
 cp -R "$REMOTE_HOME" "$TMP_ROOT/retired-residue-before"
 if ! remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-retired-residue.out" 2>&1; then
   printf 'already-retired retry output:\n%s\n' "$(cat "$TMP_ROOT/teardown-retired-residue.out")" >&2
@@ -1244,15 +1274,24 @@ diff -ru "$TMP_ROOT/retired-residue-before" "$REMOTE_HOME" >/dev/null \
 pass "already-retired remote home completes primary-side unregistration without remote deletion"
 
 restore_ios_primary_route
+printf 'stale copy\n' > "$REMOTE_HOME/config/crew-harness.bak"
+assert_retirement_refused "an unrelated name beside inherited-material residue"
+rm -f "$REMOTE_HOME/config/crew-harness.bak"
+pass "remote retirement refuses residue carrying any name outside the inheritance family"
+
+printf 'worker state\n' > "$REMOTE_HOME/state/worker.meta"
+assert_retirement_refused "a retired home whose operational directory still holds content"
+rm -f "$REMOTE_HOME/state/worker.meta"
+pass "remote retirement refuses a retired home whose operational directory retains content"
+
+printf 'tampered\n' > "$REMOTE_HOME/config/crew-harness"
+assert_retirement_refused "inherited material that does not match its generation record"
+write_inherited_residue config/crew-harness 3 'codex
+'
+pass "remote retirement refuses residue whose bytes diverge from their hash commitment"
+
 printf 'project content\n' > "$REMOTE_HOME/README.md"
-cp -R "$REMOTE_HOME" "$TMP_ROOT/unsafe-remote-home-before"
-if remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-unsafe-home.out" 2>&1; then
-  fail "remote retirement accepted an unseeded directory with unrelated content"
-fi
-assert_present "$PARENT/state/ios.meta" "unsafe remote-home refusal removed parent metadata"
-assert_grep '- ios ' "$PARENT/data/secondmates.md" "unsafe remote-home refusal removed the registry route"
-diff -ru "$TMP_ROOT/unsafe-remote-home-before" "$REMOTE_HOME" >/dev/null \
-  || fail "unsafe remote-home refusal changed the remote directory"
+assert_retirement_refused "an unseeded directory with unrelated content"
 pass "remote retirement still refuses an unsafe or wrong remote-home path"
 
 echo "ALL TESTS PASSED"

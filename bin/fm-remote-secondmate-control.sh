@@ -27,8 +27,11 @@
 # Retirement closes only this secondmate's panes or workspace and never
 # stops fm-remote or removes a sibling secondmate's workspace or panes.
 # A retry after remote removal treats an absent home, or a home recreated only
-# from hash-bound inherited-material residue, as already retired. Any other
-# unseeded directory remains unsafe and is refused without deletion.
+# from hash-bound inherited-material residue - propagated items, generation
+# records, the receiver's own lock and staging artifacts, shared-preference
+# quarantine siblings, and contentless operational directories - as already
+# retired. Any other unseeded directory remains unsafe and is refused without
+# deletion.
 #
 # The optional launch traceparent is the per-task W3C trace-context carrier the
 # PARENT home resolved for this secondmate; this host only delivers it to the
@@ -77,38 +80,99 @@ retired_inheritance_generation_valid() { # <path>
   RETIRED_INHERIT_COMMAND=$command
 }
 
+retired_plain_file() { # <path>
+  [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+# The six-character mktemp template both the inheritance receiver and the lock
+# owner contract expand.
+retired_mktemp_suffix_valid() { # <suffix>
+  case "$1" in
+    [A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) return 0 ;;
+  esac
+  return 1
+}
+
+# A lock owner directory holds only the files bin/fm-wake-lib.sh's owner
+# contract writes and cleans.
+retired_lock_owner_dir_valid() { # <path>
+  local dir=$1 entry
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    retired_plain_file "$entry" || return 1
+    case "${entry##*/}" in
+      pid|fm-home|pid-identity|role|watcher-path) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# An operational directory the retired home kept but that carries no content.
+retired_operational_dir_contentless() { # <path>
+  local dir=$1 entry
+  for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+    retired_operational_dir_contentless "$entry" || return 1
+  done
+  return 0
+}
+
+# True when <path> under config/ or data/ belongs to the Firstmate inheritance
+# family: a propagated item, its generation record, the receiver's lock symlink
+# and lock owner directory, the receiver's atomic staging scratch, or a shared
+# captain-preference quarantine sibling.
+retired_inheritance_path_allowed() { # <path>
+  local path=$1 rel name dir item base
+  rel=${path#"$TARGET_HOME"/}
+  name=${rel##*/}
+  dir=${rel%/*}
+  case "$rel" in
+    data/captain-shared.md.remote-quarantine-*) retired_plain_file "$path"; return ;;
+  esac
+  case "$name" in
+    .inherit.*|.inherit-generation.*|.inherit-empty.*)
+      retired_mktemp_suffix_valid "${name##*.}" || return 1
+      retired_plain_file "$path"
+      return
+      ;;
+  esac
+  while IFS= read -r item; do
+    [ "${item%/*}" = "$dir" ] || continue
+    base=${item##*/}
+    case "$name" in
+      "$base"|".fm-inherit-$base.generation") retired_plain_file "$path"; return ;;
+      ".fm-inherit-$base.lock"|".fm-inherit-$base.lock.steal") [ -L "$path" ]; return ;;
+      ".fm-inherit-$base.lock.owner."*|".fm-inherit-$base.lock.steal.owner."*)
+        retired_mktemp_suffix_valid "${name##*.}" || return 1
+        retired_lock_owner_dir_valid "$path"
+        return
+        ;;
+    esac
+  done <<EOF
+$(fm_config_inherit_items)
+EOF
+  return 1
+}
+
 retired_inheritance_residue_valid() {
-  local path rel item base generation material actual_bytes actual_hash generation_count=0
+  local path item base generation material actual_bytes actual_hash generation_count=0
   [ -d "$TARGET_HOME" ] && [ ! -L "$TARGET_HOME" ] || return 1
   for path in "$TARGET_HOME"/* "$TARGET_HOME"/.[!.]* "$TARGET_HOME"/..?*; do
     [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -d "$path" ] && [ ! -L "$path" ] || return 1
     case "${path##*/}" in
-      config|data) [ -d "$path" ] && [ ! -L "$path" ] || return 1 ;;
+      config|data) ;;
+      state|projects) retired_operational_dir_contentless "$path" || return 1 ;;
       *) return 1 ;;
     esac
   done
   for path in "$TARGET_HOME/config"/* "$TARGET_HOME/config"/.[!.]* "$TARGET_HOME/config"/..?* \
     "$TARGET_HOME/data"/* "$TARGET_HOME/data"/.[!.]* "$TARGET_HOME/data"/..?*; do
     [ -e "$path" ] || [ -L "$path" ] || continue
-    [ -f "$path" ] && [ ! -L "$path" ] || return 1
-    rel=${path#"$TARGET_HOME"/}
-    case "$rel" in
-      data/captain-shared.md.remote-quarantine-*) continue ;;
-    esac
-    while IFS= read -r item; do
-      if [ "$rel" = "$item" ]; then
-        item=
-        break
-      fi
-      base=${item##*/}
-      if [ "$rel" = "${item%/*}/.fm-inherit-$base.generation" ]; then
-        item=
-        break
-      fi
-    done <<EOF
-$(fm_config_inherit_items)
-EOF
-    [ -z "$item" ] || return 1
+    retired_inheritance_path_allowed "$path" || return 1
   done
   while IFS= read -r item; do
     material="$TARGET_HOME/$item"
@@ -122,7 +186,7 @@ EOF
     generation_count=$((generation_count + 1))
     case "$RETIRED_INHERIT_COMMAND" in
       put)
-        [ -f "$material" ] && [ ! -L "$material" ] || return 1
+        retired_plain_file "$material" || return 1
         actual_bytes=$(LC_ALL=C wc -c < "$material" | tr -d ' ')
         [ "$actual_bytes" = "$RETIRED_INHERIT_BYTES" ] || return 1
         actual_hash=$(fm_inherit_sha256 "$material") || return 1
@@ -362,12 +426,12 @@ cmd_update() {
 cmd_retire() {
   local id=$1 force=${2:-} rc
   validate_id "$id"
+  [ -z "$force" ] || [ "$force" = --force ] || usage
   validate_home "$id" yes || rc=$?
   if [ "${rc:-0}" -eq 2 ]; then
     printf 'already-retired: %s\n' "$id"
     return 0
   fi
-  [ -z "$force" ] || [ "$force" = --force ] || usage
   remote_endpoint_require "$id"
   FM_HOME="$TARGET_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$TARGET_HOME/state" \
     FM_CONFIG_OVERRIDE="$TARGET_HOME/config" "$SCRIPT_DIR/fm-guard.sh" || true

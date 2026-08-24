@@ -23,12 +23,18 @@
 # unique launch token, so it is published in a single atomic step and is never
 # observable half-initialized; stale PID reuse is not trusted by status or
 # disarm.
-# Every lock reclaim-and-republish sequence is serialized by an atomic mkdir
-# guard directory, so a stale lock can never be retired on top of a fresh one.
+# Every lock reclaim-and-republish sequence is serialized by a guard symlink
+# naming its holder, so a stale lock can never be retired on top of a fresh one.
+# A guard is only ever reclaimed once its holder is gone from the process table,
+# never on a timeout, so a slow holder blocks lock changes instead of losing the
+# guard; `arm` and `disarm` then report that they could not reclaim the lock.
 # `disarm` sends TERM and waits for the recorder's trap to release that lock.
 # `arm` proves the durable-flush helper works before it detaches, and the
 # detached recorder's diagnostics are appended to state/telemetry/recorder.err,
 # which the loop trims back to its last 32 KiB whenever it exceeds 64 KiB.
+# Every diagnostic carries a UTC timestamp and `status` reports the newest one
+# with its age; losing the start-up race is reported on stdout instead, so it
+# never lands in that stream.
 # Nothing auto-arms this tool and it never installs a launch agent.
 #
 # FM_TELEMETRY_INTERVAL controls the cadence in whole seconds from 15 through
@@ -56,19 +62,19 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 TELEMETRY_DIR="$STATE/telemetry"
 LOCK_LINK="$TELEMETRY_DIR/.record.lock"
-GUARD_DIR="$TELEMETRY_DIR/.record.guard"
+GUARD_LINK="$TELEMETRY_DIR/.record.guard"
 DIAGNOSTICS_LOG="$TELEMETRY_DIR/recorder.err"
 INTERVAL=${FM_TELEMETRY_INTERVAL:-20}
 MAX_BYTES=${FM_TELEMETRY_MAX_BYTES:-209715200}
 FSYNC_PYTHON="${FM_TELEMETRY_PYTHON:-/usr/bin/python3}"
 TOP_COUNT=15
-GUARD_STALE_SECONDS=10
 DIAGNOSTICS_MAX_BYTES=65536
 SNAPSHOT_SCHEMA=fm-telemetry-v1
 SNAPSHOT_TMP=
 SAMPLE_TMP=
 PROCESS_TMP=
 OWNER_TOKEN=
+GUARD_TOKEN=
 
 usage() {
   cat <<'EOF'
@@ -86,8 +92,16 @@ This command never auto-arms itself or installs a launch agent.
 EOF
 }
 
+diagnostic_stamp() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'unknown'
+}
+
+diagnostic() {
+  printf 'fm-telemetry: %s %s\n' "$(diagnostic_stamp)" "$1" >&2
+}
+
 fail() {
-  printf 'fm-telemetry: %s\n' "$1" >&2
+  diagnostic "$1"
   exit 1
 }
 
@@ -146,32 +160,51 @@ remove_stale_lock() {
   rm -f "$LOCK_LINK" 2>/dev/null || return 1
 }
 
-guard_age_seconds() {
-  local mtime now
-  mtime=$(stat -f %m "$GUARD_DIR" 2>/dev/null || stat -c %Y "$GUARD_DIR" 2>/dev/null) || return 1
-  now=$(date '+%s') || return 1
-  printf '%s\n' "$((now - mtime))"
+guard_owner_is_live() {
+  local target pid command_line
+  target=$(readlink "$GUARD_LINK" 2>/dev/null) || return 1
+  pid=${target%%:*}
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  command_line=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+  case "$command_line" in
+    *fm-telemetry.sh*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 guard_acquire() {
-  local tries=0 age
+  local tries=0 observed
+  GUARD_TOKEN="$$:guard-$(date '+%s')-$RANDOM"
   while [ "$tries" -lt 200 ]; do
     tries=$((tries + 1))
-    if mkdir "$GUARD_DIR" 2>/dev/null; then
+    if ln -s "$GUARD_TOKEN" "$GUARD_LINK" 2>/dev/null; then
       return 0
     fi
-    age=$(guard_age_seconds) || age=0
-    if [ "$age" -gt "$GUARD_STALE_SECONDS" ]; then
-      rm -rf "$GUARD_DIR" 2>/dev/null || true
+    if guard_owner_is_live; then
+      sleep 0.05
       continue
     fi
-    sleep 0.05
+    if ! observed=$(readlink "$GUARD_LINK" 2>/dev/null); then
+      [ -e "$GUARD_LINK" ] && rm -rf "$GUARD_LINK" 2>/dev/null
+      continue
+    fi
+    [ "$observed" = "$(readlink "$GUARD_LINK" 2>/dev/null)" ] || continue
+    rm -f "$GUARD_LINK" 2>/dev/null || true
   done
+  GUARD_TOKEN=
   return 1
 }
 
 guard_release() {
-  rmdir "$GUARD_DIR" 2>/dev/null || true
+  local target
+  [ -n "$GUARD_TOKEN" ] || return 0
+  if target=$(readlink "$GUARD_LINK" 2>/dev/null) && [ "$target" = "$GUARD_TOKEN" ]; then
+    rm -f "$GUARD_LINK" 2>/dev/null || true
+  fi
+  GUARD_TOKEN=
 }
 
 acquire_lock() {
@@ -230,6 +263,7 @@ cleanup_snapshot_temps() {
 
 cleanup_record() {
   cleanup_snapshot_temps
+  guard_release
   release_lock
 }
 
@@ -276,7 +310,7 @@ capture_processes() {
 fsync_file() {
   local target=${1:-}
   if [ -z "$target" ] || [ ! -f "$target" ]; then
-    printf 'fm-telemetry: fsync target %s is not a file\n' "${target:-<missing>}" >&2
+    diagnostic "fsync target ${target:-<missing>} is not a file"
     return 1
   fi
   "$FSYNC_PYTHON" - "$target" <<'FSYNC_PY'
@@ -383,7 +417,7 @@ append_snapshot() {
     return 1
   fi
   if ! fsync_file "$log_file"; then
-    printf 'fm-telemetry: durability flush failed for %s\n' "$log_file" >&2
+    diagnostic "durability flush failed for $log_file"
     cleanup_snapshot_temps
     return 1
   fi
@@ -432,7 +466,10 @@ record() {
   guarded_acquire_lock
   case $? in
     0) ;;
-    2) fail "recorder already running" ;;
+    2)
+      printf 'fm-telemetry: recorder already running\n'
+      exit 1
+      ;;
     *) fail "could not acquire $LOCK_LINK" ;;
   esac
   trap 'cleanup_record; exit 0' TERM INT
@@ -440,19 +477,19 @@ record() {
 
   while :; do
     if ! owns_lock; then
-      printf 'fm-telemetry: lock owner changed, standing down\n' >&2
+      diagnostic 'lock owner changed, standing down'
       return 0
     fi
     if ! trim_diagnostics; then
-      printf 'fm-telemetry: could not trim %s\n' "$DIAGNOSTICS_LOG" >&2
+      diagnostic "could not trim $DIAGNOSTICS_LOG"
     fi
     tick_rc=0
     if ! append_snapshot; then
-      printf 'fm-telemetry: snapshot failed\n' >&2
+      diagnostic 'snapshot failed'
       tick_rc=1
     fi
     if ! prune_daily_logs; then
-      printf 'fm-telemetry: rotation failed\n' >&2
+      diagnostic 'rotation failed'
       tick_rc=1
     fi
     if [ "${FM_TELEMETRY_RECORD_ONCE:-0}" = 1 ]; then
@@ -464,7 +501,7 @@ record() {
 }
 
 arm() {
-  local token child_pid tries=0
+  local token child_pid tries=0 child_alive=1
   validate_configuration
   mkdir -p "$TELEMETRY_DIR" || fail "could not create $TELEMETRY_DIR"
   if lock_owner_is_live; then
@@ -493,11 +530,29 @@ arm() {
         "$LOCK_PID" "$LOCK_INTERVAL" "$TELEMETRY_DIR"
       return 0
     fi
-    kill -0 "$child_pid" 2>/dev/null || break
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+      child_alive=0
+      break
+    fi
     sleep 0.1
     tries=$((tries + 1))
   done
-  wait "$child_pid" 2>/dev/null || true
+  if [ "$child_alive" -eq 0 ]; then
+    wait "$child_pid" 2>/dev/null || true
+  else
+    read_lock_owner || true
+    if [ "$LOCK_PID" = "$child_pid" ]; then
+      printf 'fm-telemetry: running pid=%s interval=%ss directory=%s\n' \
+        "$LOCK_PID" "$LOCK_INTERVAL" "$TELEMETRY_DIR"
+      return 0
+    fi
+    kill -TERM "$child_pid" 2>/dev/null || true
+    tries=0
+    while kill -0 "$child_pid" 2>/dev/null && [ "$tries" -lt 30 ]; do
+      sleep 0.1
+      tries=$((tries + 1))
+    done
+  fi
   if lock_owner_is_live; then
     printf 'fm-telemetry: already running pid=%s interval=%ss\n' "$LOCK_PID" "$LOCK_INTERVAL"
     return 0
@@ -561,10 +616,22 @@ newest_snapshot_age() {
   printf '%ss' "$((now - newest_mtime))"
 }
 
+diagnostic_age() {
+  local stamp=$1 epoch now
+  epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$stamp" '+%s' 2>/dev/null) ||
+    epoch=$(date -u -d "$stamp" '+%s' 2>/dev/null) || return 1
+  now=$(date '+%s') || return 1
+  printf '%ss\n' "$((now - epoch))"
+}
+
 report_diagnostics() {
-  local newest
+  local newest stamp age
   newest=$(newest_diagnostic) || return 0
-  printf 'fm-telemetry: newest diagnostic in %s: %s\n' "$DIAGNOSTICS_LOG" "$newest"
+  stamp=${newest#fm-telemetry: }
+  stamp=${stamp%% *}
+  age=$(diagnostic_age "$stamp") || age=unknown
+  printf 'fm-telemetry: newest diagnostic (age %s) in %s: %s\n' \
+    "$age" "$DIAGNOSTICS_LOG" "$newest"
 }
 
 status() {

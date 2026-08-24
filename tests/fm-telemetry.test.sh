@@ -70,6 +70,43 @@ recorder_pids() {
   pgrep -f 'fm-telemetry.sh record' 2>/dev/null | sort || true
 }
 
+# Runs a command in the background and fails the test if it has not returned
+# within <deciseconds>, so a hang is reported instead of wedging the suite.
+run_bounded() {
+  local label=$1 limit=$2 rc_file=$3 out_file=$4
+  shift 4
+  ( "$@" > "$out_file" 2>&1; printf '%s\n' "$?" > "$rc_file" ) &
+  local runner=$! tries=0
+  while kill -0 "$runner" 2>/dev/null && [ "$tries" -lt "$limit" ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  if kill -0 "$runner" 2>/dev/null; then
+    kill -KILL "$runner" 2>/dev/null || true
+    wait "$runner" 2>/dev/null || true
+    fail "$label did not return within $((limit / 10))s"
+  fi
+  wait "$runner" 2>/dev/null || true
+}
+
+write_guard_holder() {
+  local dir=$1
+  mkdir -p "$dir"
+  cat > "$dir/fm-telemetry.sh" <<'SH'
+#!/usr/bin/env bash
+sleep "${1:-60}"
+SH
+  chmod +x "$dir/fm-telemetry.sh"
+}
+
+dead_pid() {
+  local pid
+  sleep 0 &
+  pid=$!
+  wait "$pid" 2>/dev/null || true
+  printf '%s\n' "$pid"
+}
+
 test_record_writes_parseable_durable_snapshot() {
   local home fakebin log expected_day offset
   home="$TMP_ROOT/record-home"
@@ -350,6 +387,7 @@ exec /usr/bin/mktemp "$@"
 SH
   chmod +x "$fakebin/mktemp"
   head -c 200000 /dev/zero | tr '\0' 'x' > "$diagnostics"
+  printf '\n' >> "$diagnostics"
   DAEMON_HOME=$home
 
   FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
@@ -366,13 +404,130 @@ SH
   bytes=$(wc -c < "$diagnostics")
   [ "$bytes" -le 65536 ] || fail "recorder diagnostics grew to $bytes bytes without being trimmed"
 
+  case "$(grep 'snapshot failed' "$diagnostics" | tail -n 1)" in
+    'fm-telemetry: '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z' snapshot failed') ;;
+    *) fail "persisted diagnostics are not UTC timestamped: $(grep 'snapshot failed' "$diagnostics" | tail -n 1)" ;;
+  esac
+
   out=$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status)
   assert_contains "$out" 'newest diagnostic' "status did not surface the recorder's diagnostics"
+  case "$out" in
+    *'newest diagnostic (age '[0-9]*'s)'*) ;;
+    *) fail "status did not report how old the newest diagnostic is: $out" ;;
+  esac
 
   FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" disarm >/dev/null ||
     fail "disarm failed"
   DAEMON_HOME=
   pass "a detached recorder persists bounded diagnostics that status surfaces"
+}
+
+test_arm_returns_even_when_liveness_cannot_be_confirmed() {
+  local home fakebin rc out pid
+  home="$TMP_ROOT/blindps-home"
+  fakebin="$TMP_ROOT/blindps-fakebin"
+  mkdir -p "$home/state"
+  write_fake_samplers "$fakebin"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/ps"
+  DAEMON_HOME=$home
+
+  run_bounded 'arm with unusable ps' 150 "$home/arm.rc" "$home/arm.out" \
+    env FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" arm
+  rc=$(cat "$home/arm.rc")
+  out=$(cat "$home/arm.out")
+  [ "$rc" -eq 0 ] || fail "arm failed against an unusable ps: $out"
+  assert_contains "$out" 'running pid=' "arm did not converge on the observed lock owner"
+
+  pid=$(readlink "$home/state/telemetry/.record.lock")
+  pid=${pid%%:*}
+  FM_HOME="$home" PATH="/usr/bin:/bin" "$TELEMETRY" disarm >/dev/null ||
+    fail "disarm could not stop the recorder arm reported"
+  kill -0 "$pid" 2>/dev/null && fail "disarm left recorder pid $pid alive"
+  DAEMON_HOME=
+  pass "arm returns bounded and reports the owner when liveness cannot be confirmed"
+}
+
+test_guard_is_reclaimed_only_after_its_holder_is_gone() {
+  local home fakebin holderbin holder_pid stale rc out
+  home="$TMP_ROOT/guard-home"
+  fakebin="$TMP_ROOT/guard-fakebin"
+  holderbin="$TMP_ROOT/guard-holderbin"
+  mkdir -p "$home/state/telemetry"
+  write_fake_samplers "$fakebin"
+  rm -f "$fakebin/ps"
+  write_guard_holder "$holderbin"
+
+  stale=$(dead_pid)
+  ln -s "$stale:20:fmtelemetry-stale" "$home/state/telemetry/.record.lock" ||
+    fail "could not stage a stale lock"
+
+  "$holderbin/fm-telemetry.sh" 60 &
+  holder_pid=$!
+  ln -s "$holder_pid:guard-live" "$home/state/telemetry/.record.guard" ||
+    fail "could not stage a live guard"
+
+  run_bounded 'arm against a live guard holder' 250 "$home/arm.rc" "$home/arm.out" \
+    env FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" arm
+  rc=$(cat "$home/arm.rc")
+  out=$(cat "$home/arm.out")
+  [ "$rc" -ne 0 ] || fail "arm stole the guard from a live holder: $out"
+  [ "$(readlink "$home/state/telemetry/.record.guard")" = "$holder_pid:guard-live" ] ||
+    fail "a live holder's guard was replaced"
+  [ -L "$home/state/telemetry/.record.lock" ] ||
+    fail "arm retired the stale lock while another process held the guard"
+
+  kill -TERM "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  DAEMON_HOME=$home
+  run_bounded 'arm against a dead guard holder' 250 "$home/arm2.rc" "$home/arm2.out" \
+    env FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" arm
+  rc=$(cat "$home/arm2.rc")
+  out=$(cat "$home/arm2.out")
+  [ "$rc" -eq 0 ] || fail "arm did not reclaim a guard whose holder is gone: $out"
+  assert_contains "$out" 'running pid=' "arm did not start a recorder after reclaiming the guard"
+
+  FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" disarm >/dev/null ||
+    fail "disarm failed"
+  DAEMON_HOME=
+  pass "the guard is held against live holders and reclaimed once its holder is gone"
+}
+
+test_losing_the_start_up_race_stays_out_of_diagnostics() {
+  local home fakebin diagnostics rc out
+  home="$TMP_ROOT/loser-home"
+  fakebin="$TMP_ROOT/loser-fakebin"
+  diagnostics="$home/state/telemetry/recorder.err"
+  mkdir -p "$home/state"
+  write_fake_samplers "$fakebin"
+  rm -f "$fakebin/ps"
+  DAEMON_HOME=$home
+
+  FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" arm >/dev/null || fail "arm failed"
+
+  out=$(FM_HOME="$home" FM_TELEMETRY_INTERVAL=15 PATH="$fakebin:/usr/bin:/bin" \
+    "$TELEMETRY" record "fmtelemetry-loser-$$" 2>>"$diagnostics")
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a second recorder started against the same FM_HOME"
+  assert_contains "$out" 'recorder already running' "the losing recorder did not report the live owner"
+  [ ! -s "$diagnostics" ] ||
+    fail "losing the start-up race polluted the diagnostics stream: $(cat "$diagnostics")"
+
+  out=$(FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" status) ||
+    fail "status did not report the live recorder"
+  assert_not_contains "$out" 'newest diagnostic' "status reported a benign lost race as a diagnostic"
+
+  FM_HOME="$home" PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" disarm >/dev/null ||
+    fail "disarm failed"
+  DAEMON_HOME=
+  pass "losing the start-up race is reported without polluting persisted diagnostics"
 }
 
 test_concurrent_arms_over_a_stale_lock_keep_one_recorder() {
@@ -450,4 +605,7 @@ test_arm_is_idempotent_and_disarm_stops_singleton
 test_tokenless_record_is_visible_to_status_and_disarm
 test_arm_refuses_to_detach_without_a_working_durability_helper
 test_detached_recorder_diagnostics_are_persisted_and_bounded
+test_arm_returns_even_when_liveness_cannot_be_confirmed
+test_guard_is_reclaimed_only_after_its_holder_is_gone
+test_losing_the_start_up_race_stays_out_of_diagnostics
 test_concurrent_arms_over_a_stale_lock_keep_one_recorder

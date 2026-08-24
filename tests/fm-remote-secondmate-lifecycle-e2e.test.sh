@@ -443,8 +443,12 @@ pass "remote seeding proceeds once the repair closes every gap"
 # primary project tree is left exactly as it was found.
 tree_snapshot() { # <dir>
   local dir=$1 path
+  if [ ! -d "$dir" ]; then
+    printf 'tree_snapshot: %s is not a directory\n' "$dir" >&2
+    return 1
+  fi
   (
-    cd "$dir" 2>/dev/null || exit 0
+    cd "$dir" || exit 1
     find . -print | LC_ALL=C sort | while IFS= read -r path; do
       if [ -L "$path" ]; then
         printf 'link %s -> %s\n' "$path" "$(readlink "$path")"
@@ -471,7 +475,8 @@ cat > "$TMP_ROOT/seed-parent/data/projects.md" <<'EOF'
 - delta [local-only] - delta project (added 2026-08-06)
 EOF
 BETA_ORIGIN="file://$TMP_ROOT/beta.git"
-PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects")
+PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "the primary project tree was missing before seeding"
 
 if FM_SECONDMATE_CHARTER='Unsupplied origin charter.' FM_SECONDMATE_SCOPE='unsupplied origin' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noorigin remote-mac "$REMOTE_ROOT" \
@@ -527,7 +532,9 @@ assert_grep '- beta [direct-PR]' "$TMP_ROOT/seed-noclone-home/data/projects.md" 
   "the remote home did not publish the project's registered posture"
 assert_absent "$TMP_ROOT/seed-parent/projects/beta" \
   "seeding cloned the project into the primary project tree"
-[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+PROJECTS_AFTER=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "seeding removed the primary project tree"
+[ "$PROJECTS_AFTER" = "$PROJECTS_BEFORE" ] \
   || fail "seeding changed the primary project tree"
 pass "remote seeding provisions a supplied origin without touching the primary project tree"
 
@@ -631,7 +638,9 @@ done
 [ "$(cat "$FORGE_HOME/projects/scp-app/ORIGIN.txt")" = \
   'served from git@host.internal:group/scp-app.git' ] \
   || fail "the scp-like route did not clone its own origin"
-[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+PROJECTS_AFTER=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "seeding non-GitHub projects removed the primary project tree"
+[ "$PROJECTS_AFTER" = "$PROJECTS_BEFORE" ] \
   || fail "seeding non-GitHub projects changed the primary project tree"
 assert_grep '- seed-forge ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
   "the multi-forge route was not registered"
@@ -1249,10 +1258,11 @@ write_absent_generation() { # <home-relative-path> <generation>
 }
 
 assert_retirement_completed() { # <label>
-  local label=$1 existed=0 home_before=
+  local label=$1 existed=0 home_before='' home_after
   if [ -d "$REMOTE_HOME" ]; then
     existed=1
-    home_before=$(tree_snapshot "$REMOTE_HOME")
+    home_before=$(tree_snapshot "$REMOTE_HOME") \
+      || fail "$label could not snapshot the remote home"
   fi
   if ! remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-completed.out" 2>&1; then
     printf '%s retry output:\n%s\n' "$label" "$(cat "$TMP_ROOT/teardown-completed.out")" >&2
@@ -1261,7 +1271,9 @@ assert_retirement_completed() { # <label>
   assert_absent "$PARENT/state/ios.meta" "$label retained parent metadata"
   assert_no_grep '- ios ' "$PARENT/data/secondmates.md" "$label retained the registry route"
   if [ "$existed" -eq 1 ]; then
-    [ "$(tree_snapshot "$REMOTE_HOME")" = "$home_before" ] \
+    home_after=$(tree_snapshot "$REMOTE_HOME") \
+      || fail "$label removed the remote directory"
+    [ "$home_after" = "$home_before" ] \
       || fail "$label changed the remote directory"
   else
     assert_absent "$REMOTE_HOME" "$label recreated the remote home"
@@ -1269,14 +1281,17 @@ assert_retirement_completed() { # <label>
 }
 
 assert_retirement_refused() { # <label>
-  local label=$1 home_before
-  home_before=$(tree_snapshot "$REMOTE_HOME")
+  local label=$1 home_before home_after
+  home_before=$(tree_snapshot "$REMOTE_HOME") \
+    || fail "$label refusal ran without a remote home"
   if remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-refused.out" 2>&1; then
     fail "remote retirement accepted $label"
   fi
   assert_present "$PARENT/state/ios.meta" "$label refusal removed parent metadata"
   assert_grep '- ios ' "$PARENT/data/secondmates.md" "$label refusal removed the registry route"
-  [ "$(tree_snapshot "$REMOTE_HOME")" = "$home_before" ] \
+  home_after=$(tree_snapshot "$REMOTE_HOME") \
+    || fail "$label refusal removed the remote directory"
+  [ "$home_after" = "$home_before" ] \
     || fail "$label refusal changed the remote directory"
 }
 
@@ -1299,14 +1314,17 @@ printf '4242\n' > "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9
 ln -s "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9Z" \
   "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock"
 printf 'partial payload\n' > "$REMOTE_HOME/data/.inherit.Qz71xW"
-RETIRED_RESIDUE_BEFORE=$(tree_snapshot "$REMOTE_HOME")
+RETIRED_RESIDUE_BEFORE=$(tree_snapshot "$REMOTE_HOME") \
+  || fail "the already-retired remote home was missing before the retry"
 if ! remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-retired-residue.out" 2>&1; then
   printf 'already-retired retry output:\n%s\n' "$(cat "$TMP_ROOT/teardown-retired-residue.out")" >&2
   fail "already-retired remote home did not complete primary-side unregistration"
 fi
 assert_absent "$PARENT/state/ios.meta" "already-retired retry retained parent metadata"
 assert_no_grep '- ios ' "$PARENT/data/secondmates.md" "already-retired retry retained the registry route"
-[ "$(tree_snapshot "$REMOTE_HOME")" = "$RETIRED_RESIDUE_BEFORE" ] \
+RETIRED_RESIDUE_AFTER=$(tree_snapshot "$REMOTE_HOME") \
+  || fail "already-retired retry removed the remote home"
+[ "$RETIRED_RESIDUE_AFTER" = "$RETIRED_RESIDUE_BEFORE" ] \
   || fail "already-retired retry changed inherited-material residue"
 pass "already-retired remote home completes primary-side unregistration without remote deletion"
 

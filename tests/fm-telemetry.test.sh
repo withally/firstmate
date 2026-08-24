@@ -321,6 +321,17 @@ test_fseventsd_check_reads_the_kernel_memory_pressure_encoding() {
   fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
   out=$(fseventsd_check "$home" "$fakebin" 1300 600M 4 0.00M)
   assert_contains "$out" 'ACTION: fseventsd' "critical pressure level 4 did not escalate the warning"
+  assert_contains "$out" 'warning plus red critical memory pressure' "critical pressure level 4 was reported as yellow"
+  assert_contains "$out" 'pressure_level=4' "the critical-pressure action omitted the measured level"
+
+  home="$TMP_ROOT/fseventsd-encoding-warn-home"
+  mkdir -p "$home/state"
+  fseventsd_check "$home" "$fakebin" 1000 600M 1 0.00M >/dev/null
+  out=$(fseventsd_check "$home" "$fakebin" 1300 600M 2 0.00M)
+  assert_contains "$out" 'warning plus yellow memory pressure' "warn pressure level 2 was not reported as yellow"
+  case "$out" in
+    *critical*) fail "warn pressure level 2 was reported as critical: $out" ;;
+  esac
   pass "fseventsd pressure escalation follows the kernel normal/warn/critical encoding"
 }
 

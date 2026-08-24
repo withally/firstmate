@@ -428,9 +428,9 @@ fseventsd_check() {
   local prev_epoch=0 prev_mem=0
   local preprev_epoch=0 preprev_mem=0
   local growth_rate_mib='' doubling=0 warning=0
-  local severity=none reasons='' message mem_mib swap_gib
+  local severity=none reasons='' message mem_mib swap_gib pressure_label
   local warning_bytes=536870912 action_bytes=2147483648 swap_action_bytes=8589934592
-  local pressure_warn_level=2
+  local pressure_warn_level=2 pressure_critical_level=4
 
   now=${FM_TELEMETRY_NOW:-$(date '+%s' 2>/dev/null || true)}
   case "$now" in ''|*[!0-9]*) return 0 ;; esac
@@ -501,10 +501,17 @@ EOF
     reasons="${reasons}doubling within one hour"
   elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_warn_level" ]; then
     severity=action
-    reasons="${reasons}; warning plus yellow memory pressure"
+    if [ "$FSEVENTSD_PRESSURE_LEVEL" -ge "$pressure_critical_level" ]; then
+      pressure_label='red critical'
+    else
+      pressure_label=yellow
+    fi
+    [ -z "$reasons" ] || reasons="$reasons; "
+    reasons="${reasons}warning plus ${pressure_label} memory pressure"
   elif [ "$warning" -eq 1 ] && [ "$FSEVENTSD_SWAP_BYTES" -gt "$swap_action_bytes" ]; then
     severity=action
-    reasons="${reasons}; warning plus more than 8 GiB swap"
+    [ -z "$reasons" ] || reasons="$reasons; "
+    reasons="${reasons}warning plus more than 8 GiB swap"
   elif [ "$warning" -eq 1 ]; then
     severity=warning
   fi

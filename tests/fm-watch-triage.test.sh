@@ -48,7 +48,8 @@ watch_bg() {  # <state> <fakebin> <out> [extra env assignments...]
   local state=$1 fakebin=$2 out=$3
   shift 3
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
-    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$out" &
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    env "$@" "$WATCH" > "$out" &
 }
 
 # Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if it died.
@@ -183,7 +184,37 @@ test_signal_reason_is_actionable_classifier() {
   signal_reason_is_actionable "$state/d.status" || fail "a failed: line was not actionable"
   printf 'merged\n' > "$state/e.status"
   signal_reason_is_actionable "$state/e.status" || fail "a legacy merged line was not actionable"
+  printf 'this line has no status verb\n' > "$state/f.status"
+  signal_reason_is_routine_nonterminal "$state/f.status" \
+    && fail "an unparseable status line was classified as routine nonterminal"
+  printf 'resolved [key=closed]: worker observed the already-recorded close\n' > "$state/g.status"
+  signal_reason_is_routine_nonterminal "$state/a.status" "$state/g.status" \
+    || fail "working/resolved status lines were not classified as routine nonterminal"
+  signal_reason_is_routine_nonterminal "$state/a.status" "$state/c.turn-ended" \
+    || fail "a routine status plus its turn-end was not classified as routine nonterminal"
   pass "signal_reason_is_actionable: benign absorbed, captain verbs and coalesced batches surfaced"
+}
+
+test_attended_routine_absorb_configuration() {
+  local dir
+  dir=$(make_case attended-routine-config)
+  mkdir -p "$dir/config"
+  FM_HOME="$dir" attended_routine_status_absorb_enabled \
+    || fail "an absent attended routine-absorb setting did not preserve the safe default on"
+  FM_HOME="$dir" FM_ATTENDED_ROUTINE_STATUS_ABSORB=off attended_routine_status_absorb_enabled \
+    && fail "the environment off switch did not disable attended routine absorption"
+  printf 'off\n' > "$dir/config/attended-routine-status-absorb"
+  FM_HOME="$dir" attended_routine_status_absorb_enabled \
+    && fail "the home-local off switch did not disable attended routine absorption"
+  FM_HOME="$dir" FM_ATTENDED_ROUTINE_STATUS_ABSORB=on attended_routine_status_absorb_enabled \
+    || fail "the explicit environment on setting did not override the home-local off switch"
+  printf 'invalid\n' > "$dir/config/attended-routine-status-absorb"
+  FM_HOME="$dir" attended_routine_status_absorb_enabled \
+    && fail "an invalid home-local setting enabled absorption instead of failing toward a wake"
+  printf 'on\nextra\n' > "$dir/config/attended-routine-status-absorb"
+  FM_HOME="$dir" attended_routine_status_absorb_enabled \
+    && fail "a multi-line home-local setting enabled absorption instead of failing toward a wake"
+  pass "attended routine absorption defaults on, supports explicit on/off, and fails closed on invalid values"
 }
 
 test_stale_is_terminal_classifier() {
@@ -617,6 +648,66 @@ test_provably_working_signal_absorbed() {
   pass "a no-verb signal whose crew is provably working is absorbed (no exit, no queue, suppressor advanced, beacon present)"
 }
 
+test_absorbed_signal_surfaces_on_next_unrelated_model_turn() {
+  local dir state fakebin out drain_out second_drain status_file pid
+  dir=$(make_case absorbed-next-turn); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; second_drain="$dir/drain-second.out"
+  status_file="$state/task.status"
+  printf 'working: compiling step 2\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited instead of absorbing the routine status used by the no-loss regression"
+  fi
+  reap "$pid"
+  append_wake "$state" check unrelated.check.sh 'check: unrelated genuine model turn' \
+    || fail "the unrelated genuine wake could not be queued"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "the next genuine model-turn drain failed"
+  grep -F 'UNREAD STATUS' "$drain_out" >/dev/null \
+    || fail "the next genuine turn omitted the absorbed line's UNREAD STATUS section: $(cat "$drain_out")"
+  grep -F 'task working: compiling step 2' "$drain_out" >/dev/null \
+    || fail "the absorbed status line was lost before the next genuine model turn: $(cat "$drain_out")"
+  [ ! -e "$state/.status-absorbed-task" ] \
+    || fail "the delayed-presentation receipt remained after its status bytes were committed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second_drain" 2>/dev/null \
+    || fail "the replay check drain failed"
+  ! grep -F 'task working: compiling step 2' "$second_drain" >/dev/null \
+    || fail "the absorbed status line was replayed after its successful presentation"
+  pass "an absorbed status line is presented once in UNREAD STATUS on the next unrelated genuine model turn"
+}
+
+test_attended_absorb_off_surfaces_routine_signal() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case attended-absorb-off); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'working: compiling step 2\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  watch_bg "$state" "$fakebin" "$out" FM_ATTENDED_ROUTINE_STATUS_ABSORB=off
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the explicit off switch did not surface a routine status signal"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the off switch exited without the routine signal reason"
+  [ -s "$state/.wake-queue" ] || fail "the off switch surfaced no durable wake"
+  pass "the attended routine-absorb off switch restores an immediate model wake"
+}
+
+test_unparseable_live_status_still_surfaces() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case unparseable-live-status); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'progress text without a status verb\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "an unparseable status from a live worker was absorbed"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the unparseable status surfaced without its signal reason"
+  [ -s "$state/.wake-queue" ] || fail "the unparseable status produced no durable wake"
+  pass "an unparseable status always wakes even when the worker is positively live"
+}
+
 test_turn_ended_provably_working_absorbed() {
   local dir state fakebin out pid
   dir=$(make_case turn-ended-working); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -841,10 +932,9 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   window="test:fm-quiet"
   printf 'idle building output' > "$capture_file"
   printf 'window=%s\nkind=ship\n' "$window" > "$state/quiet.meta"
-  # Non-terminal status, and prime .seen-* so the signal scan does not pre-empt
-  # the stale path.
+  # Leave the non-terminal status unannounced so this same watcher first absorbs
+  # its signal using positive live-worker evidence, then reaches the stale path.
   printf 'working: still compiling\n' > "$state/quiet.status"
-  sig=$(seen_sig "$state/quiet.status"); printf '%s' "$sig" > "$state/.seen-quiet_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "idle building output")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
@@ -862,6 +952,8 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   fi
   [ ! -s "$out" ] || fail "fresh provably-working stale printed a wake reason during absorb"
   [ ! -s "$state/.wake-queue" ] || fail "fresh provably-working stale enqueued a wake during absorb"
+  grep -F "absorbed benign signal: $state/quiet.status" "$state/.watch-triage.log" >/dev/null \
+    || fail "the wedge regression did not actually traverse the attended signal-absorb path"
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor not advanced on absorb"
   [ -s "$state/.stale-since-$key" ] || fail "stale-since escalation timer was not recorded on absorb"
   reap "$pid"
@@ -2770,6 +2862,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
 }
 
 test_signal_reason_is_actionable_classifier
+test_attended_routine_absorb_configuration
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
@@ -2783,6 +2876,9 @@ test_worktree_write_probe_is_wall_clock_bounded
 test_signal_crew_provably_working_classifier
 test_secondmate_status_signal_never_absorbed_classifier
 test_provably_working_signal_absorbed
+test_absorbed_signal_surfaces_on_next_unrelated_model_turn
+test_attended_absorb_off_surfaces_routine_signal
+test_unparseable_live_status_still_surfaces
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced

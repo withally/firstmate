@@ -93,6 +93,19 @@ test_daemon_state_root_uses_fm_home() {
   pass "supervise daemon state root is scoped by FM_HOME"
 }
 
+test_unparseable_signal_fails_toward_escalation() {
+  local dir state out
+  dir=$(make_supercase unparseable-signal)
+  state="$dir/state"
+  printf 'progress text without a status verb\n' > "$state/task.status"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/task.status" "$state")
+  case "$out" in
+    escalate\|*) ;;
+    *) fail "away classification absorbed an unparseable signal instead of failing toward escalation: $out" ;;
+  esac
+  pass "away classification escalates an unparseable signal through the shared status policy"
+}
+
 test_classify_routine_signal_self() {
   local dir state out
   dir=$(make_supercase classify-routine)
@@ -1924,6 +1937,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 }
 
 test_afk_start_refuses_when_flag_cannot_be_written
+test_unparseable_signal_fails_toward_escalation
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_daemon_state_root_uses_fm_home

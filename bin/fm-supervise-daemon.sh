@@ -340,6 +340,15 @@ _collapse_newlines() {  # <text>
 
 classify_signal() {  # <reason-after-colon> <state>
   local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task seen
+  # The same positive shape policy attended mode uses is the away classifier's
+  # syntax boundary too. Unknown verbs, paths, missing files, and blank logs are
+  # escalated instead of becoming a second, broader absorption dialect.
+  # shellcheck disable=SC2086 # reason is the validated space-separated signal path list
+  if ! signal_reason_is_routine_nonterminal $reason \
+    && ! signal_reason_is_actionable $reason; then
+    printf 'escalate|unrecognized signal shape: %s' "$reason"
+    return
+  fi
   for f in $reason; do
     [ -e "$f" ] || continue
     last=$(last_status_line "$f")

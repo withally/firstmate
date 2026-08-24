@@ -445,7 +445,18 @@ fm_lock_try_acquire_steal_mutex() {
   [ "$rc" -ne 0 ] || return 0
   [ "$rc" -ne 2 ] || return 2
   ! fm_lock_legacy_nested_steal_blocks "$steal.steal" || return 1
+  # Compare against ${BASHPID:-$$} inline, never via a command substitution,
+  # and keep the Bash 3 subshell guard the primary path uses: a trap that
+  # abandoned the frame holding this mutex must not deadlock the exit path
+  # against itself, but a child frame must never reclaim its parent's hold.
   pid=$(cat "$steal/pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ] \
+    && { [ -n "${BASHPID:-}" ] || [ "${BASH_SUBSHELL:-0}" -eq 0 ]; }; then
+    fm_lock_remove_path "$steal" || true
+    rc=0
+    fm_lock_try_create "$steal" || rc=$?
+    return "$rc"
+  fi
   fm_pid_alive "$pid" && return 1
   fm_lock_mid_acquire_is_fresh "$steal" "$pid" && return 1
   if [ -L "$steal" ]; then

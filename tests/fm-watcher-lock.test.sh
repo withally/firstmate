@@ -807,6 +807,33 @@ test_self_orphaned_reclaim_marker_is_reclaimable_by_its_owner() {
   pass "a reclaim marker orphaned by the caller itself stays reclaimable by that caller"
 }
 
+test_self_abandoned_steal_mutex_is_reclaimed_only_by_its_own_frame() {
+  local dir state lockdir dead out rc
+  dir=$(make_case lock-self-abandoned-steal)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  dead=$(dead_pid)
+  mkdir "$lockdir"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2.steal" || exit 7
+    ( fm_lock_try_acquire "$2" >/dev/null 2>&1; printf "sub=%s " "$?" )
+    fm_lock_try_acquire "$2"
+    printf "self=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "self-abandoned steal-mutex fixture shell failed (rc=$rc): $out"
+  case "$out" in
+    "sub=1 self="*) : ;;
+    *) fail "a child frame reclaimed the steal mutex its live parent still holds: $out" ;;
+  esac
+  [ "$out" = "sub=1 self=0" ] \
+    || fail "a process could not reclaim the steal mutex its own interrupted frame abandoned, so the exit path would spin forever: $out"
+  pass "a self-abandoned steal mutex is reclaimed by its own frame and never by a child frame"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -1709,6 +1736,7 @@ test_legacy_directory_steal_mutex_survives_known_recovery_debris
 test_legacy_directory_steal_mutex_without_owner_record_is_reclaimable_when_aged
 test_legacy_directory_reclaim_never_deletes_a_racer_mutex
 test_self_orphaned_reclaim_marker_is_reclaimable_by_its_owner
+test_self_abandoned_steal_mutex_is_reclaimed_only_by_its_own_frame
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

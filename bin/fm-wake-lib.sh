@@ -436,7 +436,7 @@ fm_lock_try_create() {
 # created. A dead symlink owner is serialized inside its unique owner directory,
 # so interrupted recovery remains reclaimable without creating .steal.steal.
 fm_lock_try_acquire_steal_mutex() {
-  local steal=$1 rc pid ownerdir reclaim
+  local steal=$1 rc pid ownerdir expected_owner reclaim
   case "$steal" in
     *.steal) : ;;
     *) return 2 ;;
@@ -449,35 +449,51 @@ fm_lock_try_acquire_steal_mutex() {
   pid=$(cat "$steal/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" && return 1
   fm_lock_mid_acquire_is_fresh "$steal" "$pid" && return 1
-  [ -L "$steal" ] || return 1
-  ownerdir=$(fm_lock_link_owner "$steal" 2>/dev/null) || return 1
-  if [ ! -d "$ownerdir" ]; then
-    case "${ownerdir##*/}" in
-      "${steal##*/}".owner.*) : ;;
-      *) return 1 ;;
+  if [ -L "$steal" ]; then
+    ownerdir=$(fm_lock_link_owner "$steal" 2>/dev/null) || return 1
+    expected_owner=$ownerdir
+    if [ ! -d "$ownerdir" ]; then
+      case "${ownerdir##*/}" in
+        "${steal##*/}".owner.*) : ;;
+        *) return 1 ;;
+      esac
+      if ! mkdir "$ownerdir" 2>/dev/null; then
+        [ -d "$ownerdir" ] || return 1
+      fi
+      if ! fm_lock_points_to_owner "$steal" "$ownerdir"; then
+        rmdir "$ownerdir" 2>/dev/null || true
+        return 1
+      fi
+    fi
+  elif [ -d "$steal" ]; then
+    case "$pid" in
+      ''|*[!0-9]*) return 1 ;;
     esac
-    if ! mkdir "$ownerdir" 2>/dev/null; then
-      [ -d "$ownerdir" ] || return 1
-    fi
-    if ! fm_lock_points_to_owner "$steal" "$ownerdir"; then
-      rmdir "$ownerdir" 2>/dev/null || true
-      return 1
-    fi
+    ownerdir=$steal
+    expected_owner=
+  else
+    return 1
   fi
   reclaim="$ownerdir/reclaim"
   fm_lock_reclaim_marker_claim "$reclaim" || return 1
   if fm_lock_legacy_nested_steal_blocks "$steal.steal" \
-    || ! fm_lock_recheck_stale_owner "$steal" "$ownerdir" "$pid"; then
+    || ! fm_lock_recheck_stale_owner "$steal" "$expected_owner" "$pid"; then
     fm_lock_reclaim_marker_release "$reclaim"
     return 1
   fi
-  if ! rm -f "$steal" 2>/dev/null; then
+  fm_lock_reclaim_marker_held "$reclaim" || return 1
+  if [ "$ownerdir" = "$steal" ]; then
+    fm_lock_reclaim_marker_release "$reclaim" || return 1
+    fm_lock_remove_path "$steal" || return 1
+  else
+    if ! rm -f "$steal" 2>/dev/null; then
+      fm_lock_reclaim_marker_release "$reclaim"
+      return 1
+    fi
+    fm_lock_clean_known_files "$ownerdir"
     fm_lock_reclaim_marker_release "$reclaim"
-    return 1
+    rmdir "$ownerdir" 2>/dev/null || true
   fi
-  fm_lock_clean_known_files "$ownerdir"
-  fm_lock_reclaim_marker_release "$reclaim"
-  rmdir "$ownerdir" 2>/dev/null || true
   fm_lock_try_create "$steal"
 }
 
@@ -486,13 +502,21 @@ fm_lock_try_acquire_steal_mutex() {
 # reclaimer: a marker whose pid is dead and whose age passed the stale window is
 # itself reclaimable, exactly like every other stale record in this file.
 fm_lock_reclaim_marker_claim() {
-  local reclaim=$1 mypid retired
+  local reclaim=$1 mypid retired abandoned_pid retired_pid
   mypid=${BASHPID:-$$}
   if ! mkdir "$reclaim" 2>/dev/null; then
     fm_lock_reclaim_marker_is_abandoned "$reclaim" || return 1
+    abandoned_pid=$FM_LOCK_RECLAIM_OBSERVED_PID
     retired="$reclaim.dead.$mypid"
     rm -rf "$retired" 2>/dev/null || true
     mv "$reclaim" "$retired" 2>/dev/null || return 1
+    retired_pid=$(cat "$retired/pid" 2>/dev/null || true)
+    if [ "$retired_pid" != "$abandoned_pid" ] || fm_pid_alive "$retired_pid"; then
+      if [ -e "$reclaim" ] || [ -L "$reclaim" ] || ! mv "$retired" "$reclaim" 2>/dev/null; then
+        rm -rf "$retired" 2>/dev/null || true
+      fi
+      return 1
+    fi
     rm -rf "$retired" 2>/dev/null || true
     mkdir "$reclaim" 2>/dev/null || return 1
   fi
@@ -505,19 +529,28 @@ fm_lock_reclaim_marker_claim() {
   return 0
 }
 
+FM_LOCK_RECLAIM_OBSERVED_PID=
+
 fm_lock_reclaim_marker_is_abandoned() {
   local reclaim=$1 pid stale
+  FM_LOCK_RECLAIM_OBSERVED_PID=
   [ -d "$reclaim" ] || return 1
   pid=$(cat "$reclaim/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" && return 1
   stale=$FM_LOCK_STALE_AFTER
   [ "$stale" -lt 2 ] && stale=2
-  [ "$(fm_path_age "$reclaim")" -ge "$stale" ]
+  [ "$(fm_path_age "$reclaim")" -ge "$stale" ] || return 1
+  FM_LOCK_RECLAIM_OBSERVED_PID=$pid
+  return 0
+}
+
+fm_lock_reclaim_marker_held() {
+  [ "$(cat "$1/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ]
 }
 
 fm_lock_reclaim_marker_release() {
   local reclaim=$1
-  [ "$(cat "$reclaim/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || return 1
+  fm_lock_reclaim_marker_held "$reclaim" || return 1
   rm -f "$reclaim/pid" 2>/dev/null || true
   rmdir "$reclaim" 2>/dev/null || true
   return 0

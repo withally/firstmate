@@ -535,6 +535,75 @@ test_dangling_steal_owner_reclaim_yields_one_winner() {
   pass "dangling steal-owner reclaim is serialized to one winner and refuses foreign targets"
 }
 
+test_reclaim_marker_takeover_is_bound_to_the_marker_it_inspected() {
+  local dir state ownerdir reclaim fakebin real_mv dead out rc
+  dir=$(make_case lock-reclaim-marker-takeover-identity)
+  state="$dir/state"
+  ownerdir="$state/.owner"
+  reclaim="$ownerdir/reclaim"
+  fakebin="$dir/racebin"
+  real_mv=$(command -v mv)
+  dead=$(dead_pid)
+  mkdir -p "$reclaim" "$fakebin"
+  printf '%s\n' "$dead" > "$reclaim/pid"
+  touch -t 202001010000 "$reclaim"
+  cat > "$fakebin/mv" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\${FM_TEST_RACER_PID:?}" > "\$1/pid" 2>/dev/null || true
+exec "$real_mv" "\$@"
+SH
+  chmod +x "$fakebin/mv"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_RACER_PID="$$" bash -c '
+    . "$1"
+    fm_lock_reclaim_marker_claim "$2"
+    printf "claim=%s\n" "$?"
+  ' _ "$LIB" "$reclaim" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "reclaim-marker takeover fixture shell failed (rc=$rc): $out"
+  [ "$out" = "claim=1" ] \
+    || fail "a reclaimer retired a marker another racer had already replaced with its own live one: $out"
+  [ -d "$reclaim" ] || fail "the racer's live reclaim marker was destroyed by the losing takeover"
+  [ "$(cat "$reclaim/pid" 2>/dev/null || true)" = "$$" ] \
+    || fail "the racer's live reclaim-marker pid did not survive the losing takeover"
+  pass "a reclaim-marker takeover only retires the abandoned marker it actually inspected"
+}
+
+test_legacy_directory_steal_mutex_is_reclaimed_without_recursion() {
+  local dir state lockdir steal fakebin log real_ln dead out rc
+  dir=$(make_case lock-legacy-steal-dir)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  fakebin="$dir/logbin"
+  log="$dir/ln-targets"
+  real_ln=$(command -v ln)
+  dead=$(dead_pid)
+  mkdir "$lockdir" "$steal" "$fakebin"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$steal/pid"
+  cat > "$fakebin/ln" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do target=\$arg; done
+printf '%s\n' "\$target" >> "\${FM_TEST_LN_LOG:?}"
+exec "$real_ln" "\$@"
+SH
+  chmod +x "$fakebin/ln"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_LN_LOG="$log" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "legacy directory steal-mutex fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=0" ] \
+    || fail "a legacy directory-shaped steal mutex with a dead owner was never reclaimed: $out"
+  ! grep -F "$steal.steal" "$log" >/dev/null 2>&1 \
+    || fail "reclaiming a legacy directory steal mutex created a nested .steal.steal: $(cat "$log")"
+  pass "a legacy directory-shaped steal mutex is reclaimed without any nested steal transition"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -1430,6 +1499,8 @@ test_abandoned_reclaim_marker_does_not_wedge_stale_steal_recovery
 test_legacy_nested_steal_residue_is_retired_only_when_stale
 test_reclaim_marker_is_not_stolen_from_a_live_owner
 test_dangling_steal_owner_reclaim_yields_one_winner
+test_reclaim_marker_takeover_is_bound_to_the_marker_it_inspected
+test_legacy_directory_steal_mutex_is_reclaimed_without_recursion
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

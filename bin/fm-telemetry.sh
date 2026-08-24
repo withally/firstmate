@@ -593,13 +593,25 @@ disarm() {
   printf 'fm-telemetry: stopped pid=%s\n' "$pid"
 }
 
+# Portable mtime; Linux stat lacks -f (it means --file-system there), macOS stat lacks -c.
+file_mtime() {
+  if [ "$(uname 2>/dev/null || true)" = Darwin ]; then
+    stat -f %m "$1" 2>/dev/null
+  else
+    stat -c %Y "$1" 2>/dev/null
+  fi
+}
+
 newest_snapshot_age() {
   local newest newest_mtime file mtime now
   newest=
   newest_mtime=0
   for file in "$TELEMETRY_DIR"/telemetry-*.log; do
     [ -f "$file" ] || continue
-    mtime=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null) || continue
+    mtime=$(file_mtime "$file") || continue
+    case "$mtime" in
+      '' | *[!0-9]*) continue ;;
+    esac
     if [ "$mtime" -gt "$newest_mtime" ]; then
       newest=$file
       newest_mtime=$mtime

@@ -91,7 +91,7 @@ SH
 
 fseventsd_check() {
   local home=$1 fakebin=$2 now=$3 mem=$4 pressure=$5 swap=$6
-  FM_HOME="$home" FM_TELEMETRY_NOW="$now" \
+  FM_HOME="$home" FM_TELEMETRY_NOW="$now" FM_TELEMETRY_FSEVENTSD_DISABLE=0 \
     FM_FAKE_FSEVENTSD_MEM="$mem" FM_FAKE_PRESSURE_LEVEL="$pressure" \
     FM_FAKE_SWAP_USED="$swap" PATH="$fakebin:/usr/bin:/bin" \
     "$TELEMETRY" fseventsd-check
@@ -284,6 +284,41 @@ test_fseventsd_action_reports_every_condition_that_holds() {
   assert_contains "$out" 'warning plus red critical memory pressure' "the alert dropped the critical memory pressure it measured"
   assert_contains "$out" 'warning plus more than 8 GiB swap' "the alert dropped the swap breach it measured"
   pass "fseventsd action reports every threshold that holds in the same sample"
+}
+
+test_fseventsd_check_is_disabled_by_its_seam() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-disabled-home"
+  fakebin="$TMP_ROOT/fseventsd-disabled-fakebin"
+  mkdir -p "$home/state"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  out=$(FM_HOME="$home" FM_TELEMETRY_NOW=1000 FM_TELEMETRY_FSEVENTSD_DISABLE=1 \
+    FM_FAKE_FSEVENTSD_MEM=2049M FM_FAKE_PRESSURE_LEVEL=4 FM_FAKE_SWAP_USED=9000M \
+    PATH="$fakebin:/usr/bin:/bin" "$TELEMETRY" fseventsd-check)
+  [ -z "$out" ] || fail "the disabled check still alerted: $out"
+  [ ! -e "$home/state/telemetry/fseventsd-samples" ] ||
+    fail "the disabled check still sampled and persisted history"
+  out=$(fseventsd_check "$home" "$fakebin" 1000 2049M 4 9000M)
+  assert_contains "$out" 'ACTION: fseventsd' "the check did not run once its seam was cleared"
+  pass "fseventsd-check samples nothing while its disable seam is set"
+}
+
+test_fseventsd_alerts_even_when_history_cannot_be_persisted() {
+  local home fakebin out
+  home="$TMP_ROOT/fseventsd-unwritable-home"
+  fakebin="$TMP_ROOT/fseventsd-unwritable-fakebin"
+  mkdir -p "$home/state/telemetry"
+  write_fake_fseventsd_samplers "$fakebin"
+
+  printf '900 104857600 1 0\n' > "$home/state/telemetry/fseventsd-samples"
+  chmod 000 "$home/state/telemetry/fseventsd-samples" ||
+    fail "could not make the sample history unreadable"
+  out=$(fseventsd_check "$home" "$fakebin" 1000 2500M 2 0.00M 2>/dev/null)
+  chmod 600 "$home/state/telemetry/fseventsd-samples"
+  assert_contains "$out" 'ACTION: fseventsd' "a failed history write silenced the measured action level"
+  assert_contains "$out" 'MEM above 2 GiB' "the alert lost the threshold it measured"
+  pass "fseventsd alerts on a measured level even when its history cannot be persisted"
 }
 
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure() {
@@ -857,6 +892,8 @@ test_fseventsd_check_warns_after_two_hours_of_fast_growth
 test_fseventsd_check_surfaces_action_thresholds
 test_fseventsd_action_retains_the_warning_evidence_it_measured
 test_fseventsd_action_reports_every_condition_that_holds
+test_fseventsd_check_is_disabled_by_its_seam
+test_fseventsd_alerts_even_when_history_cannot_be_persisted
 test_fseventsd_check_emergency_requires_sustained_growth_and_worsening_pressure
 test_fseventsd_emergency_retains_the_evidence_it_measured
 test_fseventsd_check_reads_the_kernel_memory_pressure_encoding

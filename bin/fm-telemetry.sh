@@ -59,6 +59,12 @@
 # one snapshot and exit.
 # FM_TELEMETRY_NOW is a test seam that overrides the whole-second clock used by
 # `fseventsd-check` for its cadence, history and growth windows.
+# FM_TELEMETRY_FSEVENTSD_DISABLE=1 makes `fseventsd-check` a no-op before it
+# samples anything; the shared test library sets it so watcher tests never read
+# the live host, and production never sets it.
+# A sample whose history could not be persisted is still alerted on, with the
+# persistence failure reported as a diagnostic, so a full disk cannot silence a
+# level that was already measured.
 # Internal record mode without an owner token re-execs itself with a synthesized
 # one, so every recorder carries its token in argv and status and disarm have a
 # single liveness rule.
@@ -432,6 +438,7 @@ fseventsd_check() {
   local warning_bytes=536870912 action_bytes=2147483648 swap_action_bytes=8589934592
   local pressure_warn_level=2 pressure_critical_level=4
 
+  case "${FM_TELEMETRY_FSEVENTSD_DISABLE:-0}" in ''|0) ;; *) return 0 ;; esac
   now=${FM_TELEMETRY_NOW:-$(date '+%s' 2>/dev/null || true)}
   case "$now" in ''|*[!0-9]*) return 0 ;; esac
   mkdir -p "$TELEMETRY_DIR" || return 0
@@ -532,7 +539,8 @@ EOF
   fi
 
   fseventsd_record_sample "$now" "$FSEVENTSD_MEM_BYTES" \
-    "$FSEVENTSD_PRESSURE_LEVEL" "$FSEVENTSD_SWAP_BYTES" || return 0
+    "$FSEVENTSD_PRESSURE_LEVEL" "$FSEVENTSD_SWAP_BYTES" \
+    || diagnostic "could not persist the fseventsd sample history"
   if [ "$severity" = none ]; then
     rm -f "$FSEVENTSD_ALERT"
     return 0

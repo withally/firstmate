@@ -441,19 +441,24 @@ pass "remote seeding proceeds once the repair closes every gap"
 # Seeding must not need a copy of the project in this home: firstmate names the
 # origin it already resolved, the seed validates and transports it, and the
 # primary project tree is left exactly as it was found.
-projects_snapshot() { # <dir>
+tree_snapshot() { # <dir>
   local dir=$1 path
   (
     cd "$dir" 2>/dev/null || exit 0
     find . -print | LC_ALL=C sort | while IFS= read -r path; do
-      if [ -f "$path" ] && [ ! -L "$path" ]; then
-        printf '%s %s\n' "$path" "$(sha256_file "$path")"
+      if [ -L "$path" ]; then
+        printf 'link %s -> %s\n' "$path" "$(readlink "$path")"
+      elif [ -f "$path" ]; then
+        printf 'file %s %s\n' "$path" "$(sha256_file "$path")"
+      elif [ -d "$path" ]; then
+        printf 'dir %s\n' "$path"
       else
-        printf '%s\n' "$path"
+        printf 'other %s\n' "$path"
       fi
     done
   )
 }
+projects_snapshot() { tree_snapshot "$1"; }
 mkdir -p "$TMP_ROOT/seed-parent/projects"
 fm_git_init_commit "$TMP_ROOT/seed-parent/projects/resident"
 git init -q --bare "$TMP_ROOT/beta.git"
@@ -1244,11 +1249,10 @@ write_absent_generation() { # <home-relative-path> <generation>
 }
 
 assert_retirement_completed() { # <label>
-  local label=$1 existed=0
+  local label=$1 existed=0 home_before=
   if [ -d "$REMOTE_HOME" ]; then
     existed=1
-    rm -rf "$TMP_ROOT/completed-home-before"
-    cp -R "$REMOTE_HOME" "$TMP_ROOT/completed-home-before"
+    home_before=$(tree_snapshot "$REMOTE_HOME")
   fi
   if ! remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-completed.out" 2>&1; then
     printf '%s retry output:\n%s\n' "$label" "$(cat "$TMP_ROOT/teardown-completed.out")" >&2
@@ -1257,26 +1261,23 @@ assert_retirement_completed() { # <label>
   assert_absent "$PARENT/state/ios.meta" "$label retained parent metadata"
   assert_no_grep '- ios ' "$PARENT/data/secondmates.md" "$label retained the registry route"
   if [ "$existed" -eq 1 ]; then
-    diff -ru "$TMP_ROOT/completed-home-before" "$REMOTE_HOME" >/dev/null \
+    [ "$(tree_snapshot "$REMOTE_HOME")" = "$home_before" ] \
       || fail "$label changed the remote directory"
-    rm -rf "$TMP_ROOT/completed-home-before"
   else
     assert_absent "$REMOTE_HOME" "$label recreated the remote home"
   fi
 }
 
 assert_retirement_refused() { # <label>
-  local label=$1
-  rm -rf "$TMP_ROOT/refused-home-before"
-  cp -R "$REMOTE_HOME" "$TMP_ROOT/refused-home-before"
+  local label=$1 home_before
+  home_before=$(tree_snapshot "$REMOTE_HOME")
   if remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-refused.out" 2>&1; then
     fail "remote retirement accepted $label"
   fi
   assert_present "$PARENT/state/ios.meta" "$label refusal removed parent metadata"
   assert_grep '- ios ' "$PARENT/data/secondmates.md" "$label refusal removed the registry route"
-  diff -ru "$TMP_ROOT/refused-home-before" "$REMOTE_HOME" >/dev/null \
+  [ "$(tree_snapshot "$REMOTE_HOME")" = "$home_before" ] \
     || fail "$label refusal changed the remote directory"
-  rm -rf "$TMP_ROOT/refused-home-before"
 }
 
 restore_ios_primary_route
@@ -1298,14 +1299,14 @@ printf '4242\n' > "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9
 ln -s "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock.owner.aB3d9Z" \
   "$REMOTE_HOME/config/.fm-inherit-crew-harness.lock"
 printf 'partial payload\n' > "$REMOTE_HOME/data/.inherit.Qz71xW"
-cp -R "$REMOTE_HOME" "$TMP_ROOT/retired-residue-before"
+RETIRED_RESIDUE_BEFORE=$(tree_snapshot "$REMOTE_HOME")
 if ! remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-retired-residue.out" 2>&1; then
   printf 'already-retired retry output:\n%s\n' "$(cat "$TMP_ROOT/teardown-retired-residue.out")" >&2
   fail "already-retired remote home did not complete primary-side unregistration"
 fi
 assert_absent "$PARENT/state/ios.meta" "already-retired retry retained parent metadata"
 assert_no_grep '- ios ' "$PARENT/data/secondmates.md" "already-retired retry retained the registry route"
-diff -ru "$TMP_ROOT/retired-residue-before" "$REMOTE_HOME" >/dev/null \
+[ "$(tree_snapshot "$REMOTE_HOME")" = "$RETIRED_RESIDUE_BEFORE" ] \
   || fail "already-retired retry changed inherited-material residue"
 pass "already-retired remote home completes primary-side unregistration without remote deletion"
 

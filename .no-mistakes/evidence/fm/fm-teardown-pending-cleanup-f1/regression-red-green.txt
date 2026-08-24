@@ -1,0 +1,21 @@
+Regression test: tests/fm-teardown-remote-pending-replies.test.sh
+
+--- RED (pre-fix AND-list restored in bin/fm-teardown.sh) ---
+$ bash tests/fm-teardown-remote-pending-replies.test.sh
+not ok - remote teardown failed when no pending-reply records matched: error: remote pending-reply cleanup failed; preserving the local route for retry
+EXIT=1
+
+--- GREEN (fix as committed at 7aa5486) ---
+$ bash tests/fm-teardown-remote-pending-replies.test.sh
+ok - remote pending-reply cleanup succeeds when only unrelated records exist
+ok - remote pending-reply cleanup deletes only target task records
+ok - remote pending-reply cleanup refuses a non-regular entry
+EXIT=0
+
+--- Existing suite tests/fm-teardown.test.sh ---
+baseline c447db5 : 1 failure  -> not ok - herdr-preflight-missing-adapter: teardown continued without its required preflight
+HEAD     7aa5486 : same 1 failure, no new failures
+
+--- tests/fm-remote-secondmate-lifecycle-e2e.test.sh ---
+baseline c447db5 : not ok - failing seed exited before remote provisioning
+HEAD     7aa5486 : same failure at the same point (pre-existing, suite aborts there)

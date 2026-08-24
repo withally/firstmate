@@ -1,0 +1,64 @@
+############ BEFORE FIX (baseline c447db5) ############
+
+=== Scenario A: retire remote secondmate 'sm-alpha'; pending-replies holds only ANOTHER task's record ===
+$ ls state/pending-replies/
+reply-for-sm-beta
+$ fm-teardown.sh sm-alpha
+  error: remote pending-reply cleanup failed; preserving the local route for retry
+  [exit status: 1]
+$ ls state/pending-replies/   # sm-beta's record must survive
+  reply-for-sm-beta
+$ ls state/sm-alpha.meta      # retired => gone
+  /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-evidence.K6Qtta/sm-alpha/state/sm-alpha.meta
+
+=== Scenario B: mixed records - sm-gamma's own record plus an unrelated one ===
+$ ls state/pending-replies/
+  001-sm-gamma
+  zzz-sm-beta
+$ fm-teardown.sh sm-gamma
+  error: remote pending-reply cleanup failed; preserving the local route for retry
+  [exit status: 1]
+$ ls state/pending-replies/   # only sm-gamma's record removed
+  zzz-sm-beta
+
+=== Scenario C: unsafe (non-regular) pending-reply entry must still refuse ===
+$ fm-teardown.sh sm-delta
+  REFUSED: pending-replies contains an unsafe recovery entry
+  [exit status: 1]
+$ ls state/sm-delta.meta      # route preserved for retry
+  /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-evidence.K6Qtta/sm-delta/state/sm-delta.meta
+$ grep sm-delta data/secondmates.md
+  matches: 1
+
+############ AFTER FIX (7aa5486) ############
+
+=== Scenario A: retire remote secondmate 'sm-alpha'; pending-replies holds only ANOTHER task's record ===
+$ ls state/pending-replies/
+reply-for-sm-beta
+$ fm-teardown.sh sm-alpha
+  teardown sm-alpha complete (remote remote.example:/srv/firstmate-homes/sm-alpha)
+  [exit status: 0]
+$ ls state/pending-replies/   # sm-beta's record must survive
+  reply-for-sm-beta
+$ ls state/sm-alpha.meta      # retired => gone
+  ls: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-evidence.RGXZ7D/sm-alpha/state/sm-alpha.meta: No such file or directory
+
+=== Scenario B: mixed records - sm-gamma's own record plus an unrelated one ===
+$ ls state/pending-replies/
+  001-sm-gamma
+  zzz-sm-beta
+$ fm-teardown.sh sm-gamma
+  teardown sm-gamma complete (remote remote.example:/srv/firstmate-homes/sm-gamma)
+  [exit status: 0]
+$ ls state/pending-replies/   # only sm-gamma's record removed
+  zzz-sm-beta
+
+=== Scenario C: unsafe (non-regular) pending-reply entry must still refuse ===
+$ fm-teardown.sh sm-delta
+  REFUSED: pending-replies contains an unsafe recovery entry
+  [exit status: 1]
+$ ls state/sm-delta.meta      # route preserved for retry
+  /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-evidence.RGXZ7D/sm-delta/state/sm-delta.meta
+$ grep sm-delta data/secondmates.md
+  matches: 1
+

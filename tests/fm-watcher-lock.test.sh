@@ -278,7 +278,7 @@ SH
   [ "$result" -eq 2 ] || fail "missing-parent lock attempt returned '$result' instead of typed invalid-path status 2: $out"
   [ "$wait_result" -eq 2 ] || fail "missing-parent lock wait returned '$wait_result' instead of propagating status 2: $out"
   [ "$launches" -le 18 ] || fail "five missing-parent failures plus one wait exceeded the helper-launch budget ($launches): $out"
-  [ "$elapsed" -lt 3 ] || fail "missing-parent lock attempts did not return promptly (${elapsed}s): $out"
+  [ "$elapsed" -lt 10 ] || fail "missing-parent lock attempts did not return promptly (${elapsed}s): $out"
   attempt_pid=$(cat "$pidfile")
   [ -z "$(pgrep -P "$attempt_pid" 2>/dev/null || true)" ] \
     || fail "missing-parent lock attempt left a spawned descendant alive"

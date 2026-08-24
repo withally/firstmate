@@ -502,7 +502,7 @@ fm_lock_try_acquire_steal_mutex() {
 # reclaimer: a marker whose pid is dead and whose age passed the stale window is
 # itself reclaimable, exactly like every other stale record in this file.
 fm_lock_reclaim_marker_claim() {
-  local reclaim=$1 mypid retired abandoned_pid retired_pid
+  local reclaim=$1 mypid retired abandoned_pid retired_pid took_over=0
   mypid=${BASHPID:-$$}
   if ! mkdir "$reclaim" 2>/dev/null; then
     fm_lock_reclaim_marker_is_abandoned "$reclaim" || return 1
@@ -510,21 +510,30 @@ fm_lock_reclaim_marker_claim() {
     retired="$reclaim.dead.$mypid"
     rm -rf "$retired" 2>/dev/null || true
     mv "$reclaim" "$retired" 2>/dev/null || return 1
-    retired_pid=$(cat "$retired/pid" 2>/dev/null || true)
-    if [ "$retired_pid" != "$abandoned_pid" ] || fm_pid_alive "$retired_pid"; then
-      if [ -e "$reclaim" ] || [ -L "$reclaim" ] || ! mv "$retired" "$reclaim" 2>/dev/null; then
-        rm -rf "$retired" 2>/dev/null || true
-      fi
+    if ! mkdir "$reclaim" 2>/dev/null; then
+      rm -rf "$retired" 2>/dev/null || true
       return 1
     fi
-    rm -rf "$retired" 2>/dev/null || true
-    mkdir "$reclaim" 2>/dev/null || return 1
+    took_over=1
   fi
   if ! { printf '%s\n' "$mypid" 2>/dev/null > "$reclaim/pid"; } \
     || [ "$(cat "$reclaim/pid" 2>/dev/null || true)" != "$mypid" ]; then
     rm -f "$reclaim/pid" 2>/dev/null || true
     rmdir "$reclaim" 2>/dev/null || true
+    [ "$took_over" -eq 0 ] || rm -rf "$retired" 2>/dev/null || true
     return 1
+  fi
+  if [ "$took_over" -eq 1 ]; then
+    retired_pid=$(cat "$retired/pid" 2>/dev/null || true)
+    rm -rf "$retired" 2>/dev/null || true
+    if [ "$retired_pid" != "$abandoned_pid" ] || fm_pid_alive "$retired_pid"; then
+      if fm_pid_alive "$retired_pid"; then
+        printf '%s\n' "$retired_pid" 2>/dev/null > "$reclaim/pid" || true
+      else
+        fm_lock_reclaim_marker_release "$reclaim"
+      fi
+      return 1
+    fi
   fi
   return 0
 }

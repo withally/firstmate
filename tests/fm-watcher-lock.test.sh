@@ -604,6 +604,47 @@ SH
   pass "a legacy directory-shaped steal mutex is reclaimed without any nested steal transition"
 }
 
+test_reclaim_marker_takeover_never_vacates_the_marker_slot() {
+  local dir state ownerdir reclaim fakebin real_cat gaps dead out rc
+  dir=$(make_case lock-reclaim-marker-no-gap)
+  state="$dir/state"
+  ownerdir="$state/.owner"
+  reclaim="$ownerdir/reclaim"
+  fakebin="$dir/gapbin"
+  gaps="$dir/gap-log"
+  real_cat=$(command -v cat)
+  dead=$(dead_pid)
+  mkdir -p "$reclaim" "$fakebin"
+  printf '%s\n' "$dead" > "$reclaim/pid"
+  touch -t 202001010000 "$reclaim"
+  : > "$gaps"
+  cat > "$fakebin/cat" <<SH
+#!/usr/bin/env bash
+if mkdir "\${FM_TEST_RECLAIM:?}" 2>/dev/null; then
+  printf '%s\n' "\${FM_TEST_BYSTANDER_PID:?}" > "\$FM_TEST_RECLAIM/pid" 2>/dev/null || true
+  printf 'claimed\n' >> "\${FM_TEST_GAP_LOG:?}"
+fi
+exec "$real_cat" "\$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_RECLAIM="$reclaim" \
+    FM_TEST_GAP_LOG="$gaps" FM_TEST_BYSTANDER_PID="$$" bash -c '
+      . "$1"
+      fm_lock_reclaim_marker_claim "$2"
+      printf "claim=%s\n" "$?"
+    ' _ "$LIB" "$reclaim" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "reclaim-marker gap fixture shell failed (rc=$rc): $out"
+  [ ! -s "$gaps" ] \
+    || fail "a bystander claimed the reclaim marker while a takeover had vacated the slot: $(cat "$gaps")"
+  [ "$out" = "claim=0" ] \
+    || fail "the takeover of a genuinely abandoned marker did not succeed: $out"
+  [ "$(cat "$reclaim/pid" 2>/dev/null || true)" != "$$" ] \
+    || fail "the bystander's pid ended up owning the reclaim marker"
+  pass "a reclaim-marker takeover never leaves the marker slot claimable by a bystander"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -1500,6 +1541,7 @@ test_legacy_nested_steal_residue_is_retired_only_when_stale
 test_reclaim_marker_is_not_stolen_from_a_live_owner
 test_dangling_steal_owner_reclaim_yields_one_winner
 test_reclaim_marker_takeover_is_bound_to_the_marker_it_inspected
+test_reclaim_marker_takeover_never_vacates_the_marker_slot
 test_legacy_directory_steal_mutex_is_reclaimed_without_recursion
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency

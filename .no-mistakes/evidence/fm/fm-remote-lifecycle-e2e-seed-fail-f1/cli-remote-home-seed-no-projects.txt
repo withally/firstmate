@@ -1,0 +1,16 @@
+=== USER-FACING CLI: seed a remote secondmate home with no projects (macOS bash 3.2) ===
+Command is identical in both runs; only the checkout differs.
+
+--- BEFORE (base bac5c84): crashes in the project-assembly loop ---
+$ FM_HOME=<home> bin/fm-remote-home-seed.sh demo remote-mac <repo> <remote-home> --no-projects   # (before)
+<repo>/bin/fm-remote-home-seed.sh: line 190: PROJECT_NAMES[@]: unbound variable
+exit=0
+
+--- AFTER (this branch 30f2a9b): loop is safe on an empty project list;
+    the run advances to the remote-runtime preflight and refuses there for
+    an unrelated, correctly-reported reason (this demo points the remote
+    code root at the local checkout, which has no fm-remote-doctor.sh) ---
+$ FM_HOME=<home> bin/fm-remote-home-seed.sh demo remote-mac <repo> <remote-home> --no-projects   # (after)
+error: remote command is not tracked by this Firstmate checkout: fm-remote-doctor.sh
+error: remote runtime preflight failed; nothing was provisioned. Close the gaps listed above, or update the remote code root if it predates the current fm-remote-doctor.sh
+exit=1

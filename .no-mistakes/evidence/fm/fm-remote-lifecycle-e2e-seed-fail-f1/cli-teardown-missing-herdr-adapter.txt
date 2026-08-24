@@ -1,0 +1,21 @@
+=== fm-teardown.sh herdr preflight when bin/backends/herdr.sh is missing ===
+
+fm-teardown.sh runs under 'set -eu' (line 136) with an EXIT trap (line 207).
+The driver below reproduces exactly that shell contract around the dispatcher
+call at fm-teardown.sh:2072 (teardown_herdr_require_prerequisites).
+
+BEFORE (base bac5c84): the failing '. adapter' aborts the shell under set -e,
+the EXIT trap succeeds, and teardown reports SUCCESS having silently skipped
+its required safety preflight -- the baseline failure
+'herdr-preflight-missing-adapter: teardown continued without its required preflight'.
+--- BEFORE (base bac5c84) ---
+<checkout>/bin/fm-backend.sh: line 609: <checkout>/bin/backends/herdr.sh: No such file or directory
+teardown exit status: 0
+
+AFTER (this branch 30f2a9b): the dispatcher checks the adapter is present and
+readable and returns 1 without ever running a failing '.', so teardown reaches
+its own refusal path and exits non-zero, changing nothing.
+--- AFTER (branch 30f2a9b) ---
+error: backend adapter is unavailable: <checkout>/bin/backends/herdr.sh
+error: herdr teardown prerequisites are unavailable for task-x1; nothing was changed - restore the adapter and rerun teardown
+teardown exit status: 1

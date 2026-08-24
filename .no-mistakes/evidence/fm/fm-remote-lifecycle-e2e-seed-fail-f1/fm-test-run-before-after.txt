@@ -1,0 +1,19 @@
+=== bin/fm-test-run.sh on the affected baseline scripts (macOS, GNU bash 3.2.57) ===
+
+--- BEFORE: branch tests + base (bac5c84) bin/ sources ---
+$ bin/fm-test-run.sh tests/fm-remote-secondmate-lifecycle-e2e.test.sh tests/fm-pending-reply.test.sh tests/fm-wake-queue.test.sh
+not ok - failing seed exited before remote provisioning
+FM_TEST_SUMMARY total=3 failed=1 skipped_gate=0 duration_ms=49466
+/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0SSQ9W7VEMZYXANR8PTV8RX/bin/fm-remote-home-seed.sh: line 190: PROJECT_NAMES[@]: unbound variable
+$ bin/fm-test-run.sh tests/fm-teardown.test.sh
+not ok - herdr-preflight-missing-adapter: teardown continued without its required preflight
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=39080
+
+--- AFTER: this branch at 30f2a9b ---
+$ bin/fm-test-run.sh tests/fm-remote-secondmate-lifecycle-e2e.test.sh tests/fm-teardown.test.sh tests/fm-pending-reply.test.sh tests/fm-wake-queue.test.sh tests/fm-backend.test.sh
+FM_TEST_SUMMARY total=5 failed=0 skipped_gate=0 duration_ms=514956
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=32329 failed=0
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=159065 failed=0
+FM_TEST_SUMMARY_FAMILY family=secondmate count=1 duration_ms=266146 failed=0
+FM_TEST_SUMMARY_FAMILY family=unclassified count=1 duration_ms=18198 failed=0
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=39006 failed=0

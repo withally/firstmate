@@ -346,7 +346,7 @@ test_stale_or_malformed_steal_mutex_never_claims_nested_mutex() {
       printf '%s\n' "$dead" > "$ownerdir/pid"
       ln -s "$ownerdir" "$steal"
     else
-      ln -s "$state/.missing-steal-owner" "$steal"
+      ln -s "$steal.owner.gone01" "$steal"
       touch -h -t 202001010000 "$steal"
     fi
     cat > "$fakebin/ln" <<SH
@@ -398,6 +398,141 @@ test_abandoned_reclaim_marker_does_not_wedge_stale_steal_recovery() {
     || fail "a reclaim marker left behind by a killed reclaimer permanently blocked stale steal recovery: $out"
   [ ! -d "$ownerdir/reclaim" ] || fail "the reclaimed marker was not released"
   pass "a reclaim marker abandoned by a killed reclaimer does not wedge stale steal recovery"
+}
+
+test_legacy_nested_steal_residue_is_retired_only_when_stale() {
+  local dir state lockdir steal residue ownerdir dead out rc
+
+  dir=$(make_case lock-legacy-nested-stale)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  residue="$steal.steal"
+  ownerdir="$steal.owner.legacy"
+  dead=$(dead_pid)
+  mkdir "$lockdir" "$ownerdir"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$ownerdir/pid"
+  ln -s "$ownerdir" "$steal"
+  ln -s "$state/.retired-nested-owner" "$residue"
+  touch -h -t 202001010000 "$residue"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "stale nested-steal residue fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=0" ] \
+    || fail "a pre-upgrade .steal.steal residue permanently blocked stale primary reclaim: $out"
+  [ ! -e "$residue" ] && [ ! -L "$residue" ] \
+    || fail "the retired nested-steal residue was left behind"
+
+  dir=$(make_case lock-legacy-nested-live)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  residue="$steal.steal"
+  ownerdir="$steal.owner.legacy"
+  mkdir "$lockdir" "$ownerdir" "$residue"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$ownerdir/pid"
+  printf '%s\n' "$$" > "$residue/pid"
+  ln -s "$ownerdir" "$steal"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "live nested-steal residue fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=1" ] \
+    || fail "a live pre-upgrade nested-steal holder was overrun instead of being waited out: $out"
+  [ -d "$residue" ] || fail "a live nested-steal residue was destroyed by the upgrade path"
+  [ -L "$steal" ] || fail "the steal mutex was reclaimed while a live nested holder still owned it"
+  pass "a pre-upgrade .steal.steal residue is retired only once its owner is dead and stale"
+}
+
+test_reclaim_marker_is_not_stolen_from_a_live_owner() {
+  local dir state ownerdir reclaim out rc
+  dir=$(make_case lock-reclaim-marker-ownership)
+  state="$dir/state"
+  ownerdir="$state/.owner"
+  reclaim="$ownerdir/reclaim"
+  mkdir -p "$reclaim"
+  printf '%s\n' "$$" > "$reclaim/pid"
+  touch -t 202001010000 "$reclaim"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_reclaim_marker_release "$2"
+    printf "release=%s " "$?"
+    fm_lock_reclaim_marker_claim "$2"
+    printf "claim=%s\n" "$?"
+  ' _ "$LIB" "$reclaim" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "reclaim-marker ownership fixture shell failed (rc=$rc): $out"
+  [ "$out" = "release=1 claim=1" ] \
+    || fail "another process released or took over a reclaim marker held by a live owner: $out"
+  [ -d "$reclaim" ] || fail "the live owner's reclaim marker was removed by a non-owner"
+  [ "$(cat "$reclaim/pid")" = "$$" ] || fail "the live owner's reclaim-marker pid was overwritten"
+  pass "a reclaim marker held by a live owner is neither released nor taken over by another process"
+}
+
+test_dangling_steal_owner_reclaim_yields_one_winner() {
+  local dir state lockdir steal foreign marker dead i pids pid wins out rc
+
+  dir=$(make_case lock-dangling-steal-concurrency)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  marker="$dir/wins"
+  dead=$(dead_pid)
+  mkdir "$lockdir"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  ln -s "$steal.owner.gone01" "$steal"
+  touch -h -t 202001010000 "$steal"
+  : > "$marker"
+  pids=
+  i=1
+  while [ "$i" -le 40 ]; do
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      if fm_lock_try_acquire "$2"; then
+        printf "%s\n" "${BASHPID:-$$}" >> "$3"
+        sleep 1
+      fi
+    ' _ "$LIB" "$lockdir" "$marker" &
+    pids="$pids $!"
+    i=$((i + 1))
+  done
+  for pid in $pids; do
+    wait "$pid" 2>/dev/null || true
+  done
+  wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
+  [ "$wins" -eq 1 ] || fail "expected exactly one dangling-steal reclaimer to win, got $wins"
+
+  dir=$(make_case lock-dangling-steal-foreign)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  foreign="$state/.not-an-owner-record"
+  mkdir "$lockdir"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  ln -s "$foreign" "$steal"
+  touch -h -t 202001010000 "$steal"
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "foreign steal-target fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=1" ] || fail "a steal mutex pointing outside the owner-record shape was reclaimed: $out"
+  [ ! -e "$foreign" ] || fail "reclaim created a directory at a path that is not an owner record"
+  pass "dangling steal-owner reclaim is serialized to one winner and refuses foreign targets"
 }
 
 test_lock_steals_dead_pid_lock() {
@@ -1292,6 +1427,9 @@ test_lock_missing_parent_returns_typed_failure_with_bounded_launches
 test_lock_owner_record_failure_returns_typed_failure
 test_stale_or_malformed_steal_mutex_never_claims_nested_mutex
 test_abandoned_reclaim_marker_does_not_wedge_stale_steal_recovery
+test_legacy_nested_steal_residue_is_retired_only_when_stale
+test_reclaim_marker_is_not_stolen_from_a_live_owner
+test_dangling_steal_owner_reclaim_yields_one_winner
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

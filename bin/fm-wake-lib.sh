@@ -445,22 +445,28 @@ fm_lock_try_acquire_steal_mutex() {
   fm_lock_try_create "$steal" || rc=$?
   [ "$rc" -ne 0 ] || return 0
   [ "$rc" -ne 2 ] || return 2
-  [ ! -e "$steal.steal" ] && [ ! -L "$steal.steal" ] || return 1
+  ! fm_lock_legacy_nested_steal_blocks "$steal.steal" || return 1
   pid=$(cat "$steal/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" && return 1
   fm_lock_mid_acquire_is_fresh "$steal" "$pid" && return 1
   [ -L "$steal" ] || return 1
   ownerdir=$(fm_lock_link_owner "$steal" 2>/dev/null) || return 1
   if [ ! -d "$ownerdir" ]; then
-    fm_lock_points_to_owner "$steal" "$ownerdir" || return 1
-    rm -f "$steal" 2>/dev/null || return 1
-    rc=0
-    fm_lock_try_create "$steal" || rc=$?
-    return "$rc"
+    case "${ownerdir##*/}" in
+      "${steal##*/}".owner.*) : ;;
+      *) return 1 ;;
+    esac
+    if ! mkdir "$ownerdir" 2>/dev/null; then
+      [ -d "$ownerdir" ] || return 1
+    fi
+    if ! fm_lock_points_to_owner "$steal" "$ownerdir"; then
+      rmdir "$ownerdir" 2>/dev/null || true
+      return 1
+    fi
   fi
   reclaim="$ownerdir/reclaim"
   fm_lock_reclaim_marker_claim "$reclaim" || return 1
-  if [ -e "$steal.steal" ] || [ -L "$steal.steal" ] \
+  if fm_lock_legacy_nested_steal_blocks "$steal.steal" \
     || ! fm_lock_recheck_stale_owner "$steal" "$ownerdir" "$pid"; then
     fm_lock_reclaim_marker_release "$reclaim"
     return 1
@@ -480,14 +486,22 @@ fm_lock_try_acquire_steal_mutex() {
 # reclaimer: a marker whose pid is dead and whose age passed the stale window is
 # itself reclaimable, exactly like every other stale record in this file.
 fm_lock_reclaim_marker_claim() {
-  local reclaim=$1 mypid
+  local reclaim=$1 mypid retired
   mypid=${BASHPID:-$$}
   if ! mkdir "$reclaim" 2>/dev/null; then
     fm_lock_reclaim_marker_is_abandoned "$reclaim" || return 1
-    fm_lock_reclaim_marker_release "$reclaim"
+    retired="$reclaim.dead.$mypid"
+    rm -rf "$retired" 2>/dev/null || true
+    mv "$reclaim" "$retired" 2>/dev/null || return 1
+    rm -rf "$retired" 2>/dev/null || true
     mkdir "$reclaim" 2>/dev/null || return 1
   fi
-  printf '%s\n' "$mypid" > "$reclaim/pid" 2>/dev/null || true
+  if ! { printf '%s\n' "$mypid" 2>/dev/null > "$reclaim/pid"; } \
+    || [ "$(cat "$reclaim/pid" 2>/dev/null || true)" != "$mypid" ]; then
+    rm -f "$reclaim/pid" 2>/dev/null || true
+    rmdir "$reclaim" 2>/dev/null || true
+    return 1
+  fi
   return 0
 }
 
@@ -503,8 +517,27 @@ fm_lock_reclaim_marker_is_abandoned() {
 
 fm_lock_reclaim_marker_release() {
   local reclaim=$1
+  [ "$(cat "$reclaim/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || return 1
   rm -f "$reclaim/pid" 2>/dev/null || true
   rmdir "$reclaim" 2>/dev/null || true
+  return 0
+}
+
+# A leftover .steal.steal can only come from a pre-upgrade recursive reclaimer.
+# It still blocks while its owner is live or too fresh to judge; once the owner
+# is dead and the residue passed the stale window it is retired here so the
+# non-recursive path can proceed without ever creating a nested mutex.
+fm_lock_legacy_nested_steal_blocks() {
+  local residue=$1 pid stale
+  [ -e "$residue" ] || [ -L "$residue" ] || return 1
+  pid=$(cat "$residue/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" && return 0
+  stale=$FM_LOCK_STALE_AFTER
+  [ "$stale" -lt 2 ] && stale=2
+  [ "$(fm_path_age "$residue")" -lt "$stale" ] && return 0
+  fm_lock_remove_path "$residue" >/dev/null 2>&1 || true
+  [ -e "$residue" ] || [ -L "$residue" ] || return 1
+  return 0
 }
 
 fm_lock_remove_path() {
@@ -1230,7 +1263,7 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
@@ -1259,7 +1292,7 @@ fm_wake_queued_keys() {
     signal|stale|check|heartbeat) ;;
     *) printf 'fm_wake_queued_keys: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
   esac
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   fm_wake_queued_keys_locked "$kind"
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 }

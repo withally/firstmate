@@ -27,11 +27,12 @@
 # Retirement closes only this secondmate's panes or workspace and never
 # stops fm-remote or removes a sibling secondmate's workspace or panes.
 # A retry after remote removal treats an absent home, or a home recreated only
-# from hash-bound inherited-material residue - propagated items, generation
-# records, the receiver's own lock and staging artifacts, shared-preference
-# quarantine siblings, and contentless operational directories - as already
-# retired. Any other unseeded directory remains unsafe and is refused without
-# deletion.
+# from inheritance-owned residue - propagated items bound to their generation
+# record, generation records whose commit the receiver never applied, its own
+# lock and staging artifacts, shared-preference quarantine siblings, and
+# contentless operational directories - as already retired. Every such artifact
+# is primary-authoritative and reproducible from the primary home. Any other
+# unseeded directory remains unsafe and is refused without deletion.
 #
 # The optional launch traceparent is the per-task W3C trace-context carrier the
 # PARENT home resolved for this secondmate; this host only delivers it to the
@@ -184,9 +185,12 @@ retired_inheritance_residue_valid() {
     fi
     retired_inheritance_generation_valid "$generation" || return 1
     generation_count=$((generation_count + 1))
+    if [ ! -e "$material" ] && [ ! -L "$material" ]; then
+      continue
+    fi
+    retired_plain_file "$material" || return 1
     case "$RETIRED_INHERIT_COMMAND" in
       put)
-        retired_plain_file "$material" || return 1
         actual_bytes=$(LC_ALL=C wc -c < "$material" | tr -d ' ')
         [ "$actual_bytes" = "$RETIRED_INHERIT_BYTES" ] || return 1
         actual_hash=$(fm_inherit_sha256 "$material") || return 1
@@ -194,7 +198,6 @@ retired_inheritance_residue_valid() {
         ;;
       absent)
         [ "$RETIRED_INHERIT_BYTES" -eq 0 ] || return 1
-        [ ! -e "$material" ] && [ ! -L "$material" ] || return 1
         ;;
     esac
   done <<EOF

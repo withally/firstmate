@@ -1233,6 +1233,37 @@ write_inherited_residue() { # <home-relative-path> <generation> <content>
   printf '%s\n%s\n%s\nput\n' "$generation" "$bytes" "$hash" > "$dir/.fm-inherit-$base.generation"
 }
 
+write_absent_generation() { # <home-relative-path> <generation>
+  local rel=$1 generation=$2 dir base empty_hash
+  dir=$(dirname "$REMOTE_HOME/$rel")
+  base=$(basename "$rel")
+  : > "$TMP_ROOT/empty-inherit-payload"
+  empty_hash=$(sha256_file "$TMP_ROOT/empty-inherit-payload")
+  printf '%s\n0\n%s\nabsent\n' "$generation" "$empty_hash" > "$dir/.fm-inherit-$base.generation"
+}
+
+assert_retirement_completed() { # <label>
+  local label=$1 existed=0
+  if [ -d "$REMOTE_HOME" ]; then
+    existed=1
+    rm -rf "$TMP_ROOT/completed-home-before"
+    cp -R "$REMOTE_HOME" "$TMP_ROOT/completed-home-before"
+  fi
+  if ! remote_env "$ROOT/bin/fm-teardown.sh" ios > "$TMP_ROOT/teardown-completed.out" 2>&1; then
+    printf '%s retry output:\n%s\n' "$label" "$(cat "$TMP_ROOT/teardown-completed.out")" >&2
+    fail "$label did not complete primary-side unregistration"
+  fi
+  assert_absent "$PARENT/state/ios.meta" "$label retained parent metadata"
+  assert_no_grep '- ios ' "$PARENT/data/secondmates.md" "$label retained the registry route"
+  if [ "$existed" -eq 1 ]; then
+    diff -ru "$TMP_ROOT/completed-home-before" "$REMOTE_HOME" >/dev/null \
+      || fail "$label changed the remote directory"
+    rm -rf "$TMP_ROOT/completed-home-before"
+  else
+    assert_absent "$REMOTE_HOME" "$label recreated the remote home"
+  fi
+}
+
 assert_retirement_refused() { # <label>
   local label=$1
   rm -rf "$TMP_ROOT/refused-home-before"
@@ -1292,6 +1323,27 @@ pass "remote retirement refuses residue whose bytes diverge from their hash comm
 
 printf 'project content\n' > "$REMOTE_HOME/README.md"
 assert_retirement_refused "an unseeded directory with unrelated content"
+rm -f "$REMOTE_HOME/README.md"
 pass "remote retirement still refuses an unsafe or wrong remote-home path"
+
+# The receiver commits the generation record before it publishes or removes the
+# material, so a killed inherit job leaves a committed generation whose command
+# was never applied. Both halves of that window are primary-reproducible
+# residue and must still reach idempotent success.
+rm -f "$REMOTE_HOME/config/crew-harness"
+assert_retirement_completed "a committed put generation whose material was never published"
+pass "already-retired retry accepts a committed put generation with no published material"
+
+restore_ios_primary_route
+write_inherited_residue config/crew-harness 3 'codex
+'
+write_absent_generation config/crew-harness 5
+assert_retirement_completed "a committed absent generation whose material is still present"
+pass "already-retired retry accepts a committed absent generation with the material still present"
+
+restore_ios_primary_route
+rm -rf "$REMOTE_HOME"
+assert_retirement_completed "a remote home that no longer exists"
+pass "an absent remote home completes primary-side unregistration"
 
 echo "ALL TESTS PASSED"

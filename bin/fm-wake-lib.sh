@@ -403,6 +403,10 @@ fm_lock_claim() {
   return 0
 }
 
+# Status 1 means the lock is held or was lost to a racer and retrying can win it;
+# status 2 means this process could not create its own owner record at all
+# (missing or unwritable parent directory), which no amount of waiting fixes.
+# Every caller in this file propagates that distinction rather than spinning.
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
@@ -1016,6 +1020,11 @@ fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }
 
+# Returns 0 on acquisition, 1 while the lock is legitimately contended, and 2
+# when acquisition can never succeed here (see fm_lock_try_create). A path that
+# already ends in .steal is never stale-recovered through a second mutex: at
+# most one primary-lock-to-.steal transition exists, so no .steal.steal is ever
+# created and stale recovery cannot recurse.
 fm_lock_try_acquire() {
   local lockdir=$1 pid steal cur rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
@@ -1130,6 +1139,9 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# Waits out ordinary contention but is NOT unconditional: a status-2 failure from
+# fm_lock_try_acquire is returned to the caller, so callers must check the result
+# and must not assume the lock is held after this returns.
 fm_lock_acquire_wait() {
   local lockdir=$1 rc
   while :; do

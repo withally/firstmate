@@ -484,6 +484,7 @@ fm_lock_try_acquire_steal_mutex() {
   fm_lock_reclaim_marker_held "$reclaim" || return 1
   if [ "$ownerdir" = "$steal" ]; then
     fm_lock_reclaim_marker_release "$reclaim" || return 1
+    fm_lock_clean_known_debris "$steal"
     fm_lock_remove_path "$steal" || return 1
   else
     if ! rm -f "$steal" 2>/dev/null; then
@@ -580,6 +581,24 @@ fm_lock_legacy_nested_steal_blocks() {
   fm_lock_remove_path "$residue" >/dev/null 2>&1 || true
   [ -e "$residue" ] || [ -L "$residue" ] || return 1
   return 0
+}
+
+# Retire only debris this lock implementation is known to create inside a lock
+# directory: an interrupted reclaim takeover copy, and a stray owner symlink a
+# racer left behind. Anything else is left in place so the caller's rmdir still
+# fails closed on state this code does not own.
+fm_lock_clean_known_debris() {
+  local lockdir=$1 base entry
+  base=${lockdir##*/}
+  for entry in "$lockdir"/reclaim.dead.*; do
+    [ -d "$entry" ] && [ ! -L "$entry" ] || continue
+    rm -f "$entry/pid" 2>/dev/null || true
+    rmdir "$entry" 2>/dev/null || true
+  done
+  for entry in "$lockdir/$base".owner.*; do
+    [ -L "$entry" ] || continue
+    rm -f "$entry" 2>/dev/null || true
+  done
 }
 
 fm_lock_remove_path() {

@@ -645,6 +645,51 @@ SH
   pass "a reclaim-marker takeover never leaves the marker slot claimable by a bystander"
 }
 
+test_legacy_directory_steal_mutex_survives_known_recovery_debris() {
+  local dir state lockdir steal dead out rc
+  dir=$(make_case lock-legacy-steal-dir-debris)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  dead=$(dead_pid)
+  mkdir "$lockdir" "$steal" "$steal/reclaim.dead.$dead"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$steal/pid"
+  printf '%s\n' "$dead" > "$steal/reclaim.dead.$dead/pid"
+  ln -s "$state/.gone-owner" "$steal/.contend.lock.steal.owner.abc123"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "legacy steal-dir debris fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=0" ] \
+    || fail "known reclaim debris left the legacy directory steal mutex permanently unreclaimable: $out"
+
+  dir=$(make_case lock-legacy-steal-dir-unknown)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  mkdir "$lockdir" "$steal"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  printf '%s\n' "$dead" > "$steal/pid"
+  printf 'unowned\n' > "$steal/not-a-lock-record"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "unknown steal-dir content fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=1" ] \
+    || fail "reclaim destroyed a steal directory holding content this lock code does not own: $out"
+  [ -f "$steal/not-a-lock-record" ] || fail "unowned content inside the steal directory was deleted"
+  pass "legacy steal-dir reclaim retires known debris and stays fail-closed on unowned content"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -1543,6 +1588,7 @@ test_dangling_steal_owner_reclaim_yields_one_winner
 test_reclaim_marker_takeover_is_bound_to_the_marker_it_inspected
 test_reclaim_marker_takeover_never_vacates_the_marker_slot
 test_legacy_directory_steal_mutex_is_reclaimed_without_recursion
+test_legacy_directory_steal_mutex_survives_known_recovery_debris
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed

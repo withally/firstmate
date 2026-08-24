@@ -465,9 +465,6 @@ fm_lock_try_acquire_steal_mutex() {
       fi
     fi
   elif [ -d "$steal" ]; then
-    case "$pid" in
-      ''|*[!0-9]*) return 1 ;;
-    esac
     ownerdir=$steal
     expected_owner=
   else
@@ -475,21 +472,25 @@ fm_lock_try_acquire_steal_mutex() {
   fi
   reclaim="$ownerdir/reclaim"
   fm_lock_reclaim_marker_claim "$reclaim" || return 1
-  if fm_lock_legacy_nested_steal_blocks "$steal.steal" \
-    || ! fm_lock_recheck_stale_owner "$steal" "$expected_owner" "$pid"; then
+  if fm_lock_legacy_nested_steal_blocks "$steal.steal"; then
+    fm_lock_reclaim_marker_release "$reclaim"
+    return 1
+  fi
+  if [ "$ownerdir" = "$steal" ]; then
+    if ! fm_lock_legacy_steal_dir_still_stale "$steal" "$pid"; then
+      fm_lock_reclaim_marker_release "$reclaim"
+      return 1
+    fi
+  elif ! fm_lock_recheck_stale_owner "$steal" "$expected_owner" "$pid"; then
     fm_lock_reclaim_marker_release "$reclaim"
     return 1
   fi
   fm_lock_reclaim_marker_held "$reclaim" || return 1
   if [ "$ownerdir" = "$steal" ]; then
-    if [ ! -d "$steal" ] || [ -L "$steal" ]; then
+    if ! fm_lock_retire_legacy_steal_dir "$steal"; then
       fm_lock_reclaim_marker_release "$reclaim"
       return 1
     fi
-    fm_lock_clean_known_files "$steal"
-    fm_lock_clean_known_debris "$steal"
-    fm_lock_reclaim_marker_release "$reclaim" || return 1
-    rmdir "$steal" 2>/dev/null || return 1
   else
     if ! rm -f "$steal" 2>/dev/null; then
       fm_lock_reclaim_marker_release "$reclaim"
@@ -500,6 +501,48 @@ fm_lock_try_acquire_steal_mutex() {
     rmdir "$ownerdir" 2>/dev/null || true
   fi
   fm_lock_try_create "$steal"
+}
+
+# The staleness of a legacy directory-shaped steal mutex was already judged on
+# the untouched directory before its reclaim marker was created, so the marker's
+# own mtime must not be re-read here; only the owner record is re-verified.
+fm_lock_legacy_steal_dir_still_stale() {
+  local steal=$1 expected_pid=$2 actual_pid
+  [ -d "$steal" ] && [ ! -L "$steal" ] || return 1
+  actual_pid=$(cat "$steal/pid" 2>/dev/null || true)
+  [ "$actual_pid" = "$expected_pid" ] || return 1
+  ! fm_pid_alive "$actual_pid"
+}
+
+# Replace a proven-stale legacy directory steal mutex by renaming it into a
+# fresh owner-record name and removing it there. The rename is the removal, so
+# the directory's own pid record survives every failure path and the mutex stays
+# reclaimable; unknown content refuses the whole retirement untouched.
+fm_lock_retire_legacy_steal_dir() {
+  local steal=$1 aside entry
+  [ -d "$steal" ] && [ ! -L "$steal" ] || return 1
+  fm_lock_clean_known_debris "$steal"
+  for entry in "$steal"/* "$steal"/.[!.]* "$steal"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case "${entry##*/}" in
+      pid|reclaim) ;;
+      *) return 1 ;;
+    esac
+  done
+  aside=$(fm_lock_owner_dir "$steal") || return 1
+  if ! rmdir "$aside" 2>/dev/null; then
+    fm_lock_discard_owner "$aside"
+    return 1
+  fi
+  if [ ! -d "$steal" ] || [ -L "$steal" ]; then
+    rmdir "$aside" 2>/dev/null || true
+    return 1
+  fi
+  mv "$steal" "$aside" 2>/dev/null || return 1
+  rm -f "$aside/pid" "$aside/reclaim/pid" 2>/dev/null || true
+  rmdir "$aside/reclaim" 2>/dev/null || true
+  rmdir "$aside" 2>/dev/null || true
+  return 0
 }
 
 # The reclaim marker serializes stale steal-mutex recovery. It records the

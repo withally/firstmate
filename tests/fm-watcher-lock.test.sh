@@ -222,12 +222,15 @@ test_lock_single_winner_under_concurrency() {
 
 test_lock_missing_parent_returns_typed_failure_with_bounded_launches() {
   local dir state missing fakebin count pidfile command_name real_command out rc elapsed result wait_result launches attempt_pid
+  local proctable snapfile snapshot_pid leaked
   dir=$(make_case lock-missing-parent)
   state="$dir/state"
   missing="$dir/absent/demo.lock"
   fakebin="$dir/countbin"
   count="$dir/helper-launches"
   pidfile="$dir/attempt-pid"
+  proctable="$dir/live-process-table"
+  snapfile="$dir/snapshot-pid"
   mkdir -p "$fakebin"
   for command_name in basename cat date dirname ln mkdir mktemp readlink rm rmdir stat uname; do
     real_command=$(command -v "$command_name")
@@ -267,8 +270,12 @@ SH
       wait_result=$?
       [ "$wait_result" -eq 2 ] || exit 21
       read -r launches < "$3"
+      ps -eo pid=,ppid= > "$5" 2>/dev/null &
+      snapshot_pid=$!
+      wait "$snapshot_pid" 2>/dev/null || true
+      printf "%s\n" "$snapshot_pid" > "$6"
       printf "result=%s wait_result=%s launches=%s\n" "$result" "$wait_result" "$launches"
-    ' _ "$LIB" "$missing" "$count" "$pidfile" 2>&1) || rc=$?
+    ' _ "$LIB" "$missing" "$count" "$pidfile" "$proctable" "$snapfile" 2>&1) || rc=$?
   elapsed=$SECONDS
 
   [ "$rc" -eq 0 ] || fail "missing-parent lock attempt did not return typed invalid-path status within its launch fuse (rc=$rc): $out"
@@ -280,8 +287,12 @@ SH
   [ "$launches" -le 18 ] || fail "five missing-parent failures plus one wait exceeded the helper-launch budget ($launches): $out"
   [ "$elapsed" -lt 10 ] || fail "missing-parent lock attempts did not return promptly (${elapsed}s): $out"
   attempt_pid=$(cat "$pidfile")
-  [ -z "$(pgrep -P "$attempt_pid" 2>/dev/null || true)" ] \
-    || fail "missing-parent lock attempt left a spawned descendant alive"
+  snapshot_pid=$(cat "$snapfile")
+  [ -s "$proctable" ] || fail "the live process table was never captured while the lock attempt was running"
+  leaked=$(awk -v parent="$attempt_pid" -v self="$snapshot_pid" \
+    '$2 == parent && $1 != self { print $1 }' "$proctable" | tr '\n' ' ')
+  [ -z "$leaked" ] \
+    || fail "missing-parent lock attempt left a spawned descendant alive: $leaked"
   pass "missing-parent lock failure is typed, prompt, descendant-free, and launch-bounded"
 }
 
@@ -687,16 +698,51 @@ test_legacy_directory_steal_mutex_survives_known_recovery_debris() {
   [ "$out" = "rc=1" ] \
     || fail "reclaim destroyed a steal directory holding content this lock code does not own: $out"
   [ -f "$steal/not-a-lock-record" ] || fail "unowned content inside the steal directory was deleted"
-  pass "legacy steal-dir reclaim retires known debris and stays fail-closed on unowned content"
+  [ "$(cat "$steal/pid" 2>/dev/null || true)" = "$dead" ] \
+    || fail "a refused retirement destroyed the steal mutex's own owner record"
+
+  rm -f "$steal/not-a-lock-record"
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "retry-after-cleanup fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=0" ] \
+    || fail "a legacy steal mutex stayed unreclaimable after its unowned content was removed: $out"
+  pass "legacy steal-dir reclaim retires known debris, fails closed on unowned content, and stays retryable"
+}
+
+test_legacy_directory_steal_mutex_without_owner_record_is_reclaimable_when_aged() {
+  local dir state lockdir steal dead out rc
+  dir=$(make_case lock-legacy-steal-dir-no-pid)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  steal="$lockdir.steal"
+  dead=$(dead_pid)
+  mkdir "$lockdir" "$steal"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+  touch -t 202001010000 "$steal"
+
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+    printf "rc=%s\n" "$?"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "pid-less legacy steal-dir fixture shell failed (rc=$rc): $out"
+  [ "$out" = "rc=0" ] \
+    || fail "an aged legacy steal directory carrying no owner record was permanently unreclaimable: $out"
+  pass "an aged legacy steal directory with no owner record is still reclaimable"
 }
 
 test_legacy_directory_reclaim_never_deletes_a_racer_mutex() {
-  local dir state lockdir steal reclaim racer_owner fakebin real_rmdir dead out rc
+  local dir state lockdir steal racer_owner fakebin real_rmdir dead out rc
   dir=$(make_case lock-legacy-steal-dir-racer)
   state="$dir/state"
   lockdir="$state/.contend.lock"
   steal="$lockdir.steal"
-  reclaim="$steal/reclaim"
   racer_owner="$state/.racer-owner"
   fakebin="$dir/racebin"
   real_rmdir=$(command -v rmdir)
@@ -706,21 +752,22 @@ test_legacy_directory_reclaim_never_deletes_a_racer_mutex() {
   printf '%s\n' "$dead" > "$steal/pid"
   cat > "$fakebin/rmdir" <<SH
 #!/usr/bin/env bash
-if [ "\$1" = "\${FM_TEST_RECLAIM:?}" ]; then
-  "$real_rmdir" "\$@"
-  rc=\$?
-  "$real_rmdir" "\${FM_TEST_STEAL:?}" 2>/dev/null || true
-  mkdir -p "\${FM_TEST_RACER_OWNER:?}"
-  printf '%s\n' "\${FM_TEST_RACER_PID:?}" > "\$FM_TEST_RACER_OWNER/pid"
-  ln -s "\$FM_TEST_RACER_OWNER" "\$FM_TEST_STEAL" 2>/dev/null || true
-  exit \$rc
-fi
+case "\$1" in
+  */reclaim)
+    "$real_rmdir" "\$@"
+    rc=\$?
+    mkdir -p "\${FM_TEST_RACER_OWNER:?}"
+    printf '%s\n' "\${FM_TEST_RACER_PID:?}" > "\$FM_TEST_RACER_OWNER/pid"
+    ln -s "\$FM_TEST_RACER_OWNER" "\${FM_TEST_STEAL:?}" 2>/dev/null || true
+    exit \$rc
+    ;;
+esac
 exec "$real_rmdir" "\$@"
 SH
   chmod +x "$fakebin/rmdir"
 
   rc=0
-  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_TEST_RECLAIM="$reclaim" \
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
     FM_TEST_STEAL="$steal" FM_TEST_RACER_OWNER="$racer_owner" FM_TEST_RACER_PID="$$" bash -c '
       . "$1"
       fm_lock_try_acquire "$2"
@@ -1659,6 +1706,7 @@ test_reclaim_marker_takeover_is_bound_to_the_marker_it_inspected
 test_reclaim_marker_takeover_never_vacates_the_marker_slot
 test_legacy_directory_steal_mutex_is_reclaimed_without_recursion
 test_legacy_directory_steal_mutex_survives_known_recovery_debris
+test_legacy_directory_steal_mutex_without_owner_record_is_reclaimable_when_aged
 test_legacy_directory_reclaim_never_deletes_a_racer_mutex
 test_self_orphaned_reclaim_marker_is_reclaimable_by_its_owner
 test_lock_steals_dead_pid_lock

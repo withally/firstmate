@@ -1,0 +1,10 @@
+$ pgrep -x fseventsd
+  342
+$ top -l 1 -pid $(pgrep -x fseventsd|head -1) -stats pid,command,mem,rsize,compressed,cpu,time,threads | tail -3
+  
+  PID  COMMAND   MEM   MEM   CMPRS %CPU TIME     #TH
+  342  fseventsd 5904K 5904K 1648K 0.0  06:26.37 19 
+$ FM_TELEMETRY_FSEVENTSD_DISABLE=0 bin/fm-telemetry.sh fseventsd-check   # real host, no fakes
+  (exit 0, no alert text: healthy daemon stays silent)
+$ cat state/telemetry/fseventsd-samples   # epoch mem_bytes pressure_level swap_bytes
+  1787577203 6225920 1 8739818045

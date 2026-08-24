@@ -1,0 +1,107 @@
+fseventsd footprint early warning - end-to-end fleet walkthrough
+repo:    /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0SQSCDK191W0FGA39ASB6G1
+real:    bin/fm-watch.sh (fleet watcher) + bin/fm-wake-drain.sh (wake delivery)
+faked:   pgrep / top / sysctl only
+clock:   real; sample history is pre-seeded with recent epochs
+accepted thresholds: warning >512 MiB twice or >256 MiB/h for 2h; action >2 GiB,
+                     doubling within 1h, or warning + pressure/swap; emergency is
+                     sustained growth toward 4 GiB with worsening pressure.
+
+================================================================
+1. HEALTHY - the ~5 MiB daemon this Mac actually runs right now
+================================================================
+live sample the watcher will take: fseventsd MEM=5M, kern pressure level=1, swap used=0.00M
+$ cat state/telemetry/fseventsd-samples   # history already on disk (epoch mem_bytes pressure swap_bytes)
+  1787576438 5242880 1 0
+  1787576798 5242880 1 0
+$ bin/fm-watch.sh
+  (watcher raised no fseventsd wake)
+$ cat state/telemetry/fseventsd-samples   # history after this cycle
+  1787576438 5242880 1 0
+  1787576798 5242880 1 0
+  1787577158 5242880 1 0
+$ cat state/telemetry/fseventsd-alert     # (absent: no episode open)
+
+================================================================
+2. WARNING - two consecutive samples above 512 MiB
+================================================================
+live sample the watcher will take: fseventsd MEM=640M, kern pressure level=1, swap used=0.00M
+$ cat state/telemetry/fseventsd-samples   # history already on disk (epoch mem_bytes pressure swap_bytes)
+  1787576798 629145600 1 0
+$ bin/fm-watch.sh
+  check: fseventsd: WARNING: fseventsd MEM=640.00 MiB; two consecutive samples above 512 MiB
+$ bin/fm-wake-drain.sh   # what the fleet operator/agent is actually handed
+  1787577186	1	check	fseventsd	check: fseventsd: WARNING: fseventsd MEM=640.00 MiB; two consecutive samples above 512 MiB
+$ cat state/telemetry/fseventsd-samples   # history after this cycle
+  1787576798 629145600 1 0
+  1787577186 671088640 1 0
+$ cat state/telemetry/fseventsd-alert     # highest level of the live episode
+  warning
+
+================================================================
+3. WARNING - growth above 256 MiB/hour sustained for two hours
+================================================================
+live sample the watcher will take: fseventsd MEM=800M, kern pressure level=1, swap used=0.00M
+$ cat state/telemetry/fseventsd-samples   # history already on disk (epoch mem_bytes pressure swap_bytes)
+  1787568158 104857600 1 0
+  1787576798 828375040 1 0
+$ bin/fm-watch.sh
+  check: fseventsd: WARNING: fseventsd MEM=800.00 MiB; two consecutive samples above 512 MiB; growth 279.10 MiB/hour for 2h
+$ bin/fm-wake-drain.sh   # what the fleet operator/agent is actually handed
+  1787577188	1	check	fseventsd	check: fseventsd: WARNING: fseventsd MEM=800.00 MiB; two consecutive samples above 512 MiB; growth 279.10 MiB/hour for 2h
+$ cat state/telemetry/fseventsd-samples   # history after this cycle
+  1787568158 104857600 1 0
+  1787576798 828375040 1 0
+  1787577187 838860800 1 0
+$ cat state/telemetry/fseventsd-alert     # highest level of the live episode
+  warning
+
+================================================================
+4. ACTION - past 2 GiB, doubled within the hour, yellow memory pressure
+================================================================
+live sample the watcher will take: fseventsd MEM=2500M, kern pressure level=2, swap used=0.00M
+$ cat state/telemetry/fseventsd-samples   # history already on disk (epoch mem_bytes pressure swap_bytes)
+  1787576798 629145600 1 0
+$ bin/fm-watch.sh
+  check: fseventsd: ACTION: fseventsd MEM=2500.00 MiB; two consecutive samples above 512 MiB; MEM above 2 GiB; doubling within one hour; warning plus yellow memory pressure; pressure_level=2 swap_used=0.00 GiB
+$ bin/fm-wake-drain.sh   # what the fleet operator/agent is actually handed
+  1787577190	1	check	fseventsd	check: fseventsd: ACTION: fseventsd MEM=2500.00 MiB; two consecutive samples above 512 MiB; MEM above 2 GiB; doubling within one hour; warning plus yellow memory pressure; pressure_level=2 swap_used=0.00 GiB
+$ cat state/telemetry/fseventsd-samples   # history after this cycle
+  1787576798 629145600 1 0
+  1787577189 2621440000 2 0
+$ cat state/telemetry/fseventsd-alert     # highest level of the live episode
+  action
+
+================================================================
+5. ACTION - warning episode plus more than 8 GiB of swap in use
+================================================================
+live sample the watcher will take: fseventsd MEM=700M, kern pressure level=1, swap used=9000M
+$ cat state/telemetry/fseventsd-samples   # history already on disk (epoch mem_bytes pressure swap_bytes)
+  1787576798 629145600 1 0
+$ bin/fm-watch.sh
+  check: fseventsd: ACTION: fseventsd MEM=700.00 MiB; two consecutive samples above 512 MiB; warning plus more than 8 GiB swap; pressure_level=1 swap_used=8.79 GiB
+$ bin/fm-wake-drain.sh   # what the fleet operator/agent is actually handed
+  1787577192	1	check	fseventsd	check: fseventsd: ACTION: fseventsd MEM=700.00 MiB; two consecutive samples above 512 MiB; warning plus more than 8 GiB swap; pressure_level=1 swap_used=8.79 GiB
+$ cat state/telemetry/fseventsd-samples   # history after this cycle
+  1787576798 629145600 1 0
+  1787577191 734003200 1 9437184000
+$ cat state/telemetry/fseventsd-alert     # highest level of the live episode
+  action
+
+================================================================
+6. EMERGENCY - sustained climb toward 4 GiB with worsening pressure
+================================================================
+live sample the watcher will take: fseventsd MEM=3500M, kern pressure level=4, swap used=9000M
+$ cat state/telemetry/fseventsd-samples   # history already on disk (epoch mem_bytes pressure swap_bytes)
+  1787576468 2726297600 1 0
+  1787576813 3145728000 2 0
+$ bin/fm-watch.sh
+  check: fseventsd: EMERGENCY: fseventsd MEM=3500.00 MiB; two consecutive samples above 512 MiB; MEM above 2 GiB; warning plus red critical memory pressure; warning plus more than 8 GiB swap; sustained growth toward 4 GiB plus worsening memory pressure; pressure_level=4 swap_used=8.79 GiB; stop launching new work, save state, and reduce workload before the machine wedges
+$ bin/fm-wake-drain.sh   # what the fleet operator/agent is actually handed
+  1787577193	1	check	fseventsd	check: fseventsd: EMERGENCY: fseventsd MEM=3500.00 MiB; two consecutive samples above 512 MiB; MEM above 2 GiB; warning plus red critical memory pressure; warning plus more than 8 GiB swap; sustained growth toward 4 GiB plus worsening memory pressure; pressure_level=4 swap_used=8.79 GiB; stop launching new work, save state, and reduce workload before the machine wedges
+$ cat state/telemetry/fseventsd-samples   # history after this cycle
+  1787576468 2726297600 1 0
+  1787576813 3145728000 2 0
+  1787577193 3670016000 4 9437184000
+$ cat state/telemetry/fseventsd-alert     # highest level of the live episode
+  emergency

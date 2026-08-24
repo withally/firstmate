@@ -347,7 +347,7 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  (print_status_presentation) || true
+  (print_status_presentation) || echo "wake drain: status presentation failed; UNREAD STATUS, OPEN DECISIONS and RECORD DIVERGENCE may be incomplete" >&2
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
   fi
@@ -399,6 +399,6 @@ DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
-(print_status_presentation "$RAW_ROWS") || true
+(print_status_presentation "$RAW_ROWS") || echo "wake drain: status presentation failed; UNREAD STATUS, OPEN DECISIONS and RECORD DIVERGENCE may be incomplete" >&2
 assert_watcher_liveness
 exit 0

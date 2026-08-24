@@ -192,6 +192,14 @@ test_signal_reason_is_actionable_classifier() {
     || fail "working/resolved status lines were not classified as routine nonterminal"
   signal_reason_is_routine_nonterminal "$state/a.status" "$state/c.turn-ended" \
     || fail "a routine status plus its turn-end was not classified as routine nonterminal"
+  printf 'note: captain said use REST not RPC\n' > "$state/h.status"
+  signal_reason_is_routine_nonterminal "$state/h.status" \
+    || fail "an informational note: line was not classified as routine nonterminal"
+  signal_reason_is_actionable "$state/h.status" \
+    && fail "an informational note: line was classified as actionable"
+  printf 'note: PR ready for review\n' > "$state/i.status"
+  signal_reason_is_actionable "$state/i.status" \
+    || fail "a captain-relevant note: line lost its actionable classification"
   pass "signal_reason_is_actionable: benign absorbed, captain verbs and coalesced batches surfaced"
 }
 
@@ -676,6 +684,48 @@ test_absorbed_signal_surfaces_on_next_unrelated_model_turn() {
   ! grep -F 'task working: compiling step 2' "$second_drain" >/dev/null \
     || fail "the absorbed status line was replayed after its successful presentation"
   pass "an absorbed status line is presented once in UNREAD STATUS on the next unrelated genuine model turn"
+}
+
+test_live_note_signal_absorbed_and_presented_once() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case live-note-absorb); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  status_file="$state/task.status"
+  # A `note:` from a provably-live worker is informational, never terminal, and
+  # was absorbable before recognized-shape gating existed. It must stay absorbed
+  # and still reach the model exactly once through the receipt path.
+  printf 'note: captain said use REST not RPC\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher woke for a note: signal whose crew is provably working: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$out" ] || fail "an absorbable note: signal printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "an absorbable note: signal enqueued a durable wake record"
+  append_wake "$state" check unrelated.check.sh 'check: unrelated genuine model turn' \
+    || fail "the unrelated genuine wake could not be queued"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "the next genuine model-turn drain failed"
+  grep -F 'task note: captain said use REST not RPC' "$drain_out" >/dev/null \
+    || fail "the absorbed note: line was lost before the next genuine model turn: $(cat "$drain_out")"
+  pass "a note: signal from a provably-live worker is absorbed and presented once"
+}
+
+test_terminal_status_still_wakes_over_a_live_worker() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case terminal-over-live); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'done: shipped clean\n' > "$status_file"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a terminal done: status was absorbed even though it must always wake"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the terminal status surfaced without its signal reason"
+  [ -s "$state/.wake-queue" ] || fail "the terminal status produced no durable wake"
+  pass "a terminal done: status wakes immediately even when the worker is positively live"
 }
 
 test_attended_absorb_off_surfaces_routine_signal() {
@@ -2877,6 +2927,8 @@ test_signal_crew_provably_working_classifier
 test_secondmate_status_signal_never_absorbed_classifier
 test_provably_working_signal_absorbed
 test_absorbed_signal_surfaces_on_next_unrelated_model_turn
+test_live_note_signal_absorbed_and_presented_once
+test_terminal_status_still_wakes_over_a_live_worker
 test_attended_absorb_off_surfaces_routine_signal
 test_unparseable_live_status_still_surfaces
 test_turn_ended_provably_working_absorbed

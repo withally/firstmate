@@ -811,25 +811,40 @@ status_record_absorbed_signal() {  # <state> <file> ...
 }
 
 # Print the pending absorbed byte endpoint for a status file, or an empty string
-# when no receipt exists. Malformed, stale-identity, symlinked, or out-of-range
-# receipts fail so the drain preserves its cursor and retries visibly later.
+# when no receipt applies. A receipt that can no longer describe the CURRENT file
+# - stale identity, an endpoint past the end, malformed content, or a symlinked
+# or otherwise unreadable receipt - is dropped and reported as absent: those
+# absorbed bytes went away with the file they described, and one unverifiable
+# receipt must never disable the drain's no-loss sections. Dropping is also the
+# conservative direction, because it can only hold the presentation cursor back.
+# Only a status file whose own identity or size cannot be read fails.
 status_absorbed_receipt_endpoint() {  # <status-file>
   local f=$1 receipt data ident endpoint extra cur_ident size
   receipt=$(_fm_status_absorbed_receipt_path "$f")
   if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then return 0; fi
-  [ -f "$receipt" ] && [ -r "$receipt" ] && [ ! -L "$receipt" ] || return 1
-  data=$(LC_ALL=C command cat "$receipt" 2>/dev/null) || return 1
-  IFS=$(printf '\t') read -r ident endpoint extra <<EOF
-$data
-EOF
-  [ -n "$ident" ] && [ -z "$extra" ] || return 1
-  case "$endpoint" in ''|*[!0-9]*) return 1 ;; esac
   cur_ident=$(_fm_open_decisions_file_ident "$f") || return 1
   size=$(_fm_status_file_size "$f") || return 1
   size=${size//[[:space:]]/}
   case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$ident" = "$cur_ident" ] && [ "$endpoint" -le "$size" ] || return 1
-  printf '%s' "$endpoint"
+  if [ -f "$receipt" ] && [ -r "$receipt" ] && [ ! -L "$receipt" ] \
+    && data=$(LC_ALL=C command cat "$receipt" 2>/dev/null); then
+    IFS=$(printf '\t') read -r ident endpoint extra <<EOF
+$data
+EOF
+    if [ -n "$ident" ] && [ -z "$extra" ] && [ "$ident" = "$cur_ident" ]; then
+      case "$endpoint" in
+        ''|*[!0-9]*) ;;
+        *)
+          if [ "$endpoint" -le "$size" ]; then
+            printf '%s' "$endpoint"
+            return 0
+          fi
+          ;;
+      esac
+    fi
+  fi
+  rm -f -- "$receipt" || return 1
+  return 0
 }
 
 status_retire_presentation_task() {  # <state> <task-id>
@@ -1188,10 +1203,14 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f lines line offset absorbed tail_start
+  local state=$1 snapshot=$2 task endpoint ident f lines line offset absorbed
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
+    # A status file that vanished or was replaced by a symlink between the
+    # snapshot and this scan has nothing left to present; skip it rather than
+    # failing the whole presentation, matching status_new_lines_since_cursor.
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     offset=$(status_presentation_cursor_offset "$f") || return 1
     absorbed=$(status_absorbed_receipt_endpoint "$f") || return 1
     [ -n "$absorbed" ] || absorbed=$offset
@@ -1206,9 +1225,7 @@ scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
 $lines
 EOF
     fi
-    tail_start=$absorbed
-    [ "$tail_start" -ge "$offset" ] || tail_start=$offset
-    lines=$(status_lines_between_offsets "$f" "$tail_start" "$endpoint") || return 1
+    lines=$(status_lines_between_offsets "$f" "$absorbed" "$endpoint") || return 1
     [ -n "$lines" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -1305,7 +1322,9 @@ signal_reason_is_actionable() {  # <file> ...
 }
 
 # 0 only when every referenced signal path has a recognized routine shape.
-# Status files must end in a recognized nonterminal lifecycle verb; turn-end
+# Status files must end in a recognized nonterminal lifecycle verb (the progress
+# and declared-wait verbs, plus the informational `note:` verb, whose bytes are
+# still surfaced exactly once through the delayed presentation receipt); turn-end
 # markers may accompany them or stand alone. Missing files, unknown path kinds,
 # blank status logs, and every other verb are not routine, so both attended and
 # away supervisors fail toward waking on syntax they do not positively understand.
@@ -1319,7 +1338,7 @@ signal_reason_is_routine_nonterminal() {  # <file> ...
         [ -n "$last" ] || return 1
         verb=$(status_line_verb "$last")
         case "$verb" in
-          working|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
+          working|resolved|captain-held|note|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
           *) return 1 ;;
         esac
         seen=1

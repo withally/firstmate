@@ -288,6 +288,58 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
 
+# An absorbed-status receipt is bound to one file identity and byte endpoint.
+# When it can no longer describe the current file - id reuse, an out-of-band
+# replacement, a restore, or truncation - it must be dropped and treated as
+# absent. It must NEVER be able to blank the no-loss sections it exists to serve.
+test_unverifiable_absorbed_receipt_still_presents_every_section() {
+  local dir state out status receipt
+  dir=$(make_case unverifiable-receipt)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task-receipt.status"
+  receipt="$state/.status-absorbed-task-receipt"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$status"
+  printf 'note: buried informational answer\n' >> "$status"
+  printf 'stale-device:stale-inode\t3\n' > "$receipt"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain failed with a stale-identity absorbed receipt"
+
+  grep -F 'task-receipt note: buried informational answer' "$out" >/dev/null \
+    || fail "a stale absorbed receipt silenced UNREAD STATUS: $(cat "$out")"
+  grep -F 'task-receipt [key=api-shape] needs-decision: pick REST or RPC' "$out" >/dev/null \
+    || fail "a stale absorbed receipt silenced OPEN DECISIONS: $(cat "$out")"
+  [ ! -e "$receipt" ] \
+    || fail "the unverifiable receipt was kept and will re-break every later drain"
+  pass "an unverifiable absorbed receipt is dropped instead of blanking the presentation"
+}
+
+test_out_of_range_absorbed_receipt_still_presents_every_section() {
+  local dir state out status receipt ident
+  dir=$(make_case out-of-range-receipt)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task-range.status"
+  receipt="$state/.status-absorbed-task-range"
+  printf 'note: only surviving line after truncation\n' > "$status"
+  ident=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-classify-lib.sh"
+    _fm_open_decisions_file_ident "$STATE/task-range.status"
+  ' _ "$ROOT") || fail "could not read the current status identity"
+  printf '%s\t999999\n' "$ident" > "$receipt"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain failed with an out-of-range absorbed receipt"
+
+  grep -F 'task-range note: only surviving line after truncation' "$out" >/dev/null \
+    || fail "an out-of-range absorbed receipt silenced UNREAD STATUS: $(cat "$out")"
+  [ ! -e "$receipt" ] \
+    || fail "the out-of-range receipt was kept and will re-break every later drain"
+  pass "an absorbed receipt past the end of its file is dropped instead of blanking the presentation"
+}
+
 test_routine_working_lines_stay_silent_on_the_empty_queue() {
   local dir state out
   dir=$(make_case silent-working)
@@ -318,4 +370,6 @@ test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
+test_unverifiable_absorbed_receipt_still_presents_every_section
+test_out_of_range_absorbed_receipt_still_presents_every_section
 test_routine_working_lines_stay_silent_on_the_empty_queue

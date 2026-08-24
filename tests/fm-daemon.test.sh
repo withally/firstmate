@@ -106,6 +106,33 @@ test_unparseable_signal_fails_toward_escalation() {
   pass "away classification escalates an unparseable signal through the shared status policy"
 }
 
+test_vanished_signal_path_self_handles() {
+  local dir state out
+  dir=$(make_supercase vanished-signal)
+  state="$dir/state"
+  # Teardown retired the task between the wake and this classification, so the
+  # path carries no content to act on. It must not add a contentless digest
+  # entry the captain cannot do anything with.
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/gone.status" "$state")
+  case "$out" in
+    self\|*) ;;
+    *) fail "away classification escalated a signal whose status file no longer exists: $out" ;;
+  esac
+  printf 'working: still compiling\n' > "$state/live.status"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/gone.status $state/live.status" "$state")
+  case "$out" in
+    self\|*) ;;
+    *) fail "a routine live status was escalated because a sibling path had been retired: $out" ;;
+  esac
+  printf 'done: shipped clean\n' > "$state/live.status"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/gone.status $state/live.status" "$state")
+  case "$out" in
+    escalate\|*) ;;
+    *) fail "a retired sibling path suppressed a terminal status escalation: $out" ;;
+  esac
+  pass "away classification self-handles retired signal paths without hiding a live terminal status"
+}
+
 test_classify_routine_signal_self() {
   local dir state out
   dir=$(make_supercase classify-routine)
@@ -1938,6 +1965,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 
 test_afk_start_refuses_when_flag_cannot_be_written
 test_unparseable_signal_fails_toward_escalation
+test_vanished_signal_path_self_handles
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_daemon_state_root_uses_fm_home

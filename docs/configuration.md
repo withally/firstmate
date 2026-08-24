@@ -702,7 +702,7 @@ FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
 ```
 
 Attended routine-status absorption defaults on and can be disabled home-locally by writing exactly `off` to `config/attended-routine-status-absorb`.
-Only recognized nonterminal lifecycle shapes with positive current-work evidence are absorbed; malformed configuration, unknown status syntax, and missing liveness proof wake the primary.
+Only recognized nonterminal lifecycle shapes (`working`, `resolved`, `captain-held`, the paused verb, and informational `note:` lines) with positive current-work evidence are absorbed; malformed configuration, unknown status syntax, terminal verbs, and missing liveness proof wake the primary.
 `FM_ATTENDED_ROUTINE_STATUS_ABSORB` overrides the file with exact `on` or `off` for one process.
 
 `fm-teardown.sh` retries only Git's `Unable to create '...index.lock': File exists` return failure up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times.

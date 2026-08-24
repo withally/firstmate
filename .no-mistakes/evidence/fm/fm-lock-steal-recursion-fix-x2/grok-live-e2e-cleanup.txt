@@ -1,0 +1,20 @@
+lab directory created: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M0SF08ZQ9J6J68AHH9N3X9N6/.grok-live-e2e.79486
+
+peak lab-owned processes observed while running: 8
+--- snapshot of lab-owned processes at peak (paths shortened) ---
+79503 /opt/homebrew/bin/tmux -L fm-grok-live-e2e-79486 new-session -d -s grok-live-e2e -c <LAB>/project env FM_HOME='<LAB>/fmhome' FM_ROOT_OVERRIDE='<
+83886 bash <LAB>/project/bin/fm-watch.sh
+85706 bash <LAB>/project/bin/fm-watch.sh
+85709 bash <LAB>/project/bin/fm-inactive-reconcile.sh scan
+86499 timeout -k 1 11 bash -c \012    status_file=$1\012    shift\012    "$@"\012    command_rc=$?\012    printf "%s\n" "$command_rc" > "$status_file"
+86506 bash -c \012    status_file=$1\012    shift\012    "$@"\012    command_rc=$?\012    printf "%s\n" "$command_rc" > "$status_file"\012    exit "$c
+86510 bash <LAB>/project/bin/fm-inactive-reconcile.sh _scan-locked 0
+79504 bash -lc printf "pid=%s\n" "$$" > "<LAB>/fmhome/state/.grok-watch-coordinator"; printf "%s\n" "$$" > "$FM_HOME/state/.lock"; grok --trust --alwa
+
+test exit status: 0
+test output: ok - grok 1.0.5 (5115b46bc909) live E2E preserved tracked background completion and shared ledger classification
+
+--- after cleanup ---
+lab directory still present: no
+surviving lab-owned coordinator/watcher/arm processes: 0
+RESULT: no Grok coordinator, arm, or watcher survived lab deletion

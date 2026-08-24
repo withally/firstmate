@@ -1,0 +1,18 @@
+### BEFORE FIX - base commit 7e4fada:bin/fm-wake-lib.sh
+lock path        : $WORK/no-such-parent/.wake-queue.lock
+parent dir exists: no
+outcome          : HUNG - killed after 20s (never returned)
+process launches : 2486
+deepest .steal chain reached: 621
+sample runaway path (truncated to 160 chars):
+/no-such-parent/.wake-queue.lock.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.s
+  ...(continues)
+expected: unbounded primary->.steal->.steal.steal... recursion (Mac freeze)
+
+### AFTER FIX - target commit 1ebeaf4 bin/fm-wake-lib.sh
+lock path        : $WORK/no-such-parent/.wake-queue.lock
+parent dir exists: no
+outcome          : returned status 2
+process launches : 4
+deepest .steal chain reached: 0
+status 2 = typed invalid parent / owner-record failure (status 1 would mean contention)

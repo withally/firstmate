@@ -157,7 +157,8 @@ done < "$BRIEF" > "$TMP/charter.remote"
 PROJECTS_CSV=
 : > "$TMP/project.records"
 PROJECT_INDEX=0
-for project in "${PROJECT_NAMES[@]}"; do
+while [ "$PROJECT_INDEX" -lt "${#PROJECT_NAMES[@]}" ]; do
+  project=${PROJECT_NAMES[$PROJECT_INDEX]}
   ORIGIN=${PROJECT_ORIGINS[$PROJECT_INDEX]}
   PROJECT_INDEX=$((PROJECT_INDEX + 1))
   MODE_LINE=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-project-mode.sh" "$project")

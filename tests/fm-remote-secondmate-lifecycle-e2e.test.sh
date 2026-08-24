@@ -357,7 +357,8 @@ FM_SECONDMATE_CHARTER='Failing seed charter.' FM_SECONDMATE_SCOPE='failed seed' 
 seed_fail_pid=$!
 seed_wait=0
 while [ ! -f "$TMP_ROOT/seed.entered" ]; do
-  kill -0 "$seed_fail_pid" 2>/dev/null || fail "failing seed exited before remote provisioning"
+  kill -0 "$seed_fail_pid" 2>/dev/null \
+    || fail "failing seed exited before remote provisioning"$'\n'"$(cat "$TMP_ROOT/seed-fail.out")"
   seed_wait=$((seed_wait + 1))
   [ "$seed_wait" -le 250 ] || fail "failing seed never reached remote provisioning"
   sleep 0.02

@@ -251,13 +251,13 @@ fm_pi_extension_owns_supervision() {
 # shellcheck disable=SC2034 # Read by callers after the function returns.
 FM_WATCHER_VERDICT_OK=false
 # shellcheck disable=SC2034 # Read by callers after the function returns.
-FM_WATCHER_VERDICT_REASON=stale-beacon
+FM_WATCHER_VERDICT_REASON='stale-beacon'
 fm_watcher_supervision_verdict() {
   local state=$1 watch=$2 grace=${3:-${FM_GUARD_GRACE:-300}} home=${4:-$FM_HOME}
   local root=${5:-$FM_ROOT}
   local beat age fresh=false model
   FM_WATCHER_VERDICT_OK=false
-  FM_WATCHER_VERDICT_REASON=stale-beacon
+  FM_WATCHER_VERDICT_REASON='stale-beacon'
   beat="$state/.last-watcher-beat"
   age=$(fm_path_age "$beat")
   case "$age" in

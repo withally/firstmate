@@ -127,6 +127,19 @@ A Secondmate on a remote route is covered the same way: the primary resolves and
 The presence flag is session-scoped enablement, so it transfers at launch and is left unchanged by live convergence into a running home.
 See [`trace-context.md`](trace-context.md) for carrier semantics, supported routes, the manual fleet-restart requirement, the session boundary, and safety limits; `bin/fm-trace-context-lib.sh`'s header owns the exact mechanics, and [`verification/trace-context.md`](verification/trace-context.md) records repeatable evidence.
 
+## Attended routine status absorption (config/attended-routine-status-absorb / FM_ATTENDED_ROUTINE_STATUS_ABSORB)
+
+In attended mode the watcher absorbs a routine supervision wake in bash instead of spending an LLM turn on it, so healthy waiting stays free.
+Absorption is conservative and positive: it applies only when every signal path has a recognized nonterminal shape - a status log whose last line carries `working`, `resolved`, `captain-held`, the paused verb, or an informational `note:`, plus bare turn-ended markers - no listed status is captain-relevant, and `bin/fm-crew-state.sh` supplies positive current-work proof for every referenced crew.
+Everything else wakes the primary immediately: terminal verbs, unknown or unparseable status syntax, dead or unreadable endpoints, secondmate status replies, authenticated check results, and stale or wedge suspicion.
+Absorption suppresses only the wake, never the content or the clock: the absorbed status lines are presented exactly once in the drain's UNREAD STATUS section on the next genuine turn, and stale and wedge detection continue on their unchanged schedules.
+
+The local, gitignored `config/attended-routine-status-absorb` file defaults on when absent and is disabled by writing exactly `off`.
+`FM_ATTENDED_ROUTINE_STATUS_ABSORB` overrides the file for one process with exact `on` or `off`.
+Any other value, and an unreadable or symlinked config file, disables absorption, so configuration drift wakes the primary rather than quietly hiding work.
+Away-mode triage is unaffected: while `state/.afk` exists the daemon owns every wake, and it reuses only the same recognized-shape boundary before distilling a digest entry.
+[`architecture.md`](architecture.md) owns how this fits the supervision loop and the delayed-presentation receipt.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true` and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
@@ -649,6 +662,7 @@ FM_WATCH_CYCLE_LOG_MAX_BYTES=262144   # size cap for the arm-owned watcher lifec
 FM_WATCH_CYCLE_LOG_KEEP_LINES=1000   # newest complete lifecycle rows considered when the ledger is capped
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watcher lock may have a stale beacon before re-arm errors
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake
+FM_ATTENDED_ROUTINE_STATUS_ABSORB=on   # attended routine-status absorption override; see "Attended routine status absorption"
 FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches
 FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
 FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates; stale panes whose crew is not provably working surface immediately unless they declare the pause verb

@@ -339,9 +339,28 @@ _collapse_newlines() {  # <text>
 # summary firstmate would otherwise have to re-read.
 
 classify_signal() {  # <reason-after-colon> <state>
-  local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task seen
+  local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task seen live=""
+  # A path that no longer exists was retired by teardown, not left unclassified,
+  # and carries no content to act on, so it self-handles exactly as before rather
+  # than adding a contentless digest entry. Whatever remains must have a
+  # recognized shape: the same positive policy attended mode uses is the away
+  # classifier's syntax boundary too. Unknown verbs, unknown path kinds, and
+  # blank logs are escalated instead of becoming a second, broader dialect.
+  # shellcheck disable=SC2086 # reason is a space-separated signal path list
   for f in $reason; do
     [ -e "$f" ] || continue
+    live="${live}${live:+ }$f"
+  done
+  if [ -n "$live" ]; then
+    # shellcheck disable=SC2086 # live is a space-separated signal path list
+    if ! signal_reason_is_routine_nonterminal $live \
+      && ! signal_reason_is_actionable $live; then
+      printf 'escalate|unrecognized signal shape: %s' "$reason"
+      return
+    fi
+  fi
+  # shellcheck disable=SC2086 # live is a space-separated signal path list
+  for f in $live; do
     last=$(last_status_line "$f")
     [ -n "$last" ] || continue
     distilled="${distilled}$(basename "$f"): ${last} | "

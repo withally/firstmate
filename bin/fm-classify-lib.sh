@@ -84,6 +84,10 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
+# shellcheck disable=SC2034 # Read by fm-watch.sh after sourcing this policy owner.
+FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT=20
+# shellcheck disable=SC2034 # Read by fm-watch.sh after sourcing this policy owner.
+FM_ENDPOINT_BATCH_LIMIT_DEFAULT=20
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
@@ -207,6 +211,18 @@ status_is_paused_or_captain_held() {  # <status-line>
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
+# The status verbs that make a wake URGENT rather than routine: a supervisor must
+# see them without waiting out any aggregation window. Kept beside status_line_verb
+# as the one owner of that set, so the watcher's stale reasons and the Pi
+# extension's urgent bypass cannot disagree about which verbs qualify. A declared
+# wait (paused:) and ordinary progress (working:) are deliberately not urgent.
+status_line_is_urgent() {  # <status-line>
+  case "$(status_line_verb "$1")" in
+    failed|blocked|needs-decision) return 0 ;;
+  esac
+  return 1
+}
+
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[*}
@@ -1531,8 +1547,27 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # raised decision, a mirrored remote line), and a busy mate agent makes its note
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
+# The ONE owner of the mate routed-reply carve-out described directly above, so
+# every absorber that consults it agrees. 0 when any listed file is a
+# kind=secondmate task's .status; a mate's bare turn-ended ping is not one.
+signal_list_has_secondmate_status() {  # <file> ...
+  local f base dir task
+  for f in "$@"; do
+    base=${f##*/}
+    dir=${f%/*}
+    [ "$dir" != "$f" ] || dir=.
+    case "$base" in *.status) task=${base%.status} ;; *) continue ;; esac
+    [ -n "$task" ] || continue
+    if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 signal_crew_provably_working() {  # <file> ...
   local f base dir task seen=""
+  signal_list_has_secondmate_status "$@" && return 1
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -1543,13 +1578,6 @@ signal_crew_provably_working() {  # <file> ...
       *)            continue ;;
     esac
     [ -n "$task" ] || continue
-    case "$base" in
-      *.status)
-        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
-          return 1
-        fi
-        ;;
-    esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
     crew_is_provably_working "$task" || return 1

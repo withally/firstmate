@@ -3799,6 +3799,65 @@ test_send_text_submit_unknown_on_composer_capture_failure() {
   pass "fm_backend_herdr_send_text_submit: an unreadable composer stops Enter retries after native status stays idle"
 }
 
+test_send_text_submit_rechecks_transient_unknown_before_retrying_enter() {
+  local dir log out
+  dir="$TMP_ROOT/submit-transient-unknown"; mkdir -p "$dir"; log="$dir/enters"; : > "$log"
+  out=$(FM_ENTER_LOG="$log" FM_CASE_DIR="$dir" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_parse_target() { FM_BACKEND_HERDR_SESSION=default; FM_BACKEND_HERDR_PANE=w1:p2; }
+    fm_backend_herdr_send_literal() { return 0; }
+    fm_backend_herdr_send_key() { printf "enter\n" >> "$FM_ENTER_LOG"; return 0; }
+    fm_backend_herdr_agent_status_raw() { printf idle; }
+    fm_backend_herdr_classify_submit_agent_status() { printf idle; }
+    fm_backend_herdr_rendered_busy_state() { printf idle; }
+    fm_backend_herdr_submit_confirm_budget() { printf 0.01; }
+    fm_backend_herdr_wait_for_working() {
+      calls=$(cat "$FM_CASE_DIR/waits" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/waits"
+      if [ "$calls" -eq 1 ]; then printf unknown; else printf busy; fi
+    }
+    fm_backend_herdr_composer_state() {
+      calls=$(cat "$FM_CASE_DIR/composers" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/composers"
+      if [ "$calls" -eq 1 ]; then printf unknown; else printf pending; fi
+    }
+    sleep() { :; }
+    fm_backend_herdr_send_text_submit default:w1:p2 "hello" 3 0.01 0
+  ' "$ROOT")
+  [ "$out" = empty ] || fail "a transient unknown submit was not recovered, got '$out'"
+  [ "$(wc -l < "$log" | tr -d ' ')" -eq 2 ] \
+    || fail "a proven-pending transient unknown did not receive exactly one bounded Enter retry"
+  pass "fm_backend_herdr_send_text_submit: transient unknown is observed until pending, then retried once and confirmed"
+}
+
+test_send_text_submit_idle_branch_trusts_proven_pending_recheck() {
+  local dir log out
+  dir="$TMP_ROOT/submit-idle-proven-pending"; mkdir -p "$dir"; log="$dir/enters"; : > "$log"
+  out=$(FM_ENTER_LOG="$log" FM_CASE_DIR="$dir" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_parse_target() { FM_BACKEND_HERDR_SESSION=default; FM_BACKEND_HERDR_PANE=w1:p2; }
+    fm_backend_herdr_send_literal() { return 0; }
+    fm_backend_herdr_send_key() { printf "enter\n" >> "$FM_ENTER_LOG"; return 0; }
+    fm_backend_herdr_agent_status_raw() { printf idle; }
+    fm_backend_herdr_classify_submit_agent_status() { printf idle; }
+    fm_backend_herdr_rendered_busy_state() { printf idle; }
+    fm_backend_herdr_submit_confirm_budget() { printf 0.01; }
+    fm_backend_herdr_wait_for_working() {
+      calls=$(cat "$FM_CASE_DIR/waits" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/waits"
+      if [ "$calls" -eq 1 ]; then printf unknown; else printf busy; fi
+    }
+    fm_backend_herdr_composer_state() {
+      calls=$(cat "$FM_CASE_DIR/composers" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/composers"
+      if [ "$calls" -eq 1 ]; then printf pending; else printf unknown; fi
+    }
+    sleep() { :; }
+    fm_backend_herdr_send_text_submit default:w1:p2 "hello" 3 0.01 0
+  ' "$ROOT")
+  [ "$out" = empty ] \
+    || fail "a later transient unknown discarded the recheck's proven-pending verdict, got '$out'"
+  [ "$(wc -l < "$log" | tr -d " ")" -eq 2 ] \
+    || fail "the proven-pending recheck did not authorize exactly one bounded Enter retry"
+  pass "fm_backend_herdr_send_text_submit: an idle-baseline proven-pending recheck is not overwritten by a later unknown read"
+}
+
 # --- fm-backend.sh dispatch wiring -------------------------------------------
 
 test_dispatch_routes_herdr_backend() {
@@ -4561,6 +4620,8 @@ test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
 test_send_text_submit_unknown_on_composer_capture_failure
+test_send_text_submit_rechecks_transient_unknown_before_retrying_enter
+test_send_text_submit_idle_branch_trusts_proven_pending_recheck
 test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
 test_dispatch_composer_state_routes_by_backend

@@ -24,7 +24,8 @@ It takes `--source <name>` when the adapter knows the source natively, and other
 | Source | Action | Why |
 | --- | --- | --- |
 | `startup`, `new` | Full digest | This is a true session start that has not taken the helm; Pi CLI continuations are refined to `resume` by the adapter before reaching this boundary. |
-| `clear`, `compact` | `--reemit` after a proven complete startup, otherwise full digest | This process normally has the helm and lost only its context, but an earlier hook may have been truncated after acquiring the lock. |
+| `clear` | `--reemit` after a proven complete startup, otherwise full digest | This process normally has the helm and lost only its context, but an earlier hook may have been truncated after acquiring the lock. |
+| `compact` | Compact recovery digest after a proven complete startup, otherwise full digest | Pi compaction needs current supervision ownership and actionable identities, not repeated status tails and unchanged context files. |
 | `resume`, `reload`, `fork` | Delegate to the nudge wrapper | Prior context is restored, so re-running is redundant when the lock is still ours and an instruction is enough when a new process resumed an old session. |
 | unreadable or unrecognized | Full digest | Taking the helm redundantly is cheap and idempotent; not taking it is the bug this tier exists to fix. |
 
@@ -33,7 +34,18 @@ Compaction is covered where a tracked adapter delivers that source because a com
 
 Current harness ownership of the lock and its matching `state/.session-start-complete` record together are the idempotency interlock for the whole scheme.
 The full digest clears that completion record after acquiring the lock and republishes the lock owner's pid only after every stage completes, so `clear` or `compact` cannot skip startup sweeps after a truncated run.
-`bin/fm-lock.sh` already treats a lock this session's own harness holds as its own, so a proven `clear` or `compact` re-emit re-verifies ownership and proceeds, while a lock another live session took meanwhile still produces the ordinary read-only digest.
+`bin/fm-lock.sh` already treats a lock this session's own harness holds as its own, so a proven `clear` re-emit or `compact` recovery re-verifies ownership and proceeds, while a lock another live session took meanwhile still produces read-only guidance.
+The compact recovery digest is bounded to supervision ownership, the actionable queue and open decisions, active task identities, and the next supervision instruction.
+Away-mode and X-mode state ride in that bound as two short lines under lock and watcher ownership, printed by `bin/fm-supervision-instructions.sh --state-lines`, because both change who owns supervision and what a wake means; a recovering session that read them as attended while the daemon owned triage would cross an AGENTS.md section 8 boundary.
+That digest carries no protocol snippet, so `bin/fm-supervision-instructions.sh --next-line` is self-contained for every harness: the drain and acknowledgement steps, the condition, the exact command where the model owns the next cycle, and the path of the owning `docs/supervision-protocols/` document.
+Under away mode that line instead routes the recovering session to the daemon: it names the `/afk` action, the `state/.afk` condition, the `bin/fm-supervise-daemon.sh` owner, and explicitly forbids the attended drain and acknowledgement, because the daemon triages the same durable queue.
+It names that document rather than inlining it, because a compacted session cannot follow a pointer into context it has lost, and inlined protocol would defeat the compaction.
+
+When the tracked Firstmate checkout is itself a registered crew worktree, both session-start wrappers print only `crew worktree - digest suppressed`.
+Registration is proven by an exact `worktree=` match in the primary checkout's task metadata; unmarked linked worktrees remain silent, and marked secondmate homes remain eligible primaries.
+`bin/fm-session-start.sh` runs that git-backed lookup under its own short bound outside the timed digest child, and any timeout or failure falls through to the ordinary digest, because a redundant startup is cheaper than a silent one.
+That lookup is scoped to the primary checkout's own default home, `<primary>/state`, because a crew worktree carries no registrations of its own and an ordinary crew session inherits no `FM_HOME`.
+A crew worktree registered by some other home is therefore not suppressed from that home's registrations; each home runs its own session start against its own, and cross-home discovery is deliberately not part of this scheme.
 On a run-tier harness the nudge cannot also fire: `resume`, `reload`, and `fork` are the only sources routed to it, and on those its own ancestry check stays silent whenever this process already holds the lock.
 
 `bin/fm-session-start.sh --reemit` owns which work a re-emit skips, its true-start AGENTS.md baseline, and its supported stale-instruction refresh pairs; its header is the single owner of those mechanics.

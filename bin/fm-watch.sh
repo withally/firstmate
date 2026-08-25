@@ -188,6 +188,24 @@ BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+PAUSED_RESURFACE_KEYS=''
+PAUSED_RESURFACE_ITEMS=''
+PAUSED_RESURFACE_MARKERS=''
+PAUSED_RESURFACE_COUNT=0
+PAUSED_RESURFACE_SHOWN=0
+PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT
+# A missing or unreadable endpoint stays an immediate, same-cycle wake, but one
+# backend restart (or several finished tasks whose .meta outlives their panes)
+# makes it true of every window at once, and wake() ends the cycle - so
+# per-window immediacy would cost one supervision turn per window for a single
+# event. The cycle collects them here instead and delivers one fleet wake naming
+# the windows before any batched routine recheck, so immediacy is preserved
+# without amplifying churn.
+MISSING_ENDPOINT_ITEMS=''
+MISSING_ENDPOINT_MARKERS=''
+MISSING_ENDPOINT_COUNT=0
+MISSING_ENDPOINT_SHOWN=0
+MISSING_ENDPOINT_LIMIT=$FM_ENDPOINT_BATCH_LIMIT_DEFAULT
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -319,12 +337,119 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # two cadences cannot drift apart; each caller owns its own marker and reason.
 # Returns without waking while either the absorb or the throttle is inside the
 # window; wake() itself exits the cycle, exactly as it does inline.
-resurface_absorbed() {  # <window> <throttle-marker> <age> <reason>
-  local win=$1 throttle=$2 age=$3 reason=$4
+# Fleet batching is an ATTENDED presentation: it collapses many due panes into one
+# supervision turn for a human-driven primary. Away mode is daemon-owned and
+# bin/fm-supervise-daemon.sh parses a stale reason as `stale: <window> (<detail>)`
+# to recover the window identity, so a batched fleet reason would classify under
+# the literal string "paused fleet recheck" - recording a wedge marker for a window
+# that does not exist while the real panes lose their per-pane pause markers.
+# Under afk the caller therefore keeps the undecorated per-window wake it has
+# always emitted, and only attended mode batches.
+# <presented-marker>/<presented-value>, when set by the caller, are committed ONLY
+# where this pane's line is actually delivered, for the same reason the throttle is.
+PAUSED_PRESENT_MARKER=''
+PAUSED_PRESENT_VALUE=''
+
+resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [batch]
+  local win=$1 throttle=$2 age=$3 reason=$4 mode=${5:-immediate} key
+  local present_marker=$PAUSED_PRESENT_MARKER present_value=$PAUSED_PRESENT_VALUE
+  PAUSED_PRESENT_MARKER=''
+  PAUSED_PRESENT_VALUE=''
   [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] || return 0
   [ "$(age_of "$throttle")" -ge "$PAUSE_RESURFACE_SECS" ] || return 0   # 999999 when no prior re-surface
+  if [ "$mode" = batch ] && ! afk_present; then
+    key=$(window_key "$win")
+    case "$PAUSED_RESURFACE_KEYS" in *"|$key|"*) return 0 ;; esac
+    PAUSED_RESURFACE_KEYS="$PAUSED_RESURFACE_KEYS|$key|"
+    PAUSED_RESURFACE_COUNT=$((PAUSED_RESURFACE_COUNT + 1))
+    # The throttle marker is stamped ONLY for a pane whose reason actually makes
+    # it into the delivered batch. A pane past PAUSED_RESURFACE_LIMIT is counted
+    # but never named, so suppressing it for another PAUSE_RESURFACE_SECS would
+    # spend its bounded safety recheck on a wake that never mentioned it; leaving
+    # its marker untouched keeps it due, and it is named by the next cycle once
+    # the panes ahead of it are throttled.
+    if [ "$PAUSED_RESURFACE_SHOWN" -lt "$PAUSED_RESURFACE_LIMIT" ]; then
+      PAUSED_RESURFACE_ITEMS="${PAUSED_RESURFACE_ITEMS}${PAUSED_RESURFACE_ITEMS:+; }${reason#stale: }"
+      PAUSED_RESURFACE_SHOWN=$((PAUSED_RESURFACE_SHOWN + 1))
+      PAUSED_RESURFACE_MARKERS="${PAUSED_RESURFACE_MARKERS}${PAUSED_RESURFACE_MARKERS:+
+}$throttle
+$present_marker
+$present_value"
+    fi
+    return 0
+  fi
   fm_wake_append stale "$win" "$reason" || exit 1
   date +%s > "$throttle"
+  [ -z "$present_marker" ] || printf '%s' "$present_value" > "$present_marker"
+  wake "$reason"
+}
+
+flush_paused_resurfaces() {
+  local reason throttle present_marker present_value omitted
+  [ "$PAUSED_RESURFACE_COUNT" -gt 0 ] || return 0
+  omitted=$((PAUSED_RESURFACE_COUNT - PAUSED_RESURFACE_SHOWN))
+  reason="stale: paused fleet recheck (${PAUSED_RESURFACE_COUNT} due): $PAUSED_RESURFACE_ITEMS"
+  [ "$omitted" -eq 0 ] || reason="$reason; $omitted more omitted"
+  fm_wake_append stale paused-fleet "$reason" || exit 1
+  while IFS= read -r throttle && IFS= read -r present_marker && IFS= read -r present_value; do
+    [ -n "$throttle" ] || continue
+    date +%s > "$throttle"
+    [ -z "$present_marker" ] || printf '%s' "$present_value" > "$present_marker"
+  done <<EOF
+$PAUSED_RESURFACE_MARKERS
+EOF
+  wake "$reason"
+}
+
+# Record one window whose endpoint could not be read this cycle. The sentinel is
+# this window's OWN .endpoint-missing-<key> marker, never the .stale-<key> hash
+# suppressor: overloading the hash suppressor would suppress a second
+# disappearance forever (nothing rewrites the hash while the pane is busy), re-wake
+# an already-surfaced stale pane on the next successful capture, and restart wedge
+# aging on every flap. The marker is dropped by the first successful capture, so
+# each distinct disappearance is reported exactly once.
+# Same limit rule as the paused batch, under its OWN bound
+# (FM_ENDPOINT_BATCH_LIMIT): tightening the paused batch must not silently truncate
+# the endpoint wake, which reports a different failure to a different audience. A
+# window past the limit is counted but not named, and its marker is left unwritten so
+# the next cycle still reports it.
+# Away mode is daemon-owned and needs the undecorated per-window identity to
+# classify, so under afk this stays the immediate single-window wake it was.
+record_missing_endpoint() {  # <window> <endpoint-missing-marker>
+  local win=$1 marker=$2 reason
+  if afk_present; then
+    reason="stale: $win (endpoint missing or unreadable)"
+    fm_wake_append stale "$win" "$reason" || exit 1
+    : > "$marker"
+    wake "$reason"
+    return 0
+  fi
+  MISSING_ENDPOINT_COUNT=$((MISSING_ENDPOINT_COUNT + 1))
+  if [ "$MISSING_ENDPOINT_SHOWN" -lt "$MISSING_ENDPOINT_LIMIT" ]; then
+    MISSING_ENDPOINT_ITEMS="${MISSING_ENDPOINT_ITEMS}${MISSING_ENDPOINT_ITEMS:+; }$win"
+    MISSING_ENDPOINT_SHOWN=$((MISSING_ENDPOINT_SHOWN + 1))
+    MISSING_ENDPOINT_MARKERS="${MISSING_ENDPOINT_MARKERS}${MISSING_ENDPOINT_MARKERS:+
+}$marker"
+  fi
+}
+
+flush_missing_endpoints() {
+  local reason marker omitted
+  [ "$MISSING_ENDPOINT_SHOWN" -gt 0 ] || return 0
+  if [ "$MISSING_ENDPOINT_COUNT" -eq 1 ]; then
+    reason="stale: $MISSING_ENDPOINT_ITEMS (endpoint missing or unreadable)"
+  else
+    omitted=$((MISSING_ENDPOINT_COUNT - MISSING_ENDPOINT_SHOWN))
+    reason="stale: fleet endpoints missing or unreadable (${MISSING_ENDPOINT_COUNT}): $MISSING_ENDPOINT_ITEMS"
+    [ "$omitted" -eq 0 ] || reason="$reason; $omitted more omitted"
+  fi
+  fm_wake_append stale endpoint-fleet "$reason" || exit 1
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    : > "$marker"
+  done <<EOF
+$MISSING_ENDPOINT_MARKERS
+EOF
   wake "$reason"
 }
 
@@ -451,7 +576,9 @@ handle_paused_stale() {  # <window> <task> <hash>
     detail="paused, awaiting external"
     reason="paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
-  resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)"
+  PAUSED_PRESENT_MARKER="$STATE/.paused-presented-$key"
+  PAUSED_PRESENT_VALUE=$(last_status_line "$statusf")
+  resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)" batch
   triage_log "absorbed stale ($detail, age ${age}s): $win"
 }
 
@@ -481,7 +608,8 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 
 clear_pause_state() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" \
+    "$STATE/.paused-resurfaced-$key" "$STATE/.paused-presented-$key"
 }
 
 clear_pause_tracking() {  # <window-key>
@@ -577,10 +705,72 @@ surface_nonterminal_stale() {  # <window> <hash>
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
     date +%s > "$STATE/.paused-resurfaced-$key"
+    printf '%s' "$last" > "$STATE/.paused-presented-$key"
   else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+    clear_pause_state "$key"
   fi
   wake "stale: $win"
+}
+
+# Records ONLY that this declaration was presented: the two markers
+# attended_declared_wait_signal_is_absorbable reads. It deliberately does NOT arm
+# .paused-<key> or .paused-rechecked-<key>. Delivering a wake is not an inspection:
+# surface_nonterminal_stale may arm the cadence because pause_state_class has just
+# spent its one live-agent gate for that key, and this path spends none. Arming here
+# would let pause_state_class take its on-cadence short-circuit on the pane's first
+# stale hash, so an ordinary crew still alive at an interactive permission or
+# decision prompt would be absorbed onto the PAUSE_RESURFACE_SECS cadence instead of
+# surfacing immediately - exactly the live decision gate that gate exists to protect.
+record_declared_wait_presented() {  # <status-file>
+  local f=$1 task meta win key last
+  case "$f" in *.status) ;; *) return 0 ;; esac
+  task=$(basename "$f" .status)
+  meta="$STATE/$task.meta"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
+  win=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+  [ -n "$win" ] || return 0
+  last=$(last_status_line "$f")
+  status_is_paused_or_captain_held "$last" || return 0
+  key=$(window_key "$win")
+  date +%s > "$STATE/.paused-resurfaced-$key"
+  printf '%s' "$last" > "$STATE/.paused-presented-$key"
+}
+
+# A repeat status or turn-end for an already presented declared wait is routine
+# only while the exact durable declaration, endpoint readability, and bounded
+# recheck window all still hold. Any uncertainty falls back to an immediate wake.
+# A kind=secondmate task's .status is excluded through the same shared owner the
+# provably-working absorb consults (signal_list_has_secondmate_status in
+# fm-classify-lib.sh): that stream is the mate's routed-reply channel, so an
+# unchanged repeat is still parent-directed content the supervisor must read.
+# Absorption here stays scoped to ordinary crewmate paused-pane rechecks.
+attended_declared_wait_signal_is_absorbable() {  # <file> ...
+  local f task meta win key last presented checked=''
+  attended_routine_status_absorb_enabled || return 1
+  signal_reason_is_routine_nonterminal "$@" || return 1
+  signal_reason_is_actionable "$@" && return 1
+  signal_list_has_secondmate_status "$@" && return 1
+  for f in "$@"; do
+    task=$(basename "$f")
+    task=${task%.status}; task=${task%.turn-ended}
+    case "$checked" in *"|$task|"*) continue ;; esac
+    checked="$checked|$task|"
+    [ -f "$STATE/$task.status" ] && [ -r "$STATE/$task.status" ] \
+      && [ ! -L "$STATE/$task.status" ] || return 1
+    last=$(last_status_line "$STATE/$task.status")
+    status_is_paused_or_captain_held "$last" || return 1
+    meta="$STATE/$task.meta"
+    [ -f "$meta" ] && [ -r "$meta" ] && [ ! -L "$meta" ] || return 1
+    win=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+    [ -n "$win" ] || return 1
+    key=$(window_key "$win")
+    presented=$(cat "$STATE/.paused-presented-$key" 2>/dev/null || true)
+    [ "$presented" = "$last" ] || return 1
+    [ "$(age_of "$STATE/.paused-resurfaced-$key")" -lt "$PAUSE_RESURFACE_SECS" ] || return 1
+    fm_backend_capture "$(window_backend "$win")" "$win" 1 "$(window_label "$win")" \
+      >/dev/null 2>&1 || return 1
+  done
+  [ -n "$checked" ]
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -969,6 +1159,23 @@ resurface_after_downtime() {
 }
 
 while :; do
+  PAUSED_RESURFACE_KEYS=''
+  PAUSED_RESURFACE_ITEMS=''
+  PAUSED_RESURFACE_MARKERS=''
+  PAUSED_RESURFACE_COUNT=0
+  PAUSED_RESURFACE_SHOWN=0
+  MISSING_ENDPOINT_ITEMS=''
+  MISSING_ENDPOINT_MARKERS=''
+  MISSING_ENDPOINT_COUNT=0
+  MISSING_ENDPOINT_SHOWN=0
+  PAUSED_RESURFACE_LIMIT=${FM_PAUSED_RESURFACE_BATCH_LIMIT:-$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT}
+  case "$PAUSED_RESURFACE_LIMIT" in
+    ''|*[!0-9]*|0) PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT ;;
+  esac
+  MISSING_ENDPOINT_LIMIT=${FM_ENDPOINT_BATCH_LIMIT:-$FM_ENDPOINT_BATCH_LIMIT_DEFAULT}
+  case "$MISSING_ENDPOINT_LIMIT" in
+    ''|*[!0-9]*|0) MISSING_ENDPOINT_LIMIT=$FM_ENDPOINT_BATCH_LIMIT_DEFAULT ;;
+  esac
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
   # down so the rightful singleton continues alone. The EXIT trap's release
@@ -1131,7 +1338,9 @@ EOF
     # signal. A receipt failure leaves absorb_signal false, so the ordinary
     # durable wake path handles the event immediately.
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if ! afk_present && attended_signal_is_absorbable $files \
+    if ! afk_present \
+      && { attended_signal_is_absorbable $files \
+        || attended_declared_wait_signal_is_absorbable $files; } \
       && status_record_absorbed_signal "$STATE" $files; then
       absorb_signal=1
     fi
@@ -1146,6 +1355,7 @@ EOF
         [ -n "$sf" ] || continue
         printf '%s' "$sig" > "$sf"
         mark_surfaced "$f"
+        record_declared_wait_presented "$f"
       done <<EOF
 $pending
 EOF
@@ -1183,11 +1393,16 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused_or_captain_held "$last"; then
       continue
     fi
-    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
+    sf="$STATE/.stale-$key"
+    emf="$STATE/.endpoint-missing-$key"
+    if ! tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null); then
+      [ -e "$emf" ] || record_missing_endpoint "$w" "$emf"
+      continue
+    fi
+    rm -f "$emf"
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
-    sf="$STATE/.stale-$key"
     ssf="$STATE/.stale-since-$key"
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
@@ -1238,12 +1453,23 @@ EOF
               clear_write_tracking "$key"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
-              fm_wake_append stale "$w" "stale: $w" || exit 1
+              terminal_status="$STATE/$(window_to_task "$w" "$STATE").status"
+              reason="stale: $w"
+              # A bare `stale: <window>` carries no verb and no path, so a
+              # downstream aggregator cannot tell a finished crew from a failed
+              # one and holds both for its full batch window. Naming the status
+              # file lets the reader resolve the actual last line, so failed:,
+              # blocked: and needs-decision: take the urgent bypass while done:
+              # and the rest stay routine.
+              if status_line_is_urgent "$(last_status_line "$terminal_status")"; then
+                reason="$reason ($terminal_status)"
+              fi
+              fm_wake_append stale "$w" "$reason" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
               clear_write_tracking "$key"
-              mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
-              wake "stale: $w"
+              mark_surfaced "$terminal_status"
+              wake "$reason"
             fi
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
@@ -1345,6 +1571,14 @@ EOF
       fi
     fi
   done < <(recorded_windows)
+
+  # Unreadable endpoints are the more urgent of the two batches, so they go
+  # first: an endpoint that vanished this cycle is still reported in this cycle.
+  flush_missing_endpoints
+
+  # Declared waits are individually reconciled above, then presented once for
+  # the fleet so one cadence boundary costs one supervision turn and one drain.
+  flush_paused_resurfaces
 
   # Heartbeat: the watcher runs a cheap fleet-scan at a regular cadence no matter
   # what. Time-based via .last-heartbeat mtime; interval doubles per consecutive

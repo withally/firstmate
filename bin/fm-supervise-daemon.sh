@@ -1317,7 +1317,7 @@ handle_durable_wakes() {  # <watcher-reason> <state>
   local handled=0 ack_through ack_generation
   out=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || return 1
   err=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || { rm -f "$out"; return 1; }
-  if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then
+  if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" --no-presentation-commit > "$out" 2> "$err"; then
     cat "$err" >&2
     rm -f "$out" "$err"
     return 1

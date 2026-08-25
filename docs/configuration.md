@@ -146,6 +146,39 @@ Any other value, and an unreadable or symlinked config file, disables absorption
 Away-mode triage is unaffected: while `state/.afk` exists the daemon owns every wake, and it reuses only the same recognized-shape boundary before distilling a digest entry.
 [`architecture.md`](architecture.md) owns how this fits the supervision loop and the delayed-presentation receipt.
 
+An unchanged repeat status or turn-end from an ordinary crewmate already presented as `paused:` or `captain-held` is also absorbed while the exact durable declaration, readable endpoint, and bounded pause-recheck window still hold.
+The first declaration, a changed terminal verb, a missing or unreadable endpoint, and a lapsed bounded recheck always wake immediately.
+A `kind=secondmate` task's `.status` is never absorbed by either absorber: that stream is the mate's routed-reply channel, so even an unchanged repeat is parent-directed content the supervisor must read.
+A mate's bare `.turn-ended` ping is not covered by that carve-out and still uses the ordinary provably-working absorb.
+
+A compact-recovery drain (`bin/fm-wake-drain.sh --compact`) always prints the full bounded OPEN DECISIONS block rather than the `OPEN DECISIONS: unchanged, N open` collapse.
+A drain that handles an open watcher-down recovery episode - the downtime marker `bin/fm-watch-arm.sh` publishes, or a handling episode a previous turn never acknowledged - prints the full block for the same reason: the decisions were last presented to a session that is no longer supervising them, and a decision-only recovery would otherwise re-surface as a bare count with no key, task, or resolve instruction.
+The collapse's premise is that the full block is already in this session's context, and compaction is exactly the event that destroys it; compaction may trim bulk status tails, never the decision list.
+For the same reason the collapse is only ever spent by a drain a human actually reads: the away-mode daemon drains with `--no-presentation-commit` because it consumes the wake rows mechanically and discards the presented text, so the block survives intact for whoever reads it next, and `bin/fm-afk-return.sh` drains in recovery mode so a captain returning from away mode is handed the decisions in full.
+`--no-presentation-commit` withholds the UNREAD STATUS cursor as well: exact-once means presented once to a reader, so a mechanical drain may read status bytes but never advances the cursor or marks lines absorbed.
+
+A terminal stale wake names its task's status file when that status is `failed:`, `blocked:` or `needs-decision:`, so an aggregator can resolve the verb and take the urgent bypass instead of holding the failure for a batch window.
+`done:` and every other terminal status keeps the bare `stale: <window>` identity, and `paused:` and `working:` are never urgent.
+In attended mode a cadence boundary presents every due declared wait in one fleet stale wake, bounded by `FM_PAUSED_RESURFACE_BATCH_LIMIT`.
+Away mode is unaffected: while `state/.afk` exists the daemon owns triage and still receives the undecorated per-window stale identity it parses, for declared waits and for missing or unreadable endpoints alike.
+Only a pane actually named in that wake has its bounded recheck throttled; a pane counted past the limit stays due and is named by a later cycle, so no pane loses its safety recheck to a wake that never mentioned it.
+Missing or unreadable endpoints found in one attended watcher cycle are likewise collected into one immediate fleet wake naming those windows, so a backend restart costs one supervision turn rather than one per window while detection stays in the same cycle.
+Each window's disappearance is tracked by its own marker, dropped by the first successful capture, so a flapping endpoint reports each distinct disappearance exactly once without disturbing the pane's recorded stale hash or its wedge timer.
+That list has its own bound, `FM_ENDPOINT_BATCH_LIMIT`, so tightening the paused batch never silently truncates it.
+
+## Pi watcher wake batching (config/wake-batch-seconds)
+
+Pi and pi-signed primary homes aggregate routine watcher closes before delivering one `FIRSTMATE WATCHER WAKE` follow-up.
+The default window is 60 seconds.
+Write one positive integer number of seconds to gitignored `config/wake-batch-seconds` to change it for that home.
+`FM_WAKE_BATCH_SECONDS` is the process-local override used by tests and specialized launches.
+Identical status paths and backend endpoints are deduplicated, the rendered list is bounded, and one delivered batch requires one drain and one acknowledgement.
+Urgent details are rendered ahead of routine ones, so the bound can only omit routine wakes and never the failure that triggered the flush.
+A batch does not outlive its CURRENT watcher arm when that arm is not replaced: an actionable close starts a successor immediately and the batch keeps aggregating across that rotation, handing ownership to the successor each time, but a non-actionable close hands off to a bounded retry, so the batch is flushed there rather than waiting out a window under a cycle that may not come back.
+An arm only exits after the watcher it waited on has exited, so that arm-end flush does not attempt the handling confirmation: there is nothing left to confirm, and confirming would report a watcher failure that never happened. A timer-driven flush still confirms.
+The durable wake queue and the recovery marker remain the only records of what was delivered and acknowledged, so a crash between that flush and its confirmation re-presents on the next drain instead of losing the batch.
+`failed:`, `blocked:`, `needs-decision:`, lost-lock, and watcher-failure wakes bypass the delay and flush any pending routine batch immediately.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true` and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
@@ -611,6 +644,7 @@ FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context pr
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline
+FM_BACKEND_HERDR_UNKNOWN_RECHECKS=3  # herdr-only: keypress-free re-observations of an inconclusive post-Enter surface before a submit is reported unknown (docs/herdr-backend.md "Current transport behavior")
 FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops and test isolation (docs/zellij-backend.md)
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
 FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
@@ -669,6 +703,10 @@ FM_WATCH_CYCLE_LOG_KEEP_LINES=1000   # newest complete lifecycle rows considered
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watcher lock may have a stale beacon before re-arm errors
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake
 FM_ATTENDED_ROUTINE_STATUS_ABSORB=on   # attended routine-status absorption override; see "Attended routine status absorption"
+FM_WAKE_BATCH_SECONDS=60   # Pi watcher follow-up aggregation window; config/wake-batch-seconds is the home-local owner
+FM_WAKE_BATCH_LIMIT=20     # maximum distinct routine watcher items rendered in one Pi follow-up
+FM_PAUSED_RESURFACE_BATCH_LIMIT=20   # maximum due paused/captain-held pane details in one fleet stale wake
+FM_ENDPOINT_BATCH_LIMIT=20           # maximum missing or unreadable endpoint windows named in one fleet stale wake
 FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches
 FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
 FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates; stale panes whose crew is not provably working surface immediately unless they declare the pause verb

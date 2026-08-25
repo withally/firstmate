@@ -98,6 +98,9 @@ Their adapters fail open at the hook boundary to protect the user session but sc
 The generated prompts use the canonical `turn-end-guard` kind after the U+2063 `FIRSTMATE_OP: ` prefix, so Ahoy does not treat them as captain messages.
 Each passive adapter owns a loop latch.
 Pi keeps the latch across internal tool turns and clears it only when the generated follow-up settles or delivery fails.
+On `session_compact`, the Pi guard injects the compact recovery digest rather than the full startup re-emit.
+That digest contains only lock and watcher ownership, the actionable queue and open decisions, active task identities, and the exact next supervision instruction.
+It omits status tails and unchanged context files; unread routine status remains durable for the next ordinary drain instead of being acknowledged by the compact view.
 OpenCode's forced follow-up is supported for persistent TUI sessions and remains fail-open in headless `opencode run`.
 
 Grok makes exactly one typed capability decision from each running Stop payload.

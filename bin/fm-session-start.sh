@@ -294,6 +294,7 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   [ "$SESSION_START_BUDGET" -ge "$CREW_CHECK_BUDGET" ] || CREW_CHECK_BUDGET=$SESSION_START_BUDGET
   # shellcheck source=bin/fm-primary-scope-lib.sh
   . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+  # shellcheck disable=SC2016 # $1/$2 are the child bash -c positional args, expanded there, not here.
   if fm_run_timed "$CREW_CHECK_BUDGET" bash -c \
     '. "$1/fm-primary-scope-lib.sh"; fm_root_is_registered_crew_worktree "$2"' \
     _ "$SCRIPT_DIR" "$FM_ROOT"; then

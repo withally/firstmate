@@ -1,0 +1,2 @@
+pre-compaction collapse: blank_run=2 above NEXT_VISIBLE_CONTENT (PI_CLEAR_ON_SHRINK=0)
+post-compaction collapse: blank_run=2 above NEXT_VISIBLE_AFTER_COMPACT (PI_CLEAR_ON_SHRINK=0)

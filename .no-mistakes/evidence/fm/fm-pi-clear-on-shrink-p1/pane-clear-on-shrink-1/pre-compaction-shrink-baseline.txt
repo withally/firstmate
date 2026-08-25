@@ -1,0 +1,36 @@
+ TRANSCRIPT_TALLER_THAN_PANE
+
+
+ Run viewport_fill once, then finish.
+
+
+
+ viewport_fill
+ BEFORE_COMPACT_ROW_001
+ BEFORE_COMPACT_ROW_002
+ BEFORE_COMPACT_ROW_003
+ BEFORE_COMPACT_ROW_004
+ BEFORE_COMPACT_ROW_005
+ BEFORE_COMPACT_ROW_006
+ BEFORE_COMPACT_ROW_007
+ BEFORE_COMPACT_ROW_008
+ BEFORE_COMPACT_ROW_009
+ BEFORE_COMPACT_ROW_010
+ ... (86 more lines, ctrl+o to expand)
+
+
+ AFTER_TOOL_RESULT
+
+ Tool output: collapsed
+
+
+ Reply after the collapsed tool result.
+
+
+ NEXT_VISIBLE_CONTENT
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-pi-clear-on-shrink-live-e2e.J3aLNP/pr...
+↑8.0k ↓1.6k R5.9k W8.0k CH52.8% 5.5%/100k (auto)                       (pi-shrink-e2e) deterministic

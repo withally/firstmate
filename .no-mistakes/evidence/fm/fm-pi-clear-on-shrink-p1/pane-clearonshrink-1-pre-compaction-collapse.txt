@@ -1,0 +1,36 @@
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose context prose context prose context prose context prose context prose
+ context prose context prose
+ AFTER_TOOL_RESULT
+
+ Tool output: collapsed
+
+
+ Reply after the collapsed tool result.
+
+
+ NEXT_VISIBLE_CONTENT
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-pi-clear-on-shrink-live-e2e.y1PreD/pr...
+↑6.7k ↓1.6k R2.0k W6.7k CH18.3% 7.0%/100k (auto)                       (pi-shrink-e2e) deterministic

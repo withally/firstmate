@@ -1,0 +1,1 @@
+ok - Pi 0.84.2 regular TUI leaves no stale rows when the render shrinks, before and after compaction

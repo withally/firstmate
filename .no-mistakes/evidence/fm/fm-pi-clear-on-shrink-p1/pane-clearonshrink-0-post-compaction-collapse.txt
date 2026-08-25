@@ -1,0 +1,36 @@
+
+
+
+ Run viewport_fill once after compaction, then finish.
+
+
+
+ viewport_fill
+ AFTER_COMPACT_ROW_001
+ AFTER_COMPACT_ROW_002
+ AFTER_COMPACT_ROW_003
+ AFTER_COMPACT_ROW_004
+ AFTER_COMPACT_ROW_005
+ AFTER_COMPACT_ROW_006
+ AFTER_COMPACT_ROW_007
+ AFTER_COMPACT_ROW_008
+ AFTER_COMPACT_ROW_009
+ AFTER_COMPACT_ROW_010
+ ... (86 more lines, ctrl+o to expand)
+
+
+ AFTER_COMPACT_TOOL_RESULT
+
+ Tool output: collapsed
+
+
+ Reply after the post-compaction collapsed tool result.
+
+
+ NEXT_VISIBLE_AFTER_COMPACT
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-pi-clear-on-shrink-live-e2e.EOBSKd/pr...
+↑13k ↓1.6k R8.0k W13k CH52.9% 5.5%/100k (auto)                         (pi-shrink-e2e) deterministic

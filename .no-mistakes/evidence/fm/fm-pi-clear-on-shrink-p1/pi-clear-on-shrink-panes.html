@@ -1,0 +1,86 @@
+<!doctype html><meta charset=utf-8><style>
+body{background:#14161a;color:#e6e6e6;font-family:-apple-system,Helvetica,sans-serif;margin:24px}
+h1{font-size:18px} .row{display:flex;gap:24px} .col{flex:1}
+h2{font-size:14px;font-weight:600;margin:0 0 8px}
+.bad{color:#ff6b6b} .good{color:#5ddf87}
+pre{background:#000;color:#d8d8d8;font:12px/1.25 "SF Mono",Menlo,monospace;padding:10px;margin:0;
+border:1px solid #333;white-space:pre;overflow:hidden;min-height:calc(36*1.25*12px)}
+p.cap{font-size:12px;color:#9aa0a6}
+</style>
+<h1>Pi regular-TUI viewport right after a transcript shrink (real Pi 0.84.2, 100&times;36 tmux pane)</h1>
+<div class=row>
+<div class=col><h2 class=bad>PI_CLEAR_ON_SHRINK=0 &mdash; 9 stale blank rows at the bottom</h2><pre> BEFORE_COMPACT_ROW_002
+ BEFORE_COMPACT_ROW_003
+ BEFORE_COMPACT_ROW_004
+ BEFORE_COMPACT_ROW_005
+ BEFORE_COMPACT_ROW_006
+ BEFORE_COMPACT_ROW_007
+ BEFORE_COMPACT_ROW_008
+ BEFORE_COMPACT_ROW_009
+ BEFORE_COMPACT_ROW_010
+ ... (86 more lines, ctrl+o to expand)
+
+
+ AFTER_TOOL_RESULT
+
+ Tool output: collapsed
+
+
+ Reply after the collapsed tool result.
+
+
+ NEXT_VISIBLE_CONTENT
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-pi-clear-on-shrink-live-e2e.SUy3UR/pr...
+↑8.0k ↓1.6k R5.9k W8.0k CH52.8% 5.5%/100k (auto)                       (pi-shrink-e2e) deterministic
+
+
+
+
+
+
+
+
+</pre>
+<p class=cap>Pre-fix launch: the composer draft was cleared, the render got shorter, and the removed rows stay as an empty black region below the last drawn row.</p></div>
+<div class=col><h2 class=good>PI_CLEAR_ON_SHRINK=1 &mdash; 0 stale rows</h2><pre> TRANSCRIPT_TALLER_THAN_PANE
+
+
+ Run viewport_fill once, then finish.
+
+
+
+ viewport_fill
+ BEFORE_COMPACT_ROW_001
+ BEFORE_COMPACT_ROW_002
+ BEFORE_COMPACT_ROW_003
+ BEFORE_COMPACT_ROW_004
+ BEFORE_COMPACT_ROW_005
+ BEFORE_COMPACT_ROW_006
+ BEFORE_COMPACT_ROW_007
+ BEFORE_COMPACT_ROW_008
+ BEFORE_COMPACT_ROW_009
+ BEFORE_COMPACT_ROW_010
+ ... (86 more lines, ctrl+o to expand)
+
+
+ AFTER_TOOL_RESULT
+
+ Tool output: collapsed
+
+
+ Reply after the collapsed tool result.
+
+
+ NEXT_VISIBLE_CONTENT
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-pi-clear-on-shrink-live-e2e.J3aLNP/pr...
+↑8.0k ↓1.6k R5.9k W8.0k CH52.8% 5.5%/100k (auto)                       (pi-shrink-e2e) deterministic</pre>
+<p class=cap>Firstmate-launched Pi: the shrink redraws the full viewport, so content fills down to the last terminal row.</p></div>
+</div>

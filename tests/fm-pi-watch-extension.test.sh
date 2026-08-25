@@ -11,6 +11,9 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
+# Production defaults to a 60-second aggregation window; fixtures keep the same
+# behavior with a one-second window so delivery assertions stay fast.
+export FM_WAKE_BATCH_SECONDS=1
 
 # One owner for the readiness budget every unready-successor test below spends
 # on purpose. Both plugins start a successor arm through a login shell and
@@ -394,6 +397,7 @@ for (let i = 0; i < 250; i += 1) {
   if (rows.length >= 2 && deliveryStarted) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 const armRows = rows.filter((row) => row.startsWith("arm="));
 if (armRows.length !== 2) throw new Error(`expected one successor arm, got ${armRows.length}: ${rows.join(" | ")}`);
@@ -420,6 +424,112 @@ EOF
   expect_code 0 "$status" "Pi actionable close must start one successor before wake delivery settles"
   [ -z "$out" ] || fail "Pi continuous-rearm test printed output: $out"
   pass "Pi actionable close starts one successor before wake delivery settles"
+}
+
+test_pi_batches_and_dedupes_routine_wakes() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-wake-batch-root"; home="$TMP_ROOT/pi-wake-batch-home"
+  log="$TMP_ROOT/pi-wake-batch.log"; stop="$TMP_ROOT/pi-wake-batch.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  printf 'working: routine a\n' > "$home/state/a.status"
+  printf 'working: routine b\n' > "$home/state/b.status"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirmed\n' >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=batch-%s\n' "$$" "$count"
+case "$count" in
+  1) printf 'signal: %s/state/a.status\n' "$FM_HOME" ;;
+  2) sleep 0.1; printf 'signal: %s/state/a.status\n' "$FM_HOME" ;;
+  3) sleep 0.1; printf 'signal: %s/state/b.status\n' "$FM_HOME" ;;
+  *) trap 'exit 0' TERM INT; while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done ;;
+esac
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("batch", {}, undefined, undefined, {});
+for (let i = 0; i < 400 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) throw new Error(`expected one batched follow-up, got ${deliveries.length}`);
+const message = deliveries[0];
+if (!message.includes("batched 2 watcher wakes")) throw new Error(`batch did not contain two distinct wakes: ${message}`);
+if ((message.match(/a\.status/g) ?? []).length !== 1) throw new Error(`duplicate status path was not deduped: ${message}`);
+if (!message.includes("b.status")) throw new Error(`second status path was omitted: ${message}`);
+const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+if (rows.filter((row) => row === "confirmed").length !== 1) throw new Error(`batch was not confirmed exactly once: ${rows.join(" | ")}`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi routine wake batching"
+  [ -z "$out" ] || fail "Pi routine wake batching printed output: $out"
+  pass "Pi watcher batches routine wakes, dedupes repeated status paths, and confirms once"
+}
+
+test_pi_urgent_status_bypasses_batch_window() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-wake-urgent-root"; home="$TMP_ROOT/pi-wake-urgent-home"
+  log="$TMP_ROOT/pi-wake-urgent.log"; stop="$TMP_ROOT/pi-wake-urgent.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  printf 'blocked [key=route]: captain decision required\n' > "$home/state/urgent.status"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then exit 0; fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=urgent-%s\n' "$$" "$count"
+if [ "$count" -eq 1 ]; then
+  printf 'signal: %s/state/urgent.status\n' "$FM_HOME"
+else
+  trap 'exit 0' TERM INT
+  while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+fi
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" FM_WAKE_BATCH_SECONDS=30 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("urgent", {}, undefined, undefined, {});
+for (let i = 0; i < 50 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) throw new Error("blocked status waited for the 30-second routine batch window");
+if (!deliveries[0].includes("urgent.status")) throw new Error(`urgent wake path missing: ${deliveries[0]}`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi urgent wake bypass"
+  [ -z "$out" ] || fail "Pi urgent wake bypass printed output: $out"
+  pass "Pi blocked status bypasses the configured routine wake window"
 }
 
 test_pi_handling_delivery_failure_is_typed_once() {
@@ -2255,6 +2365,8 @@ test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
+test_pi_batches_and_dedupes_routine_wakes
+test_pi_urgent_status_bypasses_batch_window
 test_pi_handling_delivery_failure_is_typed_once
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry

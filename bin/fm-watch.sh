@@ -188,6 +188,12 @@ BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+PAUSED_RESURFACE_KEYS=''
+PAUSED_RESURFACE_ITEMS=''
+PAUSED_RESURFACE_MARKERS=''
+PAUSED_RESURFACE_COUNT=0
+PAUSED_RESURFACE_SHOWN=0
+PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -319,12 +325,41 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # two cadences cannot drift apart; each caller owns its own marker and reason.
 # Returns without waking while either the absorb or the throttle is inside the
 # window; wake() itself exits the cycle, exactly as it does inline.
-resurface_absorbed() {  # <window> <throttle-marker> <age> <reason>
-  local win=$1 throttle=$2 age=$3 reason=$4
+resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [batch]
+  local win=$1 throttle=$2 age=$3 reason=$4 mode=${5:-immediate} key
   [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] || return 0
   [ "$(age_of "$throttle")" -ge "$PAUSE_RESURFACE_SECS" ] || return 0   # 999999 when no prior re-surface
+  if [ "$mode" = batch ]; then
+    key=$(window_key "$win")
+    case "$PAUSED_RESURFACE_KEYS" in *"|$key|"*) return 0 ;; esac
+    PAUSED_RESURFACE_KEYS="$PAUSED_RESURFACE_KEYS|$key|"
+    PAUSED_RESURFACE_COUNT=$((PAUSED_RESURFACE_COUNT + 1))
+    if [ "$PAUSED_RESURFACE_SHOWN" -lt "$PAUSED_RESURFACE_LIMIT" ]; then
+      PAUSED_RESURFACE_ITEMS="${PAUSED_RESURFACE_ITEMS}${PAUSED_RESURFACE_ITEMS:+; }${reason#stale: }"
+      PAUSED_RESURFACE_SHOWN=$((PAUSED_RESURFACE_SHOWN + 1))
+    fi
+    PAUSED_RESURFACE_MARKERS="${PAUSED_RESURFACE_MARKERS}${PAUSED_RESURFACE_MARKERS:+
+}$throttle"
+    return 0
+  fi
   fm_wake_append stale "$win" "$reason" || exit 1
   date +%s > "$throttle"
+  wake "$reason"
+}
+
+flush_paused_resurfaces() {
+  local reason marker omitted
+  [ "$PAUSED_RESURFACE_COUNT" -gt 0 ] || return 0
+  omitted=$((PAUSED_RESURFACE_COUNT - PAUSED_RESURFACE_SHOWN))
+  reason="stale: paused fleet recheck (${PAUSED_RESURFACE_COUNT} due): $PAUSED_RESURFACE_ITEMS"
+  [ "$omitted" -eq 0 ] || reason="$reason; $omitted more omitted"
+  fm_wake_append stale paused-fleet "$reason" || exit 1
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    date +%s > "$marker"
+  done <<EOF
+$PAUSED_RESURFACE_MARKERS
+EOF
   wake "$reason"
 }
 
@@ -451,7 +486,8 @@ handle_paused_stale() {  # <window> <task> <hash>
     detail="paused, awaiting external"
     reason="paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
-  resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)"
+  printf '%s' "$(last_status_line "$statusf")" > "$STATE/.paused-presented-$key"
+  resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)" batch
   triage_log "absorbed stale ($detail, age ${age}s): $win"
 }
 
@@ -481,7 +517,8 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 
 clear_pause_state() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" \
+    "$STATE/.paused-resurfaced-$key" "$STATE/.paused-presented-$key"
 }
 
 clear_pause_tracking() {  # <window-key>
@@ -577,10 +614,59 @@ surface_nonterminal_stale() {  # <window> <hash>
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
     date +%s > "$STATE/.paused-resurfaced-$key"
+    printf '%s' "$last" > "$STATE/.paused-presented-$key"
   else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+    clear_pause_state "$key"
   fi
   wake "stale: $win"
+}
+
+record_declared_wait_presented() {  # <status-file>
+  local f=$1 task meta win key last
+  case "$f" in *.status) ;; *) return 0 ;; esac
+  task=$(basename "$f" .status)
+  meta="$STATE/$task.meta"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
+  win=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+  [ -n "$win" ] || return 0
+  last=$(last_status_line "$f")
+  status_is_paused_or_captain_held "$last" || return 0
+  key=$(window_key "$win")
+  : > "$STATE/.paused-$key"
+  date +%s > "$STATE/.paused-rechecked-$key"
+  date +%s > "$STATE/.paused-resurfaced-$key"
+  printf '%s' "$last" > "$STATE/.paused-presented-$key"
+}
+
+# A repeat status or turn-end for an already presented declared wait is routine
+# only while the exact durable declaration, endpoint readability, and bounded
+# recheck window all still hold. Any uncertainty falls back to an immediate wake.
+attended_declared_wait_signal_is_absorbable() {  # <file> ...
+  local f task meta win key last presented checked=''
+  attended_routine_status_absorb_enabled || return 1
+  signal_reason_is_routine_nonterminal "$@" || return 1
+  signal_reason_is_actionable "$@" && return 1
+  for f in "$@"; do
+    task=$(basename "$f")
+    task=${task%.status}; task=${task%.turn-ended}
+    case "$checked" in *"|$task|"*) continue ;; esac
+    checked="$checked|$task|"
+    [ -f "$STATE/$task.status" ] && [ -r "$STATE/$task.status" ] \
+      && [ ! -L "$STATE/$task.status" ] || return 1
+    last=$(last_status_line "$STATE/$task.status")
+    status_is_paused_or_captain_held "$last" || return 1
+    meta="$STATE/$task.meta"
+    [ -f "$meta" ] && [ -r "$meta" ] && [ ! -L "$meta" ] || return 1
+    win=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+    [ -n "$win" ] || return 1
+    key=$(window_key "$win")
+    presented=$(cat "$STATE/.paused-presented-$key" 2>/dev/null || true)
+    [ "$presented" = "$last" ] || return 1
+    [ "$(age_of "$STATE/.paused-resurfaced-$key")" -lt "$PAUSE_RESURFACE_SECS" ] || return 1
+    fm_backend_capture "$(window_backend "$win")" "$win" 1 "$(window_label "$win")" \
+      >/dev/null 2>&1 || return 1
+  done
+  [ -n "$checked" ]
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -969,6 +1055,15 @@ resurface_after_downtime() {
 }
 
 while :; do
+  PAUSED_RESURFACE_KEYS=''
+  PAUSED_RESURFACE_ITEMS=''
+  PAUSED_RESURFACE_MARKERS=''
+  PAUSED_RESURFACE_COUNT=0
+  PAUSED_RESURFACE_SHOWN=0
+  PAUSED_RESURFACE_LIMIT=${FM_PAUSED_RESURFACE_BATCH_LIMIT:-$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT}
+  case "$PAUSED_RESURFACE_LIMIT" in
+    ''|*[!0-9]*|0) PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT ;;
+  esac
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
   # down so the rightful singleton continues alone. The EXIT trap's release
@@ -1131,7 +1226,9 @@ EOF
     # signal. A receipt failure leaves absorb_signal false, so the ordinary
     # durable wake path handles the event immediately.
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if ! afk_present && attended_signal_is_absorbable $files \
+    if ! afk_present \
+      && { attended_signal_is_absorbable $files \
+        || attended_declared_wait_signal_is_absorbable $files; } \
       && status_record_absorbed_signal "$STATE" $files; then
       absorb_signal=1
     fi
@@ -1146,6 +1243,7 @@ EOF
         [ -n "$sf" ] || continue
         printf '%s' "$sig" > "$sf"
         mark_surfaced "$f"
+        record_declared_wait_presented "$f"
       done <<EOF
 $pending
 EOF
@@ -1183,11 +1281,19 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused_or_captain_held "$last"; then
       continue
     fi
-    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
+    sf="$STATE/.stale-$key"
+    if ! tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null); then
+      if [ "$(cat "$sf" 2>/dev/null || true)" != missing-endpoint ]; then
+        reason="stale: $w (endpoint missing or unreadable)"
+        fm_wake_append stale "$w" "$reason" || exit 1
+        printf '%s' missing-endpoint > "$sf"
+        wake "$reason"
+      fi
+      continue
+    fi
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
-    sf="$STATE/.stale-$key"
     ssf="$STATE/.stale-since-$key"
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
@@ -1345,6 +1451,10 @@ EOF
       fi
     fi
   done < <(recorded_windows)
+
+  # Declared waits are individually reconciled above, then presented once for
+  # the fleet so one cadence boundary costs one supervision turn and one drain.
+  flush_paused_resurfaces
 
   # Heartbeat: the watcher runs a cheap fleet-scan at a regular cadence no matter
   # what. Time-based via .last-heartbeat mtime; interval doubles per consecutive

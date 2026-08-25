@@ -37,6 +37,24 @@ test_buried_decision_still_surfaces() {
   pass "a needs-decision buried under later routine/other-key lines still reports as open"
 }
 
+test_unchanged_open_decisions_use_compact_marker() {
+  local dir state first second
+  dir=$(make_case unchanged-marker); state="$dir/state"
+  first="$dir/first.out"; second="$dir/second.out"
+  printf 'needs-decision [key=route]: choose A or B\n' > "$state/task-marker.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" || fail "first decision drain failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "second decision drain failed"
+  grep -F 'task-marker [key=route]' "$first" >/dev/null \
+    || fail "first decision presentation omitted the full open decision"
+  [ "$(cat "$second")" = 'OPEN DECISIONS: unchanged, 1 open' ] \
+    || fail "unchanged decision did not collapse to the one-line marker: $(cat "$second")"
+  printf 'blocked [key=infra]: credentials missing\n' >> "$state/task-marker.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "changed decision drain failed"
+  grep -F 'credentials missing' "$second" >/dev/null \
+    || fail "a changed decision set did not restore the full block"
+  pass "unchanged open decisions collapse to one line and changed sets print in full"
+}
+
 test_explicit_resolution_closes_it() {
   local dir state out
   dir=$(make_case resolved)
@@ -216,6 +234,7 @@ test_over_long_decision_note_is_capped_with_a_marker() {
 }
 
 test_buried_decision_still_surfaces
+test_unchanged_open_decisions_use_compact_marker
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

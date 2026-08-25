@@ -838,6 +838,43 @@ test_secondmate_status_note_surfaced_despite_busy_agent() {
   pass "a secondmate's status note surfaces even while its own agent is busy"
 }
 
+test_repeat_presented_pause_signal_is_absorbed_until_it_changes() {
+  local dir state fakebin out capture_file window pid
+  dir=$(make_case repeat-presented-pause); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window='test:fm-repeat-pause'
+  printf 'idle pause pane\n' > "$capture_file"
+  printf 'window=%s\nkind=secondmate\n' "$window" > "$state/repeat-pause.meta"
+  printf 'paused: awaiting upstream release\n' > "$state/repeat-pause.status"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the first pause declaration did not surface"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first pause declaration"
+
+  printf 'paused: awaiting upstream release\n' >> "$state/repeat-pause.status"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file" FM_PAUSE_RESURFACE_SECS=999
+  pid=$!
+  wait_poll_cycle "$state" "$pid" \
+    || { reap "$pid"; fail "an unchanged presented pause woke again: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || fail "an unchanged presented pause queued another wake"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional repeat-pause stop"
+
+  printf 'failed: upstream wait ended in failure\n' >> "$state/repeat-pause.status"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file" FM_PAUSE_RESURFACE_SECS=999
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a changed terminal verb behind a pause was absorbed"
+  grep -F 'signal:' "$out" >/dev/null || fail "changed terminal verb did not wake immediately"
+  unset FM_FAKE_CREW_STATE
+  pass "repeat unchanged pause signals absorb after presentation while changed terminal verbs wake immediately"
+}
+
 test_self_announced_close_does_not_rewake_but_next_note_does() {
   local dir state fakebin out status_file pid rc
   dir=$(make_case self-close-quiet); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -1125,7 +1162,8 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not re-surface a declared pause past the threshold"
-  grep -F "stale: $window" "$out" >/dev/null || fail "re-surface did not print a stale wake"
+  grep -F "stale: paused fleet recheck (1 due): $window" "$out" >/dev/null \
+    || fail "re-surface did not print the fleet-level stale wake"
   grep -F "awaiting external" "$out" >/dev/null || fail "re-surface was not labeled a paused/awaiting-external recheck"
   grep -F "possible wedge" "$out" >/dev/null && fail "a declared pause was mislabeled a possible wedge"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the paused re-surface throttle marker was not recorded"
@@ -1439,7 +1477,8 @@ test_secondmate_paused_resurfaces_in_normal_mode() {
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not re-surface a paused secondmate"
-  grep -F "stale: $window" "$out" >/dev/null || fail "paused secondmate did not emit a stale recheck"
+  grep -F "stale: paused fleet recheck (1 due): $window" "$out" >/dev/null \
+    || fail "paused secondmate did not emit the fleet stale recheck"
   grep -F "awaiting external" "$out" >/dev/null || fail "paused secondmate recheck omitted its external-wait reason"
   grep -F "awaiting the captain" "$out" >/dev/null && fail "paused secondmate recheck named the captain instead of its external dependency"
   grep -F "possible wedge" "$out" >/dev/null && fail "paused secondmate was mislabeled a wedge"
@@ -1473,12 +1512,65 @@ test_secondmate_captain_held_resurfaces_in_normal_mode() {
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not re-surface a captain-held secondmate"
-  grep -F "stale: $window" "$out" >/dev/null || fail "captain-held secondmate did not emit a stale recheck"
+  grep -F "stale: paused fleet recheck (1 due): $window" "$out" >/dev/null \
+    || fail "captain-held secondmate did not emit the fleet stale recheck"
   grep -F "awaiting the captain" "$out" >/dev/null || fail "captain-held secondmate recheck did not name the captain as the blocker: $(cat "$out")"
   grep -F "awaiting external" "$out" >/dev/null && fail "captain-held secondmate recheck claimed an external wait"
   grep -F "possible wedge" "$out" >/dev/null && fail "captain-held secondmate was mislabeled a wedge"
   unset FM_FAKE_CREW_STATE
   pass "a captain-held secondmate re-surfaces on the bounded normal-mode cadence"
+}
+
+test_due_declared_waits_batch_into_one_fleet_wake() {
+  local dir state fakebin out capture_file back task window key pane_hash sig pid wakes
+  dir=$(make_case declared-wait-fleet-batch); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  printf 'idle declared wait\n' > "$capture_file"
+  back=$(( $(date +%s) - 500 ))
+  pane_hash=$(hash_text "idle declared wait")
+  for task in paused-one paused-two; do
+    window="test:fm-$task"
+    printf 'window=%s\nkind=secondmate\n' "$window" > "$state/$task.meta"
+    printf 'paused: awaiting upstream for %s\n' "$task" > "$state/$task.status"
+    set_mtime "$back" "$state/$task.status"
+    sig=$(seen_sig "$state/$task.status")
+    printf '%s' "$sig" > "$state/.seen-${task}_status"
+    key=$(printf '%s' "$window" | tr '.:/' '___')
+    printf '%s' "$pane_hash" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+  done
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting upstream'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW='test:fm-paused-one' FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not deliver the fleet pause batch"
+  grep -F 'stale: paused fleet recheck (2 due):' "$out" >/dev/null \
+    || fail "due declared waits were not summarized in one fleet wake: $(cat "$out")"
+  grep -F 'test:fm-paused-one' "$out" >/dev/null || fail "fleet pause batch omitted the first pane"
+  grep -F 'test:fm-paused-two' "$out" >/dev/null || fail "fleet pause batch omitted the second pane"
+  wakes=$(grep -c "$(printf '\tstale\t')" "$state/.wake-queue" 2>/dev/null || true)
+  [ "$wakes" -eq 1 ] || fail "fleet pause batch queued $wakes records instead of one"
+  unset FM_FAKE_CREW_STATE
+  pass "all due declared waits are reconciled per pane and delivered in one fleet stale wake"
+}
+
+test_paused_missing_endpoint_wakes_immediately() {
+  local dir state fakebin out window sig pid missing
+  dir=$(make_case paused-missing-endpoint); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; window='test:fm-paused-missing'; missing="$dir/absent-pane-capture"
+  printf 'window=%s\nkind=secondmate\n' "$window" > "$state/paused-missing.meta"
+  printf 'paused: waiting safely but endpoint vanished\n' > "$state/paused-missing.status"
+  sig=$(seen_sig "$state/paused-missing.status")
+  printf '%s' "$sig" > "$state/.seen-paused-missing_status"
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$missing" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_PAUSE_RESURFACE_SECS=999
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a paused pane with an unreadable endpoint did not wake immediately"
+  grep -F "stale: $window (endpoint missing or unreadable)" "$out" >/dev/null \
+    || fail "paused missing-endpoint wake lost its immediate typed reason: $(cat "$out")"
+  pass "a declared wait never delays missing or unreadable endpoint detection"
 }
 
 test_secondmate_nonpaused_stale_remains_suppressed() {
@@ -2935,6 +3027,7 @@ test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
+test_repeat_presented_pause_signal_is_absorbed_until_it_changes
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
@@ -2956,6 +3049,8 @@ test_declared_pause_cadence_survives_pane_churn_and_restarts
 test_captain_relevant_line_breaks_an_armed_pause_cadence
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_captain_held_resurfaces_in_normal_mode
+test_due_declared_waits_batch_into_one_fleet_wake
+test_paused_missing_endpoint_wakes_immediately
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking
 test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash

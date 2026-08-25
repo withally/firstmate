@@ -207,8 +207,8 @@ export default function (pi: ExtensionAPI) {
     await injectSessionstart(pi, source);
   });
 
-  // Pi's compaction equivalent. The digest is what a compacted session has just
-  // lost, so re-emitting it here is the point rather than a side effect.
+  // Pi's compaction equivalent. The source owner routes this to the compact
+  // recovery digest: ownership, actionable queue, task identities, next step.
   pi.on?.("session_compact", async () => {
     await injectSessionstart(pi, "compact");
   });

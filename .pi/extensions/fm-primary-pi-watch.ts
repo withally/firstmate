@@ -54,6 +54,16 @@ type SessionGeneration = {
   retryFailures: number;
   restoring: boolean;
   seq: number;
+  wakeBatchTimer: ReturnType<typeof setTimeout> | null;
+  wakeBatch: WakeBatchItem[];
+};
+
+type WakeRecovery = { generation: string; watcherPid: string };
+
+type WakeBatchItem = {
+  key: string;
+  message: string;
+  recoveries: WakeRecovery[];
 };
 
 function refreshWatchToolShell(
@@ -96,6 +106,8 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+const wakeBatchLimit = positiveInteger("FM_WAKE_BATCH_LIMIT", 20);
+const wakeBatchSeconds = configuredWakeBatchSeconds();
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -109,6 +121,18 @@ function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   if (!Number.isFinite(value) || value <= 0) return fallback;
   return Math.floor(value);
+}
+
+function configuredWakeBatchSeconds(): number {
+  const override = Number(process.env.FM_WAKE_BATCH_SECONDS);
+  if (Number.isFinite(override) && override > 0) return Math.floor(override);
+  try {
+    const value = Number(readFileSync(`${config}/wake-batch-seconds`, "utf8").trim());
+    if (Number.isFinite(value) && value > 0) return Math.floor(value);
+  } catch {
+    // An absent or unreadable local override keeps the safe shared default.
+  }
+  return 60;
 }
 
 function parentPid(pid: string): string {
@@ -194,6 +218,8 @@ function createGeneration(): SessionGeneration {
     retryFailures: 0,
     restoring: false,
     seq: 0,
+    wakeBatchTimer: null,
+    wakeBatch: [],
   };
 }
 
@@ -209,6 +235,9 @@ function stopGeneration(generation: SessionGeneration): void {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   generation.retryTimer = null;
+  if (generation.wakeBatchTimer) clearTimeout(generation.wakeBatchTimer);
+  generation.wakeBatchTimer = null;
+  generation.wakeBatch = [];
   if (generation.child) generation.child.kill("SIGTERM");
   generation.child = null;
 }
@@ -248,6 +277,83 @@ export default function (pi: ExtensionAPI) {
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
+  }
+
+  function wakeIsUrgent(message: string): boolean {
+    const urgent = /(?:^|\n)(?:failed|blocked|needs-decision)(?:\s+\[[^\]]+\])?:|watcher: FAILED|(?:lost|no longer owns?) (?:the )?(?:session )?lock|lock ownership (?:was )?lost/i;
+    if (urgent.test(message)) return true;
+    const statusPaths = message.match(/[^\s()]+\.status\b/g) ?? [];
+    for (const statusPath of statusPaths) {
+      const path = resolve(statusPath);
+      if (!path.startsWith(`${resolve(state)}/`)) continue;
+      try {
+        const last = readFileSync(path, "utf8").trim().split(/\r?\n/).pop() ?? "";
+        if (/^(?:failed|blocked|needs-decision)(?:\s+\[[^\]]+\])?:/.test(last)) return true;
+      } catch {
+        // Missing or unreadable endpoints are surfaced by the watcher itself.
+      }
+    }
+    return false;
+  }
+
+  function wakeIdentity(message: string): string {
+    const leadingEndpoint = message.match(/^stale:\s*([^\s(]+)/)?.[1];
+    const identities = [
+      ...(message.match(/(?:^|[\s(])[^\s()]+\.(?:status|turn-ended)\b/g) ?? []),
+      ...(message.match(/\b(?:[A-Za-z0-9._-]+:)?w[A-Za-z0-9._-]+:p[A-Za-z0-9._-]+\b/g) ?? []),
+      ...(leadingEndpoint ? [leadingEndpoint] : []),
+    ].map((value) => value.trim()).sort();
+    const wakeClass = message.match(/^(signal|stale|check|heartbeat)/)?.[1] ?? "wake";
+    return identities.length > 0 ? `${wakeClass}:${[...new Set(identities)].join("|")}` : message.trim();
+  }
+
+  async function flushWakeBatch(owner: SessionGeneration): Promise<void> {
+    if (!generationIsLive(owner) || owner.wakeBatch.length === 0) return;
+    if (owner.wakeBatchTimer) clearTimeout(owner.wakeBatchTimer);
+    owner.wakeBatchTimer = null;
+    const items = owner.wakeBatch.splice(0, owner.wakeBatch.length);
+    const details: string[] = [];
+    let recovery: WakeRecovery | undefined;
+    for (const item of items) {
+      details.push(item.message.length > 800 ? `${item.message.slice(0, 785)} [truncated]` : item.message);
+      if (item.recoveries.length > 0) recovery = item.recoveries[item.recoveries.length - 1];
+    }
+    if (recovery) {
+      const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
+      if (!confirmed.ok) details.push(confirmed.detail);
+    }
+    const omitted = Math.max(0, details.length - wakeBatchLimit);
+    const shown = details.slice(0, wakeBatchLimit);
+    const message = shown.length === 1 && omitted === 0
+      ? shown[0]
+      : `batched ${details.length} watcher wakes:\n${shown.map((item) => `- ${item}`).join("\n")}${omitted > 0 ? `\n- ${omitted} more omitted` : ""}`;
+    await sendWake(owner, message);
+  }
+
+  async function queueWake(owner: SessionGeneration, message: string, recovery?: WakeRecovery): Promise<void> {
+    if (!generationIsLive(owner)) return;
+    const key = wakeIdentity(message);
+    const existing = owner.wakeBatch.find((item) => item.key === key);
+    if (existing) {
+      if (recovery && !existing.recoveries.some((item) => item.generation === recovery.generation && item.watcherPid === recovery.watcherPid)) {
+        existing.recoveries.push(recovery);
+      }
+    } else {
+      owner.wakeBatch.push({ key, message, recoveries: recovery ? [recovery] : [] });
+    }
+    if (wakeIsUrgent(message)) {
+      await flushWakeBatch(owner);
+      return;
+    }
+    if (!owner.wakeBatchTimer) {
+      owner.wakeBatchTimer = setTimeout(() => {
+        owner.wakeBatchTimer = null;
+        void flushWakeBatch(owner).catch(() => {
+          // Pi owns delivery errors; durable wakes remain available to the drain.
+        });
+      }, wakeBatchSeconds * 1000);
+      owner.wakeBatchTimer.unref();
+    }
   }
 
   function confirmHandlingDelivery(recovery: { generation: string; watcherPid: string }): {
@@ -295,25 +401,14 @@ export default function (pi: ExtensionAPI) {
   async function deliverActionableWake(
     owner: SessionGeneration,
     message: string,
-    recovery?: { generation: string; watcherPid: string },
+    recovery?: WakeRecovery,
   ): Promise<void> {
     if (!generationIsLive(owner)) return;
-    if (recovery) {
-      const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
-      if (!confirmed.ok) {
-        const watcherPid = recovery.watcherPid;
-        if (!pidAlive(watcherPid)) {
-          await retireArm(owner.child);
-        }
-        await sendWake(owner, `${message}\n\n${confirmed.detail}`);
-        return;
-      }
-    }
-    await sendWake(owner, message);
+    await queueWake(owner, message, recovery);
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
-    void sendWake(owner, message).catch(() => {
+    void queueWake(owner, message).catch(() => {
       // Pi owns delivery errors; continuity restoration never waits on prompting.
     });
   }

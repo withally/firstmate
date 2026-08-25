@@ -15,14 +15,16 @@ READ_ONLY=0
 AFK=0
 X_MODE=0
 REPAIR_LINE=0
+NEXT_LINE=0
 QUEUE_PENDING=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line] [--queue-pending 0|1]
+Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line|--next-line] [--queue-pending 0|1]
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
+With --next-line, print the exact ordinary continuation after compact recovery.
 EOF
 }
 
@@ -62,6 +64,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --repair-line)
       REPAIR_LINE=1
+      shift
+      ;;
+    --next-line)
+      NEXT_LINE=1
       shift
       ;;
     -h|--help)
@@ -186,6 +192,11 @@ ordinary_wake_line() {
 
 if [ "$REPAIR_LINE" -eq 1 ]; then
   repair_line
+  exit 0
+fi
+
+if [ "$NEXT_LINE" -eq 1 ]; then
+  ordinary_wake_line | sed 's/^- Ordinary wake: //'
   exit 0
 fi
 

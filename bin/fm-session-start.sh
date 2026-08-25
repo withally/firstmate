@@ -178,14 +178,14 @@
 # Hosts without timeout, gtimeout, or perl use the shared pure-Bash watchdog, so
 # the digest never runs without the same hard bound and process-group cleanup.
 #
-# Usage: fm-session-start.sh [--reemit] [--source <source>]
+# Usage: fm-session-start.sh [--reemit|--compact] [--source <source>]
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
 #
 #   --reemit  This process ALREADY took the helm at its own startup and has
-#             only lost its context (a /clear or a compaction). Skip the
+#             only lost its context after a /clear. Skip the
 #             mutating sweeps that startup already reconciled - the stale Herdr
 #             projection cleanup and bootstrap's six mutating sweeps (fleet
 #             sync, secondmate convergence and liveness, PR-check migration,
@@ -198,6 +198,12 @@
 #             this session's own harness holds as its own, so the re-emit
 #             proceeds, while a lock another live session took meanwhile still
 #             produces the ordinary read-only path.
+#
+#   --compact Re-verify lock and watcher ownership, drain only the actionable
+#             queue and open decisions, print active task identities, then the
+#             exact next supervision instruction. Status tails, unread routine
+#             status, and unchanged context files are omitted; unread routine
+#             bytes remain unacknowledged for the next ordinary drain.
 #
 #   --source  The native session-open source, supplied only by
 #             fm-sessionstart-run.sh. A genuine `startup` that owns the active
@@ -222,11 +228,16 @@ COMPLETION_FILE="$STATE/.session-start-complete"
 AGENTS_BASELINE_FILE="$STATE/.session-start-agents-baseline"
 
 REEMIT=0
+COMPACT=0
 SESSION_SOURCE=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reemit)
       REEMIT=1
+      shift
+      ;;
+    --compact)
+      COMPACT=1
       shift
       ;;
     --source)
@@ -243,11 +254,20 @@ while [ "$#" -gt 0 ]; do
       ;;
     *)
       printf 'fm-session-start: unknown argument: %s\n' "$1" >&2
-      printf 'usage: fm-session-start.sh [--reemit] [--source <source>]\n' >&2
+      printf 'usage: fm-session-start.sh [--reemit|--compact] [--source <source>]\n' >&2
       exit 2
       ;;
   esac
 done
+
+# A worker in a registered worktree of this repository is not a fleet primary.
+# Suppress before the runtime-bound wrapper so direct invocations are safe too.
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+if fm_root_is_registered_crew_worktree "$FM_ROOT"; then
+  fm_print_crew_worktree_suppression
+  exit 0
+fi
 
 # --- 0. runtime bound ---------------------------------------------------------
 # The ordered stage list is the contract behind the truncation banner: the child
@@ -277,7 +297,17 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
     # is lost, so the child still runs bounded.
     SESSION_START_STAGE_FILE=/dev/null
   fi
-  if [ "$REEMIT" -eq 1 ]; then
+  if [ "$COMPACT" -eq 1 ]; then
+    if [ -n "$SESSION_SOURCE" ]; then
+      fm_run_timed "$SESSION_START_BUDGET" \
+        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
+        "$SCRIPT_DIR/fm-session-start.sh" --compact --source "$SESSION_SOURCE"
+    else
+      fm_run_timed "$SESSION_START_BUDGET" \
+        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
+        "$SCRIPT_DIR/fm-session-start.sh" --compact
+    fi
+  elif [ "$REEMIT" -eq 1 ]; then
     if [ -n "$SESSION_SOURCE" ]; then
       fm_run_timed "$SESSION_START_BUDGET" \
         env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
@@ -599,6 +629,55 @@ EOF
     printf 'The original AGENTS.md baseline no longer matches, but the current file is absent.\n'
   fi
 }
+
+if [ "$COMPACT" -eq 1 ]; then
+  printf 'COMPACT RECOVERY - %s\n' "$FM_HOME"
+  printf 'LOCK AND WATCHER OWNERSHIP\n'
+  COMPACT_LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
+  COMPACT_LOCK_RC=$?
+  printf 'lock: %s\n' "$COMPACT_LOCK_OUT"
+  REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
+  print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
+  WATCH_PID=$(cat "$STATE/.watch.lock/pid" 2>/dev/null || true)
+  case "$WATCH_PID" in
+    ''|*[!0-9]*) printf 'watcher: no readable owner pid\n' ;;
+    *)
+      if kill -0 "$WATCH_PID" 2>/dev/null; then
+        printf 'watcher: owned by live pid %s\n' "$WATCH_PID"
+      else
+        printf 'watcher: recorded owner pid %s is not live\n' "$WATCH_PID"
+      fi
+      ;;
+  esac
+  printf 'ACTIONABLE QUEUE AND OPEN DECISIONS\n'
+  if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
+    "$SCRIPT_DIR/fm-wake-drain.sh" --compact || true
+  else
+    printf 'queue drain skipped because this session does not own the lock\n'
+  fi
+  printf 'ACTIVE TASK IDENTITIES\n'
+  COMPACT_META_FOUND=0
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    COMPACT_META_FOUND=1
+    id=$(basename "$meta" .meta)
+    kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
+    harness=$(fm_meta_get "$meta" harness 2>/dev/null || true)
+    backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
+    target=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
+    printf '%s kind=%s harness=%s backend=%s target=%s\n' \
+      "$id" "${kind:-ship}" "${harness:-unknown}" "${backend:-unknown}" "${target:-unknown}"
+  done
+  [ "$COMPACT_META_FOUND" -eq 1 ] || printf '(none)\n'
+  printf 'NEXT SUPERVISION INSTRUCTION\n'
+  if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
+    "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" --next-line
+  else
+    "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
+      --read-only 1 --repair-line
+  fi
+  exit 0
+fi
 
 AGENTS_START_HASH=
 if [ "$REEMIT" -eq 0 ] && [ "$SESSION_SOURCE" = startup ]; then

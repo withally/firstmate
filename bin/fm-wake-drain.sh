@@ -29,9 +29,15 @@ ACK_THROUGH=
 ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
+COMPACT=0
+OPEN_DECISIONS_PRESENTATION_PENDING=
 
 case "${1:-}" in
   '') ;;
+  --compact)
+    COMPACT=1
+    [ "$#" -eq 1 ] || { echo "wake drain: unexpected compact arguments" >&2; exit 2; }
+    ;;
   --ack-through)
     ACK_THROUGH=${2:-}
     case "$ACK_THROUGH" in ''|*[!0-9]*) echo "wake drain: invalid acknowledgement sequence" >&2; exit 2 ;; esac
@@ -41,7 +47,7 @@ case "${1:-}" in
     case "$ACK_GENERATION" in ''|*[!A-Za-z0-9._-]*) echo "wake drain: invalid recovery generation" >&2; exit 2 ;; esac
     [ "$#" -eq 4 ] || { echo "wake drain: unexpected acknowledgement arguments" >&2; exit 2; }
     ;;
-  *) echo "usage: fm-wake-drain.sh [--ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
+  *) echo "usage: fm-wake-drain.sh [--compact | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
 esac
 
 # Defense in depth for the supervision chain: this script runs at the top of
@@ -115,6 +121,10 @@ EOF
   [ "$shown" -gt 0 ] || return 0
 }
 
+open_decisions_digest() {
+  git hash-object --stdin 2>/dev/null
+}
+
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
@@ -132,14 +142,25 @@ EOF
 # common case.
 print_open_decisions_section() {
   local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
-  local output='' used=0 shown=0 omitted=0 bytes
+  local output='' used=0 shown=0 omitted=0 bytes digest count marker prior
+  marker="$STATE/.open-decisions-presentation"
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
   else
     open=$(scan_open_decisions_incremental "$STATE") || return 1
   fi
-  [ -n "$open" ] || return 0
+  if [ -z "$open" ]; then
+    rm -f "$marker"
+    return 0
+  fi
+  count=$(printf '%s\n' "$open" | awk -F '\t' 'NF { n += 1 } END { print n + 0 }') || return 1
+  digest=$(printf '%s' "$open" | open_decisions_digest) || return 1
+  prior=$(cat "$marker" 2>/dev/null || true)
+  if [ "$prior" = "$digest $count" ]; then
+    printf 'OPEN DECISIONS: unchanged, %d open\n' "$count"
+    return
+  fi
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
@@ -175,6 +196,17 @@ EOF
   # depends on the busy worker writing a matching resolved line (contract:
   # bin/fm-send.sh header).
   printf "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n" || return 1
+  OPEN_DECISIONS_PRESENTATION_PENDING="$digest $count"
+}
+
+commit_open_decisions_presentation() {
+  local marker="$STATE/.open-decisions-presentation" tmp
+  [ -n "$OPEN_DECISIONS_PRESENTATION_PENDING" ] || return 0
+  tmp="$marker.tmp.$$"
+  printf '%s\n' "$OPEN_DECISIONS_PRESENTATION_PENDING" > "$tmp" \
+    || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$marker" || { rm -f "$tmp"; return 1; }
+  OPEN_DECISIONS_PRESENTATION_PENDING=
 }
 
 # Print the RECORD DIVERGENCE section: every captain call whose two records
@@ -245,7 +277,8 @@ print_status_sections() {
   print_unread_status_section "$snapshot" || return 1
   print_open_decisions_section "$snapshot" || return 1
   print_record_divergence_section || return 1
-  status_commit_presentation_snapshot "$STATE" "$acknowledged"
+  status_commit_presentation_snapshot "$STATE" "$acknowledged" || return 1
+  commit_open_decisions_presentation
 }
 
 print_status_presentation() {  # [<deduped-raw-rows>]
@@ -261,6 +294,15 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
   fm_lock_release "$lock"
+  return "$rc"
+}
+
+print_compact_open_decisions() {
+  local lock="$STATE/.status-presentation-lock" rc=0
+  fm_lock_acquire_wait "$lock" || return 1
+  print_open_decisions_section || rc=1
+  if [ "$rc" -eq 0 ]; then commit_open_decisions_presentation || rc=1; fi
+  fm_lock_release "$lock" || rc=1
   return "$rc"
 }
 
@@ -347,7 +389,11 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  (print_status_presentation) || echo "wake drain: status presentation failed; UNREAD STATUS, OPEN DECISIONS and RECORD DIVERGENCE may be incomplete" >&2
+  if [ "$COMPACT" -eq 1 ]; then
+    (print_compact_open_decisions) || echo "wake drain: compact OPEN DECISIONS presentation failed" >&2
+  else
+    (print_status_presentation) || echo "wake drain: status presentation failed; UNREAD STATUS, OPEN DECISIONS and RECORD DIVERGENCE may be incomplete" >&2
+  fi
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
   fi
@@ -399,6 +445,10 @@ DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
-(print_status_presentation "$RAW_ROWS") || echo "wake drain: status presentation failed; UNREAD STATUS, OPEN DECISIONS and RECORD DIVERGENCE may be incomplete" >&2
+if [ "$COMPACT" -eq 1 ]; then
+  (print_compact_open_decisions) || echo "wake drain: compact OPEN DECISIONS presentation failed" >&2
+else
+  (print_status_presentation "$RAW_ROWS") || echo "wake drain: status presentation failed; UNREAD STATUS, OPEN DECISIONS and RECORD DIVERGENCE may be incomplete" >&2
+fi
 assert_watcher_liveness
 exit 0

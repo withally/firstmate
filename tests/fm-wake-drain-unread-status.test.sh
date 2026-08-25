@@ -288,6 +288,22 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
 
+test_compact_drain_preserves_unread_status_for_ordinary_delivery() {
+  local dir state compact ordinary
+  dir=$(make_case compact-preserves-unread); state="$dir/state"
+  compact="$dir/compact.out"; ordinary="$dir/ordinary.out"
+  prime_cursor "$state" "$state/compact-task.status"
+  printf 'note: unread routine line survives compaction\n' >> "$state/compact-task.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --compact > "$compact" \
+    || fail "compact drain failed"
+  [ ! -s "$compact" ] || fail "compact drain printed a routine status tail: $(cat "$compact")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$ordinary" \
+    || fail "ordinary drain after compact failed"
+  grep -F 'note: unread routine line survives compaction' "$ordinary" >/dev/null \
+    || fail "compact drain advanced the unread-status cursor: $(cat "$ordinary")"
+  pass "compact recovery omits routine status without consuming its exact-once ordinary presentation"
+}
+
 # An absorbed-status receipt is bound to one file identity and byte endpoint.
 # When it can no longer describe the current file - id reuse, an out-of-band
 # replacement, a restore, or truncation - it must be dropped and treated as
@@ -370,6 +386,7 @@ test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
+test_compact_drain_preserves_unread_status_for_ordinary_delivery
 test_unverifiable_absorbed_receipt_still_presents_every_section
 test_out_of_range_absorbed_receipt_still_presents_every_section
 test_routine_working_lines_stay_silent_on_the_empty_queue

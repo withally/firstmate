@@ -77,6 +77,7 @@ config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitig
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see docs/configuration.md "Watched tool updates"
 config/attended-routine-status-absorb  optional "off" opt-out from default-on attended absorption of routine supervision wakes; LOCAL, gitignored; see docs/configuration.md "Attended routine status absorption"
+config/wake-batch-seconds  optional positive-integer Pi watcher follow-up aggregation window; LOCAL, gitignored, default 60 seconds; see docs/configuration.md "Pi watcher wake batching"
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history

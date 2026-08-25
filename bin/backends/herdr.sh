@@ -2780,6 +2780,31 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
   fi
 }
 
+# Re-read an inconclusive post-Enter surface without sending another Enter.
+# A later proven-pending composer authorizes the caller's bounded submit retry;
+# a later empty composer or idle-baseline busy transition confirms delivery.
+# Persistent unreadability remains unknown and never receives a blind keypress.
+fm_backend_herdr_recheck_unknown_submit() {  # <target> <allow-native-busy> <sleep>
+  local target=$1 allow_busy=$2 sleep_s=$3 attempts i=0 raw verdict
+  attempts=${FM_BACKEND_HERDR_UNKNOWN_RECHECKS:-3}
+  case "$attempts" in ''|*[!0-9]*|0) attempts=3 ;; esac
+  while [ "$i" -lt "$attempts" ]; do
+    sleep "$sleep_s"
+    raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+    if [ "$allow_busy" = 1 ] \
+      && [ "$(fm_backend_herdr_classify_submit_agent_status "$raw")" = busy ]; then
+      printf 'empty'
+      return 0
+    fi
+    verdict=$(fm_backend_herdr_composer_state "$target")
+    case "$verdict" in
+      empty|pending|pending-unproven) printf '%s' "$verdict"; return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  printf 'unknown'
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline='' allow_rendered=0 enter_sent=0
@@ -2813,7 +2838,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
       case "$verdict" in
         busy) printf 'empty'; return 0 ;;
-        unknown) printf 'unknown'; return 0 ;;
+        unknown)
+          verdict=$(fm_backend_herdr_recheck_unknown_submit "$target" 1 "$sleep_s")
+          case "$verdict" in empty) printf 'empty'; return 0 ;; unknown) printf 'unknown'; return 0 ;; esac
+          ;;
       esac
       # Native stayed idle. Composer empty is positive delivery (a landed
       # Claude turn that never flipped agent_status). Proven pending retries.
@@ -2834,7 +2862,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       case "$verdict" in
         busy) printf 'empty'; return 0 ;;
         empty) printf 'empty'; return 0 ;;
-        unknown) printf 'unknown'; return 0 ;;
+        unknown)
+          verdict=$(fm_backend_herdr_recheck_unknown_submit "$target" 0 "$sleep_s")
+          case "$verdict" in empty) printf 'empty'; return 0 ;; unknown) printf 'unknown'; return 0 ;; esac
+          ;;
       esac
     fi
     i=$((i + 1))

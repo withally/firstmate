@@ -65,22 +65,29 @@ send_line() {
   tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
 }
 
+CALM_SHIP_HULL='\__/'
+SETTLE_SAMPLE_SECONDS=0.06
+SETTLE_STABLE_INTERVALS=4
+
 settle_viewport() {
-  local marker=$1 label=$2 attempt=0
+  local marker=$1 label=$2 attempt=0 stable=0
   : >"$PREV_SNAPSHOT"
-  while [ "$attempt" -lt 240 ]; do
+  while [ "$attempt" -lt 400 ]; do
     cp "$SNAPSHOT" "$PREV_SNAPSHOT" 2>/dev/null || true
-    sleep 0.05
+    sleep "$SETTLE_SAMPLE_SECONDS"
     capture_viewport
     if grep -Fq "$marker" "$SNAPSHOT" \
-      && ! tail -12 "$SNAPSHOT" | grep -Fq "Working..." \
+      && ! tail -12 "$SNAPSHOT" | grep -Fq "$CALM_SHIP_HULL" \
       && cmp -s "$SNAPSHOT" "$PREV_SNAPSHOT"; then
-      return 0
+      stable=$((stable + 1))
+      [ "$stable" -ge "$SETTLE_STABLE_INTERVALS" ] && return 0
+    else
+      stable=0
     fi
     attempt=$((attempt + 1))
   done
   cat "$SNAPSHOT" >&2
-  fail "$label did not settle into a stable frame with $marker visible and the transient status row cleared"
+  fail "$label did not hold $marker in a viewport that stayed unchanged across $SETTLE_STABLE_INTERVALS samples with the Calm working ship gone"
 }
 
 assert_no_empty_region_before() {

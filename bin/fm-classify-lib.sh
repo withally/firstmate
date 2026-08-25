@@ -211,6 +211,18 @@ status_is_paused_or_captain_held() {  # <status-line>
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
+# The status verbs that make a wake URGENT rather than routine: a supervisor must
+# see them without waiting out any aggregation window. Kept beside status_line_verb
+# as the one owner of that set, so the watcher's stale reasons and the Pi
+# extension's urgent bypass cannot disagree about which verbs qualify. A declared
+# wait (paused:) and ordinary progress (working:) are deliberately not urgent.
+status_line_is_urgent() {  # <status-line>
+  case "$(status_line_verb "$1")" in
+    failed|blocked|needs-decision) return 0 ;;
+  esac
+  return 1
+}
+
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[*}

@@ -704,6 +704,58 @@ EOF
   pass "Pi renders the flush-triggering urgent wake before routine wakes so the limit never omits it"
 }
 
+test_pi_terminal_stale_wake_takes_the_urgent_bypass() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-stale-urgent-root"; home="$TMP_ROOT/pi-stale-urgent-home"
+  log="$TMP_ROOT/pi-stale-urgent.log"; stop="$TMP_ROOT/pi-stale-urgent.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  printf 'failed: build broke on the release job\n' > "$home/state/urgent.status"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then exit 0; fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=stale-%s\n' "$$" "$count"
+if [ "$count" -eq 1 ]; then
+  # The watcher's terminal-stale reason for a failed crew names its status file.
+  printf 'stale: test:fm-urgent (%s/state/urgent.status)\n' "$FM_HOME"
+else
+  trap 'exit 0' TERM INT
+  while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+fi
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" FM_WAKE_BATCH_SECONDS=30 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("stale-urgent", {}, undefined, undefined, {});
+for (let i = 0; i < 50 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) {
+  throw new Error("a failed crew's terminal stale waited out the 30-second routine batch window");
+}
+if (!deliveries[0].includes("test:fm-urgent")) throw new Error(`stale wake identity missing: ${deliveries[0]}`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi terminal stale urgent bypass"
+  [ -z "$out" ] || fail "Pi terminal stale urgent bypass printed output: $out"
+  pass "a terminal stale naming a failed: status file takes the Pi urgent bypass"
+}
+
 test_pi_handling_delivery_failure_is_typed_once() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-handling-fail-root"
@@ -2543,6 +2595,7 @@ test_pi_handling_delivery_failure_is_typed_once
 test_pi_batch_keeps_both_reasons_for_one_endpoint
 test_pi_dead_watcher_arm_is_retired_when_handshake_fails
 test_pi_urgent_detail_survives_a_full_batch
+test_pi_terminal_stale_wake_takes_the_urgent_bypass
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision

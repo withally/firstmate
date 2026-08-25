@@ -913,6 +913,56 @@ test_secondmate_presented_pause_status_always_wakes() {
   pass "a secondmate status line always wakes, even as an unchanged repeat of a presented hold"
 }
 
+test_urgent_terminal_stale_names_its_status_file() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case urgent-terminal-stale); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window='test:fm-urgent'
+  printf 'stopped after the failure\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/urgent.meta"
+  printf 'failed: build broke on the release job\n' > "$state/urgent.status"
+  sig=$(seen_sig "$state/urgent.status"); printf '%s' "$sig" > "$state/.seen-urgent_status"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  pane_hash=$(hash_text "stopped after the failure")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a failed crew's stale pane did not surface"
+  # A downstream aggregator classifies urgency by resolving the named status
+  # file, so the reason has to carry it or the failure waits out the batch window.
+  grep -F "stale: $window ($state/urgent.status)" "$out" >/dev/null \
+    || fail "an urgent terminal stale did not name its status file: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "a failed: terminal stale names its status file so an aggregator can classify it urgent"
+}
+
+test_routine_terminal_stale_stays_a_bare_window_identity() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case routine-terminal-stale); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window='test:fm-routine-done'
+  printf 'finished, awaiting review\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/routine-done.meta"
+  printf 'done: PR https://example.test/pr/9\n' > "$state/routine-done.status"
+  sig=$(seen_sig "$state/routine-done.status"); printf '%s' "$sig" > "$state/.seen-routine-done_status"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  pane_hash=$(hash_text "finished, awaiting review")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a done: crew's stale pane did not surface"
+  grep -Fx "stale: $window" "$out" >/dev/null \
+    || fail "a routine terminal stale lost its bare window identity: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "a done: terminal stale stays a bare window identity and is not escalated to urgent"
+}
+
 test_self_announced_close_does_not_rewake_but_next_note_does() {
   local dir state fakebin out status_file pid rc
   dir=$(make_case self-close-quiet); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -3348,6 +3398,8 @@ test_secondmate_presented_pause_status_always_wakes
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
+test_urgent_terminal_stale_names_its_status_file
+test_routine_terminal_stale_stays_a_bare_window_identity
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold

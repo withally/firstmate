@@ -1453,12 +1453,23 @@ EOF
               clear_write_tracking "$key"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
-              fm_wake_append stale "$w" "stale: $w" || exit 1
+              terminal_status="$STATE/$(window_to_task "$w" "$STATE").status"
+              reason="stale: $w"
+              # A bare `stale: <window>` carries no verb and no path, so a
+              # downstream aggregator cannot tell a finished crew from a failed
+              # one and holds both for its full batch window. Naming the status
+              # file lets the reader resolve the actual last line, so failed:,
+              # blocked: and needs-decision: take the urgent bypass while done:
+              # and the rest stay routine.
+              if status_line_is_urgent "$(last_status_line "$terminal_status")"; then
+                reason="$reason ($terminal_status)"
+              fi
+              fm_wake_append stale "$w" "$reason" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
               clear_write_tracking "$key"
-              mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
-              wake "stale: $w"
+              mark_surfaced "$terminal_status"
+              wake "$reason"
             fi
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a

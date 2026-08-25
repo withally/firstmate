@@ -376,11 +376,42 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
   pass "routine working/done lines still print nothing on an empty-queue drain"
 }
 
+test_machine_consumer_drain_leaves_unread_status_unread() {
+  local dir state daemon returning
+  dir=$(make_case machine-consumer-unread); state="$dir/state"
+  daemon="$dir/daemon.out"; returning="$dir/returning.out"
+  # An established home: one presenting drain has already run, so the presentation
+  # cursor exists and this note is the only unread span.
+  printf 'note: first line\n' > "$state/task1.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null || fail "priming drain failed"
+  printf 'note: upstream contract changed, see thread\n' >> "$state/task1.status"
+
+  # The away-mode daemon drains to consume the TSV wake rows and throws the
+  # presented text away, so nobody was shown this line.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --no-presentation-commit > "$daemon" \
+    || fail "machine-consumer drain failed"
+  grep -F 'upstream contract changed' "$daemon" >/dev/null \
+    || fail "the machine-consumer drain changed the drain's own output shape: $(cat "$daemon")"
+
+  # The captain returns from away mode. Exact-once means presented once to a
+  # READER, so the line must still be unread here.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$returning" || fail "returning drain failed"
+  grep -F 'upstream contract changed' "$returning" >/dev/null \
+    || fail "a drain nobody read spent the unread-status cursor: $(cat "$returning")"
+
+  # A presenting drain does spend it, so exact-once still holds for readers.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/third.out" || fail "third drain failed"
+  grep -F 'upstream contract changed' "$dir/third.out" >/dev/null \
+    && fail "an already-presented status line replayed to the same reader: $(cat "$dir/third.out")"
+  pass "a drain whose presentation nobody reads leaves UNREAD STATUS unread"
+}
+
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced
 test_signal_annotation_surfaces_every_unread_note_not_only_the_newest
 test_pending_reply_resolution_surfaces_once
+test_machine_consumer_drain_leaves_unread_status_unread
 test_unread_output_over_cap_remains_recoverable
 test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread

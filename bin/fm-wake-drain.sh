@@ -37,11 +37,13 @@ COMPACT=0
 # recovery drain re-presents it in full. An ordinary mid-turn wake drain runs in
 # the same context that saw the last presentation and keeps the collapse.
 SESSION_RECOVERY=0
-# The unchanged-open-decisions collapse records that a HUMAN session was shown the
-# full block. A caller that consumes this drain's rows mechanically and discards the
-# presented text has shown it to nobody, so it must not spend that record: doing so
-# collapses the block for whoever reads it next. The away-mode daemon is exactly
-# that caller.
+# Every presentation record this drain writes - the unchanged-open-decisions
+# collapse AND the UNREAD STATUS cursor - means a HUMAN session was shown those
+# bytes. A caller that consumes this drain's rows mechanically and discards the
+# presented text has shown them to nobody, so it must spend neither: doing so
+# collapses the decisions and swallows the unread span for whoever reads it next.
+# The away-mode daemon is exactly that caller, and the captain returning from away
+# mode is the reader those records were about to be spent on.
 PRESENTATION_COMMIT=1
 OPEN_DECISIONS_PRESENTATION_PENDING=
 
@@ -307,11 +309,15 @@ print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
+  if [ "$PRESENTATION_COMMIT" -eq 1 ]; then
+    acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
+  fi
   print_unread_status_section "$snapshot" || return 1
   print_open_decisions_section "$snapshot" "$OPEN_DECISIONS_FORCE" || return 1
   print_record_divergence_section || return 1
-  status_commit_presentation_snapshot "$STATE" "$acknowledged" || return 1
+  if [ "$PRESENTATION_COMMIT" -eq 1 ]; then
+    status_commit_presentation_snapshot "$STATE" "$acknowledged" || return 1
+  fi
   commit_open_decisions_presentation
 }
 

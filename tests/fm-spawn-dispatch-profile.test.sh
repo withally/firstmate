@@ -681,7 +681,7 @@ test_pi_tui_mode_probe_is_safe_for_old_and_new_pi() {
       launch=$(cat "$LAUNCH_LOG")
       assert_contains "$launch" "'$FAKEBIN_DIR/$harness'" \
         "$harness $version launch must use the executable selected for probing"
-      assert_not_contains "$launch" "FM_PI_HARNESS=$harness $harness" \
+      assert_not_contains "$launch" "PI_CLEAR_ON_SHRINK=1 $harness " \
         "$harness $version launch must not re-resolve a bare executable in the worker"
       if [ "$version" = 0.82.0 ]; then
         assert_not_contains "$launch" "--tui-mode" \

@@ -174,6 +174,50 @@ test_next_line_is_self_contained_for_every_harness() {
   pass "every harness next line is self-contained: drain, acknowledge, exact command, owning protocol"
 }
 
+test_next_line_hands_an_active_away_mode_to_the_daemon() {
+  local h line
+  # Away mode changes who owns the durable queue: the daemon drains and triages it,
+  # so a recovering session must not be handed the attended drain/ack order.
+  for h in claude codex pi pi-signed opencode grok cursor bogus-harness; do
+    line=$("$RENDER" --harness "$h" --afk 1 --next-line) \
+      || fail "--next-line failed for harness $h under away mode"
+    [ "$(printf '%s\n' "$line" | grep -c .)" -eq 1 ] \
+      || fail "$h away-mode next line was not a single line: $line"
+    case "$line" in
+      *"/afk"*) ;;
+      *) fail "$h away-mode next line omits the /afk action: $line" ;;
+    esac
+    case "$line" in
+      *state/.afk*) ;;
+      *) fail "$h away-mode next line omits the condition that state/.afk is active: $line" ;;
+    esac
+    case "$line" in
+      *fm-supervise-daemon.sh*) ;;
+      *) fail "$h away-mode next line does not name the daemon that owns supervision: $line" ;;
+    esac
+    case "$line" in
+      *"do NOT run bin/fm-wake-drain.sh"*) ;;
+      *) fail "$h away-mode next line does not forbid the attended drain: $line" ;;
+    esac
+    case "$line" in
+      *--ack-through*) ;;
+      *) fail "$h away-mode next line does not name the acknowledgement it forbids: $line" ;;
+    esac
+    case "$line" in
+      *.md*) ;;
+      *) fail "$h away-mode next line omits its owning protocol document: $line" ;;
+    esac
+  done
+
+  # Attended mode is unchanged: the drain and acknowledgement are still ordered.
+  line=$("$RENDER" --harness pi --afk 0 --next-line)
+  case "$line" in
+    *"drain and handle this wake with bin/fm-wake-drain.sh"*) ;;
+    *) fail "attended next line lost its drain order: $line" ;;
+  esac
+  pass "an active away mode routes every harness next line to the daemon instead of an attended drain"
+}
+
 test_pi_signed_preserves_identity_with_pi_supervision_protocol() {
   local out ordinary
   out=$("$RENDER" --harness pi-signed)
@@ -236,6 +280,7 @@ test_conditional_stanzas
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
 test_next_line_is_self_contained_for_every_harness
+test_next_line_hands_an_active_away_mode_to_the_daemon
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config

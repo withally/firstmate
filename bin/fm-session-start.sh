@@ -677,7 +677,8 @@ if [ "$COMPACT" -eq 1 ]; then
   [ "$COMPACT_META_FOUND" -eq 1 ] || printf '(none)\n'
   printf 'NEXT SUPERVISION INSTRUCTION\n'
   if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
-    "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" --next-line
+    "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
+      --afk "$COMPACT_AFK_PRESENT" --next-line
   else
     "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
       --read-only 1 --repair-line

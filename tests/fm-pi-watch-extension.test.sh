@@ -811,9 +811,11 @@ if (deliveries.length !== 1) {
 if (!deliveries[0].includes("routine.status")) {
   throw new Error(`the flushed batch lost its queued wake: ${deliveries[0]}`);
 }
+// The watcher of an ended arm has already exited, so nothing is left to confirm;
+// test_pi_arm_end_flush_does_not_invent_a_watcher_failure owns that rule.
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.filter((row) => row.startsWith("confirm ")).length !== 1) {
-  throw new Error(`the handling confirmation did not run inside the owning arm: ${rows.join(" | ")}`);
+if (rows.some((row) => row.startsWith("confirm "))) {
+  throw new Error(`the arm-end flush confirmed against an already-exited watcher: ${rows.join(" | ")}`);
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
@@ -821,7 +823,135 @@ EOF
   status=$?
   expect_code 0 "$status" "Pi batch must flush when its owning arm ends"
   [ -z "$out" ] || fail "Pi arm-end flush test printed output: $out"
-  pass "a wake batch is flushed and confirmed when its owning arm ends without a successor, not a window later"
+  pass "a wake batch is flushed when its owning arm ends without a successor, not a window later"
+}
+
+test_pi_batch_ownership_rotates_to_each_successor_arm() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-batch-rotate-root"; home="$TMP_ROOT/pi-batch-rotate-home"
+  log="$TMP_ROOT/pi-batch-rotate.log"; stop="$TMP_ROOT/pi-batch-rotate.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  printf 'working: still building a\n' > "$home/state/a.status"
+  printf 'working: still building b\n' > "$home/state/b.status"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirm\n' >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=rotate-%s\n' "$$" "$count"
+case "$count" in
+  1) printf 'signal: %s/state/a.status\n' "$FM_HOME" ;;
+  2) sleep 0.2; printf 'signal: %s/state/b.status\n' "$FM_HOME" ;;
+  3) sleep 0.2; exit 0 ;;
+  *) trap 'exit 0' TERM INT; while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done ;;
+esac
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  # 300s window: after two actionable rotations the batch holds two wakes, and only
+  # an arm-end flush that followed ownership to arm 3 can deliver them here.
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" FM_WAKE_BATCH_SECONDS=300 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("rotate", {}, undefined, undefined, {});
+for (let i = 0; i < 800 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) {
+  throw new Error("a batch that spanned an arm rotation was never flushed when the current arm ended");
+}
+const message = deliveries[0];
+if (!message.includes("a.status") || !message.includes("b.status")) {
+  throw new Error(`the rotated batch lost one of its aggregated wakes: ${message}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi batch ownership must follow each successor arm"
+  [ -z "$out" ] || fail "Pi batch rotation test printed output: $out"
+  pass "a batch that spans arm rotations is still flushed when the current arm ends"
+}
+
+test_pi_arm_end_flush_does_not_invent_a_watcher_failure() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-arm-end-quiet-root"; home="$TMP_ROOT/pi-arm-end-quiet-home"
+  log="$TMP_ROOT/pi-arm-end-quiet.log"; stop="$TMP_ROOT/pi-arm-end-quiet.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  printf 'working: still building the release\n' > "$home/state/routine.status"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  # bin/fm-watch-arm.sh waits on its watcher, so by the time an arm closes that
+  # watcher pid is already gone and --handling-delivered's liveness gate rejects.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirm-rejected\n' >> "${FM_ARM_LOG:?}"
+  exit 1
+fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: %s/state/routine.status\n' "$FM_HOME"
+  exit 0
+fi
+if [ "$count" -eq 2 ]; then
+  dead=$(bash -c 'echo $$')
+  printf 'watcher: started pid=%s (beacon fresh) recovery-generation=quiet-generation\n' "$dead"
+  sleep 0.4
+  exit 0
+fi
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" FM_WAKE_BATCH_SECONDS=300 node --input-type=module 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("quiet", {}, undefined, undefined, {});
+for (let i = 0; i < 600 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) throw new Error("the arm-end flush did not deliver the batch");
+const message = deliveries[0];
+if (!message.includes("routine.status")) throw new Error(`the flushed batch lost its wake: ${message}`);
+if (message.includes("handling delivery confirmation was rejected")) {
+  throw new Error(`the arm-end flush invented a watcher failure: ${message}`);
+}
+const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+if (rows.includes("confirm-rejected")) {
+  throw new Error(`the arm-end flush confirmed against an already-exited watcher: ${rows.join(" | ")}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi arm-end flush must not invent a watcher failure"
+  [ -z "$out" ] || fail "Pi arm-end quiet test printed output: $out"
+  pass "an arm-end flush skips the confirmation its ended arm can no longer satisfy"
 }
 
 test_pi_handling_delivery_failure_is_typed_once() {
@@ -2665,6 +2795,8 @@ test_pi_dead_watcher_arm_is_retired_when_handshake_fails
 test_pi_urgent_detail_survives_a_full_batch
 test_pi_terminal_stale_wake_takes_the_urgent_bypass
 test_pi_batch_flushes_when_its_owning_arm_ends
+test_pi_batch_ownership_rotates_to_each_successor_arm
+test_pi_arm_end_flush_does_not_invent_a_watcher_failure
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision

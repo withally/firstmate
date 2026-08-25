@@ -167,7 +167,8 @@ Write one positive integer number of seconds to gitignored `config/wake-batch-se
 `FM_WAKE_BATCH_SECONDS` is the process-local override used by tests and specialized launches.
 Identical status paths and backend endpoints are deduplicated, the rendered list is bounded, and one delivered batch requires one drain and one acknowledgement.
 Urgent details are rendered ahead of routine ones, so the bound can only omit routine wakes and never the failure that triggered the flush.
-A batch does not outlive the watcher arm that opened it when that arm is not replaced: an actionable close starts a successor immediately and the batch keeps aggregating across that rotation, but a non-actionable close hands off to a bounded retry, so the batch is flushed and confirmed there rather than waiting out a window under a cycle that may not come back.
+A batch does not outlive its CURRENT watcher arm when that arm is not replaced: an actionable close starts a successor immediately and the batch keeps aggregating across that rotation, handing ownership to the successor each time, but a non-actionable close hands off to a bounded retry, so the batch is flushed there rather than waiting out a window under a cycle that may not come back.
+An arm only exits after the watcher it waited on has exited, so that arm-end flush does not attempt the handling confirmation: there is nothing left to confirm, and confirming would report a watcher failure that never happened. A timer-driven flush still confirms.
 The durable wake queue and the recovery marker remain the only records of what was delivered and acknowledged, so a crash between that flush and its confirmation re-presents on the next drain instead of losing the batch.
 `failed:`, `blocked:`, `needs-decision:`, lost-lock, and watcher-failure wakes bypass the delay and flush any pending routine batch immediately.
 

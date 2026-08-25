@@ -310,7 +310,14 @@ export default function (pi: ExtensionAPI) {
     return identities.length > 0 ? `${wakeClass}:${[...new Set(identities)].join("|")}` : message.trim();
   }
 
-  async function flushWakeBatch(owner: SessionGeneration): Promise<void> {
+  // <owning-arm-ended> is set only by the arm-end flush. bin/fm-watch-arm.sh prints
+  // its `watcher: started pid=...` line and then waits on that watcher, so an arm
+  // process only closes AFTER its own watcher pid has exited. Confirming a handling
+  // handshake there would always fail --handling-delivered's liveness gate and
+  // report a watcher failure that never happened, so an ended arm skips the
+  // confirmation: there is nothing left to confirm. A timer-driven flush still
+  // confirms, and a dangling arm that outlived its watcher is still retired below.
+  async function flushWakeBatch(owner: SessionGeneration, owningArmEnded = false): Promise<void> {
     if (!generationIsLive(owner) || owner.wakeBatch.length === 0) return;
     if (owner.wakeBatchTimer) clearTimeout(owner.wakeBatchTimer);
     owner.wakeBatchTimer = null;
@@ -326,7 +333,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (item.recoveries.length > 0) recovery = item.recoveries[item.recoveries.length - 1];
     }
-    if (recovery) {
+    if (recovery && !owningArmEnded) {
       const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
       if (!confirmed.ok) {
         urgentDetails.push(confirmed.detail);
@@ -364,7 +371,7 @@ export default function (pi: ExtensionAPI) {
       owner.wakeBatchArm = null;
       return;
     }
-    void flushWakeBatch(owner).catch(() => {
+    void flushWakeBatch(owner, true).catch(() => {
       // Pi owns delivery errors; durable wakes remain available to the drain.
     });
   }
@@ -383,13 +390,16 @@ export default function (pi: ExtensionAPI) {
         existing.recoveries.push(recovery);
       }
     } else {
-      // The arm that opens a batch owns it: a batch must never outlive that arm
-      // unconfirmed, or its handling confirmation would run a wake-batch window
-      // later against a watcher pid that has since died and report a failure that
-      // never happened.
-      if (owner.wakeBatch.length === 0) owner.wakeBatchArm = owner.child;
       owner.wakeBatch.push({ key, messages: [message], recoveries: recovery ? [recovery] : [] });
     }
+    // A batch is owned by the CURRENT arm, not the one that opened it. Every wake
+    // in an aggregating batch arrives just after an actionable rotation started a
+    // successor, so pinning ownership to the opening arm would leave it pointing at
+    // a predecessor that has already closed and can never end again - and the
+    // arm-end flush would then be unreachable for exactly the multi-wake batches
+    // batching exists for. A wake queued with no live arm leaves the last live
+    // owner in place rather than orphaning the batch.
+    if (owner.child) owner.wakeBatchArm = owner.child;
     if (wakeIsUrgent(message)) {
       await flushWakeBatch(owner);
       return;

@@ -201,6 +201,15 @@ protocol_doc_path() {
 # cannot follow a bare "as directed below" - and inlining the protocol itself would
 # defeat the point of compaction.
 ordinary_wake_line() {
+  # Away mode changes WHO owns the queue, not just how a wake is delivered:
+  # bin/fm-supervise-daemon.sh drains and triages the same durable queue, so the
+  # attended drain-and-acknowledge order below would consume its work. One
+  # self-contained line, same shape as the harness lines: the exact action, the
+  # condition, what not to do, and the owning document.
+  if [ "$AFK" -eq 1 ]; then
+    printf '%s\n' '- Ordinary wake: away mode is active (state/.afk present) and bin/fm-supervise-daemon.sh owns supervision, so load the /afk skill and let the daemon triage this wake; do NOT run bin/fm-wake-drain.sh or its --ack-through command from here. Protocol: docs/architecture.md'
+    return 0
+  fi
   case "$HARNESS" in
     claude)
       printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity, so do not arm another cycle yourself. Protocol: ' "$(protocol_doc_path)"

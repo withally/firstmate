@@ -30,6 +30,8 @@ If the unready arm does not retire within that bound, the adapter keeps ownershi
 When that retained arm later closes, its actual close is classified as a new supervised event without replaying the earlier fallback.
 After the configured retry bound is exhausted, it delivers the original wake with a typed continuity-restoration failure even if every successor arm hung without reporting readiness.
 This is deliberate Option B ordering: the fleet is protected before the model handles the wake whenever restoration succeeds, but the model is never left blind when it does not.
+Pi's follow-up aggregation leaves that ordering intact: a successor is still started and verified per actionable close, and only the delivery of routine wakes is deferred into one bounded follow-up, with urgent classes flushing immediately.
+The handling confirmation moves with that delivery - it runs once per delivered batch against the batch's latest recovery, and an arm-end flush skips it because the arm outlives its own watcher and there is nothing left to confirm; [`configuration.md`](configuration.md#pi-watcher-wake-batching-configwake-batch-seconds) owns the window, its bounds, and that flush.
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.
 The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher is live and no auto-arm claim is still deciding, so a leftover claim whose own decision already finished cannot suppress it ([`turnend-guard.md`](turnend-guard.md#harness-integrations) owns that boundary).

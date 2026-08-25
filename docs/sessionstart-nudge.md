@@ -43,6 +43,7 @@ It names that document rather than inlining it, because a compacted session cann
 
 When the tracked Firstmate checkout is itself a registered crew worktree, both session-start wrappers print only `crew worktree - digest suppressed`.
 Registration is proven by an exact `worktree=` match in the primary checkout's task metadata; unmarked linked worktrees remain silent, and marked secondmate homes remain eligible primaries.
+`bin/fm-session-start.sh` runs that git-backed lookup under its own short bound outside the timed digest child, and any timeout or failure falls through to the ordinary digest, because a redundant startup is cheaper than a silent one.
 That lookup is scoped to the primary checkout's own default home, `<primary>/state`, because a crew worktree carries no registrations of its own and an ordinary crew session inherits no `FM_HOME`.
 A crew worktree registered by some other home is therefore not suppressed from that home's registrations; each home runs its own session start against its own, and cross-home discovery is deliberately not part of this scheme.
 On a run-tier harness the nudge cannot also fire: `resume`, `reload`, and `fork` are the only sources routed to it, and on those its own ancestry check stays silent whenever this process already holds the lock.

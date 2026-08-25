@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Opt-in real-Pi regular-TUI regression for transcript shrink after a
-# viewport-filling tool result is expanded and collapsed.
+# Opt-in real-Pi regular-TUI regression for transcript shrink: a viewport-filling
+# tool result is expanded and collapsed, and a render that is taller before the
+# shrink than after must not leave stale empty rows below the new content.
 set -u
 
 if [ "${FM_PI_CLEAR_ON_SHRINK_LIVE_E2E:-0}" != 1 ]; then
@@ -23,6 +24,8 @@ SOCKET="fm-pi-shrink-$$"
 SESSION=pi-shrink
 SNAPSHOT="$LAB/pane.txt"
 PREV_SNAPSHOT="$LAB/pane-prev.txt"
+PANE_ROWS=36
+PANE_COLUMNS=100
 
 cleanup() {
   tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -49,6 +52,17 @@ wait_for_text() {
   return 1
 }
 
+wait_for_text_gone() {
+  local text=$1 attempt=0
+  while [ "$attempt" -lt 240 ]; do
+    capture_viewport
+    grep -Fq "$text" "$SNAPSHOT" || return 0
+    sleep 0.05
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 wait_for_history_text() {
   local text=$1 attempt=0
   while [ "$attempt" -lt 240 ]; do
@@ -68,6 +82,11 @@ send_line() {
 CALM_SHIP_HULL='\__/'
 SETTLE_SAMPLE_SECONDS=0.06
 SETTLE_STABLE_INTERVALS=4
+DRAFT_TOKEN=draftfill
+# 130 repeats wrap to about ten composer rows in a 100-column pane, so clearing
+# the draft shrinks the render far past the tolerated blank-row slack.
+DRAFT_TEXT=$(awk 'BEGIN { for (i = 0; i < 130; i++) printf "draftfill " }')
+DRAFT_MIN_ROWS=6
 
 settle_viewport() {
   local marker=$1 label=$2 attempt=0 stable=0
@@ -101,6 +120,53 @@ assert_no_empty_region_before() {
   ' "$SNAPSHOT") || fail "$label did not render $marker in the visible viewport"
   [ "$blank_run" -le 3 ] \
     || fail "$label left a $blank_run-row empty region above $marker"
+}
+
+# The transcript is taller than the pane throughout, so a correctly cleared
+# shrink always redraws content down to the last terminal row. Rows left blank
+# under the final rendered row are the stale region the fix must prevent.
+assert_no_stale_rows_below() {
+  local label=$1 last_row stale
+  last_row=$(awk '!/^[[:space:]]*$/ { row = NR } END { print row + 0 }' "$SNAPSHOT")
+  [ "$last_row" -gt 0 ] || {
+    cat "$SNAPSHOT" >&2
+    fail "$label left the whole viewport blank"
+  }
+  stale=$((PANE_ROWS - last_row))
+  [ "$stale" -le 2 ] || {
+    cat "$SNAPSHOT" >&2
+    fail "$label left a $stale-row empty region below the last rendered row"
+  }
+}
+
+# Grow the render with a wrapped composer draft, then clear it. The shrink is
+# confined to the bottom of the viewport, which is the case Pi renders
+# differentially instead of redrawing in full.
+shrink_render_and_assert() {
+  local label=$1 anchor=$2 draft_rows attempt=0
+  # The shrink only proves anything while the transcript is taller than the
+  # pane, so require a full viewport before growing the render.
+  assert_no_stale_rows_below "$label baseline"
+  tmux -L "$SOCKET" send-keys -t "$SESSION" -l "$DRAFT_TEXT"
+  wait_for_text "$DRAFT_TOKEN" || fail "$label draft never reached the composer"
+  while [ "$attempt" -lt 120 ]; do
+    capture_viewport
+    draft_rows=$(grep -c "$DRAFT_TOKEN" "$SNAPSHOT")
+    [ "$draft_rows" -ge "$DRAFT_MIN_ROWS" ] && break
+    sleep 0.05
+    attempt=$((attempt + 1))
+  done
+  [ "$draft_rows" -ge "$DRAFT_MIN_ROWS" ] || {
+    cat "$SNAPSHOT" >&2
+    fail "$label draft only grew the render by $draft_rows rows, so the shrink would prove nothing"
+  }
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    tmux -L "$SOCKET" send-keys -t "$SESSION" C-u
+    sleep 0.05
+  done
+  wait_for_text_gone "$DRAFT_TOKEN" || fail "$label could not clear the composer draft"
+  settle_viewport "$anchor" "$label"
+  assert_no_stale_rows_below "$label"
 }
 
 mkdir -p \
@@ -156,13 +222,16 @@ export default function (pi: ExtensionAPI): void {
     tokenSize: { min: 1, max: 1 },
   });
   faux.setResponses([
+    fauxAssistantMessage(fauxText(`${"context prose ".repeat(450)}\nTRANSCRIPT_TALLER_THAN_PANE`)),
     fauxAssistantMessage(
       fauxToolCall("viewport_fill", { label: "BEFORE_COMPACT" }, { id: "viewport_before" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage(fauxText(`${"context prose ".repeat(450)}\nAFTER_TOOL_RESULT`)),
+    fauxAssistantMessage(fauxText("AFTER_TOOL_RESULT")),
     fauxAssistantMessage(fauxText("NEXT_VISIBLE_CONTENT")),
+    // A real /compact rebuild consumes two model calls before the next turn.
     fauxAssistantMessage(fauxText("COMPACTED_SHRINK_FIXTURE")),
+    fauxAssistantMessage(fauxText("COMPACTION_REBUILD_FILLER")),
     fauxAssistantMessage(
       fauxToolCall("viewport_fill", { label: "AFTER_COMPACT" }, { id: "viewport_after" }),
       { stopReason: "toolUse" },
@@ -201,12 +270,14 @@ export default function (pi: ExtensionAPI): void {
 }
 TS
 
-tmux -L "$SOCKET" new-session -d -s "$SESSION" -x 100 -y 36 \
+tmux -L "$SOCKET" new-session -d -s "$SESSION" -x "$PANE_COLUMNS" -y "$PANE_ROWS" \
   "cd '$PROJECT' && env FM_HOME='$HOME_DIR' PI_CODING_AGENT_DIR='$CONFIG_DIR' PI_OFFLINE=1 PI_CLEAR_ON_SHRINK=1 pi --approve --no-context-files --no-skills --no-prompt-templates --no-extensions --tui-mode regular -e ./.pi/extensions/fm-calm.ts -e ./shrink-provider.ts --session-dir '$SESSIONS_DIR'; rc=\$?; printf '\nPI_EXIT=%s\n' \"\$rc\"; sleep 20"
 
 wait_for_text "shrink-provider.ts" || fail "Pi shrink E2E did not reach the ready composer"
 send_line /pi-shrink-e2e
 sleep 0.1
+send_line "Fill the transcript past the pane height."
+wait_for_text TRANSCRIPT_TALLER_THAN_PANE || fail "Pi shrink E2E did not fill the transcript past the pane height"
 send_line "Run viewport_fill once, then finish."
 wait_for_text AFTER_TOOL_RESULT || fail "Pi shrink E2E did not complete the pre-compaction tool turn"
 
@@ -221,6 +292,7 @@ send_line "Reply after the collapsed tool result."
 wait_for_text NEXT_VISIBLE_CONTENT || fail "Pi shrink E2E did not render content after the pre-compaction collapse"
 settle_viewport NEXT_VISIBLE_CONTENT "pre-compaction collapse"
 assert_no_empty_region_before NEXT_VISIBLE_CONTENT "pre-compaction collapse"
+shrink_render_and_assert "pre-compaction shrink" NEXT_VISIBLE_CONTENT
 
 send_line /compact
 wait_for_text "Compacted from" || fail "Pi shrink E2E did not complete a real compaction rebuild"
@@ -237,5 +309,6 @@ send_line "Reply after the post-compaction collapsed tool result."
 wait_for_text NEXT_VISIBLE_AFTER_COMPACT || fail "Pi shrink E2E did not render content after the post-compaction collapse"
 settle_viewport NEXT_VISIBLE_AFTER_COMPACT "post-compaction collapse"
 assert_no_empty_region_before NEXT_VISIBLE_AFTER_COMPACT "post-compaction collapse"
+shrink_render_and_assert "post-compaction shrink" NEXT_VISIBLE_AFTER_COMPACT
 
-printf 'ok - Pi %s regular TUI clears viewport-filling tool-result shrink before and after compaction\n' "$(pi --version 2>/dev/null | head -n 1)"
+printf 'ok - Pi %s regular TUI leaves no stale rows when the render shrinks, before and after compaction\n' "$(pi --version 2>/dev/null | head -n 1)"

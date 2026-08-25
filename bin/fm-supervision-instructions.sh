@@ -187,28 +187,41 @@ supervision_state_lines() {
   fi
 }
 
+# The repo-relative path of the protocol snippet this harness actually renders,
+# derived from $SNIPPET so pi-signed resolves to pi.md and any unresolved harness
+# resolves to unknown.md without a second mapping to keep in step.
+protocol_doc_path() {
+  printf 'docs/supervision-protocols/%s' "${SNIPPET##*/}"
+}
+
+# Every line here is SELF-CONTAINED: the drain-and-acknowledge step, the one-line
+# condition, the exact command (or the reason no command is owed), and the path of
+# the owning protocol document. --next-line prints this into a compact-recovery
+# digest that carries no protocol snippet, so a session that just lost its context
+# cannot follow a bare "as directed below" - and inlining the protocol itself would
+# defeat the point of compaction.
 ordinary_wake_line() {
   case "$HARNESS" in
     claude)
-      printf '%s\n' '- Ordinary wake: the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
+      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity, so do not arm another cycle yourself. Protocol: ' "$(protocol_doc_path)"
       ;;
     codex)
-      printf '%s\n' '- Ordinary wake: take the next foreground bin/fm-watch-checkpoint.sh checkpoint as directed below.'
+      printf '%s%s%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; you own continuity here, so start the next foreground checkpoint with bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" ' and never use shell &. Protocol: ' "$(protocol_doc_path)"
       ;;
     pi|pi-signed)
-      printf '%s\n' '- Ordinary wake: the Pi extension already owns watcher continuity; do not arm another cycle.'
+      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the Pi extension already owns watcher continuity, so do not arm another cycle. Protocol: ' "$(protocol_doc_path)"
       ;;
     opencode)
-      printf '%s\n' '- Ordinary wake: the OpenCode TUI plugin already owns watcher continuity; do not arm manually.'
+      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the OpenCode TUI plugin already owns watcher continuity, so do not arm manually. Protocol: ' "$(protocol_doc_path)"
       ;;
     grok)
-      printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh Grok tracked background task as directed below.'
+      printf '%s%s%s%s%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; you own continuity here, so re-arm exactly one Grok tracked background task by calling run_terminal_command with background: true on `[ -f ' "$x_mode_env_sh" ' ] && . ' "$x_mode_env_sh" '; exec bin/fm-watch-arm.sh`, and never use shell &. Protocol: ' "$(protocol_doc_path)"
       ;;
     cursor)
-      printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
+      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity, so do not arm another cycle yourself. Protocol: ' "$(protocol_doc_path)"
       ;;
     *)
-      printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
+      printf '%s%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; this harness has no verified wake adapter, so repeat the same bounded supervision wait it can actually wake from and never use shell &. Protocol: ' "$(protocol_doc_path)" ' and AGENTS.md'
       ;;
   esac
 }

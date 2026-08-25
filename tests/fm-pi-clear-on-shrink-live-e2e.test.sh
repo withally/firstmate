@@ -22,6 +22,7 @@ SESSIONS_DIR="$LAB/sessions"
 SOCKET="fm-pi-shrink-$$"
 SESSION=pi-shrink
 SNAPSHOT="$LAB/pane.txt"
+PREV_SNAPSHOT="$LAB/pane-prev.txt"
 
 cleanup() {
   tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -64,9 +65,28 @@ send_line() {
   tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
 }
 
+settle_viewport() {
+  local marker=$1 label=$2 attempt=0
+  : >"$PREV_SNAPSHOT"
+  while [ "$attempt" -lt 240 ]; do
+    cp "$SNAPSHOT" "$PREV_SNAPSHOT" 2>/dev/null || true
+    sleep 0.05
+    capture_viewport
+    if grep -Fq "$marker" "$SNAPSHOT" \
+      && ! tail -12 "$SNAPSHOT" | grep -Fq "Working..." \
+      && cmp -s "$SNAPSHOT" "$PREV_SNAPSHOT"; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  cat "$SNAPSHOT" >&2
+  fail "$label did not settle into a stable frame with $marker visible and the transient status row cleared"
+}
+
 assert_no_empty_region_before() {
   local marker=$1 label=$2 blank_run
   blank_run=$(awk -v marker="$marker" '
+    BEGIN { run = 0 }
     index($0, marker) { print run; found=1; exit }
     /^[[:space:]]*$/ { run += 1; next }
     { run = 0 }
@@ -192,6 +212,7 @@ tmux -L "$SOCKET" send-keys -t "$SESSION" C-o
 wait_for_text AFTER_TOOL_RESULT || fail "collapsed pre-compaction result hid the next visible reply"
 send_line "Reply after the collapsed tool result."
 wait_for_text NEXT_VISIBLE_CONTENT || fail "Pi shrink E2E did not render content after the pre-compaction collapse"
+settle_viewport NEXT_VISIBLE_CONTENT "pre-compaction collapse"
 assert_no_empty_region_before NEXT_VISIBLE_CONTENT "pre-compaction collapse"
 
 send_line /compact
@@ -207,6 +228,7 @@ tmux -L "$SOCKET" send-keys -t "$SESSION" C-o
 wait_for_text AFTER_COMPACT_TOOL_RESULT || fail "collapsed post-compaction result hid the next visible reply"
 send_line "Reply after the post-compaction collapsed tool result."
 wait_for_text NEXT_VISIBLE_AFTER_COMPACT || fail "Pi shrink E2E did not render content after the post-compaction collapse"
+settle_viewport NEXT_VISIBLE_AFTER_COMPACT "post-compaction collapse"
 assert_no_empty_region_before NEXT_VISIBLE_AFTER_COMPACT "post-compaction collapse"
 
 printf 'ok - Pi %s regular TUI clears viewport-filling tool-result shrink before and after compaction\n' "$(pi --version 2>/dev/null | head -n 1)"

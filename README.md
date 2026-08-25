@@ -101,9 +101,9 @@ grok --trust
 **Pi**
 
 ```sh
-pi
+PI_CLEAR_ON_SHRINK=1 pi
 # or, when the signed wrapper is installed
-FM_PI_HARNESS=pi-signed pi-signed
+FM_PI_HARNESS=pi-signed PI_CLEAR_ON_SHRINK=1 pi-signed
 ```
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.

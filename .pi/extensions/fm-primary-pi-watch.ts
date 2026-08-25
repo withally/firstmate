@@ -312,24 +312,31 @@ export default function (pi: ExtensionAPI) {
     if (owner.wakeBatchTimer) clearTimeout(owner.wakeBatchTimer);
     owner.wakeBatchTimer = null;
     const items = owner.wakeBatch.splice(0, owner.wakeBatch.length);
-    const details: string[] = [];
+    const urgentDetails: string[] = [];
+    const routineDetails: string[] = [];
     let recovery: WakeRecovery | undefined;
     for (const item of items) {
       for (const message of item.messages) {
-        details.push(message.length > 800 ? `${message.slice(0, 785)} [truncated]` : message);
+        const detail = message.length > 800 ? `${message.slice(0, 785)} [truncated]` : message;
+        (wakeIsUrgent(message) ? urgentDetails : routineDetails).push(detail);
       }
       if (item.recoveries.length > 0) recovery = item.recoveries[item.recoveries.length - 1];
     }
     if (recovery) {
       const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
       if (!confirmed.ok) {
-        details.push(confirmed.detail);
+        urgentDetails.push(confirmed.detail);
         // A successor whose watcher died before confirming leaves owner.child
         // pointing at an arm that will never supervise. Retiring it here keeps
         // the dangling-arm recovery the pre-batching delivery path owned.
         if (!pidAlive(recovery.watcherPid)) await retireArm(owner.child);
       }
     }
+    // An urgent wake is what triggered this flush, and it is appended last. Rendering
+    // in insertion order would push it past wakeBatchLimit behind the routine wakes it
+    // interrupted, so the follow-up would omit the very failure that broke the window.
+    // Urgent details are therefore rendered first and only routine details are omitted.
+    const details = [...urgentDetails, ...routineDetails];
     const omitted = Math.max(0, details.length - wakeBatchLimit);
     const shown = details.slice(0, wakeBatchLimit);
     const message = shown.length === 1 && omitted === 0

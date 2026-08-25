@@ -645,6 +645,65 @@ EOF
   pass "Pi retires the successor arm when its watcher died before confirming handling delivery"
 }
 
+test_pi_urgent_detail_survives_a_full_batch() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-urgent-overflow-root"; home="$TMP_ROOT/pi-urgent-overflow-home"
+  log="$TMP_ROOT/pi-urgent-overflow.log"; stop="$TMP_ROOT/pi-urgent-overflow.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then exit 0; fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=overflow-%s\n' "$$" "$count"
+if [ "$count" -le 4 ]; then
+  [ "$count" -eq 1 ] || sleep 0.05
+  printf 'stale: test:fm-routine-%s (paused awaiting upstream)\n' "$count"
+elif [ "$count" -eq 5 ]; then
+  sleep 0.05
+  printf 'signal: %s/state/urgent.status\n' "$FM_HOME"
+else
+  trap 'exit 0' TERM INT
+  while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+fi
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  printf 'blocked [key=route]: captain decision required\n' > "$home/state/urgent.status"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" FM_WAKE_BATCH_SECONDS=30 FM_WAKE_BATCH_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("overflow", {}, undefined, undefined, {});
+for (let i = 0; i < 400 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) throw new Error(`expected one flushed follow-up, got ${deliveries.length}`);
+const message = deliveries[0];
+if (!message.includes("urgent.status")) {
+  throw new Error(`the urgent wake that triggered the flush was omitted behind routine wakes: ${message}`);
+}
+if (!message.includes("more omitted")) {
+  throw new Error(`the batch was not actually over the render limit, so nothing was tested: ${message}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi urgent detail must survive a full routine batch"
+  [ -z "$out" ] || fail "Pi urgent-overflow test printed output: $out"
+  pass "Pi renders the flush-triggering urgent wake before routine wakes so the limit never omits it"
+}
+
 test_pi_handling_delivery_failure_is_typed_once() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-handling-fail-root"
@@ -2483,6 +2542,7 @@ test_pi_urgent_status_bypasses_batch_window
 test_pi_handling_delivery_failure_is_typed_once
 test_pi_batch_keeps_both_reasons_for_one_endpoint
 test_pi_dead_watcher_arm_is_retired_when_handshake_fails
+test_pi_urgent_detail_survives_a_full_batch
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision

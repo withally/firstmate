@@ -142,9 +142,11 @@ Away-mode triage is unaffected: while `state/.afk` exists the daemon owns every 
 
 An unchanged repeat status or turn-end from a child already presented as `paused:` or `captain-held` is also absorbed while the exact durable declaration, readable endpoint, and bounded pause-recheck window still hold.
 The first declaration, a changed terminal verb, a missing or unreadable endpoint, and a lapsed bounded recheck always wake immediately.
-A cadence boundary presents every due declared wait in one fleet stale wake, bounded by `FM_PAUSED_RESURFACE_BATCH_LIMIT`.
+In attended mode a cadence boundary presents every due declared wait in one fleet stale wake, bounded by `FM_PAUSED_RESURFACE_BATCH_LIMIT`.
+Away mode is unaffected: while `state/.afk` exists the daemon owns triage and still receives the undecorated per-window stale identity it parses, for declared waits and for missing or unreadable endpoints alike.
 Only a pane actually named in that wake has its bounded recheck throttled; a pane counted past the limit stays due and is named by a later cycle, so no pane loses its safety recheck to a wake that never mentioned it.
-Missing or unreadable endpoints found in one watcher cycle are likewise collected into one immediate fleet wake naming those windows, so a backend restart costs one supervision turn rather than one per window while detection stays in the same cycle.
+Missing or unreadable endpoints found in one attended watcher cycle are likewise collected into one immediate fleet wake naming those windows, so a backend restart costs one supervision turn rather than one per window while detection stays in the same cycle.
+Each window's disappearance is tracked by its own marker, dropped by the first successful capture, so a flapping endpoint reports each distinct disappearance exactly once without disturbing the pane's recorded stale hash or its wedge timer.
 
 ## Pi watcher wake batching (config/wake-batch-seconds)
 
@@ -153,6 +155,7 @@ The default window is 60 seconds.
 Write one positive integer number of seconds to gitignored `config/wake-batch-seconds` to change it for that home.
 `FM_WAKE_BATCH_SECONDS` is the process-local override used by tests and specialized launches.
 Identical status paths and backend endpoints are deduplicated, the rendered list is bounded, and one delivered batch requires one drain and one acknowledgement.
+Urgent details are rendered ahead of routine ones, so the bound can only omit routine wakes and never the failure that triggered the flush.
 `failed:`, `blocked:`, `needs-decision:`, lost-lock, and watcher-failure wakes bypass the delay and flush any pending routine batch immediately.
 
 ## Gate defaults (.no-mistakes.yaml)

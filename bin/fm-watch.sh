@@ -336,11 +336,27 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # two cadences cannot drift apart; each caller owns its own marker and reason.
 # Returns without waking while either the absorb or the throttle is inside the
 # window; wake() itself exits the cycle, exactly as it does inline.
+# Fleet batching is an ATTENDED presentation: it collapses many due panes into one
+# supervision turn for a human-driven primary. Away mode is daemon-owned and
+# bin/fm-supervise-daemon.sh parses a stale reason as `stale: <window> (<detail>)`
+# to recover the window identity, so a batched fleet reason would classify under
+# the literal string "paused fleet recheck" - recording a wedge marker for a window
+# that does not exist while the real panes lose their per-pane pause markers.
+# Under afk the caller therefore keeps the undecorated per-window wake it has
+# always emitted, and only attended mode batches.
+# <presented-marker>/<presented-value>, when set by the caller, are committed ONLY
+# where this pane's line is actually delivered, for the same reason the throttle is.
+PAUSED_PRESENT_MARKER=''
+PAUSED_PRESENT_VALUE=''
+
 resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [batch]
   local win=$1 throttle=$2 age=$3 reason=$4 mode=${5:-immediate} key
+  local present_marker=$PAUSED_PRESENT_MARKER present_value=$PAUSED_PRESENT_VALUE
+  PAUSED_PRESENT_MARKER=''
+  PAUSED_PRESENT_VALUE=''
   [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] || return 0
   [ "$(age_of "$throttle")" -ge "$PAUSE_RESURFACE_SECS" ] || return 0   # 999999 when no prior re-surface
-  if [ "$mode" = batch ]; then
+  if [ "$mode" = batch ] && ! afk_present; then
     key=$(window_key "$win")
     case "$PAUSED_RESURFACE_KEYS" in *"|$key|"*) return 0 ;; esac
     PAUSED_RESURFACE_KEYS="$PAUSED_RESURFACE_KEYS|$key|"
@@ -355,37 +371,54 @@ resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [batch]
       PAUSED_RESURFACE_ITEMS="${PAUSED_RESURFACE_ITEMS}${PAUSED_RESURFACE_ITEMS:+; }${reason#stale: }"
       PAUSED_RESURFACE_SHOWN=$((PAUSED_RESURFACE_SHOWN + 1))
       PAUSED_RESURFACE_MARKERS="${PAUSED_RESURFACE_MARKERS}${PAUSED_RESURFACE_MARKERS:+
-}$throttle"
+}$throttle
+$present_marker
+$present_value"
     fi
     return 0
   fi
   fm_wake_append stale "$win" "$reason" || exit 1
   date +%s > "$throttle"
+  [ -z "$present_marker" ] || printf '%s' "$present_value" > "$present_marker"
   wake "$reason"
 }
 
 flush_paused_resurfaces() {
-  local reason marker omitted
+  local reason throttle present_marker present_value omitted
   [ "$PAUSED_RESURFACE_COUNT" -gt 0 ] || return 0
   omitted=$((PAUSED_RESURFACE_COUNT - PAUSED_RESURFACE_SHOWN))
   reason="stale: paused fleet recheck (${PAUSED_RESURFACE_COUNT} due): $PAUSED_RESURFACE_ITEMS"
   [ "$omitted" -eq 0 ] || reason="$reason; $omitted more omitted"
   fm_wake_append stale paused-fleet "$reason" || exit 1
-  while IFS= read -r marker; do
-    [ -n "$marker" ] || continue
-    date +%s > "$marker"
+  while IFS= read -r throttle && IFS= read -r present_marker && IFS= read -r present_value; do
+    [ -n "$throttle" ] || continue
+    date +%s > "$throttle"
+    [ -z "$present_marker" ] || printf '%s' "$present_value" > "$present_marker"
   done <<EOF
 $PAUSED_RESURFACE_MARKERS
 EOF
   wake "$reason"
 }
 
-# Record one window whose endpoint could not be read this cycle. Same rule as the
-# paused batch: a window past the limit is counted but not named, and its
-# .stale-<key> marker is left alone so the next cycle still reports it rather
-# than silently treating an unnamed window as already surfaced.
-record_missing_endpoint() {  # <window> <stale-marker>
-  local win=$1 marker=$2
+# Record one window whose endpoint could not be read this cycle. The sentinel is
+# this window's OWN .endpoint-missing-<key> marker, never the .stale-<key> hash
+# suppressor: overloading the hash suppressor would suppress a second
+# disappearance forever (nothing rewrites the hash while the pane is busy), re-wake
+# an already-surfaced stale pane on the next successful capture, and restart wedge
+# aging on every flap. The marker is dropped by the first successful capture, so
+# each distinct disappearance is reported exactly once.
+# Same limit rule as the paused batch: a window past the limit is counted but not
+# named, and its marker is left unwritten so the next cycle still reports it.
+# Away mode is daemon-owned and needs the undecorated per-window identity to
+# classify, so under afk this stays the immediate single-window wake it was.
+record_missing_endpoint() {  # <window> <endpoint-missing-marker>
+  local win=$1 marker=$2 reason
+  if afk_present; then
+    reason="stale: $win (endpoint missing or unreadable)"
+    fm_wake_append stale "$win" "$reason" || exit 1
+    : > "$marker"
+    wake "$reason"
+  fi
   MISSING_ENDPOINT_COUNT=$((MISSING_ENDPOINT_COUNT + 1))
   if [ "$MISSING_ENDPOINT_SHOWN" -lt "$PAUSED_RESURFACE_LIMIT" ]; then
     MISSING_ENDPOINT_ITEMS="${MISSING_ENDPOINT_ITEMS}${MISSING_ENDPOINT_ITEMS:+; }$win"
@@ -408,7 +441,7 @@ flush_missing_endpoints() {
   fm_wake_append stale endpoint-fleet "$reason" || exit 1
   while IFS= read -r marker; do
     [ -n "$marker" ] || continue
-    printf '%s' missing-endpoint > "$marker"
+    : > "$marker"
   done <<EOF
 $MISSING_ENDPOINT_MARKERS
 EOF
@@ -538,7 +571,8 @@ handle_paused_stale() {  # <window> <task> <hash>
     detail="paused, awaiting external"
     reason="paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
   fi
-  printf '%s' "$(last_status_line "$statusf")" > "$STATE/.paused-presented-$key"
+  PAUSED_PRESENT_MARKER="$STATE/.paused-presented-$key"
+  PAUSED_PRESENT_VALUE=$(last_status_line "$statusf")
   resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)" batch
   triage_log "absorbed stale ($detail, age ${age}s): $win"
 }
@@ -1338,12 +1372,12 @@ EOF
       continue
     fi
     sf="$STATE/.stale-$key"
+    emf="$STATE/.endpoint-missing-$key"
     if ! tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null); then
-      if [ "$(cat "$sf" 2>/dev/null || true)" != missing-endpoint ]; then
-        record_missing_endpoint "$w" "$sf"
-      fi
+      [ -e "$emf" ] || record_missing_endpoint "$w" "$emf"
       continue
     fi
+    rm -f "$emf"
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"

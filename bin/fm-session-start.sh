@@ -260,15 +260,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# A worker in a registered worktree of this repository is not a fleet primary.
-# Suppress before the runtime-bound wrapper so direct invocations are safe too.
-# shellcheck source=bin/fm-primary-scope-lib.sh
-. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
-if fm_root_is_registered_crew_worktree "$FM_ROOT"; then
-  fm_print_crew_worktree_suppression
-  exit 0
-fi
-
 # --- 0. runtime bound ---------------------------------------------------------
 # The ordered stage list is the contract behind the truncation banner: the child
 # names the stage it is entering, and the parent reports every stage at or after
@@ -291,6 +282,25 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   # the deadline outright), so an unusable value falls back to the default
   # rather than silently removing the bound.
   case "$SESSION_START_BUDGET" in ''|*[!0-9]*|0) SESSION_START_BUDGET=120 ;; esac
+
+  # A worker in a registered worktree of this repository is not a fleet primary,
+  # so it emits the suppression line instead of a digest. The predicate shells
+  # out to git, which a stuck index.lock or an unresponsive filesystem can hang
+  # forever, so it runs bounded and only here in the parent - never inside the
+  # timed child, where it would spend the digest's whole budget before the first
+  # stage. Hitting the bound (or any failure) falls through to the digest: a
+  # loud, possibly redundant startup beats a silent one.
+  CREW_CHECK_BUDGET=5
+  [ "$SESSION_START_BUDGET" -ge "$CREW_CHECK_BUDGET" ] || CREW_CHECK_BUDGET=$SESSION_START_BUDGET
+  # shellcheck source=bin/fm-primary-scope-lib.sh
+  . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+  if fm_run_timed "$CREW_CHECK_BUDGET" bash -c \
+    '. "$1/fm-primary-scope-lib.sh"; fm_root_is_registered_crew_worktree "$2"' \
+    _ "$SCRIPT_DIR" "$FM_ROOT"; then
+    fm_print_crew_worktree_suppression
+    exit 0
+  fi
+
   SESSION_START_STAGE_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-stage.XXXXXX" 2>/dev/null) || SESSION_START_STAGE_FILE=
   if [ -z "$SESSION_START_STAGE_FILE" ]; then
     # Without a breadcrumb the bound still holds; only the banner's precision

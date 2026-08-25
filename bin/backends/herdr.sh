@@ -2836,21 +2836,36 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
-      case "$verdict" in
-        busy) printf 'empty'; return 0 ;;
-        unknown)
-          verdict=$(fm_backend_herdr_recheck_unknown_submit "$target" 1 "$sleep_s")
-          case "$verdict" in empty) printf 'empty'; return 0 ;; unknown) printf 'unknown'; return 0 ;; esac
-          ;;
-      esac
-      # Native stayed idle. Composer empty is positive delivery (a landed
-      # Claude turn that never flipped agent_status). Proven pending retries.
-      verdict=$(fm_backend_herdr_composer_state "$target")
-      case "$verdict" in
-        empty) printf 'empty'; return 0 ;;
-        pending|pending-unproven) ;;
-        *) printf '%s' "$verdict"; return 0 ;;
-      esac
+      if [ "$verdict" = unknown ]; then
+        # The recheck already read the composer boundedly; a pending verdict from
+        # it is the proof this retry needs, so it is used directly. Re-reading the
+        # composer here would let a single transient unknown from that second read
+        # print an unbounded 'unknown' the recheck exists to prevent.
+        verdict=$(fm_backend_herdr_recheck_unknown_submit "$target" 1 "$sleep_s")
+        case "$verdict" in
+          empty) printf 'empty'; return 0 ;;
+          unknown) printf 'unknown'; return 0 ;;
+        esac
+      else
+        case "$verdict" in
+          busy) printf 'empty'; return 0 ;;
+        esac
+        # Native stayed idle. Composer empty is positive delivery (a landed
+        # Claude turn that never flipped agent_status). Proven pending retries.
+        verdict=$(fm_backend_herdr_composer_state "$target")
+        case "$verdict" in
+          empty) printf 'empty'; return 0 ;;
+          pending|pending-unproven) ;;
+          unknown)
+            verdict=$(fm_backend_herdr_recheck_unknown_submit "$target" 1 "$sleep_s")
+            case "$verdict" in
+              empty) printf 'empty'; return 0 ;;
+              unknown) printf 'unknown'; return 0 ;;
+            esac
+            ;;
+          *) printf '%s' "$verdict"; return 0 ;;
+        esac
+      fi
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")

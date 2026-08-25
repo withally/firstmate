@@ -194,6 +194,17 @@ PAUSED_RESURFACE_MARKERS=''
 PAUSED_RESURFACE_COUNT=0
 PAUSED_RESURFACE_SHOWN=0
 PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT
+# A missing or unreadable endpoint stays an immediate, same-cycle wake, but one
+# backend restart (or several finished tasks whose .meta outlives their panes)
+# makes it true of every window at once, and wake() ends the cycle - so
+# per-window immediacy would cost one supervision turn per window for a single
+# event. The cycle collects them here instead and delivers one fleet wake naming
+# the windows before any batched routine recheck, so immediacy is preserved
+# without amplifying churn.
+MISSING_ENDPOINT_ITEMS=''
+MISSING_ENDPOINT_MARKERS=''
+MISSING_ENDPOINT_COUNT=0
+MISSING_ENDPOINT_SHOWN=0
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -334,12 +345,18 @@ resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [batch]
     case "$PAUSED_RESURFACE_KEYS" in *"|$key|"*) return 0 ;; esac
     PAUSED_RESURFACE_KEYS="$PAUSED_RESURFACE_KEYS|$key|"
     PAUSED_RESURFACE_COUNT=$((PAUSED_RESURFACE_COUNT + 1))
+    # The throttle marker is stamped ONLY for a pane whose reason actually makes
+    # it into the delivered batch. A pane past PAUSED_RESURFACE_LIMIT is counted
+    # but never named, so suppressing it for another PAUSE_RESURFACE_SECS would
+    # spend its bounded safety recheck on a wake that never mentioned it; leaving
+    # its marker untouched keeps it due, and it is named by the next cycle once
+    # the panes ahead of it are throttled.
     if [ "$PAUSED_RESURFACE_SHOWN" -lt "$PAUSED_RESURFACE_LIMIT" ]; then
       PAUSED_RESURFACE_ITEMS="${PAUSED_RESURFACE_ITEMS}${PAUSED_RESURFACE_ITEMS:+; }${reason#stale: }"
       PAUSED_RESURFACE_SHOWN=$((PAUSED_RESURFACE_SHOWN + 1))
-    fi
-    PAUSED_RESURFACE_MARKERS="${PAUSED_RESURFACE_MARKERS}${PAUSED_RESURFACE_MARKERS:+
+      PAUSED_RESURFACE_MARKERS="${PAUSED_RESURFACE_MARKERS}${PAUSED_RESURFACE_MARKERS:+
 }$throttle"
+    fi
     return 0
   fi
   fm_wake_append stale "$win" "$reason" || exit 1
@@ -359,6 +376,41 @@ flush_paused_resurfaces() {
     date +%s > "$marker"
   done <<EOF
 $PAUSED_RESURFACE_MARKERS
+EOF
+  wake "$reason"
+}
+
+# Record one window whose endpoint could not be read this cycle. Same rule as the
+# paused batch: a window past the limit is counted but not named, and its
+# .stale-<key> marker is left alone so the next cycle still reports it rather
+# than silently treating an unnamed window as already surfaced.
+record_missing_endpoint() {  # <window> <stale-marker>
+  local win=$1 marker=$2
+  MISSING_ENDPOINT_COUNT=$((MISSING_ENDPOINT_COUNT + 1))
+  if [ "$MISSING_ENDPOINT_SHOWN" -lt "$PAUSED_RESURFACE_LIMIT" ]; then
+    MISSING_ENDPOINT_ITEMS="${MISSING_ENDPOINT_ITEMS}${MISSING_ENDPOINT_ITEMS:+; }$win"
+    MISSING_ENDPOINT_SHOWN=$((MISSING_ENDPOINT_SHOWN + 1))
+    MISSING_ENDPOINT_MARKERS="${MISSING_ENDPOINT_MARKERS}${MISSING_ENDPOINT_MARKERS:+
+}$marker"
+  fi
+}
+
+flush_missing_endpoints() {
+  local reason marker omitted
+  [ "$MISSING_ENDPOINT_SHOWN" -gt 0 ] || return 0
+  if [ "$MISSING_ENDPOINT_COUNT" -eq 1 ]; then
+    reason="stale: $MISSING_ENDPOINT_ITEMS (endpoint missing or unreadable)"
+  else
+    omitted=$((MISSING_ENDPOINT_COUNT - MISSING_ENDPOINT_SHOWN))
+    reason="stale: fleet endpoints missing or unreadable (${MISSING_ENDPOINT_COUNT}): $MISSING_ENDPOINT_ITEMS"
+    [ "$omitted" -eq 0 ] || reason="$reason; $omitted more omitted"
+  fi
+  fm_wake_append stale endpoint-fleet "$reason" || exit 1
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    printf '%s' missing-endpoint > "$marker"
+  done <<EOF
+$MISSING_ENDPOINT_MARKERS
 EOF
   wake "$reason"
 }
@@ -1060,6 +1112,10 @@ while :; do
   PAUSED_RESURFACE_MARKERS=''
   PAUSED_RESURFACE_COUNT=0
   PAUSED_RESURFACE_SHOWN=0
+  MISSING_ENDPOINT_ITEMS=''
+  MISSING_ENDPOINT_MARKERS=''
+  MISSING_ENDPOINT_COUNT=0
+  MISSING_ENDPOINT_SHOWN=0
   PAUSED_RESURFACE_LIMIT=${FM_PAUSED_RESURFACE_BATCH_LIMIT:-$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT}
   case "$PAUSED_RESURFACE_LIMIT" in
     ''|*[!0-9]*|0) PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT ;;
@@ -1284,10 +1340,7 @@ EOF
     sf="$STATE/.stale-$key"
     if ! tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null); then
       if [ "$(cat "$sf" 2>/dev/null || true)" != missing-endpoint ]; then
-        reason="stale: $w (endpoint missing or unreadable)"
-        fm_wake_append stale "$w" "$reason" || exit 1
-        printf '%s' missing-endpoint > "$sf"
-        wake "$reason"
+        record_missing_endpoint "$w" "$sf"
       fi
       continue
     fi
@@ -1451,6 +1504,10 @@ EOF
       fi
     fi
   done < <(recorded_windows)
+
+  # Unreadable endpoints are the more urgent of the two batches, so they go
+  # first: an endpoint that vanished this cycle is still reported in this cycle.
+  flush_missing_endpoints
 
   # Declared waits are individually reconciled above, then presented once for
   # the fleet so one cadence boundary costs one supervision turn and one drain.

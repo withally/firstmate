@@ -532,6 +532,119 @@ EOF
   pass "Pi blocked status bypasses the configured routine wake window"
 }
 
+test_pi_batch_keeps_both_reasons_for_one_endpoint() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-wake-identity-root"; home="$TMP_ROOT/pi-wake-identity-home"
+  log="$TMP_ROOT/pi-wake-identity.log"; stop="$TMP_ROOT/pi-wake-identity.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then exit 0; fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=identity-%s\n' "$$" "$count"
+case "$count" in
+  1) printf 'stale: w1:p2 (paused awaiting upstream release)\n' ;;
+  2) sleep 0.1; printf 'stale: w1:p2 (endpoint missing or unreadable)\n' ;;
+  *) trap 'exit 0' TERM INT; while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done ;;
+esac
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("identity", {}, undefined, undefined, {});
+for (let i = 0; i < 400 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) throw new Error(`expected one batched follow-up, got ${deliveries.length}`);
+const message = deliveries[0];
+if (!message.includes("paused awaiting upstream release")) {
+  throw new Error(`the first reason for the endpoint was lost: ${message}`);
+}
+if (!message.includes("endpoint missing or unreadable")) {
+  throw new Error(`a differently-typed reason for the same endpoint was collapsed away: ${message}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi batch must keep both reasons for one endpoint"
+  [ -z "$out" ] || fail "Pi endpoint-identity batching printed output: $out"
+  pass "Pi batching dedupes an unchanged repeat but keeps a second, differently-typed reason for one endpoint"
+}
+
+test_pi_dead_watcher_arm_is_retired_when_handshake_fails() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-dead-watcher-root"; home="$TMP_ROOT/pi-dead-watcher-home"
+  log="$TMP_ROOT/pi-dead-watcher.log"; stop="$TMP_ROOT/pi-dead-watcher.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'refused\n' >> "${FM_ARM_LOG:?}"
+  exit 1
+fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: synthetic actionable close\n'
+  exit 0
+fi
+# A successor whose watcher process is already gone: the pid below belongs to a
+# shell that has exited, so the extension must retire this dangling arm.
+dead=$(bash -c 'echo $$')
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=dead-watcher\n' "$dead"
+trap 'printf "retired\n" >> "$FM_ARM_LOG"; exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+let prompt = "";
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { prompt += content; },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("dead-watcher", {}, undefined, undefined, {});
+const rows = () => {
+  try { return readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n"); } catch { return []; }
+};
+for (let i = 0; i < 400 && !rows().includes("retired"); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+if (!prompt.includes("handling delivery confirmation was rejected")) {
+  throw new Error(`the failed handshake was swallowed: ${prompt}`);
+}
+if (!rows().includes("retired")) {
+  throw new Error(`the dangling successor arm was never retired: ${rows().join(" | ")}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi must retire a successor arm whose watcher is dead"
+  [ -z "$out" ] || fail "Pi dead-watcher retirement test printed output: $out"
+  pass "Pi retires the successor arm when its watcher died before confirming handling delivery"
+}
+
 test_pi_handling_delivery_failure_is_typed_once() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-handling-fail-root"
@@ -2368,6 +2481,8 @@ test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_batches_and_dedupes_routine_wakes
 test_pi_urgent_status_bypasses_batch_window
 test_pi_handling_delivery_failure_is_typed_once
+test_pi_batch_keeps_both_reasons_for_one_endpoint
+test_pi_dead_watcher_arm_is_retired_when_handshake_fails
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision

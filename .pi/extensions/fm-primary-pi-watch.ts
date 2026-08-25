@@ -62,7 +62,7 @@ type WakeRecovery = { generation: string; watcherPid: string };
 
 type WakeBatchItem = {
   key: string;
-  message: string;
+  messages: string[];
   recoveries: WakeRecovery[];
 };
 
@@ -315,12 +315,20 @@ export default function (pi: ExtensionAPI) {
     const details: string[] = [];
     let recovery: WakeRecovery | undefined;
     for (const item of items) {
-      details.push(item.message.length > 800 ? `${item.message.slice(0, 785)} [truncated]` : item.message);
+      for (const message of item.messages) {
+        details.push(message.length > 800 ? `${message.slice(0, 785)} [truncated]` : message);
+      }
       if (item.recoveries.length > 0) recovery = item.recoveries[item.recoveries.length - 1];
     }
     if (recovery) {
       const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
-      if (!confirmed.ok) details.push(confirmed.detail);
+      if (!confirmed.ok) {
+        details.push(confirmed.detail);
+        // A successor whose watcher died before confirming leaves owner.child
+        // pointing at an arm that will never supervise. Retiring it here keeps
+        // the dangling-arm recovery the pre-batching delivery path owned.
+        if (!pidAlive(recovery.watcherPid)) await retireArm(owner.child);
+      }
     }
     const omitted = Math.max(0, details.length - wakeBatchLimit);
     const shown = details.slice(0, wakeBatchLimit);
@@ -335,11 +343,16 @@ export default function (pi: ExtensionAPI) {
     const key = wakeIdentity(message);
     const existing = owner.wakeBatch.find((item) => item.key === key);
     if (existing) {
+      // Identity collapse dedupes an unchanged repeat of the same wake, not a
+      // differently-typed one: two reasons for one endpoint (a paused recheck and
+      // then a vanished endpoint) must both reach the batch, or the second reason
+      // would only ever be seen by the drain.
+      if (!existing.messages.includes(message)) existing.messages.push(message);
       if (recovery && !existing.recoveries.some((item) => item.generation === recovery.generation && item.watcherPid === recovery.watcherPid)) {
         existing.recoveries.push(recovery);
       }
     } else {
-      owner.wakeBatch.push({ key, message, recoveries: recovery ? [recovery] : [] });
+      owner.wakeBatch.push({ key, messages: [message], recoveries: recovery ? [recovery] : [] });
     }
     if (wakeIsUrgent(message)) {
       await flushWakeBatch(owner);

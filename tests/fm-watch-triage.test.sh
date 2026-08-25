@@ -1556,6 +1556,70 @@ test_due_declared_waits_batch_into_one_fleet_wake() {
   pass "all due declared waits are reconciled per pane and delivered in one fleet stale wake"
 }
 
+test_omitted_declared_wait_keeps_its_bounded_recheck() {
+  local dir state fakebin out capture_file back task window key pane_hash sig pid stamped
+  dir=$(make_case declared-wait-omitted-throttle); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  printf 'idle declared wait\n' > "$capture_file"
+  back=$(( $(date +%s) - 500 ))
+  pane_hash=$(hash_text "idle declared wait")
+  for task in paused-one paused-two; do
+    window="test:fm-$task"
+    printf 'window=%s\nkind=secondmate\n' "$window" > "$state/$task.meta"
+    printf 'paused: awaiting upstream for %s\n' "$task" > "$state/$task.status"
+    set_mtime "$back" "$state/$task.status"
+    sig=$(seen_sig "$state/$task.status")
+    printf '%s' "$sig" > "$state/.seen-${task}_status"
+    key=$(printf '%s' "$window" | tr '.:/' '___')
+    printf '%s' "$pane_hash" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+  done
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting upstream'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW='test:fm-paused-one' FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=240 FM_PAUSED_RESURFACE_BATCH_LIMIT=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not deliver the limited fleet pause batch"
+  grep -F 'stale: paused fleet recheck (2 due):' "$out" >/dev/null \
+    || fail "the limited batch did not count both due panes: $(cat "$out")"
+  grep -F '1 more omitted' "$out" >/dev/null \
+    || fail "the limited batch did not report the omitted pane: $(cat "$out")"
+  stamped=0
+  for task in paused-one paused-two; do
+    key=$(printf '%s' "test:fm-$task" | tr '.:/' '___')
+    [ -e "$state/.paused-resurfaced-$key" ] && stamped=$((stamped + 1))
+  done
+  [ "$stamped" -eq 1 ] \
+    || fail "throttle markers were stamped for $stamped panes; only the pane actually named may be throttled"
+  unset FM_FAKE_CREW_STATE
+  pass "a pane omitted from the fleet batch keeps its bounded recheck due instead of being throttled"
+}
+
+test_missing_endpoints_batch_into_one_fleet_wake() {
+  local dir state fakebin out task window sig pid wakes missing
+  dir=$(make_case missing-endpoint-fleet-batch); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; missing="$dir/absent-pane-capture"
+  for task in gone-one gone-two; do
+    window="test:fm-$task"
+    printf 'window=%s\nkind=secondmate\n' "$window" > "$state/$task.meta"
+    printf 'paused: waiting safely but endpoint vanished\n' > "$state/$task.status"
+    sig=$(seen_sig "$state/$task.status")
+    printf '%s' "$sig" > "$state/.seen-${task}_status"
+  done
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW='test:fm-gone-one' \
+    FM_FAKE_TMUX_CAPTURE="$missing" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_PAUSE_RESURFACE_SECS=999
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a fleet of unreadable endpoints did not wake in the same cycle"
+  grep -F 'stale: fleet endpoints missing or unreadable (2):' "$out" >/dev/null \
+    || fail "unreadable endpoints were not collected into one fleet wake: $(cat "$out")"
+  grep -F 'test:fm-gone-one' "$out" >/dev/null || fail "fleet endpoint wake omitted the first window"
+  grep -F 'test:fm-gone-two' "$out" >/dev/null || fail "fleet endpoint wake omitted the second window"
+  wakes=$(grep -c "$(printf '\tstale\t')" "$state/.wake-queue" 2>/dev/null || true)
+  [ "$wakes" -eq 1 ] || fail "the fleet endpoint wake queued $wakes records instead of one"
+  pass "every unreadable endpoint in one cycle is named by a single immediate fleet wake"
+}
+
 test_paused_missing_endpoint_wakes_immediately() {
   local dir state fakebin out window sig pid missing
   dir=$(make_case paused-missing-endpoint); state="$dir/state"; fakebin="$dir/fakebin"
@@ -3051,6 +3115,8 @@ test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_captain_held_resurfaces_in_normal_mode
 test_due_declared_waits_batch_into_one_fleet_wake
 test_paused_missing_endpoint_wakes_immediately
+test_omitted_declared_wait_keeps_its_bounded_recheck
+test_missing_endpoints_batch_into_one_fleet_wake
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking
 test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash

@@ -142,6 +142,9 @@ Away-mode triage is unaffected: while `state/.afk` exists the daemon owns every 
 
 An unchanged repeat status or turn-end from a child already presented as `paused:` or `captain-held` is also absorbed while the exact durable declaration, readable endpoint, and bounded pause-recheck window still hold.
 The first declaration, a changed terminal verb, a missing or unreadable endpoint, and a lapsed bounded recheck always wake immediately.
+A cadence boundary presents every due declared wait in one fleet stale wake, bounded by `FM_PAUSED_RESURFACE_BATCH_LIMIT`.
+Only a pane actually named in that wake has its bounded recheck throttled; a pane counted past the limit stays due and is named by a later cycle, so no pane loses its safety recheck to a wake that never mentioned it.
+Missing or unreadable endpoints found in one watcher cycle are likewise collected into one immediate fleet wake naming those windows, so a backend restart costs one supervision turn rather than one per window while detection stays in the same cycle.
 
 ## Pi watcher wake batching (config/wake-batch-seconds)
 

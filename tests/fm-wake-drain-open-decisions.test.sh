@@ -105,6 +105,37 @@ test_session_recovery_always_prints_the_full_open_decisions_block() {
   pass "a session-recovery drain re-presents the full open-decisions block while in-context repeats still collapse"
 }
 
+test_machine_consumer_drain_does_not_spend_the_open_decisions_presentation() {
+  local dir state daemon returning recovered
+  dir=$(make_case machine-consumer-decisions); state="$dir/state"
+  daemon="$dir/daemon.out"; returning="$dir/returning.out"; recovered="$dir/recovered.out"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task1.status"
+
+  # The away-mode daemon drains to consume the TSV wake rows and discards the
+  # presented text, so it shows the block to nobody.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --no-presentation-commit > "$daemon" \
+    || fail "machine-consumer drain failed"
+  grep -F 'task1 [key=api-shape]' "$daemon" >/dev/null \
+    || fail "the machine-consumer drain changed the drain's own output shape: $(cat "$daemon")"
+
+  # The captain returns from away mode. Nobody has seen the block yet, so the
+  # collapse must not have been spent on the daemon's behalf.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$returning" || fail "returning drain failed"
+  grep -F 'OPEN DECISIONS: unchanged' "$returning" >/dev/null \
+    && fail "a drain nobody read spent the open-decisions presentation: $(cat "$returning")"
+  grep -F 'task1' "$returning" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
+    || fail "the away-mode handover lost the decision's task, key, and note: $(cat "$returning")"
+  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$returning" >/dev/null \
+    || fail "the away-mode handover omitted the resolve instruction: $(cat "$returning")"
+
+  # bin/fm-afk-return.sh drains in recovery mode, which re-presents regardless.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --session-recovery > "$recovered" \
+    || fail "away-return recovery drain failed"
+  grep -F '[key=api-shape]' "$recovered" >/dev/null \
+    || fail "the away-return recovery drain omitted the open decision: $(cat "$recovered")"
+  pass "a drain whose presentation nobody reads never spends the open-decisions collapse"
+}
+
 test_explicit_resolution_closes_it() {
   local dir state out
   dir=$(make_case resolved)
@@ -287,6 +318,7 @@ test_buried_decision_still_surfaces
 test_unchanged_open_decisions_use_compact_marker
 test_compact_recovery_always_prints_the_full_open_decisions_block
 test_session_recovery_always_prints_the_full_open_decisions_block
+test_machine_consumer_drain_does_not_spend_the_open_decisions_presentation
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

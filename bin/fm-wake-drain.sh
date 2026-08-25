@@ -37,6 +37,12 @@ COMPACT=0
 # recovery drain re-presents it in full. An ordinary mid-turn wake drain runs in
 # the same context that saw the last presentation and keeps the collapse.
 SESSION_RECOVERY=0
+# The unchanged-open-decisions collapse records that a HUMAN session was shown the
+# full block. A caller that consumes this drain's rows mechanically and discards the
+# presented text has shown it to nobody, so it must not spend that record: doing so
+# collapses the block for whoever reads it next. The away-mode daemon is exactly
+# that caller.
+PRESENTATION_COMMIT=1
 OPEN_DECISIONS_PRESENTATION_PENDING=
 
 case "${1:-}" in
@@ -50,6 +56,10 @@ case "${1:-}" in
     SESSION_RECOVERY=1
     [ "$#" -eq 1 ] || { echo "wake drain: unexpected session-recovery arguments" >&2; exit 2; }
     ;;
+  --no-presentation-commit)
+    PRESENTATION_COMMIT=0
+    [ "$#" -eq 1 ] || { echo "wake drain: unexpected no-presentation-commit arguments" >&2; exit 2; }
+    ;;
   --ack-through)
     ACK_THROUGH=${2:-}
     case "$ACK_THROUGH" in ''|*[!0-9]*) echo "wake drain: invalid acknowledgement sequence" >&2; exit 2 ;; esac
@@ -59,7 +69,7 @@ case "${1:-}" in
     case "$ACK_GENERATION" in ''|*[!A-Za-z0-9._-]*) echo "wake drain: invalid recovery generation" >&2; exit 2 ;; esac
     [ "$#" -eq 4 ] || { echo "wake drain: unexpected acknowledgement arguments" >&2; exit 2; }
     ;;
-  *) echo "usage: fm-wake-drain.sh [--compact | --session-recovery | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
+  *) echo "usage: fm-wake-drain.sh [--compact | --session-recovery | --no-presentation-commit | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
 esac
 
 OPEN_DECISIONS_FORCE=
@@ -224,6 +234,7 @@ EOF
 
 commit_open_decisions_presentation() {
   local marker="$STATE/.open-decisions-presentation" tmp
+  [ "$PRESENTATION_COMMIT" -eq 1 ] || return 0
   [ -n "$OPEN_DECISIONS_PRESENTATION_PENDING" ] || return 0
   tmp="$marker.tmp.$$"
   printf '%s\n' "$OPEN_DECISIONS_PRESENTATION_PENDING" > "$tmp" \

@@ -147,6 +147,7 @@ A mate's bare `.turn-ended` ping is not covered by that carve-out and still uses
 
 A compact-recovery drain (`bin/fm-wake-drain.sh --compact`) always prints the full bounded OPEN DECISIONS block rather than the `OPEN DECISIONS: unchanged, N open` collapse.
 The collapse's premise is that the full block is already in this session's context, and compaction is exactly the event that destroys it; compaction may trim bulk status tails, never the decision list.
+For the same reason the collapse is only ever spent by a drain a human actually reads: the away-mode daemon drains with `--no-presentation-commit` because it consumes the wake rows mechanically and discards the presented text, so the block survives intact for whoever reads it next, and `bin/fm-afk-return.sh` drains in recovery mode so a captain returning from away mode is handed the decisions in full.
 In attended mode a cadence boundary presents every due declared wait in one fleet stale wake, bounded by `FM_PAUSED_RESURFACE_BATCH_LIMIT`.
 Away mode is unaffected: while `state/.afk` exists the daemon owns triage and still receives the undecorated per-window stale identity it parses, for declared waits and for missing or unreadable endpoints alike.
 Only a pane actually named in that wake has its bounded recheck throttled; a pane counted past the limit stays due and is named by a later cycle, so no pane loses its safety recheck to a wake that never mentioned it.

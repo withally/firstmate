@@ -35,6 +35,9 @@ Compaction is covered where a tracked adapter delivers that source because a com
 Current harness ownership of the lock and its matching `state/.session-start-complete` record together are the idempotency interlock for the whole scheme.
 The full digest clears that completion record after acquiring the lock and republishes the lock owner's pid only after every stage completes, so `clear` or `compact` cannot skip startup sweeps after a truncated run.
 `bin/fm-lock.sh` already treats a lock this session's own harness holds as its own, so a proven `clear` re-emit or `compact` recovery re-verifies ownership and proceeds, while a lock another live session took meanwhile still produces read-only guidance.
+The compact recovery digest is bounded to supervision ownership, the actionable queue and open decisions, active task identities, and the next supervision instruction.
+Away-mode and X-mode state ride in that bound as two short lines under lock and watcher ownership, printed by `bin/fm-supervision-instructions.sh --state-lines`, because both change who owns supervision and what a wake means; a recovering session that read them as attended while the daemon owned triage would cross an AGENTS.md section 8 boundary.
+
 When the tracked Firstmate checkout is itself a registered crew worktree, both session-start wrappers print only `crew worktree - digest suppressed`.
 Registration is proven by an exact `worktree=` match in the primary checkout's task metadata; unmarked linked worktrees remain silent, and marked secondmate homes remain eligible primaries.
 That lookup is scoped to the primary checkout's own default home, `<primary>/state`, because a crew worktree carries no registrations of its own and an ordinary crew session inherits no `FM_HOME`.

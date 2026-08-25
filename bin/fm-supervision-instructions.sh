@@ -16,15 +16,18 @@ AFK=0
 X_MODE=0
 REPAIR_LINE=0
 NEXT_LINE=0
+STATE_LINES=0
 QUEUE_PENDING=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line|--next-line] [--queue-pending 0|1]
+Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line|--next-line|--state-lines] [--queue-pending 0|1]
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
 With --next-line, print the exact ordinary continuation after compact recovery.
+With --state-lines, print only the away-mode and X-mode state lines, for a bounded
+digest that must report who owns supervision without any bulk output.
 EOF
 }
 
@@ -68,6 +71,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --next-line)
       NEXT_LINE=1
+      shift
+      ;;
+    --state-lines)
+      STATE_LINES=1
       shift
       ;;
     -h|--help)
@@ -164,6 +171,22 @@ repair_line() {
   esac
 }
 
+# Away mode and X mode both change WHO owns supervision and what a wake means, so
+# every digest that reports supervision state prints them from here rather than
+# re-wording them. Two lines, no bulk output, so a bounded digest can carry them.
+supervision_state_lines() {
+  if [ "$AFK" -eq 1 ]; then
+    printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
+  else
+    printf '%s\n' '- Away mode: inactive.'
+  fi
+  if [ "$X_MODE" -eq 1 ]; then
+    printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
+  else
+    printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
+  fi
+}
+
 ordinary_wake_line() {
   case "$HARNESS" in
     claude)
@@ -195,6 +218,11 @@ if [ "$REPAIR_LINE" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$STATE_LINES" -eq 1 ]; then
+  supervision_state_lines
+  exit 0
+fi
+
 if [ "$NEXT_LINE" -eq 1 ]; then
   ordinary_wake_line | sed 's/^- Ordinary wake: //'
   exit 0
@@ -210,16 +238,7 @@ if [ "$READ_ONLY" -eq 1 ]; then
 else
   printf '%s\n' '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
 fi
-if [ "$AFK" -eq 1 ]; then
-  printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
-else
-  printf '%s\n' '- Away mode: inactive.'
-fi
-if [ "$X_MODE" -eq 1 ]; then
-  printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
-else
-  printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
-fi
+supervision_state_lines
 ordinary_wake_line
 printf '\n'
 render_snippet

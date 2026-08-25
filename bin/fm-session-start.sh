@@ -649,6 +649,12 @@ if [ "$COMPACT" -eq 1 ]; then
       fi
       ;;
   esac
+  COMPACT_AFK_PRESENT=0
+  [ -e "$STATE/.afk" ] && COMPACT_AFK_PRESENT=1
+  COMPACT_X_MODE_PRESENT=0
+  [ -f "$CONFIG/x-mode.env" ] && COMPACT_X_MODE_PRESENT=1
+  "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
+    --afk "$COMPACT_AFK_PRESENT" --x-mode "$COMPACT_X_MODE_PRESENT" --state-lines
   printf 'ACTIONABLE QUEUE AND OPEN DECISIONS\n'
   if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
     "$SCRIPT_DIR/fm-wake-drain.sh" --compact 2>&1 || true

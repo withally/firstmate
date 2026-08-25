@@ -123,7 +123,7 @@ ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$PROJECT/node_modul
 ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$PROJECT/node_modules/typebox"
 printf '%s\n' '{"type":"module"}' >"$PROJECT/package.json"
 printf '%s\n' on >"$HOME_DIR/config/calm"
-printf '%s\n' '{"hideThinkingBlock":true,"compaction":{"keepRecentTokens":200}}' >"$CONFIG_DIR/settings.json"
+printf '%s\n' '{"compaction":{"keepRecentTokens":200}}' >"$CONFIG_DIR/settings.json"
 
 cat >"$PROJECT/shrink-provider.ts" <<'TS'
 import {

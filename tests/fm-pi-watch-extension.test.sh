@@ -756,6 +756,74 @@ EOF
   pass "a terminal stale naming a failed: status file takes the Pi urgent bypass"
 }
 
+test_pi_batch_flushes_when_its_owning_arm_ends() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-batch-arm-end-root"; home="$TMP_ROOT/pi-batch-arm-end-home"
+  log="$TMP_ROOT/pi-batch-arm-end.log"; stop="$TMP_ROOT/pi-batch-arm-end.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  printf 'working: still building the release\n' > "$home/state/routine.status"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirm %s\n' "$2" >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm$' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: %s/state/routine.status\n' "$FM_HOME"
+  exit 0
+fi
+if [ "$count" -eq 2 ]; then
+  # The successor that the routine wake's recovery names. It settles readiness,
+  # then ends non-actionably while the batch window is still open.
+  printf 'watcher: started pid=%s (beacon fresh) recovery-generation=arm-end-generation\n' "$$"
+  sleep 0.4
+  exit 0
+fi
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  # A 300s window: only the arm-end flush can deliver this batch during the test.
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" FM_WAKE_BATCH_SECONDS=300 node --input-type=module 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const deliveries = [];
+const pi = {
+  on() {}, registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_pi") tool = candidate; },
+  sendUserMessage: async (content) => { deliveries.push(content); },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("arm-end", {}, undefined, undefined, {});
+for (let i = 0; i < 600 && deliveries.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+if (deliveries.length !== 1) {
+  throw new Error("the batch outlived its owning arm: nothing was delivered when that arm ended");
+}
+if (!deliveries[0].includes("routine.status")) {
+  throw new Error(`the flushed batch lost its queued wake: ${deliveries[0]}`);
+}
+const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+if (rows.filter((row) => row.startsWith("confirm ")).length !== 1) {
+  throw new Error(`the handling confirmation did not run inside the owning arm: ${rows.join(" | ")}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi batch must flush when its owning arm ends"
+  [ -z "$out" ] || fail "Pi arm-end flush test printed output: $out"
+  pass "a wake batch is flushed and confirmed when its owning arm ends without a successor, not a window later"
+}
+
 test_pi_handling_delivery_failure_is_typed_once() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-handling-fail-root"
@@ -2596,6 +2664,7 @@ test_pi_batch_keeps_both_reasons_for_one_endpoint
 test_pi_dead_watcher_arm_is_retired_when_handshake_fails
 test_pi_urgent_detail_survives_a_full_batch
 test_pi_terminal_stale_wake_takes_the_urgent_bypass
+test_pi_batch_flushes_when_its_owning_arm_ends
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision

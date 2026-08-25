@@ -56,6 +56,7 @@ type SessionGeneration = {
   seq: number;
   wakeBatchTimer: ReturnType<typeof setTimeout> | null;
   wakeBatch: WakeBatchItem[];
+  wakeBatchArm: ChildProcess | null;
 };
 
 type WakeRecovery = { generation: string; watcherPid: string };
@@ -220,6 +221,7 @@ function createGeneration(): SessionGeneration {
     seq: 0,
     wakeBatchTimer: null,
     wakeBatch: [],
+    wakeBatchArm: null,
   };
 }
 
@@ -238,6 +240,7 @@ function stopGeneration(generation: SessionGeneration): void {
   if (generation.wakeBatchTimer) clearTimeout(generation.wakeBatchTimer);
   generation.wakeBatchTimer = null;
   generation.wakeBatch = [];
+  generation.wakeBatchArm = null;
   if (generation.child) generation.child.kill("SIGTERM");
   generation.child = null;
 }
@@ -312,6 +315,7 @@ export default function (pi: ExtensionAPI) {
     if (owner.wakeBatchTimer) clearTimeout(owner.wakeBatchTimer);
     owner.wakeBatchTimer = null;
     const items = owner.wakeBatch.splice(0, owner.wakeBatch.length);
+    owner.wakeBatchArm = null;
     const urgentDetails: string[] = [];
     const routineDetails: string[] = [];
     let recovery: WakeRecovery | undefined;
@@ -345,6 +349,26 @@ export default function (pi: ExtensionAPI) {
     await sendWake(owner, message);
   }
 
+  // A batch must not outlive the arm that opened it while that arm is NOT being
+  // replaced: an actionable close immediately starts a successor and carries the
+  // supervision chain forward, so the batch keeps aggregating across it - that
+  // rotation is the ordinary case the wake-batch window exists for. A
+  // non-actionable close hands off to a bounded retry instead, so the batch is
+  // delivered here rather than waiting out a window under a cycle that may never
+  // come back. The durable wake queue and the recovery marker remain the only
+  // records of what was delivered and acknowledged, so a crash between this flush
+  // and its confirmation re-presents on the next drain rather than losing it.
+  function flushWakeBatchOnArmEnd(owner: SessionGeneration, armChild: ChildProcess): void {
+    if (owner.wakeBatchArm !== armChild) return;
+    if (owner.wakeBatch.length === 0) {
+      owner.wakeBatchArm = null;
+      return;
+    }
+    void flushWakeBatch(owner).catch(() => {
+      // Pi owns delivery errors; durable wakes remain available to the drain.
+    });
+  }
+
   async function queueWake(owner: SessionGeneration, message: string, recovery?: WakeRecovery): Promise<void> {
     if (!generationIsLive(owner)) return;
     const key = wakeIdentity(message);
@@ -359,6 +383,11 @@ export default function (pi: ExtensionAPI) {
         existing.recoveries.push(recovery);
       }
     } else {
+      // The arm that opens a batch owns it: a batch must never outlive that arm
+      // unconfirmed, or its handling confirmation would run a wake-batch window
+      // later against a watcher pid that has since died and report a failure that
+      // never happened.
+      if (owner.wakeBatch.length === 0) owner.wakeBatchArm = owner.child;
       owner.wakeBatch.push({ key, messages: [message], recoveries: recovery ? [recovery] : [] });
     }
     if (wakeIsUrgent(message)) {
@@ -632,6 +661,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (owner.restoring) return;
+      flushWakeBatchOnArmEnd(owner, armChild);
       scheduleRetry(owner, classification.message, predecessor);
     });
     armChild.on("error", (error: Error) => {
@@ -639,6 +669,7 @@ export default function (pi: ExtensionAPI) {
       settled = true;
       resolveClosed();
       settleReadiness(false);
+      flushWakeBatchOnArmEnd(owner, armChild);
       releaseChild();
       if (!generationIsLive(owner)) return;
       if (owner.restoring) return;

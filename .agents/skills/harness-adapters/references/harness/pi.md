@@ -25,6 +25,7 @@ Firstmate records `pi-signed` without normalization and refuses rather than fall
 The observed signed process tree has an exact `pi-signed` wrapper parent with the Pi application as its child, while tmux reports the foreground command as the exact `pi-launcher` name for either selected executable.
 The installed plain `pi` command also execs that signed launcher.
 The router's Detection section owns how launch markers and ancestry select between the identities.
+Firstmate sets `PI_CLEAR_ON_SHRINK=1` for every Pi-family launch so terminal resizes clear stale rendered rows before supervision classifies the pane.
 
 Keep the instructions as one positional argument.
 Multiple positional arguments become separate queued messages; the spawn template already preserves the one-argument shape.

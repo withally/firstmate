@@ -147,6 +147,7 @@ Away mode is unaffected: while `state/.afk` exists the daemon owns triage and st
 Only a pane actually named in that wake has its bounded recheck throttled; a pane counted past the limit stays due and is named by a later cycle, so no pane loses its safety recheck to a wake that never mentioned it.
 Missing or unreadable endpoints found in one attended watcher cycle are likewise collected into one immediate fleet wake naming those windows, so a backend restart costs one supervision turn rather than one per window while detection stays in the same cycle.
 Each window's disappearance is tracked by its own marker, dropped by the first successful capture, so a flapping endpoint reports each distinct disappearance exactly once without disturbing the pane's recorded stale hash or its wedge timer.
+That list has its own bound, `FM_ENDPOINT_BATCH_LIMIT`, so tightening the paused batch never silently truncates it.
 
 ## Pi watcher wake batching (config/wake-batch-seconds)
 
@@ -228,12 +229,12 @@ When it is unset, most scripts use the repo root as the home; when it is set, sc
 `FM_ROOT_OVERRIDE` overrides the firstmate repo root used by scripts, including the primary checkout watched by the worktree-tangle guard.
 When `FM_HOME` is unset, it also behaves as the old whole-root override.
 `bin/fm-send.sh` is intentionally stricter than that general fallback: it requires `FM_HOME` to be set before resolving a target, so operator steers cannot silently resolve against the wrong home.
-On Herdr, a transient post-Enter `unknown` verdict is re-observed without another keypress.
-Only a later proven-pending composer authorizes a bounded Enter retry; persistent unreadability remains unconfirmed, preserving the missing-endpoint safety boundary.
 `FM_STATE_OVERRIDE`, `FM_DATA_OVERRIDE`, `FM_PROJECTS_OVERRIDE`, and `FM_CONFIG_OVERRIDE` override individual operational directories for tests and specialized harness setup.
 Before `fm-brief.sh`, `fm-spawn.sh`, or `fm-afk-launch.sh` persists a path or passes it to another process, it resolves each applicable relative `FM_HOME`, `FM_STATE_OVERRIDE`, or `FM_DATA_OVERRIDE` directory against the caller's working directory, preserves absolute spellings unchanged, and rejects an unresolvable relative directory with the offending variable named.
 Bootstrap applies the same relative `FM_HOME` resolution only when embedding that home in the generated Relay poll shim; other transient consumers retain their existing shell-relative behavior.
 For the herdr backend, `FM_HOME` also determines the workspace label used by the adapter.
+On Herdr, a transient post-Enter `unknown` verdict is re-observed without another keypress.
+Only a later proven-pending composer authorizes a bounded Enter retry; persistent unreadability remains unconfirmed, preserving the missing-endpoint safety boundary.
 For the zellij backend, `FM_HOME` does not split containers, but it determines the readable home prefix embedded in visible tab titles; use `FM_ZELLIJ_SESSION` when a separate zellij session is needed.
 The full zellij home label also includes a short hash of the resolved `FM_ROOT` path.
 For the cmux backend, `FM_CONFIG_OVERRIDE` overrides where `config/cmux-socket-password` is read from, while `FM_HOME` determines the default config path and readable home prefix embedded in workspace titles.
@@ -686,6 +687,7 @@ FM_ATTENDED_ROUTINE_STATUS_ABSORB=on   # attended routine-status absorption over
 FM_WAKE_BATCH_SECONDS=60   # Pi watcher follow-up aggregation window; config/wake-batch-seconds is the home-local owner
 FM_WAKE_BATCH_LIMIT=20     # maximum distinct routine watcher items rendered in one Pi follow-up
 FM_PAUSED_RESURFACE_BATCH_LIMIT=20   # maximum due paused/captain-held pane details in one fleet stale wake
+FM_ENDPOINT_BATCH_LIMIT=20           # maximum missing or unreadable endpoint windows named in one fleet stale wake
 FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches
 FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
 FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates; stale panes whose crew is not provably working surface immediately unless they declare the pause verb

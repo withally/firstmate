@@ -205,6 +205,7 @@ MISSING_ENDPOINT_ITEMS=''
 MISSING_ENDPOINT_MARKERS=''
 MISSING_ENDPOINT_COUNT=0
 MISSING_ENDPOINT_SHOWN=0
+MISSING_ENDPOINT_LIMIT=$FM_ENDPOINT_BATCH_LIMIT_DEFAULT
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -407,8 +408,11 @@ EOF
 # an already-surfaced stale pane on the next successful capture, and restart wedge
 # aging on every flap. The marker is dropped by the first successful capture, so
 # each distinct disappearance is reported exactly once.
-# Same limit rule as the paused batch: a window past the limit is counted but not
-# named, and its marker is left unwritten so the next cycle still reports it.
+# Same limit rule as the paused batch, under its OWN bound
+# (FM_ENDPOINT_BATCH_LIMIT): tightening the paused batch must not silently truncate
+# the endpoint wake, which reports a different failure to a different audience. A
+# window past the limit is counted but not named, and its marker is left unwritten so
+# the next cycle still reports it.
 # Away mode is daemon-owned and needs the undecorated per-window identity to
 # classify, so under afk this stays the immediate single-window wake it was.
 record_missing_endpoint() {  # <window> <endpoint-missing-marker>
@@ -418,9 +422,10 @@ record_missing_endpoint() {  # <window> <endpoint-missing-marker>
     fm_wake_append stale "$win" "$reason" || exit 1
     : > "$marker"
     wake "$reason"
+    return 0
   fi
   MISSING_ENDPOINT_COUNT=$((MISSING_ENDPOINT_COUNT + 1))
-  if [ "$MISSING_ENDPOINT_SHOWN" -lt "$PAUSED_RESURFACE_LIMIT" ]; then
+  if [ "$MISSING_ENDPOINT_SHOWN" -lt "$MISSING_ENDPOINT_LIMIT" ]; then
     MISSING_ENDPOINT_ITEMS="${MISSING_ENDPOINT_ITEMS}${MISSING_ENDPOINT_ITEMS:+; }$win"
     MISSING_ENDPOINT_SHOWN=$((MISSING_ENDPOINT_SHOWN + 1))
     MISSING_ENDPOINT_MARKERS="${MISSING_ENDPOINT_MARKERS}${MISSING_ENDPOINT_MARKERS:+
@@ -707,6 +712,15 @@ surface_nonterminal_stale() {  # <window> <hash>
   wake "stale: $win"
 }
 
+# Records ONLY that this declaration was presented: the two markers
+# attended_declared_wait_signal_is_absorbable reads. It deliberately does NOT arm
+# .paused-<key> or .paused-rechecked-<key>. Delivering a wake is not an inspection:
+# surface_nonterminal_stale may arm the cadence because pause_state_class has just
+# spent its one live-agent gate for that key, and this path spends none. Arming here
+# would let pause_state_class take its on-cadence short-circuit on the pane's first
+# stale hash, so an ordinary crew still alive at an interactive permission or
+# decision prompt would be absorbed onto the PAUSE_RESURFACE_SECS cadence instead of
+# surfacing immediately - exactly the live decision gate that gate exists to protect.
 record_declared_wait_presented() {  # <status-file>
   local f=$1 task meta win key last
   case "$f" in *.status) ;; *) return 0 ;; esac
@@ -718,8 +732,6 @@ record_declared_wait_presented() {  # <status-file>
   last=$(last_status_line "$f")
   status_is_paused_or_captain_held "$last" || return 0
   key=$(window_key "$win")
-  : > "$STATE/.paused-$key"
-  date +%s > "$STATE/.paused-rechecked-$key"
   date +%s > "$STATE/.paused-resurfaced-$key"
   printf '%s' "$last" > "$STATE/.paused-presented-$key"
 }
@@ -1153,6 +1165,10 @@ while :; do
   PAUSED_RESURFACE_LIMIT=${FM_PAUSED_RESURFACE_BATCH_LIMIT:-$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT}
   case "$PAUSED_RESURFACE_LIMIT" in
     ''|*[!0-9]*|0) PAUSED_RESURFACE_LIMIT=$FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT ;;
+  esac
+  MISSING_ENDPOINT_LIMIT=${FM_ENDPOINT_BATCH_LIMIT:-$FM_ENDPOINT_BATCH_LIMIT_DEFAULT}
+  case "$MISSING_ENDPOINT_LIMIT" in
+    ''|*[!0-9]*|0) MISSING_ENDPOINT_LIMIT=$FM_ENDPOINT_BATCH_LIMIT_DEFAULT ;;
   esac
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand

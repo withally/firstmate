@@ -86,6 +86,8 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 # shellcheck disable=SC2034 # Read by fm-watch.sh after sourcing this policy owner.
 FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT=20
+# shellcheck disable=SC2034 # Read by fm-watch.sh after sourcing this policy owner.
+FM_ENDPOINT_BATCH_LIMIT_DEFAULT=20
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions

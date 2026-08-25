@@ -1637,6 +1637,73 @@ test_paused_missing_endpoint_wakes_immediately() {
   pass "a declared wait never delays missing or unreadable endpoint detection"
 }
 
+test_presented_declared_wait_still_spends_its_liveness_gate() {
+  local dir state fakebin out capture_file statusf window key pane_hash pid
+  dir=$(make_case presented-wait-liveness-gate); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gatewait.status"
+  window='test:fm-gatewait'
+  printf 'idle at an interactive permission prompt\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/gatewait.meta"
+  printf 'paused: waiting on upstream\n' > "$statusf"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  pane_hash=$(hash_text "idle at an interactive permission prompt")
+
+  # The declaration arrives as a status signal and is delivered, which records the
+  # presentation. Delivering a wake spends no live-agent inspection.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting on upstream' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the first declared wait was not delivered"
+  grep -F "signal: $statusf" "$out" >/dev/null || fail "the declaration did not surface: $(cat "$out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the delivered declaration"
+
+  # The agent is still alive and stalled at an interactive gate. Its first stale
+  # hash must still cost one live-agent inspection and surface, not be absorbed
+  # onto the hour-long declared-wait cadence.
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting on upstream' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a live crew at a decision gate was silenced by the declared-wait cadence a delivered signal armed"; }
+  grep -Fx "stale: $window" "$out" >/dev/null \
+    || fail "the live decision gate did not surface on its first stale hash: $(cat "$out")"
+  pass "a declared wait presented through a signal still spends its live-agent inspection on the first stale hash"
+}
+
+test_endpoint_batch_keeps_its_own_bound() {
+  local dir state fakebin out task window sig pid missing
+  dir=$(make_case endpoint-own-limit); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; missing="$dir/absent-pane-capture"
+  for task in bound-one bound-two; do
+    window="test:fm-$task"
+    printf 'window=%s\nkind=secondmate\n' "$window" > "$state/$task.meta"
+    printf 'paused: waiting safely but endpoint vanished\n' > "$state/$task.status"
+    sig=$(seen_sig "$state/$task.status"); printf '%s' "$sig" > "$state/.seen-${task}_status"
+  done
+  # Tightening the PAUSED batch must not silently truncate the endpoint wake.
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW='test:fm-bound-one' \
+    FM_FAKE_TMUX_CAPTURE="$missing" FM_FAKE_TMUX_CAPTURE_FAIL=1 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_PAUSED_RESURFACE_BATCH_LIMIT=1
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the endpoint fleet wake was not delivered"
+  grep -F 'test:fm-bound-one' "$out" >/dev/null || fail "endpoint wake omitted the first window: $(cat "$out")"
+  grep -F 'test:fm-bound-two' "$out" >/dev/null \
+    || fail "the paused batch limit silently truncated the endpoint wake: $(cat "$out")"
+  grep -F 'more omitted' "$out" >/dev/null && fail "the endpoint wake was bounded by the paused limit: $(cat "$out")"
+  pass "the missing-endpoint fleet wake is bounded by its own limit, not the paused batch limit"
+}
+
 test_afk_declared_wait_hands_off_undecorated_window_identity() {
   local dir state fakebin out drain_out capture_file back task window key pane_hash sig pid
   dir=$(make_case afk-declared-wait-no-batch); state="$dir/state"; fakebin="$dir/fakebin"
@@ -3264,6 +3331,8 @@ test_due_declared_waits_batch_into_one_fleet_wake
 test_paused_missing_endpoint_wakes_immediately
 test_omitted_declared_wait_keeps_its_bounded_recheck
 test_missing_endpoints_batch_into_one_fleet_wake
+test_presented_declared_wait_still_spends_its_liveness_gate
+test_endpoint_batch_keeps_its_own_bound
 test_afk_declared_wait_hands_off_undecorated_window_identity
 test_afk_missing_endpoint_hands_off_undecorated_window_identity
 test_transient_endpoint_failure_preserves_the_stale_hash_suppressor

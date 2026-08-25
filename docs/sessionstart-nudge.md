@@ -37,6 +37,8 @@ The full digest clears that completion record after acquiring the lock and repub
 `bin/fm-lock.sh` already treats a lock this session's own harness holds as its own, so a proven `clear` re-emit or `compact` recovery re-verifies ownership and proceeds, while a lock another live session took meanwhile still produces read-only guidance.
 When the tracked Firstmate checkout is itself a registered crew worktree, both session-start wrappers print only `crew worktree - digest suppressed`.
 Registration is proven by an exact `worktree=` match in the primary checkout's task metadata; unmarked linked worktrees remain silent, and marked secondmate homes remain eligible primaries.
+That lookup is scoped to the primary checkout's own default home, `<primary>/state`, because a crew worktree carries no registrations of its own and an ordinary crew session inherits no `FM_HOME`.
+A crew worktree registered by some other home is therefore not suppressed from that home's registrations; each home runs its own session start against its own, and cross-home discovery is deliberately not part of this scheme.
 On a run-tier harness the nudge cannot also fire: `resume`, `reload`, and `fork` are the only sources routed to it, and on those its own ancestry check stays silent whenever this process already holds the lock.
 
 `bin/fm-session-start.sh --reemit` owns which work a re-emit skips, its true-start AGENTS.md baseline, and its supported stale-instruction refresh pairs; its header is the single owner of those mechanics.

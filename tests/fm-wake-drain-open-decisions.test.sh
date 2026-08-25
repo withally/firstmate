@@ -77,6 +77,34 @@ test_compact_recovery_always_prints_the_full_open_decisions_block() {
   pass "compact recovery re-presents the full open-decisions block instead of an unchanged count"
 }
 
+test_session_recovery_always_prints_the_full_open_decisions_block() {
+  local dir state first collapsed recovered
+  dir=$(make_case session-recovery-decisions); state="$dir/state"
+  first="$dir/first.out"; collapsed="$dir/collapsed.out"; recovered="$dir/recovered.out"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task1.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" || fail "first decision drain failed"
+  grep -F 'task1 [key=api-shape]' "$first" >/dev/null \
+    || fail "first decision presentation omitted the full open decision"
+
+  # An ordinary mid-turn drain runs in the same context that saw the block, so it
+  # still collapses.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$collapsed" || fail "second decision drain failed"
+  [ "$(cat "$collapsed")" = 'OPEN DECISIONS: unchanged, 1 open' ] \
+    || fail "an in-context repeat drain stopped collapsing: $(cat "$collapsed")"
+
+  # A session-start / clear re-emit digest runs precisely because that context is
+  # gone, so it must re-present the decision in full.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --session-recovery > "$recovered" \
+    || fail "session-recovery drain failed"
+  grep -F 'OPEN DECISIONS: unchanged' "$recovered" >/dev/null \
+    && fail "session recovery collapsed open decisions to a bare count: $(cat "$recovered")"
+  grep -F 'task1' "$recovered" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
+    || fail "session recovery lost the decision's task, key, and note: $(cat "$recovered")"
+  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$recovered" >/dev/null \
+    || fail "session recovery omitted the resolve instruction: $(cat "$recovered")"
+  pass "a session-recovery drain re-presents the full open-decisions block while in-context repeats still collapse"
+}
+
 test_explicit_resolution_closes_it() {
   local dir state out
   dir=$(make_case resolved)
@@ -258,6 +286,7 @@ test_over_long_decision_note_is_capped_with_a_marker() {
 test_buried_decision_still_surfaces
 test_unchanged_open_decisions_use_compact_marker
 test_compact_recovery_always_prints_the_full_open_decisions_block
+test_session_recovery_always_prints_the_full_open_decisions_block
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

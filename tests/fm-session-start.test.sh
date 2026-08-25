@@ -1957,6 +1957,64 @@ EOF
   pass "--reemit reprints the digest without repeating startup's mutating sweeps and still drains queued wakes"
 }
 
+test_compact_recovery_digest_carries_the_wake_acknowledgement() {
+  local rec root home fakebin compact
+  rec=$(new_world compact-ack)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" pi
+  printf '# Firstmate\n' > "$root/AGENTS.md"
+  # Take the lock so the compact digest runs its drain rather than skipping it.
+  FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup >/dev/null
+
+  append_wake "$home/state" stale w1 'stale: fm-sess:w1' \
+    || fail "could not queue a wake for the compact recovery"
+  compact=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --compact)
+
+  # The Pi compact route spawns fm-sessionstart-run.sh with stderr discarded
+  # (.pi/extensions/fm-primary-turnend-guard.ts), so the acknowledgement command
+  # only reaches the recovering session if the digest carries it on stdout.
+  assert_contains "$compact" "stale: fm-sess:w1" \
+    "compact recovery digest did not present the queued wake"
+  assert_contains "$compact" "WAKE_ACK_REQUIRED" \
+    "compact recovery digest dropped the acknowledgement command onto discarded stderr"
+  assert_contains "$compact" "--recovery-generation" \
+    "compact recovery acknowledgement command lost its recovery generation"
+  pass "the compact recovery digest carries its wake acknowledgement command on stdout"
+}
+
+test_new_session_digest_reprints_open_decisions_it_never_saw() {
+  local rec root home fakebin first second
+  rec=$(new_world new-session-decisions)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" pi
+  printf '# Firstmate\n' > "$root/AGENTS.md"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$home/state/task1.status"
+
+  # Session one presents the decision in full and records that presentation.
+  first=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup)
+  assert_contains "$first" "task1" "the first session digest omitted the open decision"
+  assert_contains "$first" "[key=api-shape]" "the first session digest omitted the decision key"
+
+  # Session two is a different process with none of that context. The decision
+  # set is unchanged, so the collapse would hand it a bare count.
+  second=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup)
+  assert_not_contains "$second" "OPEN DECISIONS: unchanged" \
+    "a new session digest collapsed an open decision it had never been shown"
+  assert_contains "$second" "[key=api-shape]" \
+    "a new session digest omitted the open decision's key"
+  assert_contains "$second" "pick REST or RPC" \
+    "a new session digest omitted the open decision's note"
+  assert_contains "$second" "--resolve-key" \
+    "a new session digest omitted the resolve instruction"
+  pass "a new session's digest re-presents open decisions the previous session had already been shown"
+}
+
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact() {
   local rec root home fakebin startup compact_equal compact_first compact_second clear_out resume_out reset_out baseline baseline_after expected_hash refresh_line bootstrap_line
   rec=$(new_world agents-refresh)
@@ -2439,6 +2497,8 @@ test_portable_timeout_escalates_term_resistant_process
 test_runtime_bound_leaves_a_healthy_digest_untouched
 test_runtime_bound_leaves_harness_ancestry_headroom
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
+test_compact_recovery_digest_carries_the_wake_acknowledgement
+test_new_session_digest_reprints_open_decisions_it_never_saw
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh

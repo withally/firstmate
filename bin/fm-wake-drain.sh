@@ -30,13 +30,25 @@ ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
 COMPACT=0
+# A session-recovery drain is one that runs precisely BECAUSE this session's
+# context was lost - session start, /clear re-emit, and compaction. The
+# unchanged-open-decisions collapse below assumes the full block is already in
+# this session's context, which is exactly what those three events destroy, so a
+# recovery drain re-presents it in full. An ordinary mid-turn wake drain runs in
+# the same context that saw the last presentation and keeps the collapse.
+SESSION_RECOVERY=0
 OPEN_DECISIONS_PRESENTATION_PENDING=
 
 case "${1:-}" in
   '') ;;
   --compact)
     COMPACT=1
+    SESSION_RECOVERY=1
     [ "$#" -eq 1 ] || { echo "wake drain: unexpected compact arguments" >&2; exit 2; }
+    ;;
+  --session-recovery)
+    SESSION_RECOVERY=1
+    [ "$#" -eq 1 ] || { echo "wake drain: unexpected session-recovery arguments" >&2; exit 2; }
     ;;
   --ack-through)
     ACK_THROUGH=${2:-}
@@ -47,8 +59,11 @@ case "${1:-}" in
     case "$ACK_GENERATION" in ''|*[!A-Za-z0-9._-]*) echo "wake drain: invalid recovery generation" >&2; exit 2 ;; esac
     [ "$#" -eq 4 ] || { echo "wake drain: unexpected acknowledgement arguments" >&2; exit 2; }
     ;;
-  *) echo "usage: fm-wake-drain.sh [--compact | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
+  *) echo "usage: fm-wake-drain.sh [--compact | --session-recovery | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
 esac
+
+OPEN_DECISIONS_FORCE=
+[ "$SESSION_RECOVERY" -eq 0 ] || OPEN_DECISIONS_FORCE=force
 
 # Defense in depth for the supervision chain: this script runs at the top of
 # every wake-handling and recovery turn, so assert supervision health here too. A
@@ -140,13 +155,14 @@ open_decisions_digest() {
 # fm-classify-lib.sh's "incremental (cursor-backed) open-decisions fold").
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
-# <force-full>, set only by the compact-recovery caller, skips the unchanged
-# short-circuit below. The short-circuit's whole premise is that the full block is
-# already in this session's context, and compaction is precisely the event that
-# destroys that context, so a compact recovery that printed a bare count would hand
-# the recovering session a number with no key, no task and no resolve instruction.
-# AGENTS.md section 3 makes the decision list part of every locked drain: compaction
-# may trim bulk status tails, never the decisions.
+# <force-full>, set by every session-recovery caller (see SESSION_RECOVERY above),
+# skips the unchanged short-circuit below. The short-circuit's whole premise is that
+# the full block is already in this session's context, and session start, /clear and
+# compaction are precisely the events that destroy that context, so a recovery drain
+# that printed a bare count would hand the recovering session a number with no key,
+# no task and no resolve instruction. AGENTS.md section 3 makes the decision list
+# part of every locked drain: recovery may trim bulk status tails, never the
+# decisions.
 print_open_decisions_section() {
   local snapshot=${1:-} force_full=${2:-} open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes digest count marker prior
@@ -282,7 +298,7 @@ print_status_sections() {
   [ -n "$snapshot" ] || return 0
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   print_unread_status_section "$snapshot" || return 1
-  print_open_decisions_section "$snapshot" || return 1
+  print_open_decisions_section "$snapshot" "$OPEN_DECISIONS_FORCE" || return 1
   print_record_divergence_section || return 1
   status_commit_presentation_snapshot "$STATE" "$acknowledged" || return 1
   commit_open_decisions_presentation
@@ -307,7 +323,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
 print_compact_open_decisions() {
   local lock="$STATE/.status-presentation-lock" rc=0
   fm_lock_acquire_wait "$lock" || return 1
-  print_open_decisions_section '' force || rc=1
+  print_open_decisions_section '' "$OPEN_DECISIONS_FORCE" || rc=1
   if [ "$rc" -eq 0 ]; then commit_open_decisions_presentation || rc=1; fi
   fm_lock_release "$lock" || rc=1
   return "$rc"

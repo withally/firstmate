@@ -651,7 +651,7 @@ if [ "$COMPACT" -eq 1 ]; then
   esac
   printf 'ACTIONABLE QUEUE AND OPEN DECISIONS\n'
   if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
-    "$SCRIPT_DIR/fm-wake-drain.sh" --compact || true
+    "$SCRIPT_DIR/fm-wake-drain.sh" --compact 2>&1 || true
   else
     printf 'queue drain skipped because this session does not own the lock\n'
   fi
@@ -771,7 +771,10 @@ fi
 # wake, without adding a daemon or external-network call.
 # Presented records are this turn's first work queue and remain durable until
 # post-handling acknowledgement. The drain's separate OPEN DECISIONS section
-# remains actionable even when that queue is empty (AGENTS.md sections 3 and 8).
+# remains actionable even when that queue is empty (AGENTS.md sections 3 and 8);
+# --session-recovery is what keeps that true here, because a digest runs only when
+# this session's context was lost (start, /clear re-emit, compact) and the drain's
+# unchanged-decision collapse would otherwise carry across that boundary.
 # The drain also runs fm-guard.sh internally on the locked path, so the
 # tangle/watcher-liveness alarms land right here too, ahead of the bulk digest
 # below. The read-only path never touches the queue because it lacks mutation
@@ -792,7 +795,7 @@ else
   if [ -n "$INACTIVE_OUT" ]; then
     printf 'inactive outcome reconciliation: %s\n' "$INACTIVE_OUT"
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" --session-recovery 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   else

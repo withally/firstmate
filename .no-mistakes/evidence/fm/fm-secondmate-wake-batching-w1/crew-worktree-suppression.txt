@@ -1,0 +1,11 @@
+--- registered crew worktree ---
+crew worktree - digest suppressed
+--- unregistered worktree (no state/*.meta pointing at it): digest still runs ---
+
+================================================================================
+SESSION START - /tmp/fm-crew.ikps0e/home
+================================================================================
+
+LOCK
+--------------------------------------------------------------------------------
+lock acquired: harness pid 57225

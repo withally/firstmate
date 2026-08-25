@@ -1,0 +1,95 @@
+=== BEFORE (base d982d45): fleet of 6 crew panes, all declared pauses due for recheck ===
+-- supervision turn 1 -- watcher exited with:
+     stale: fleet:crew-1
+   supervisor drain shows:
+     1787653677	1	stale	fleet:crew-1	stale: fleet:crew-1
+-- supervision turn 2 -- watcher exited with:
+     stale: fleet:crew-2 (paused 504s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787653679	2	stale	fleet:crew-2	stale: fleet:crew-2 (paused 504s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 3 -- watcher exited with:
+     stale: fleet:crew-3 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787653681	3	stale	fleet:crew-3	stale: fleet:crew-3 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 4 -- watcher exited with:
+     stale: fleet:crew-4 (paused 509s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787653684	4	stale	fleet:crew-4	stale: fleet:crew-4 (paused 509s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 5 -- watcher exited with:
+     stale: fleet:crew-5 (paused 512s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787653687	5	stale	fleet:crew-5	stale: fleet:crew-5 (paused 512s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 6 -- watcher exited with:
+     stale: fleet:crew-6 (paused 515s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787653690	6	stale	fleet:crew-6	stale: fleet:crew-6 (paused 515s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- round 7: watcher reached its heartbeat with nothing left to deliver; fleet reconciled
+RESULT BEFORE (base d982d45): supervision turns spent = 6; stale wake records presented = 6
+
+=== AFTER (target bf53bf0): fleet of 6 crew panes, all declared pauses due for recheck ===
+-- supervision turn 1 -- watcher exited with:
+     stale: fleet:crew-1
+   supervisor drain shows:
+     1787653736	1	stale	fleet:crew-1	stale: fleet:crew-1
+-- supervision turn 2 -- watcher exited with:
+     stale: paused fleet recheck (5 due): fleet:crew-2 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-3 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-4 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-5 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-6 (paused 508s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787653741	2	stale	paused-fleet	stale: paused fleet recheck (5 due): fleet:crew-2 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-3 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-4 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-5 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-6 (paused 508s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- round 3: watcher reached its heartbeat with nothing left to deliver; fleet reconciled
+RESULT AFTER (target bf53bf0): supervision turns spent = 2; stale wake records presented = 2
+
+
+### Report-shaped fleet (~8 independently paused endpoints, investigation report line 74)
+
+=== BEFORE (base d982d45): fleet of 9 crew panes, all declared pauses due for recheck ===
+-- supervision turn 1 -- watcher exited with:
+     stale: fleet:crew-1
+   supervisor drain shows:
+     1787654367	1	stale	fleet:crew-1	stale: fleet:crew-1
+-- supervision turn 2 -- watcher exited with:
+     stale: fleet:crew-2 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654369	2	stale	fleet:crew-2	stale: fleet:crew-2 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 3 -- watcher exited with:
+     stale: fleet:crew-3 (paused 510s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654372	3	stale	fleet:crew-3	stale: fleet:crew-3 (paused 510s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 4 -- watcher exited with:
+     stale: fleet:crew-4 (paused 512s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654374	4	stale	fleet:crew-4	stale: fleet:crew-4 (paused 512s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 5 -- watcher exited with:
+     stale: fleet:crew-5 (paused 515s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654377	5	stale	fleet:crew-5	stale: fleet:crew-5 (paused 515s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 6 -- watcher exited with:
+     stale: fleet:crew-6 (paused 519s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654381	6	stale	fleet:crew-6	stale: fleet:crew-6 (paused 519s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 7 -- watcher exited with:
+     stale: fleet:crew-7 (paused 523s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654385	7	stale	fleet:crew-7	stale: fleet:crew-7 (paused 523s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 8 -- watcher exited with:
+     stale: fleet:crew-8 (paused 527s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654389	8	stale	fleet:crew-8	stale: fleet:crew-8 (paused 527s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- supervision turn 9 -- watcher exited with:
+     stale: fleet:crew-9 (paused 532s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654394	9	stale	fleet:crew-9	stale: fleet:crew-9 (paused 532s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- round 10: watcher reached its heartbeat with nothing left to deliver; fleet reconciled
+RESULT BEFORE (base d982d45): supervision turns spent = 9; stale wake records presented = 9
+
+=== AFTER (target bf53bf0): fleet of 9 crew panes, all declared pauses due for recheck ===
+-- supervision turn 1 -- watcher exited with:
+     stale: fleet:crew-1
+   supervisor drain shows:
+     1787654440	1	stale	fleet:crew-1	stale: fleet:crew-1
+-- supervision turn 2 -- watcher exited with:
+     stale: paused fleet recheck (8 due): fleet:crew-2 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-3 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-4 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-5 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-6 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-7 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-8 (paused 508s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-9 (paused 508s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   supervisor drain shows:
+     1787654445	2	stale	paused-fleet	stale: paused fleet recheck (8 due): fleet:crew-2 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-3 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-4 (paused 506s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-5 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-6 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-7 (paused 507s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-8 (paused 508s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds); fleet:crew-9 (paused 508s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+-- round 3: watcher reached its heartbeat with nothing left to deliver; fleet reconciled
+RESULT AFTER (target bf53bf0): supervision turns spent = 2; stale wake records presented = 2
+

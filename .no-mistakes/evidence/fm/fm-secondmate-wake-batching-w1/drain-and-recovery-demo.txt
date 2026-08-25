@@ -1,0 +1,43 @@
+================================================================
+1. First wake drain of the session - the open decision is presented in full
+================================================================
+1787653990	1	stale	paused-fleet	stale: paused fleet recheck (3 due): fleet:crew-api (paused 512s, awaiting external); fleet:crew-db (paused 512s, awaiting external); fleet:crew-web (paused 513s, awaiting external)
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+task-api [key=api-shape] needs-decision: pick REST or RPC before the crew continues
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+================================================================
+2. Next wake drain in the SAME session, decision set unchanged - the block collapses to a marker
+================================================================
+1787653991	2	stale	w1	stale: fleet:crew-db
+OPEN DECISIONS: unchanged, 1 open
+
+================================================================
+3. After a compaction: fm-session-start.sh --compact re-presents the decisions in full,
+   with no status tails or unchanged context files, and carries its own acknowledgement command
+================================================================
+COMPACT RECOVERY - /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-drain-demo.yQ9BDD/home
+LOCK AND WATCHER OWNERSHIP
+lock: lock acquired: harness pid 95914
+watcher: no readable owner pid
+- Away mode: inactive.
+- X mode: inactive; use the default watcher cadence.
+ACTIONABLE QUEUE AND OPEN DECISIONS
+1787653992	3	stale	w2	stale: fleet:crew-api (paused 900s, awaiting external)
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 3 --recovery-generation 78252.1787653992.qIlwng
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+task-api [key=api-shape] needs-decision: pick REST or RPC before the crew continues
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+ACTIVE TASK IDENTITIES
+task-api kind=ship harness=claude backend=tmux target=fleet:crew-api
+task-db kind=ship harness=codex backend=tmux target=fleet:crew-db
+NEXT SUPERVISION INSTRUCTION
+drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity, so do not arm another cycle yourself. Protocol: docs/supervision-protocols/claude.md
+
+================================================================
+4. A crewmate session starting inside a registered crew worktree
+================================================================
+$ FM_ROOT_OVERRIDE=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-drain-demo.yQ9BDD/crewtree bin/fm-session-start.sh
+crew worktree - digest suppressed

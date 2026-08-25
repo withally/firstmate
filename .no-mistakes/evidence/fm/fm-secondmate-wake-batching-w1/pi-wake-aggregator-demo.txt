@@ -1,0 +1,33 @@
+captain's config/wake-batch-seconds = 3   (production default: 60)
+
+================================================================
+SCENARIO A - routine wakes only (working:/done:/paused stale): held for the 3s window, deduplicated, delivered once
+================================================================
+primary arms its watcher; the watcher closes several times within ~1s
+
+--- Pi primary received a follow-up at t+3.8s ---
+⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: batched 3 watcher wakes:
+- signal: $FM_HOME/state/alpha.status
+- stale: w1:crew-bravo (paused awaiting upstream release)
+- signal: $FM_HOME/state/bravo.status
+
+Run bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.
+
+watcher closes seen: 4; follow-ups delivered to the primary: see above; delivery acknowledgements sent back to the watcher: 1
+
+================================================================
+SCENARIO B - same routine wakes plus one blocked [key=deploy-window] status: urgent bypasses the window
+================================================================
+primary arms its watcher; the watcher closes several times within ~1s
+
+--- Pi primary received a follow-up at t+1.5s ---
+⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: batched 4 watcher wakes:
+- signal: $FM_HOME/state/charlie.status
+- signal: $FM_HOME/state/alpha.status
+- stale: w1:crew-bravo (paused awaiting upstream release)
+- signal: $FM_HOME/state/bravo.status
+
+Run bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.
+
+watcher closes seen: 5; follow-ups delivered to the primary: see above; delivery acknowledgements sent back to the watcher: 1
+

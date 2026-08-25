@@ -1,0 +1,37 @@
+Repro: a hung/slow git (stuck index.lock, hung network mount) while a primary opens a session.
+fm-session-start.sh promises a hard runtime bound and a loud truncation banner.
+Round 1 found the crew-worktree predicate ran unbounded BEFORE that bound; cc2dc20 moved it
+inside a bounded parent check. Re-run below on the current HEAD.
+
+=== BEFORE (base d982d45) ===
+exit=0 wall=3s - digest printed up to LOCK/BOOTSTRAP, truncation banner shown.
+
+=== BROKEN (round-1 target bf53bf0) ===
+exit=124 wall=25s - killed externally, NO output at all: the bound never applied.
+
+=== FIXED (HEAD cc2dc20) (session-start runtime bound: 3s) ===
+exit=0 wall=6s
+
+================================================================================
+SESSION START - /tmp/fm-hang.PxYNYb/home
+================================================================================
+
+LOCK
+--------------------------------------------------------------------------------
+lock acquired: harness pid 57225
+
+BOOTSTRAP
+--------------------------------------------------------------------------------
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  STARTUP TRUNCATED - SESSION START HIT ITS 3s RUNTIME BOUND
+●  It stopped during the "bootstrap" stage, so everything above is COMPLETE
+●  only up to that point.
+●  RECONCILE these stages before acting on anything they would have shown:
+●    bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step
+●  Rerun bin/fm-session-start.sh now to finish taking the helm. If it truncates
+●  again, raise FM_SESSION_START_TIMEOUT and report the slow stage - a stage that
+●  cannot finish inside the bound is a fleet problem, not a reporting detail.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+---
+

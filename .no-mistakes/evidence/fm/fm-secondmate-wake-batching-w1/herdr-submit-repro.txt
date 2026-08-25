@@ -1,0 +1,4 @@
+Scenario: post-Enter surface read fails once, then shows the steer still pending in the composer.
+
+BEFORE (base d982d45)      submit verdict reported to the supervisor: unknown  Enter keypresses sent: 1
+AFTER (target bf53bf0)     submit verdict reported to the supervisor: empty    Enter keypresses sent: 2

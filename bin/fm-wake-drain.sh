@@ -77,6 +77,17 @@ esac
 OPEN_DECISIONS_FORCE=
 [ "$SESSION_RECOVERY" -eq 0 ] || OPEN_DECISIONS_FORCE=force
 
+# A watcher-down recovery drain is the second context in which the collapse's
+# premise fails. The recovery wake exists precisely because an unsupervised
+# interval passed, so the decisions this drain re-folds were last presented to a
+# session that is no longer supervising them - and a decision-only recovery
+# (empty queue, still-open decision) would otherwise re-surface as a bare count
+# with no key, task or resolve instruction, which is the entire payload of that
+# wake. Set by the recovery paths below once the episode is known.
+force_open_decisions_for_recovery() {
+  OPEN_DECISIONS_FORCE=force
+}
+
 # Defense in depth for the supervision chain: this script runs at the top of
 # every wake-handling and recovery turn, so assert supervision health here too. A
 # lapsed supervision chain then surfaces on a plain drain-and-handle turn, not
@@ -424,8 +435,12 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
       }
       RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
       RECOVERY_ACK_REQUIRED=true
+      force_open_decisions_for_recovery
       ;;
-    pending:handling:*|announced:handling:*) RECOVERY_ACK_REQUIRED=true ;;
+    pending:handling:*|announced:handling:*)
+      RECOVERY_ACK_REQUIRED=true
+      force_open_decisions_for_recovery
+      ;;
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
@@ -457,6 +472,13 @@ elif [ "${RECOVERY_MARKER_TOKEN%%:*}" = acked ]; then
     echo "wake drain: durable wakes could not enter a fresh recovery generation" >&2
     exit 1
   }
+else
+  # An episode was already open before this drain: either the watcher-down path
+  # published it, or a previous handling turn never acknowledged it. Both are
+  # recovery, so the decisions are re-presented in full. A drain that opens its
+  # own generation for freshly queued rows (the two branches above) is the
+  # ordinary in-context loop and keeps the collapse.
+  force_open_decisions_for_recovery
 fi
 fm_recovery_marker_begin_handling "$RECOVERY_MARKER" || {
   echo "wake drain: durable wakes could not begin handling safely" >&2

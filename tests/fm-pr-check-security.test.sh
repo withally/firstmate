@@ -808,6 +808,15 @@ test_concurrent_watcher_sees_only_complete_publication() {
   while [ "$n" -le 3 ]; do
     dir=$(make_case "concurrent-$n")
     write_task_meta "$dir"
+    # This fixture has metadata but deliberately no pane, and the publication
+    # under test is delayed on purpose, so the watcher's FIRST cycle reaches the
+    # pane-stale layer before any check exists. The watcher reports an
+    # unreadable endpoint exactly once per disappearance and a wake ends the
+    # cycle, so without spending that one report here the bounded run would
+    # close on an endpoint wake that has nothing to do with this test's
+    # publication race. Spending it up front leaves the pane layer inert, which
+    # is the state every other watcher fixture in this file already relies on.
+    : > "$dir/home/state/.endpoint-missing-firstmate_fm-task-a"
     cat > "$dir/fakebin/cp" <<SH
 #!/usr/bin/env bash
 '$REAL_CP' "\$@" || exit 1

@@ -55,6 +55,28 @@ test_unchanged_open_decisions_use_compact_marker() {
   pass "unchanged open decisions collapse to one line and changed sets print in full"
 }
 
+test_compact_recovery_always_prints_the_full_open_decisions_block() {
+  local dir state first compact
+  dir=$(make_case compact-recovery-decisions); state="$dir/state"
+  first="$dir/first.out"; compact="$dir/compact.out"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task1.status"
+  # A normal drain presents the block and commits the unchanged-collapse marker.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" || fail "first decision drain failed"
+  grep -F 'task1 [key=api-shape]' "$first" >/dev/null \
+    || fail "first decision presentation omitted the full open decision"
+
+  # Compaction destroys the context that collapse depends on, so the recovery
+  # drain must re-present the decision in full even though the set is unchanged.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --compact > "$compact" || fail "compact recovery drain failed"
+  grep -F 'OPEN DECISIONS: unchanged' "$compact" >/dev/null \
+    && fail "compact recovery collapsed open decisions to a bare count: $(cat "$compact")"
+  grep -F 'task1' "$compact" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
+    || fail "compact recovery lost the decision's task, key, and note: $(cat "$compact")"
+  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$compact" >/dev/null \
+    || fail "compact recovery omitted the resolve instruction: $(cat "$compact")"
+  pass "compact recovery re-presents the full open-decisions block instead of an unchanged count"
+}
+
 test_explicit_resolution_closes_it() {
   local dir state out
   dir=$(make_case resolved)
@@ -235,6 +257,7 @@ test_over_long_decision_note_is_capped_with_a_marker() {
 
 test_buried_decision_still_surfaces
 test_unchanged_open_decisions_use_compact_marker
+test_compact_recovery_always_prints_the_full_open_decisions_block
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

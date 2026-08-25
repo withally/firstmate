@@ -140,8 +140,13 @@ Any other value, and an unreadable or symlinked config file, disables absorption
 Away-mode triage is unaffected: while `state/.afk` exists the daemon owns every wake, and it reuses only the same recognized-shape boundary before distilling a digest entry.
 [`architecture.md`](architecture.md) owns how this fits the supervision loop and the delayed-presentation receipt.
 
-An unchanged repeat status or turn-end from a child already presented as `paused:` or `captain-held` is also absorbed while the exact durable declaration, readable endpoint, and bounded pause-recheck window still hold.
+An unchanged repeat status or turn-end from an ordinary crewmate already presented as `paused:` or `captain-held` is also absorbed while the exact durable declaration, readable endpoint, and bounded pause-recheck window still hold.
 The first declaration, a changed terminal verb, a missing or unreadable endpoint, and a lapsed bounded recheck always wake immediately.
+A `kind=secondmate` task's `.status` is never absorbed by either absorber: that stream is the mate's routed-reply channel, so even an unchanged repeat is parent-directed content the supervisor must read.
+A mate's bare `.turn-ended` ping is not covered by that carve-out and still uses the ordinary provably-working absorb.
+
+A compact-recovery drain (`bin/fm-wake-drain.sh --compact`) always prints the full bounded OPEN DECISIONS block rather than the `OPEN DECISIONS: unchanged, N open` collapse.
+The collapse's premise is that the full block is already in this session's context, and compaction is exactly the event that destroys it; compaction may trim bulk status tails, never the decision list.
 In attended mode a cadence boundary presents every due declared wait in one fleet stale wake, bounded by `FM_PAUSED_RESURFACE_BATCH_LIMIT`.
 Away mode is unaffected: while `state/.afk` exists the daemon owns triage and still receives the undecorated per-window stale identity it parses, for declared waits and for missing or unreadable endpoints alike.
 Only a pane actually named in that wake has its bounded recheck throttled; a pane counted past the limit stays due and is named by a later cycle, so no pane loses its safety recheck to a wake that never mentioned it.

@@ -739,11 +739,17 @@ record_declared_wait_presented() {  # <status-file>
 # A repeat status or turn-end for an already presented declared wait is routine
 # only while the exact durable declaration, endpoint readability, and bounded
 # recheck window all still hold. Any uncertainty falls back to an immediate wake.
+# A kind=secondmate task's .status is excluded through the same shared owner the
+# provably-working absorb consults (signal_list_has_secondmate_status in
+# fm-classify-lib.sh): that stream is the mate's routed-reply channel, so an
+# unchanged repeat is still parent-directed content the supervisor must read.
+# Absorption here stays scoped to ordinary crewmate paused-pane rechecks.
 attended_declared_wait_signal_is_absorbable() {  # <file> ...
   local f task meta win key last presented checked=''
   attended_routine_status_absorb_enabled || return 1
   signal_reason_is_routine_nonterminal "$@" || return 1
   signal_reason_is_actionable "$@" && return 1
+  signal_list_has_secondmate_status "$@" && return 1
   for f in "$@"; do
     task=$(basename "$f")
     task=${task%.status}; task=${task%.turn-ended}

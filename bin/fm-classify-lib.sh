@@ -1535,8 +1535,27 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # raised decision, a mirrored remote line), and a busy mate agent makes its note
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
+# The ONE owner of the mate routed-reply carve-out described directly above, so
+# every absorber that consults it agrees. 0 when any listed file is a
+# kind=secondmate task's .status; a mate's bare turn-ended ping is not one.
+signal_list_has_secondmate_status() {  # <file> ...
+  local f base dir task
+  for f in "$@"; do
+    base=${f##*/}
+    dir=${f%/*}
+    [ "$dir" != "$f" ] || dir=.
+    case "$base" in *.status) task=${base%.status} ;; *) continue ;; esac
+    [ -n "$task" ] || continue
+    if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 signal_crew_provably_working() {  # <file> ...
   local f base dir task seen=""
+  signal_list_has_secondmate_status "$@" && return 1
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -1547,13 +1566,6 @@ signal_crew_provably_working() {  # <file> ...
       *)            continue ;;
     esac
     [ -n "$task" ] || continue
-    case "$base" in
-      *.status)
-        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
-          return 1
-        fi
-        ;;
-    esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
     crew_is_provably_working "$task" || return 1

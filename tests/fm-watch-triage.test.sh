@@ -839,11 +839,14 @@ test_secondmate_status_note_surfaced_despite_busy_agent() {
 }
 
 test_repeat_presented_pause_signal_is_absorbed_until_it_changes() {
-  local dir state fakebin out capture_file window pid
+  local dir state fakebin out capture_file window key pid
   dir=$(make_case repeat-presented-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window='test:fm-repeat-pause'
+  key=$(printf '%s' "$window" | tr '.:/' '___')
   printf 'idle pause pane\n' > "$capture_file"
-  printf 'window=%s\nkind=secondmate\n' "$window" > "$state/repeat-pause.meta"
+  # An ordinary crewmate: a kind=secondmate .status is the mate's routed-reply
+  # channel and is never absorbable, which test_secondmate_presented_pause_status_always_wakes owns.
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/repeat-pause.meta"
   printf 'paused: awaiting upstream release\n' > "$state/repeat-pause.status"
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
 
@@ -854,6 +857,9 @@ test_repeat_presented_pause_signal_is_absorbed_until_it_changes() {
   ack_stopped_cycle "$state" || fail "could not acknowledge the first pause declaration"
 
   printf 'paused: awaiting upstream release\n' >> "$state/repeat-pause.status"
+  # Drop the pane-hash bookkeeping the surfacing cycle recorded so this round
+  # exercises the signal path alone, not a separate pane-stale classification.
+  rm -f "$state/.hash-$key" "$state/.count-$key"
   : > "$out"
   watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
     FM_FAKE_TMUX_CAPTURE="$capture_file" FM_PAUSE_RESURFACE_SECS=999
@@ -865,6 +871,7 @@ test_repeat_presented_pause_signal_is_absorbed_until_it_changes() {
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional repeat-pause stop"
 
   printf 'failed: upstream wait ended in failure\n' >> "$state/repeat-pause.status"
+  rm -f "$state/.hash-$key" "$state/.count-$key"
   : > "$out"
   watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
     FM_FAKE_TMUX_CAPTURE="$capture_file" FM_PAUSE_RESURFACE_SECS=999
@@ -873,6 +880,37 @@ test_repeat_presented_pause_signal_is_absorbed_until_it_changes() {
   grep -F 'signal:' "$out" >/dev/null || fail "changed terminal verb did not wake immediately"
   unset FM_FAKE_CREW_STATE
   pass "repeat unchanged pause signals absorb after presentation while changed terminal verbs wake immediately"
+}
+
+test_secondmate_presented_pause_status_always_wakes() {
+  local dir state fakebin out capture_file window pid
+  dir=$(make_case mate-presented-pause-wakes); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window='test:fm-mate-reply'
+  printf 'idle mate pane\n' > "$capture_file"
+  printf 'window=%s\nkind=secondmate\n' "$window" > "$state/mate-reply.meta"
+  printf 'captain-held [key=route]: waiting on decision D\n' > "$state/mate-reply.status"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the mate's first hold declaration did not surface"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the mate's first hold declaration"
+
+  # A mate mirrors the identical line again. Its .status is the routed-reply
+  # channel, so an unchanged repeat is still parent-directed content and must
+  # wake even though the declaration was already presented.
+  printf 'captain-held [key=route]: waiting on decision D\n' >> "$state/mate-reply.status"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file"
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a secondmate's routed-reply status was absorbed as an already-presented repeat"; }
+  grep -F "signal: $state/mate-reply.status" "$out" >/dev/null \
+    || fail "the mate's repeated hold line did not surface as its own signal: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "a secondmate status line always wakes, even as an unchanged repeat of a presented hold"
 }
 
 test_self_announced_close_does_not_rewake_but_next_note_does() {
@@ -3306,6 +3344,7 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
 test_repeat_presented_pause_signal_is_absorbed_until_it_changes
+test_secondmate_presented_pause_status_always_wakes
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced

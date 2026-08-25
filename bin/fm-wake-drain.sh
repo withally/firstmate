@@ -140,8 +140,15 @@ open_decisions_digest() {
 # fm-classify-lib.sh's "incremental (cursor-backed) open-decisions fold").
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
+# <force-full>, set only by the compact-recovery caller, skips the unchanged
+# short-circuit below. The short-circuit's whole premise is that the full block is
+# already in this session's context, and compaction is precisely the event that
+# destroys that context, so a compact recovery that printed a bare count would hand
+# the recovering session a number with no key, no task and no resolve instruction.
+# AGENTS.md section 3 makes the decision list part of every locked drain: compaction
+# may trim bulk status tails, never the decisions.
 print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
+  local snapshot=${1:-} force_full=${2:-} open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes digest count marker prior
   marker="$STATE/.open-decisions-presentation"
 
@@ -157,7 +164,7 @@ print_open_decisions_section() {
   count=$(printf '%s\n' "$open" | awk -F '\t' 'NF { n += 1 } END { print n + 0 }') || return 1
   digest=$(printf '%s' "$open" | open_decisions_digest) || return 1
   prior=$(cat "$marker" 2>/dev/null || true)
-  if [ "$prior" = "$digest $count" ]; then
+  if [ "$force_full" != force ] && [ "$prior" = "$digest $count" ]; then
     printf 'OPEN DECISIONS: unchanged, %d open\n' "$count"
     return
   fi
@@ -300,7 +307,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
 print_compact_open_decisions() {
   local lock="$STATE/.status-presentation-lock" rc=0
   fm_lock_acquire_wait "$lock" || return 1
-  print_open_decisions_section || rc=1
+  print_open_decisions_section '' force || rc=1
   if [ "$rc" -eq 0 ]; then commit_open_decisions_presentation || rc=1; fi
   fm_lock_release "$lock" || rc=1
   return "$rc"

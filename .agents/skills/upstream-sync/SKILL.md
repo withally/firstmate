@@ -41,13 +41,13 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
    SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
-   SETTLED=<last adjudicated fork commit named by the newest catch-up log row in docs/upstream-sync.md, empty when no row names one>
+   SETTLED=<window end commit named by the newest catch-up log row in docs/upstream-sync.md, empty when no row names one>
    if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" "$SNAPSHOT"; then SNAPSHOT=$SETTLED; fi
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: no upstream tip or no snapshot commit'; exit 1; }
    ```
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
-   Two boundaries can disagree: the first-parent marker, and the last adjudicated fork commit named by the newest catch-up log row.
+   Two boundaries can disagree: the first-parent marker, and the window end commit named by the newest catch-up log row.
    The override only ever moves the boundary earlier, so it can only widen the window, never narrow it.
    The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
    That direction is also what makes an unlanded log row harmless — the 2026-08-27 row's adopted base still lives only on an unmerged branch, and the worst it can do is widen the audit set.
@@ -152,7 +152,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 5. Never widen the set with `origin/main ^upstream/main` or the merge base; the doc explains why.
    A first-parent commit whose subject starts with `chore: snapshot upstream main` is a previous sync's own squash, not a fork PR: never give it a verdict and never cherry-pick it.
    Its diff is that sync's delta against the *old* fork tip, so replaying it onto the new base would rewind everything upstream changed in between.
-   When one falls inside the window, re-audit the fork PRs its catch-up log row marked `kept` and re-apply those individual commits instead.
+   When one falls inside the window, read its row with `git show origin/main:docs/upstream-sync.md` — the sync branch has no copy yet, because step 2 branched at `upstream/main` and step 7's restore has not run — then re-audit the fork PRs that row marked `kept` and re-apply those individual commits instead.
    Those recovered PRs also get verdicts in *this* sync's row, alongside the window's own PRs.
    Without that, each row would carry only one generation of keeps: the next sync excludes this sync's squash, reads this row, and finds the older keeps missing — so the accumulated fork delta erodes silently, one generation per sync.
    Every row therefore states the full accumulated keep-list, not just what the window newly adjudicated.
@@ -245,6 +245,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 12. Ship through no-mistakes to the fork's PR path.
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
     The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.
+    The verdict table carries the same full accumulated keep-list step 5 and step 13 require, not just the window's own PRs, because it is the captain's single review surface for everything the branch re-applies.
     The PR description must contain the verdict table:
 
     ```markdown
@@ -258,9 +259,11 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     followed by `Tier: weekly|monthly`, the validation commands actually run, and a `Follow-ups` list (possibly empty).
     Never push to `upstream` and never merge.
-13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the last adjudicated fork commit as a bare backticked SHA in its own column, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
     Append to the copy step 7 restored from `origin/main`, so the row lands on top of every earlier row rather than on a stale snapshot of the file.
     If the file is missing, or its newest row predates the one `git show origin/main:docs/upstream-sync.md` shows, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
-    The last adjudicated fork commit is not optional: intake's window override reads it, and a row without it silently falls back to the stale marker.
+    The window end commit is `origin/main`'s tip as step 4 read it — the last first-parent commit inside this window, whether or not it was adjudicated, including an excluded snapshot squash.
+    Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
+    It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
     "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
 14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

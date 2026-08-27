@@ -60,9 +60,10 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Its companion edits in upstream-owned files — the `AGENTS.md` pointer, the skill's arm in `bin/fm-test-run.sh`'s changed-file map, and its entries in `docs/documentation-audiences.json` — are re-applied as targeted edits onto upstream's copies, never restored wholesale.
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
 11. Append one row to the catch-up log below.
-    Record the date, adopted base, the last adjudicated fork commit as a bare backticked SHA in its own column, tier, post-catch-up PR audit set, and final verdict for every audited PR.
+    Record the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, post-catch-up PR audit set, and final verdict for every audited PR.
     The verdict list is cumulative: it carries the PRs recovered from a previous sync's excluded snapshot squash as well as the ones this window newly adjudicated, because the next sync rebuilds the fork delta from this row alone.
-    The last adjudicated fork commit is what step 4's boundary rule reads, so a row without it leaves the next sync on the stale marker.
+    The window end commit is `origin/main`'s tip as step 4 read it, whether or not that commit was adjudicated, so the column is always fillable even when the window held nothing but an excluded snapshot squash.
+    It is what step 4's boundary rule reads, so a row without it leaves the next sync on the stale marker and silently loses the accumulated fork delta.
     After a monthly sync, advance the `Next monthly full run` line to the first day of the following month.
 
 Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September is deliberately skipped).
@@ -71,11 +72,11 @@ Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September i
 
 Append one row after every weekly catch-up.
 Do not rewrite an older row merely because upstream later absorbs one of its retained changes.
-The `Last adjudicated fork commit` column holds a bare backticked SHA and nothing else, because intake parses it to resolve the next window's start.
+The `Window end commit` column holds a bare backticked SHA and nothing else, because intake parses it to resolve the next window's start.
 A row that leaves it out drops the next sync back to the marker, which in steady state is later than the true boundary and silently skips the fork PRs that merged during this sync's review.
 Nothing after `9e0374a` is reconciled on `origin/main` yet, which is why the 2026-08-27 row names it despite adopting a newer base on an unmerged branch.
 
-| Catch-up date | Catch-up commit or adopted upstream base | Last adjudicated fork commit | Tier | Local PR interval and final verdict |
+| Catch-up date | Catch-up commit or adopted upstream base | Window end commit | Tier | Local PR interval and final verdict |
 | --- | --- | --- | --- | --- |
 | 2026-08-22 | `9e0374a` (`#65`, `chore: snapshot upstream main for 2026-08-22`) | `9e0374a` | full | Established the full-catch-up boundary. The local PRs that followed were #66 through #76, adjudicated in the next row. |
 | 2026-08-27 | `d63b0e2` (`upstream/main`), not yet landed on `origin/main` | `9e0374a` | full (predates the two-tier rule) | PRs following `9e0374a`: #66 dropped because upstream #2846 already carries it; #67 kept; #68 kept; #69 kept; #70 kept; #71 kept; #72 kept; #73 kept; #74 superseded by upstream #2953 and #3093; #75 kept; #76 superseded by upstream #2953 and #3093. The re-application of the kept PRs onto `d63b0e2` lives on the unmerged cutover branch, so the next sync must still cover this interval. |

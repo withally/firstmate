@@ -1,13 +1,14 @@
 # Worker brief template
 
 Firstmate scaffolds with `bin/fm-brief.sh <task-id> firstmate --mode no-mistakes`, adding `--herdr-lab` when the tier is `monthly` or the sync is already known to touch Herdr backend or lab code, and replaces `{TASK}` with the block below.
-Fill exactly five values; every other line is fixed text.
+Fill exactly six values; every other line is fixed text.
 
 | Placeholder | Value |
 | --- | --- |
 | `UPSTREAM_BASE` | `git rev-parse --short=12 upstream/main` at intake |
 | `SNAPSHOT` | short hash of the latest `chore: snapshot upstream main` first-parent commit on `origin/main`, or the window end commit when a catch-up log row names an older one; take it from the skill's intake command block, not by hand |
 | `SETTLED` | window end commit from the newest catch-up log row, empty when no row names one; the worker cannot re-derive it after branching at `upstream/main` |
+| `VERDICT_INPUTS` | exactly three behavior entries copied by the dispatcher from backlog item `upstream-sync-20260829-verdict-inputs` |
 | `TIER` | `weekly` or `monthly`, from the skill's tier rule |
 | `DATE` | the sync date, `YYYY-MM-DD` |
 
@@ -23,12 +24,24 @@ Recorded values:
 - UPSTREAM_BASE: `{UPSTREAM_BASE}`
 - SNAPSHOT: `{SNAPSHOT}`
 - SETTLED: `{SETTLED}`
+- VERDICT_INPUTS: see the "Verdict-table inputs" section below.
 - TIER: `{TIER}`
 - DATE: `{DATE}`
+
+## Verdict-table inputs
+
+The dispatcher copied these three shortlisted behaviors from backlog item `upstream-sync-20260829-verdict-inputs`.
+Evaluate each input against current upstream under the doc's keep rule during the audit, and carry the result into the relevant PR verdict evidence.
+If an input has no matching audited fork PR, record that fact and the resulting keep-rule disposition in `Follow-ups` rather than silently omitting it.
+
+- `{VERDICT_INPUT_1}`
+- `{VERDICT_INPUT_2}`
+- `{VERDICT_INPUT_3}`
 
 Fixed rules:
 
 - Bind UPSTREAM_BASE, SNAPSHOT, and SETTLED as shell variables from the recorded values above before running any checklist command, and stop if UPSTREAM_BASE or SNAPSHOT is empty.
+- Evaluate all three verdict-table inputs against current upstream with the doc's keep rule, and account for each in the relevant verdict evidence or in `Follow-ups` when no audited PR carries it.
 - Branch at UPSTREAM_BASE; never merge origin/main into it.
 - Audit only the first-parent commits in SNAPSHOT..WINDOW_END, where the skill's step 4 pins WINDOW_END from `origin/main` at listing time; never re-read `origin/main` for it later.
 - Decide every keep by the doc's keep rule yourself; no mid-flight approval.

@@ -25,7 +25,7 @@ Standing captain rulings (2026-08-27), each implemented below:
 
 ## Firstmate intake (dispatcher)
 
-Firstmate resolves four values and nothing else; the brief is fixed text.
+Firstmate resolves five values and nothing else — `UPSTREAM_BASE`, `SNAPSHOT`, `SETTLED`, `TIER`, and `DATE`; the brief is fixed text.
 
 1. Fetch and record the base.
 
@@ -54,7 +54,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    Two boundaries can disagree: the first-parent marker, and the window end commit named by the newest catch-up log row.
    The override only ever moves the boundary earlier, so it can only widen the window, never narrow it.
    The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
-   That direction is also what makes an unlanded log row harmless — the 2026-08-27 row's adopted base still lives only on an unmerged branch, and the worst it can do is widen the audit set.
+   That direction is also what makes a row whose catch-up never landed harmless: the worst such a row can do is widen the audit set, never narrow it.
    Record the resolved `SNAPSHOT` and the `SETTLED` it came from in the brief; the worker cannot re-derive them, because it branches at `upstream/main` where `docs/upstream-sync.md` does not exist.
 2. Determine the tier from the `Next monthly full run` line in the `$LOG` step 1 read out of `origin/main`, never from the checkout.
    The sync is `monthly` when today's date is on or after that line's date and no catch-up log row in `$LOG` already records a `monthly` tier on or after it; otherwise it is `weekly`.

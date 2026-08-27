@@ -30,11 +30,11 @@ Fixed rules:
 
 - Bind UPSTREAM_BASE, SNAPSHOT, and SETTLED as shell variables from the recorded values above before running any checklist command, and stop if UPSTREAM_BASE or SNAPSHOT is empty.
 - Branch at UPSTREAM_BASE; never merge origin/main into it.
-- Audit only the first-parent commits in SNAPSHOT..origin/main.
+- Audit only the first-parent commits in SNAPSHOT..WINDOW_END, where the skill's step 4 pins WINDOW_END from `origin/main` at listing time; never re-read `origin/main` for it later.
 - Decide every keep by the doc's keep rule yourself; no mid-flight approval.
 - Cherry-pick kept PRs with `-x`; upstream wins every conflict.
 - Run only the TIER's validation from the skill; CI's portable shards and its required Herdr lane on the PR are the weekly full gate.
-- Append the catch-up log row before shipping and commit it with `git add docs/upstream-sync.md && git commit -m 'docs: record the {DATE} catch-up'`, advancing the `Next monthly full run` line on a monthly tier; a row that is uncommitted or added after the PR is open is never validated and never reaches `origin/main`.
+- Append the catch-up log row before shipping, recording that pinned WINDOW_END as the row's `Window end commit`, and commit it with `git add docs/upstream-sync.md && git commit -m 'docs: record the {DATE} catch-up'`, advancing the `Next monthly full run` line on a monthly tier; a row that is uncommitted or added after the PR is open is never validated and never reaches `origin/main`.
 - Ship the PR with `no-mistakes axi run --skip rebase --intent "{TIER} upstream sync of withally/firstmate onto kunchenguid/firstmate at {UPSTREAM_BASE}"`; `--intent` is required to start a run, and a cutover branch is cut from `upstream/main`, so rebasing it onto the fork's `origin/main` would replay the divergent fork history back onto the new base and undo the adoption.
 - Unrelated breakage is a `Follow-ups` entry in the PR, never a fix on this branch.
 - If the kept diff selects the `real-herdr-gated` family per the skill's `comm -12` check against `bin/fm-test-run.sh --list`, and this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait.

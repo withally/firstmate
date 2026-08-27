@@ -17,6 +17,11 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+  createBranchDispatchOffer,
+  FM_BRANCH_DISPATCH_EVENT,
+  scopeForUnreadWake,
+} from "./lib/fm-branch-dispatch.ts";
+import {
   type CalmPresentationState,
   calmTranscriptClassIsVisible,
   FIRSTMATE_CALM_PRESENTATION_EVENT,
@@ -54,17 +59,6 @@ type SessionGeneration = {
   retryFailures: number;
   restoring: boolean;
   seq: number;
-  wakeBatchTimer: ReturnType<typeof setTimeout> | null;
-  wakeBatch: WakeBatchItem[];
-  wakeBatchArm: ChildProcess | null;
-};
-
-type WakeRecovery = { generation: string; watcherPid: string };
-
-type WakeBatchItem = {
-  key: string;
-  messages: string[];
-  recoveries: WakeRecovery[];
 };
 
 function refreshWatchToolShell(
@@ -107,8 +101,6 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
-const wakeBatchLimit = positiveInteger("FM_WAKE_BATCH_LIMIT", 20);
-const wakeBatchSeconds = configuredWakeBatchSeconds();
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -122,18 +114,6 @@ function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   if (!Number.isFinite(value) || value <= 0) return fallback;
   return Math.floor(value);
-}
-
-function configuredWakeBatchSeconds(): number {
-  const override = Number(process.env.FM_WAKE_BATCH_SECONDS);
-  if (Number.isFinite(override) && override > 0) return Math.floor(override);
-  try {
-    const value = Number(readFileSync(`${config}/wake-batch-seconds`, "utf8").trim());
-    if (Number.isFinite(value) && value > 0) return Math.floor(value);
-  } catch {
-    // An absent or unreadable local override keeps the safe shared default.
-  }
-  return 60;
 }
 
 function parentPid(pid: string): string {
@@ -219,9 +199,6 @@ function createGeneration(): SessionGeneration {
     retryFailures: 0,
     restoring: false,
     seq: 0,
-    wakeBatchTimer: null,
-    wakeBatch: [],
-    wakeBatchArm: null,
   };
 }
 
@@ -237,10 +214,6 @@ function stopGeneration(generation: SessionGeneration): void {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   generation.retryTimer = null;
-  if (generation.wakeBatchTimer) clearTimeout(generation.wakeBatchTimer);
-  generation.wakeBatchTimer = null;
-  generation.wakeBatch = [];
-  generation.wakeBatchArm = null;
   if (generation.child) generation.child.kill("SIGTERM");
   generation.child = null;
 }
@@ -280,139 +253,6 @@ export default function (pi: ExtensionAPI) {
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
-  }
-
-  function wakeIsUrgent(message: string): boolean {
-    const urgent = /(?:^|\n)(?:failed|blocked|needs-decision)(?:\s+\[[^\]]+\])?:|watcher: FAILED|(?:lost|no longer owns?) (?:the )?(?:session )?lock|lock ownership (?:was )?lost/i;
-    if (urgent.test(message)) return true;
-    const statusPaths = message.match(/[^\s()]+\.status\b/g) ?? [];
-    for (const statusPath of statusPaths) {
-      const path = resolve(statusPath);
-      if (!path.startsWith(`${resolve(state)}/`)) continue;
-      try {
-        const last = readFileSync(path, "utf8").trim().split(/\r?\n/).pop() ?? "";
-        if (/^(?:failed|blocked|needs-decision)(?:\s+\[[^\]]+\])?:/.test(last)) return true;
-      } catch {
-        // Missing or unreadable endpoints are surfaced by the watcher itself.
-      }
-    }
-    return false;
-  }
-
-  function wakeIdentity(message: string): string {
-    const leadingEndpoint = message.match(/^stale:\s*([^\s(]+)/)?.[1];
-    const identities = [
-      ...(message.match(/(?:^|[\s(])[^\s()]+\.(?:status|turn-ended)\b/g) ?? []),
-      ...(message.match(/\b(?:[A-Za-z0-9._-]+:)?w[A-Za-z0-9._-]+:p[A-Za-z0-9._-]+\b/g) ?? []),
-      ...(leadingEndpoint ? [leadingEndpoint] : []),
-    ].map((value) => value.trim()).sort();
-    const wakeClass = message.match(/^(signal|stale|check|heartbeat)/)?.[1] ?? "wake";
-    return identities.length > 0 ? `${wakeClass}:${[...new Set(identities)].join("|")}` : message.trim();
-  }
-
-  // <owning-arm-ended> is set only by the arm-end flush. bin/fm-watch-arm.sh prints
-  // its `watcher: started pid=...` line and then waits on that watcher, so an arm
-  // process only closes AFTER its own watcher pid has exited. Confirming a handling
-  // handshake there would always fail --handling-delivered's liveness gate and
-  // report a watcher failure that never happened, so an ended arm skips the
-  // confirmation: there is nothing left to confirm. A timer-driven flush still
-  // confirms, and a dangling arm that outlived its watcher is still retired below.
-  async function flushWakeBatch(owner: SessionGeneration, owningArmEnded = false): Promise<void> {
-    if (!generationIsLive(owner) || owner.wakeBatch.length === 0) return;
-    if (owner.wakeBatchTimer) clearTimeout(owner.wakeBatchTimer);
-    owner.wakeBatchTimer = null;
-    const items = owner.wakeBatch.splice(0, owner.wakeBatch.length);
-    owner.wakeBatchArm = null;
-    const urgentDetails: string[] = [];
-    const routineDetails: string[] = [];
-    let recovery: WakeRecovery | undefined;
-    for (const item of items) {
-      for (const message of item.messages) {
-        const detail = message.length > 800 ? `${message.slice(0, 785)} [truncated]` : message;
-        (wakeIsUrgent(message) ? urgentDetails : routineDetails).push(detail);
-      }
-      if (item.recoveries.length > 0) recovery = item.recoveries[item.recoveries.length - 1];
-    }
-    if (recovery && !owningArmEnded) {
-      const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
-      if (!confirmed.ok) {
-        urgentDetails.push(confirmed.detail);
-        // A successor whose watcher died before confirming leaves owner.child
-        // pointing at an arm that will never supervise. Retiring it here keeps
-        // the dangling-arm recovery the pre-batching delivery path owned.
-        if (!pidAlive(recovery.watcherPid)) await retireArm(owner.child);
-      }
-    }
-    // An urgent wake is what triggered this flush, and it is appended last. Rendering
-    // in insertion order would push it past wakeBatchLimit behind the routine wakes it
-    // interrupted, so the follow-up would omit the very failure that broke the window.
-    // Urgent details are therefore rendered first and only routine details are omitted.
-    const details = [...urgentDetails, ...routineDetails];
-    const omitted = Math.max(0, details.length - wakeBatchLimit);
-    const shown = details.slice(0, wakeBatchLimit);
-    const message = shown.length === 1 && omitted === 0
-      ? shown[0]
-      : `batched ${details.length} watcher wakes:\n${shown.map((item) => `- ${item}`).join("\n")}${omitted > 0 ? `\n- ${omitted} more omitted` : ""}`;
-    await sendWake(owner, message);
-  }
-
-  // A batch must not outlive the arm that opened it while that arm is NOT being
-  // replaced: an actionable close immediately starts a successor and carries the
-  // supervision chain forward, so the batch keeps aggregating across it - that
-  // rotation is the ordinary case the wake-batch window exists for. A
-  // non-actionable close hands off to a bounded retry instead, so the batch is
-  // delivered here rather than waiting out a window under a cycle that may never
-  // come back. The durable wake queue and the recovery marker remain the only
-  // records of what was delivered and acknowledged, so a crash between this flush
-  // and its confirmation re-presents on the next drain rather than losing it.
-  function flushWakeBatchOnArmEnd(owner: SessionGeneration, armChild: ChildProcess): void {
-    if (owner.wakeBatchArm !== armChild) return;
-    if (owner.wakeBatch.length === 0) {
-      owner.wakeBatchArm = null;
-      return;
-    }
-    void flushWakeBatch(owner, true).catch(() => {
-      // Pi owns delivery errors; durable wakes remain available to the drain.
-    });
-  }
-
-  async function queueWake(owner: SessionGeneration, message: string, recovery?: WakeRecovery): Promise<void> {
-    if (!generationIsLive(owner)) return;
-    const key = wakeIdentity(message);
-    const existing = owner.wakeBatch.find((item) => item.key === key);
-    if (existing) {
-      // Identity collapse dedupes an unchanged repeat of the same wake, not a
-      // differently-typed one: two reasons for one endpoint (a paused recheck and
-      // then a vanished endpoint) must both reach the batch, or the second reason
-      // would only ever be seen by the drain.
-      if (!existing.messages.includes(message)) existing.messages.push(message);
-      if (recovery && !existing.recoveries.some((item) => item.generation === recovery.generation && item.watcherPid === recovery.watcherPid)) {
-        existing.recoveries.push(recovery);
-      }
-    } else {
-      owner.wakeBatch.push({ key, messages: [message], recoveries: recovery ? [recovery] : [] });
-    }
-    // A batch is owned by the CURRENT arm, not the one that opened it. Every wake
-    // in an aggregating batch arrives just after an actionable rotation started a
-    // successor, so pinning ownership to the opening arm would leave it pointing at
-    // a predecessor that has already closed and can never end again - and the
-    // arm-end flush would then be unreachable for exactly the multi-wake batches
-    // batching exists for. A wake queued with no live arm leaves the last live
-    // owner in place rather than orphaning the batch.
-    if (owner.child) owner.wakeBatchArm = owner.child;
-    if (wakeIsUrgent(message)) {
-      await flushWakeBatch(owner);
-      return;
-    }
-    if (!owner.wakeBatchTimer) {
-      owner.wakeBatchTimer = setTimeout(() => {
-        owner.wakeBatchTimer = null;
-        void flushWakeBatch(owner).catch(() => {
-          // Pi owns delivery errors; durable wakes remain available to the drain.
-        });
-      }, wakeBatchSeconds * 1000);
-      owner.wakeBatchTimer.unref();
-    }
   }
 
   function confirmHandlingDelivery(recovery: { generation: string; watcherPid: string }): {
@@ -457,17 +297,49 @@ export default function (pi: ExtensionAPI) {
     return confirmHandlingDelivery(snapshot());
   }
 
+  function offerWakeToBranch(message: string): boolean {
+    const heartbeat = /^heartbeat($|:)/.test(message);
+    // A check-kind close (merge-confirmation polls, Relay mentions,
+    // credential/auth failures, and every other legitimately main-only
+    // class - docs/pi-supervision-branch.md) is never routed to the branch
+    // even when other currently-unread rows are individually eligible: this
+    // watcher cycle's own triggering event stays on main, exactly as before
+    // scopeForUnreadWake stopped letting a co-present check row veto the
+    // whole scan. That relaxation is what lets an UNRELATED eligible
+    // signal/stale row still reach the branch on this cycle; it must never
+    // also let a check-kind trigger itself slip past main's delivery.
+    const isCheckTrigger = /^check:/.test(message);
+    const scope = scopeForUnreadWake(state, heartbeat);
+    const eligible = !isCheckTrigger && scope.eligible;
+    const offer = createBranchDispatchOffer(message, scope.projects, heartbeat, eligible);
+    pi.events?.emit?.(FM_BRANCH_DISPATCH_EVENT, offer);
+    return offer.accepted;
+  }
+
   async function deliverActionableWake(
     owner: SessionGeneration,
     message: string,
-    recovery?: WakeRecovery,
+    repairFailed: boolean,
+    recovery?: { generation: string; watcherPid: string },
   ): Promise<void> {
     if (!generationIsLive(owner)) return;
-    await queueWake(owner, message, recovery);
+    if (recovery) {
+      const confirmed = confirmHandlingDeliveryWithRetry(owner, recovery);
+      if (!confirmed.ok) {
+        const watcherPid = recovery.watcherPid;
+        if (!pidAlive(watcherPid)) {
+          await retireArm(owner.child);
+        }
+        await sendWake(owner, `${message}\n\n${confirmed.detail}`);
+        return;
+      }
+    }
+    if (!repairFailed && offerWakeToBranch(message)) return;
+    await sendWake(owner, message);
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
-    void queueWake(owner, message).catch(() => {
+    void sendWake(owner, message).catch(() => {
       // Pi owns delivery errors; continuity restoration never waits on prompting.
     });
   }
@@ -660,7 +532,7 @@ export default function (pi: ExtensionAPI) {
             const restoration = await restoreAfterActionableClose(owner, predecessor);
             if (!generationIsLive(owner)) return;
             const message = restoration.failure ? `${classification.message}\n\n${restoration.failure}` : classification.message;
-            await deliverActionableWake(owner, message, restoration.recovery);
+            await deliverActionableWake(owner, message, Boolean(restoration.failure), restoration.recovery);
           } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             surfaceFailure(owner, `watcher: FAILED - Pi extension could not deliver an actionable wake\n${detail}`);
@@ -671,7 +543,6 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (owner.restoring) return;
-      flushWakeBatchOnArmEnd(owner, armChild);
       scheduleRetry(owner, classification.message, predecessor);
     });
     armChild.on("error", (error: Error) => {
@@ -679,7 +550,6 @@ export default function (pi: ExtensionAPI) {
       settled = true;
       resolveClosed();
       settleReadiness(false);
-      flushWakeBatchOnArmEnd(owner, armChild);
       releaseChild();
       if (!generationIsLive(owner)) return;
       if (owner.restoring) return;

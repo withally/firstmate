@@ -288,74 +288,6 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
 
-test_compact_drain_preserves_unread_status_for_ordinary_delivery() {
-  local dir state compact ordinary
-  dir=$(make_case compact-preserves-unread); state="$dir/state"
-  compact="$dir/compact.out"; ordinary="$dir/ordinary.out"
-  prime_cursor "$state" "$state/compact-task.status"
-  printf 'note: unread routine line survives compaction\n' >> "$state/compact-task.status"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --compact > "$compact" \
-    || fail "compact drain failed"
-  [ ! -s "$compact" ] || fail "compact drain printed a routine status tail: $(cat "$compact")"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$ordinary" \
-    || fail "ordinary drain after compact failed"
-  grep -F 'note: unread routine line survives compaction' "$ordinary" >/dev/null \
-    || fail "compact drain advanced the unread-status cursor: $(cat "$ordinary")"
-  pass "compact recovery omits routine status without consuming its exact-once ordinary presentation"
-}
-
-# An absorbed-status receipt is bound to one file identity and byte endpoint.
-# When it can no longer describe the current file - id reuse, an out-of-band
-# replacement, a restore, or truncation - it must be dropped and treated as
-# absent. It must NEVER be able to blank the no-loss sections it exists to serve.
-test_unverifiable_absorbed_receipt_still_presents_every_section() {
-  local dir state out status receipt
-  dir=$(make_case unverifiable-receipt)
-  state="$dir/state"
-  out="$dir/drain.out"
-  status="$state/task-receipt.status"
-  receipt="$state/.status-absorbed-task-receipt"
-  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$status"
-  printf 'note: buried informational answer\n' >> "$status"
-  printf 'stale-device:stale-inode\t3\n' > "$receipt"
-
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
-    || fail "drain failed with a stale-identity absorbed receipt"
-
-  grep -F 'task-receipt note: buried informational answer' "$out" >/dev/null \
-    || fail "a stale absorbed receipt silenced UNREAD STATUS: $(cat "$out")"
-  grep -F 'task-receipt [key=api-shape] needs-decision: pick REST or RPC' "$out" >/dev/null \
-    || fail "a stale absorbed receipt silenced OPEN DECISIONS: $(cat "$out")"
-  [ ! -e "$receipt" ] \
-    || fail "the unverifiable receipt was kept and will re-break every later drain"
-  pass "an unverifiable absorbed receipt is dropped instead of blanking the presentation"
-}
-
-test_out_of_range_absorbed_receipt_still_presents_every_section() {
-  local dir state out status receipt ident
-  dir=$(make_case out-of-range-receipt)
-  state="$dir/state"
-  out="$dir/drain.out"
-  status="$state/task-range.status"
-  receipt="$state/.status-absorbed-task-range"
-  printf 'note: only surviving line after truncation\n' > "$status"
-  ident=$(FM_STATE_OVERRIDE="$state" bash -c '
-    . "$1/bin/fm-wake-lib.sh"
-    . "$1/bin/fm-classify-lib.sh"
-    _fm_open_decisions_file_ident "$STATE/task-range.status"
-  ' _ "$ROOT") || fail "could not read the current status identity"
-  printf '%s\t999999\n' "$ident" > "$receipt"
-
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
-    || fail "drain failed with an out-of-range absorbed receipt"
-
-  grep -F 'task-range note: only surviving line after truncation' "$out" >/dev/null \
-    || fail "an out-of-range absorbed receipt silenced UNREAD STATUS: $(cat "$out")"
-  [ ! -e "$receipt" ] \
-    || fail "the out-of-range receipt was kept and will re-break every later drain"
-  pass "an absorbed receipt past the end of its file is dropped instead of blanking the presentation"
-}
-
 test_routine_working_lines_stay_silent_on_the_empty_queue() {
   local dir state out
   dir=$(make_case silent-working)
@@ -376,48 +308,14 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
   pass "routine working/done lines still print nothing on an empty-queue drain"
 }
 
-test_machine_consumer_drain_leaves_unread_status_unread() {
-  local dir state daemon returning
-  dir=$(make_case machine-consumer-unread); state="$dir/state"
-  daemon="$dir/daemon.out"; returning="$dir/returning.out"
-  # An established home: one presenting drain has already run, so the presentation
-  # cursor exists and this note is the only unread span.
-  printf 'note: first line\n' > "$state/task1.status"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null || fail "priming drain failed"
-  printf 'note: upstream contract changed, see thread\n' >> "$state/task1.status"
-
-  # The away-mode daemon drains to consume the TSV wake rows and throws the
-  # presented text away, so nobody was shown this line.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --no-presentation-commit > "$daemon" \
-    || fail "machine-consumer drain failed"
-  grep -F 'upstream contract changed' "$daemon" >/dev/null \
-    || fail "the machine-consumer drain changed the drain's own output shape: $(cat "$daemon")"
-
-  # The captain returns from away mode. Exact-once means presented once to a
-  # READER, so the line must still be unread here.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$returning" || fail "returning drain failed"
-  grep -F 'upstream contract changed' "$returning" >/dev/null \
-    || fail "a drain nobody read spent the unread-status cursor: $(cat "$returning")"
-
-  # A presenting drain does spend it, so exact-once still holds for readers.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/third.out" || fail "third drain failed"
-  grep -F 'upstream contract changed' "$dir/third.out" >/dev/null \
-    && fail "an already-presented status line replayed to the same reader: $(cat "$dir/third.out")"
-  pass "a drain whose presentation nobody reads leaves UNREAD STATUS unread"
-}
-
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced
 test_signal_annotation_surfaces_every_unread_note_not_only_the_newest
 test_pending_reply_resolution_surfaces_once
-test_machine_consumer_drain_leaves_unread_status_unread
 test_unread_output_over_cap_remains_recoverable
 test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
-test_compact_drain_preserves_unread_status_for_ordinary_delivery
-test_unverifiable_absorbed_receipt_still_presents_every_section
-test_out_of_range_absorbed_receipt_still_presents_every_section
 test_routine_working_lines_stay_silent_on_the_empty_queue

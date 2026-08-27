@@ -138,6 +138,15 @@
 #   origin, resolves the current remote default branch, and resets to its tip.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
+#   A slot whose only deviation is a stale submodule gitlink is refused by that
+#   same clean check, but is reported as a stale checkout naming each submodule
+#   and both pins; nothing is converged or removed, and no remedy is suggested.
+#   That report is only reached when each submodule's checked-out commit is
+#   already contained in one of its remotes, so a submodule carrying an unpushed
+#   commit keeps the conservative uncommitted-work refusal instead. That
+#   containment test reads local refs only and never fetches, so this gate stays
+#   usable offline; a stale remote-tracking ref can therefore make an unpushed
+#   commit look contained, which is exactly why no remedy command is printed.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -887,11 +896,26 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+# Role partition: spawning NEW work is MAIN-owned. A relaunch of an existing
+# task is legitimate branch recovery (fm-control drives it through this same
+# entrypoint), so only a fresh spawn refuses the branch actor (contract:
+# bin/fm-lease-lib.sh; no-op in homes without a branch actor).
+# shellcheck source=bin/fm-lease-lib.sh
+. "$SCRIPT_DIR/fm-lease-lib.sh"
+if [ "$RELAUNCH" -ne 1 ]; then
+  fm_lease_forbid_branch "new-task spawn (fm-spawn)"
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
   if [ "$control_owner" = "$PPID" ] && fm_pid_alive "$control_owner"; then
     SPAWN_CONTROL_PARENT=1
+  elif [ "$(fm_lease_actor)" = branch ]; then
+    # Role partition refinement: branch recovery relaunches only through the
+    # fm-control transaction that owns the control lock, never by invoking
+    # this entrypoint directly (contract: bin/fm-lease-lib.sh).
+    echo "error: relaunch (fm-spawn) refused - the supervision branch must relaunch through fm-control" >&2
+    exit "$FM_LEASE_REFUSE_EXIT"
   elif fm_lock_try_acquire "$SPAWN_CONTROL_LOCK"; then
     SPAWN_CONTROL_LOCK_HELD=1
   else
@@ -1701,39 +1725,6 @@ real_path_or_raw() {  # <path>
   fi
 }
 
-path_filesystem_identity() {  # <path> -> "device:inode"
-  local identity device inode
-  case $(uname -s 2>/dev/null) in
-    Darwin) identity=$(LC_ALL=C stat -f '%d:%i' "$1" 2>/dev/null) || return 1 ;;
-    Linux) identity=$(LC_ALL=C stat -c '%d:%i' -- "$1" 2>/dev/null) || return 1 ;;
-    *)
-      identity=$(LC_ALL=C stat -c '%d:%i' -- "$1" 2>/dev/null) \
-        || identity=$(LC_ALL=C stat -f '%d:%i' "$1" 2>/dev/null) \
-        || return 1
-      ;;
-  esac
-  case "$identity" in
-    *:*)
-      device=${identity%%:*}
-      inode=${identity#*:}
-      case "$device:$inode" in
-        *:*:*|:*|*:|*[!0-9:]*) return 1 ;;
-      esac
-      printf '%s:%s\n' "$device" "$inode"
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-path_identity_or_refuse() {  # <path> <context>
-  local identity
-  identity=$(path_filesystem_identity "$1") || {
-    echo "error: cannot read filesystem identity for '$1' while $2 on platform '$(uname -s 2>/dev/null || echo unknown)'; refusing to launch" >&2
-    return 1
-  }
-  printf '%s\n' "$identity"
-}
-
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -1744,7 +1735,6 @@ path_identity_or_refuse() {  # <path> <context>
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
-  local wt_identity proj_identity wt_top_identity
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1755,17 +1745,51 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   if ! wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P); then
     wt_top_real=
   fi
-  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ]; then
+  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
-  wt_identity=$(path_identity_or_refuse "$wt_real" "validating $source's resolved worktree") || exit 1
-  proj_identity=$(path_identity_or_refuse "$proj_real" "validating $source's primary checkout") || exit 1
-  wt_top_identity=$(path_identity_or_refuse "$wt_top_real" "validating $source's git worktree root") || exit 1
-  if [ "$wt_identity" != "$wt_top_identity" ] || [ "$wt_identity" = "$proj_identity" ]; then
-    echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
-    exit 1
-  fi
+}
+
+# A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:
+# an earlier refresh moved the superproject and left the submodule checkout on
+# the pin the previous base recorded. The refusal still stands and this gate
+# never touches the slot; it only names the cause, because "is not clean" while
+# the operator's own `git status` reads clean gives neither a cause nor a remedy.
+# A pin is only reported as stale when the commit the slot holds is already
+# contained in one of the submodule's remotes. Anything that cannot be proven
+# contained - an unpushed commit, a submodule with no remote, a git error - falls
+# through to the conservative uncommitted-work refusal, as does any entry that is
+# not exactly a clean submodule sitting on a different pin. The diagnosis is
+# buffered and only emitted once every entry qualifies, so it can never
+# contradict the verdict.
+#
+# No remedy command is printed, deliberately. That containment check reads local
+# refs only and never fetches, because this gate has to stay usable offline. A
+# remote-tracking ref that has gone stale - its upstream branch deleted or
+# force-pushed, and never pruned - therefore still reads as containment, so a
+# commit that is really unpushed can look contained. Naming the submodule and both
+# pins is what the operator actually needs; printing a checkout command on a
+# judgement that can be fooled could cost them that commit, so the remedy is left
+# to the operator, who can see the whole picture.
+describe_stale_submodule_pins() {  # <worktree> <status>
+  local worktree=$1 status=$2 line path want have unpushed lines=
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case $line in ' M '*) path=${line#' M '} ;; *) return 1 ;; esac
+    [ "$(git -C "$worktree" ls-files --stage -- "$path" 2>/dev/null | cut -c1-6)" = 160000 ] || return 1
+    [ -z "$(git -C "$worktree/$path" status --porcelain 2>/dev/null)" ] || return 1
+    want=$(git -C "$worktree" rev-parse --verify --quiet "HEAD:$path" 2>/dev/null) || return 1
+    have=$(git -C "$worktree/$path" rev-parse --verify --quiet HEAD 2>/dev/null) || return 1
+    [ "$want" != "$have" ] || return 1
+    unpushed=$(git -C "$worktree/$path" log --format=%H --max-count=1 "$have" --not --remotes -- 2>/dev/null) || return 1
+    [ -z "$unpushed" ] || return 1
+    lines+="error: submodule '$path' is checked out at $have, but this base records $want"$'\n'
+  done <<EOF
+$status
+EOF
+  [ -n "$lines" ] || return 1
+  printf '%s' "$lines" >&2
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
@@ -1791,12 +1815,16 @@ freshen_spawn_worktree_base() {  # <worktree>
     echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   }
-  status=$(git -C "$worktree" status --porcelain) || {
+  status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
   }
   if [ -n "$status" ]; then
-    echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
+    if describe_stale_submodule_pins "$worktree" "$status"; then
+      echo "error: pooled worktree '$worktree' has a stale submodule checkout, not uncommitted work; refusing to launch and leaving it untouched" >&2
+    else
+      echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
+    fi
     return 1
   fi
   if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
@@ -2241,19 +2269,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # that worktree, so the replacement agent starts where the work is rather
   # than wherever the pane happened to drift.
   relaunch_wt_real=$(real_path_or_raw "$WT")
-  relaunch_wt_identity=$(path_identity_or_refuse "$relaunch_wt_real" "validating task $ID's recorded relaunch worktree") || exit 1
   relaunch_seen=
-  relaunch_seen_identity=
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$relaunch_seen" ]; then
-      relaunch_seen_real=$(real_path_or_raw "$relaunch_seen")
-      relaunch_seen_identity=$(path_identity_or_refuse "$relaunch_seen_real" "validating task $ID's relaunch endpoint") || exit 1
-      [ "$relaunch_seen_identity" != "$relaunch_wt_identity" ] || break
-    fi
+    [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
     sleep 0.5
   done
-  if [ -z "$relaunch_seen" ] || [ "$relaunch_seen_identity" != "$relaunch_wt_identity" ]; then
+  if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1
   fi
@@ -2266,42 +2288,37 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # automatic-rename slips through), display-message -t <bad-name> falls back to the
   # active client's window, which would misread firstmate's OWN pane path as the
   # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare filesystem identities rather than path text. Physical path spelling
-  # can still retain caller-supplied capitalization on case-insensitive macOS,
-  # and POSIX permits the same directory to retain a distinct leading // form.
+  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
+  # prefix would otherwise make the pane's OS-level cwd read differ from
+  # PROJ_ABS on the very first poll, before the pane has actually moved.
   #
-  # A single read whose identity already differs from the primary checkout is
-  # not proof the pane settled there: on some tmux/WSL setups a brand-new
-  # window's pane_current_path
+  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
+  # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
   # transiently reports an unrelated stale path (seen live as another real git
   # checkout entirely) before the shell catches up with treehouse get's cd. That
-  # stale path still passes the primary-checkout identity comparison and
-  # validate_spawn_worktree
+  # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
   # below (it resolves to a real, distinct worktree top-level too), so accepting it
   # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
-  # two consecutive reads to identify the same non-project directory before
-  # accepting it;
+  # two consecutive reads to agree on the same non-project path before accepting it;
   # a mismatch just becomes the new candidate rather than resetting the wait, so a
   # pane that is already settled by the first real read only costs the one existing
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
-  candidate_identity=""
-  project_identity=$(path_identity_or_refuse "$PROJ_ABS_REAL" "waiting for treehouse get to leave the primary checkout") || exit 1
+  candidate=""
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     if [ -n "$p" ]; then
       p_real=$(real_path_or_raw "$p")
-      p_identity=$(path_identity_or_refuse "$p_real" "waiting for treehouse get to settle") || exit 1
-      if [ "$p_identity" != "$project_identity" ]; then
-        if [ -n "$candidate_identity" ] && [ "$p_identity" = "$candidate_identity" ]; then
+      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
+        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
           WT="$p"
           break
         fi
-        candidate_identity="$p_identity"
+        candidate="$p_real"
       else
-        candidate_identity=""
+        candidate=""
       fi
     else
-      candidate_identity=""
+      candidate=""
     fi
     sleep 1
   done
@@ -2674,6 +2691,15 @@ META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
+if [ -d "$SPAWN_META_PATH" ] && [ ! -L "$SPAWN_META_PATH" ]; then
+  echo "$SPAWN_META_PATH: Is a directory" >&2
+  exit 1
+fi
+if [ -L "$SPAWN_META_PATH" ] \
+   || { [ -e "$SPAWN_META_PATH" ] && [ ! -f "$SPAWN_META_PATH" ]; }; then
+  echo "error: refusing unsafe metadata path: $SPAWN_META_PATH" >&2
+  exit 1
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"

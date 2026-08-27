@@ -68,7 +68,6 @@ if [ "${1:-}" = "list-windows" ]; then
   exit 0
 fi
 if [ "${1:-}" = "capture-pane" ]; then
-  [ "${FM_FAKE_TMUX_CAPTURE_FAIL:-0}" != 1 ] || exit 1
   if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ]; then
     cat "$FM_FAKE_TMUX_CAPTURE"
   fi
@@ -162,7 +161,6 @@ case "${1:-}" in
     [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
     exit 0 ;;
   capture-pane)
-    [ "${FM_FAKE_TMUX_CAPTURE_FAIL:-0}" != 1 ] || exit 1
     # Honor a single-line band capture (-S N -E M, both non-negative) for the
     # composer reader's non-bordered compatibility fallback; otherwise (e.g. its
     # structural full-pane scan or fm_pane_is_busy's "-S -40" tail) return the whole capture. -e is accepted and

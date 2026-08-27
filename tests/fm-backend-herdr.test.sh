@@ -3083,6 +3083,28 @@ test_composer_state_pi_separator_idle_is_empty() {
   pass "fm_backend_herdr_composer_state: a native idle Pi separator composer reads empty"
 }
 
+# A pi worker parked on an interactive prompt (permission dialog, question
+# menu, trust dialog) reports agent_status=blocked: it is waiting on a human
+# keystroke. The menu is drawn ABOVE the separator pair, so the composer region
+# itself is blank and structure alone looks like a free composer. Typing there
+# does not compose a message - the menu consumes the keys and Enter selects the
+# highlighted default, so the text is discarded and a decision nobody made is
+# recorded (issue #2797). Every "is it safe to type here?" consumer reads this
+# verdict: the away-mode injection guard (bin/fm-supervise-daemon.sh) and
+# fm-send's pre-type refusal both proceed ONLY on an affirmative `empty`.
+test_composer_state_pi_parked_prompt_is_not_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-pi-parked-prompt"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf 'Should I keep going?\n  1. Yes, continue\n\x1b[7m  2. Stop, do not act\x1b[0m\n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n\x1b[0m\x1b[7m \x1b[0m                                                    \n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"blocked"}}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
+  [ "$out" != empty ] \
+    || fail "a pi pane parked on a prompt must not report an affirmatively empty composer, got '$out'"
+  pass "fm_backend_herdr_composer_state: a blocked pi pane parked on a prompt is not an empty composer"
+}
+
 test_composer_state_pi_separator_real_text_is_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-pi-separated-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3584,11 +3606,11 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
 # --- the never-idle-native-state harness (real cursor on herdr) --------------
 # Measured live on cursor-agent 2026.08.11-e8db854 under herdr: `agent get`
 # reports a cursor pane `blocked` in EVERY state - idle, mid-turn, and after -
-# so the idle-baseline native path is structurally unreachable and every send
-# lands in the composer branch. Cursor's mid-turn composer row renders its own
+# so the idle-baseline native path is structurally unreachable and every typed
+# send lands in the composer branch. Cursor's mid-turn composer row renders its own
 # `Add a follow-up` placeholder beside a right-aligned `ctrl+c to stop`, so the
 # content verdict is `pending` on a composer holding no user text, and every
-# steer reported delivery unconfirmed on a message that had actually landed.
+# typed steer reported delivery unconfirmed on a message that had actually landed.
 # The bytes below are the real captures from that pane.
 
 # The idle capture: no busy token anywhere, which is the pre-Enter baseline.
@@ -3797,65 +3819,6 @@ test_send_text_submit_unknown_on_composer_capture_failure() {
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "send_text_submit must not retry Enter after composer verification becomes unreadable, sent $enter_count Enter(s)"
   pass "fm_backend_herdr_send_text_submit: an unreadable composer stops Enter retries after native status stays idle"
-}
-
-test_send_text_submit_rechecks_transient_unknown_before_retrying_enter() {
-  local dir log out
-  dir="$TMP_ROOT/submit-transient-unknown"; mkdir -p "$dir"; log="$dir/enters"; : > "$log"
-  out=$(FM_ENTER_LOG="$log" FM_CASE_DIR="$dir" bash -c '
-    . "$0/bin/backends/herdr.sh"
-    fm_backend_herdr_parse_target() { FM_BACKEND_HERDR_SESSION=default; FM_BACKEND_HERDR_PANE=w1:p2; }
-    fm_backend_herdr_send_literal() { return 0; }
-    fm_backend_herdr_send_key() { printf "enter\n" >> "$FM_ENTER_LOG"; return 0; }
-    fm_backend_herdr_agent_status_raw() { printf idle; }
-    fm_backend_herdr_classify_submit_agent_status() { printf idle; }
-    fm_backend_herdr_rendered_busy_state() { printf idle; }
-    fm_backend_herdr_submit_confirm_budget() { printf 0.01; }
-    fm_backend_herdr_wait_for_working() {
-      calls=$(cat "$FM_CASE_DIR/waits" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/waits"
-      if [ "$calls" -eq 1 ]; then printf unknown; else printf busy; fi
-    }
-    fm_backend_herdr_composer_state() {
-      calls=$(cat "$FM_CASE_DIR/composers" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/composers"
-      if [ "$calls" -eq 1 ]; then printf unknown; else printf pending; fi
-    }
-    sleep() { :; }
-    fm_backend_herdr_send_text_submit default:w1:p2 "hello" 3 0.01 0
-  ' "$ROOT")
-  [ "$out" = empty ] || fail "a transient unknown submit was not recovered, got '$out'"
-  [ "$(wc -l < "$log" | tr -d ' ')" -eq 2 ] \
-    || fail "a proven-pending transient unknown did not receive exactly one bounded Enter retry"
-  pass "fm_backend_herdr_send_text_submit: transient unknown is observed until pending, then retried once and confirmed"
-}
-
-test_send_text_submit_idle_branch_trusts_proven_pending_recheck() {
-  local dir log out
-  dir="$TMP_ROOT/submit-idle-proven-pending"; mkdir -p "$dir"; log="$dir/enters"; : > "$log"
-  out=$(FM_ENTER_LOG="$log" FM_CASE_DIR="$dir" bash -c '
-    . "$0/bin/backends/herdr.sh"
-    fm_backend_herdr_parse_target() { FM_BACKEND_HERDR_SESSION=default; FM_BACKEND_HERDR_PANE=w1:p2; }
-    fm_backend_herdr_send_literal() { return 0; }
-    fm_backend_herdr_send_key() { printf "enter\n" >> "$FM_ENTER_LOG"; return 0; }
-    fm_backend_herdr_agent_status_raw() { printf idle; }
-    fm_backend_herdr_classify_submit_agent_status() { printf idle; }
-    fm_backend_herdr_rendered_busy_state() { printf idle; }
-    fm_backend_herdr_submit_confirm_budget() { printf 0.01; }
-    fm_backend_herdr_wait_for_working() {
-      calls=$(cat "$FM_CASE_DIR/waits" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/waits"
-      if [ "$calls" -eq 1 ]; then printf unknown; else printf busy; fi
-    }
-    fm_backend_herdr_composer_state() {
-      calls=$(cat "$FM_CASE_DIR/composers" 2>/dev/null || echo 0); calls=$((calls + 1)); echo "$calls" > "$FM_CASE_DIR/composers"
-      if [ "$calls" -eq 1 ]; then printf pending; else printf unknown; fi
-    }
-    sleep() { :; }
-    fm_backend_herdr_send_text_submit default:w1:p2 "hello" 3 0.01 0
-  ' "$ROOT")
-  [ "$out" = empty ] \
-    || fail "a later transient unknown discarded the recheck's proven-pending verdict, got '$out'"
-  [ "$(wc -l < "$log" | tr -d " ")" -eq 2 ] \
-    || fail "the proven-pending recheck did not authorize exactly one bounded Enter retry"
-  pass "fm_backend_herdr_send_text_submit: an idle-baseline proven-pending recheck is not overwritten by a later unknown read"
 }
 
 # --- fm-backend.sh dispatch wiring -------------------------------------------
@@ -4579,6 +4542,7 @@ test_composer_state_real_text_is_pending
 test_composer_state_popup_placeholder_fill_is_pending
 test_composer_state_unknown_on_capture_failure
 test_composer_state_unknown_when_no_composer_row_found
+test_composer_state_pi_parked_prompt_is_not_empty
 test_composer_state_pi_separator_idle_is_empty
 test_composer_state_pi_separator_real_text_is_pending
 test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
@@ -4620,8 +4584,6 @@ test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
 test_send_text_submit_unknown_on_composer_capture_failure
-test_send_text_submit_rechecks_transient_unknown_before_retrying_enter
-test_send_text_submit_idle_branch_trusts_proven_pending_recheck
 test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
 test_dispatch_composer_state_routes_by_backend

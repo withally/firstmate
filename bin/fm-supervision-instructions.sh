@@ -15,19 +15,14 @@ READ_ONLY=0
 AFK=0
 X_MODE=0
 REPAIR_LINE=0
-NEXT_LINE=0
-STATE_LINES=0
 QUEUE_PENDING=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line|--next-line|--state-lines] [--queue-pending 0|1]
+Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line] [--queue-pending 0|1]
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
-With --next-line, print the exact ordinary continuation after compact recovery.
-With --state-lines, print only the away-mode and X-mode state lines, for a bounded
-digest that must report who owns supervision without any bulk output.
 EOF
 }
 
@@ -67,14 +62,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --repair-line)
       REPAIR_LINE=1
-      shift
-      ;;
-    --next-line)
-      NEXT_LINE=1
-      shift
-      ;;
-    --state-lines)
-      STATE_LINES=1
       shift
       ;;
     -h|--help)
@@ -171,82 +158,34 @@ repair_line() {
   esac
 }
 
-# Away mode and X mode both change WHO owns supervision and what a wake means, so
-# every digest that reports supervision state prints them from here rather than
-# re-wording them. Two lines, no bulk output, so a bounded digest can carry them.
-supervision_state_lines() {
-  if [ "$AFK" -eq 1 ]; then
-    printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
-  else
-    printf '%s\n' '- Away mode: inactive.'
-  fi
-  if [ "$X_MODE" -eq 1 ]; then
-    printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
-  else
-    printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
-  fi
-}
-
-# The repo-relative path of the protocol snippet this harness actually renders,
-# derived from $SNIPPET so pi-signed resolves to pi.md and any unresolved harness
-# resolves to unknown.md without a second mapping to keep in step.
-protocol_doc_path() {
-  printf 'docs/supervision-protocols/%s' "${SNIPPET##*/}"
-}
-
-# Every line here is SELF-CONTAINED: the drain-and-acknowledge step, the one-line
-# condition, the exact command (or the reason no command is owed), and the path of
-# the owning protocol document. --next-line prints this into a compact-recovery
-# digest that carries no protocol snippet, so a session that just lost its context
-# cannot follow a bare "as directed below" - and inlining the protocol itself would
-# defeat the point of compaction.
 ordinary_wake_line() {
-  # Away mode changes WHO owns the queue, not just how a wake is delivered:
-  # bin/fm-supervise-daemon.sh drains and triages the same durable queue, so the
-  # attended drain-and-acknowledge order below would consume its work. One
-  # self-contained line, same shape as the harness lines: the exact action, the
-  # condition, what not to do, and the owning document.
-  if [ "$AFK" -eq 1 ]; then
-    printf '%s\n' '- Ordinary wake: away mode is active (state/.afk present) and bin/fm-supervise-daemon.sh owns supervision, so load the /afk skill and let the daemon triage this wake; do NOT run bin/fm-wake-drain.sh or its --ack-through command from here. Protocol: docs/architecture.md'
-    return 0
-  fi
   case "$HARNESS" in
     claude)
-      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity, so do not arm another cycle yourself. Protocol: ' "$(protocol_doc_path)"
+      printf '%s\n' '- Ordinary wake: the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     codex)
-      printf '%s%s%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; you own continuity here, so start the next foreground checkpoint with bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" ' and never use shell &. Protocol: ' "$(protocol_doc_path)"
+      printf '%s\n' '- Ordinary wake: take the next foreground bin/fm-watch-checkpoint.sh checkpoint as directed below.'
       ;;
     pi|pi-signed)
-      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the Pi extension already owns watcher continuity, so do not arm another cycle. Protocol: ' "$(protocol_doc_path)"
+      printf '%s\n' '- Ordinary wake: the Pi extension already owns watcher continuity; do not arm another cycle.'
       ;;
     opencode)
-      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the OpenCode TUI plugin already owns watcher continuity, so do not arm manually. Protocol: ' "$(protocol_doc_path)"
+      printf '%s\n' '- Ordinary wake: the OpenCode TUI plugin already owns watcher continuity; do not arm manually.'
       ;;
     grok)
-      printf '%s%s%s%s%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; you own continuity here, so re-arm exactly one Grok tracked background task by calling run_terminal_command with background: true on `[ -f ' "$x_mode_env_sh" ' ] && . ' "$x_mode_env_sh" '; exec bin/fm-watch-arm.sh`, and never use shell &. Protocol: ' "$(protocol_doc_path)"
+      printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh Grok tracked background task as directed below.'
       ;;
     cursor)
-      printf '%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity, so do not arm another cycle yourself. Protocol: ' "$(protocol_doc_path)"
+      printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     *)
-      printf '%s%s%s\n' '- Ordinary wake: drain and handle this wake with bin/fm-wake-drain.sh, then run the exact --ack-through command it printed; this harness has no verified wake adapter, so repeat the same bounded supervision wait it can actually wake from and never use shell &. Protocol: ' "$(protocol_doc_path)" ' and AGENTS.md'
+      printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
       ;;
   esac
 }
 
 if [ "$REPAIR_LINE" -eq 1 ]; then
   repair_line
-  exit 0
-fi
-
-if [ "$STATE_LINES" -eq 1 ]; then
-  supervision_state_lines
-  exit 0
-fi
-
-if [ "$NEXT_LINE" -eq 1 ]; then
-  ordinary_wake_line | sed 's/^- Ordinary wake: //'
   exit 0
 fi
 
@@ -260,7 +199,16 @@ if [ "$READ_ONLY" -eq 1 ]; then
 else
   printf '%s\n' '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
 fi
-supervision_state_lines
+if [ "$AFK" -eq 1 ]; then
+  printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
+else
+  printf '%s\n' '- Away mode: inactive.'
+fi
+if [ "$X_MODE" -eq 1 ]; then
+  printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
+else
+  printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
+fi
 ordinary_wake_line
 printf '\n'
 render_snippet

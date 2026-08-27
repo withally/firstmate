@@ -84,10 +84,6 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
-# shellcheck disable=SC2034 # Read by fm-watch.sh after sourcing this policy owner.
-FM_PAUSED_RESURFACE_BATCH_LIMIT_DEFAULT=20
-# shellcheck disable=SC2034 # Read by fm-watch.sh after sourcing this policy owner.
-FM_ENDPOINT_BATCH_LIMIT_DEFAULT=20
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
@@ -211,24 +207,84 @@ status_is_paused_or_captain_held() {  # <status-line>
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
-# The status verbs that make a wake URGENT rather than routine: a supervisor must
-# see them without waiting out any aggregation window. Kept beside status_line_verb
-# as the one owner of that set, so the watcher's stale reasons and the Pi
-# extension's urgent bypass cannot disagree about which verbs qualify. A declared
-# wait (paused:) and ordinary progress (working:) are deliberately not urgent.
-status_line_is_urgent() {  # <status-line>
-  case "$(status_line_verb "$1")" in
-    failed|blocked|needs-decision) return 0 ;;
+#
+# Correlation tokens. That bracket rule already covers every BRACKETED tag,
+# including the "[corr=<16 hex>]" form bin/fm-secondmate-report.sh writes. It
+# does not cover the UNBRACKETED token that bin/fm-pending-reply-lib.sh writes
+# (fm_pending_reply_corr_token), which a secondmate answering a marked request
+# echoes on its parent status line ahead of the key tag (bin/fm-brief.sh), so a
+# real transition routinely arrives as
+#   needs-decision corr=<16 hex> [key=texte-du-mur]: <summary>
+#   resolved       corr=<16 hex> [key=texte-du-mur]: <how it was decided>
+# and a recovery turn can leave two such tokens on one line. All of those must
+# read as the bare verb, in BOTH directions: a verb parse that keeps the token
+# glued on matches no arm of _fm_decision_fold_line, so the opener never opens
+# and the closer never closes, and a captain decision goes silently missing.
+# Recognition starts only AFTER the retained leading verb: a token-first line
+# keeps that token, so its following word cannot impersonate a transition and
+# close a decision the captain is owed.
+#
+# The token grammar is OWNED by bin/fm-pending-reply-lib.sh
+# (fm_pending_reply_corr_token, FM_PENDING_REPLY_CORR_RE). That library sources
+# this one, so it cannot be sourced back here; the pattern below is a deliberate
+# second statement of the SHAPE alone, and tests/fm-classify-corr-token.test.sh
+# pins the two together through the real writers so they cannot drift.
+#
+# Recognition is deliberately narrow: EXACTLY the token that writer emits, whole
+# word, and nothing else. An arbitrary "<name>=<value>" token is NOT skipped.
+# Skipping unknown tokens would be the permissive road - it would let any
+# free-text word carrying an equals sign ("resolved x=1 [key=k]: ...") reduce to
+# a bare verb and impersonate a transition, which is the takeover the strict
+# parse and _fm_decision_key_transition_allowed exist to prevent. Recognising
+# only what a firstmate library actually writes costs one more line here each
+# time a real new token shape is introduced, and that is the intended trade: a
+# new shape is a deliberate, reviewed edit rather than a silent widening. A line
+# whose token is malformed, wrong-length, or merely mentioned in prose keeps its
+# extra words and therefore stays a non-transition, exactly as before.
+#
+# The 16 hex classes are written out literally rather than built from a
+# variable, the same way bin/fm-secondmate-report.sh validates the id it is
+# handed: a variable holding a glob is only re-read as a pattern under some
+# shells' expansion rules, and a safety parse must not turn on that.
+#
+# 0 if <word> is, in whole, an unbracketed correlation token this fleet's own
+# tooling writes. The bracketed form never reaches here: the tag rule above has
+# already ended the verb parse at its opening bracket.
+_fm_classify_is_corr_token() {  # <word>
+  case "$1" in
+    corr=[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+      return 0
+      ;;
   esac
   return 1
 }
 
 status_line_verb() {  # <status-line> -> leading verb word
-  local v=${1%%:*}
+  local v=${1%%:*} out='' word
   v=${v%%\[*}
   v=${v#"${v%%[![:space:]]*}"}
   v=${v%"${v##*[![:space:]]}"}
-  printf '%s' "$v"
+  # Fast path, and the whole no-regression guarantee: a prefix that cannot
+  # contain a correlation token is returned byte-for-byte as before, so every
+  # line without one keeps its exact historical verb, spacing included.
+  case "$v" in
+    *corr=*) ;;
+    *) printf '%s' "$v"; return 0 ;;
+  esac
+  # Retain the first word, then drop only recognised tokens from the remaining
+  # whole words. Anything unrecognised stays, so prose still matches no verb.
+  word=${v%%[[:space:]]*}
+  out=$word
+  v=${v#"$word"}
+  v=${v#"${v%%[![:space:]]*}"}
+  while [ -n "$v" ]; do
+    word=${v%%[[:space:]]*}
+    v=${v#"$word"}
+    v=${v#"${v%%[![:space:]]*}"}
+    _fm_classify_is_corr_token "$word" && continue
+    out="$out $word"
+  done
+  printf '%s' "$out"
 }
 # 0 when a complete "[key=...]" token sits in the documented position before
 # the line's first colon (or anywhere on a line that has no colon at all).
@@ -549,7 +605,15 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
-FM_OPEN_DECISIONS_FOLD_VERSION=4
+# 4: verb parsing ends at the first "[name=value]" tag rather than only at a
+# "[key=...]" one, so lines carrying another bracketed tag first became opens
+# and closes.
+# 5: status_line_verb now also reads through an UNBRACKETED correlation token,
+# so lines that previously folded as ordinary status become opens and closes.
+# Version 4 was already spent on the bracketed-tag parser change above, and a
+# cursor persisted under that reading predates this one, so it must still be
+# discarded and rebuilt from byte 0 under the new reading.
+FM_OPEN_DECISIONS_FOLD_VERSION=5
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
@@ -785,84 +849,6 @@ EOF
   printf '%s' "$offset"
 }
 
-_fm_status_absorbed_receipt_path() {  # <status-file>
-  local f=$1 state task
-  state=${f%/*}
-  task=${f##*/}; task=${task%.status}
-  printf '%s/.status-absorbed-%s' "$state" "$task"
-}
-
-# Persist the current identity and byte endpoint for each absorbed status file.
-# The presentation lock serializes this receipt with drain snapshots. Callers
-# write the receipt before advancing .seen-* so a crash can replay rather than
-# lose an absorbed line. Bare turn-end signals need no receipt because they carry
-# no status bytes to present.
-status_record_absorbed_signal() {  # <state> <file> ...
-  local state=$1 lock f dir task ident size receipt tmp rc=0
-  shift
-  lock="$state/.status-presentation-lock"
-  fm_lock_acquire_wait "$lock" || return 1
-  for f in "$@"; do
-    case "$f" in *.status) ;; *) continue ;; esac
-    dir=${f%/*}
-    [ "$dir" = "$state" ] || { rc=1; break; }
-    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { rc=1; break; }
-    task=${f##*/}; task=${task%.status}
-    [ -n "$task" ] || { rc=1; break; }
-    ident=$(_fm_open_decisions_file_ident "$f") || { rc=1; break; }
-    size=$(_fm_status_file_size "$f") || { rc=1; break; }
-    size=${size//[[:space:]]/}
-    case "$size" in ''|*[!0-9]*) rc=1; break ;; esac
-    [ -n "$ident" ] || { rc=1; break; }
-    receipt=$(_fm_status_absorbed_receipt_path "$f")
-    tmp="$receipt.tmp.$$"
-    if ! printf '%s\t%s\n' "$ident" "$size" > "$tmp" || ! mv -f "$tmp" "$receipt"; then
-      rm -f "$tmp"
-      rc=1
-      break
-    fi
-  done
-  fm_lock_release "$lock" || rc=1
-  return "$rc"
-}
-
-# Print the pending absorbed byte endpoint for a status file, or an empty string
-# when no receipt applies. A receipt that can no longer describe the CURRENT file
-# - stale identity, an endpoint past the end, malformed content, or a symlinked
-# or otherwise unreadable receipt - is dropped and reported as absent: those
-# absorbed bytes went away with the file they described, and one unverifiable
-# receipt must never disable the drain's no-loss sections. Dropping is also the
-# conservative direction, because it can only hold the presentation cursor back.
-# Only a status file whose own identity or size cannot be read fails.
-status_absorbed_receipt_endpoint() {  # <status-file>
-  local f=$1 receipt data ident endpoint extra cur_ident size
-  receipt=$(_fm_status_absorbed_receipt_path "$f")
-  if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then return 0; fi
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || return 1
-  size=$(_fm_status_file_size "$f") || return 1
-  size=${size//[[:space:]]/}
-  case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  if [ -f "$receipt" ] && [ -r "$receipt" ] && [ ! -L "$receipt" ] \
-    && data=$(LC_ALL=C command cat "$receipt" 2>/dev/null); then
-    IFS=$(printf '\t') read -r ident endpoint extra <<EOF
-$data
-EOF
-    if [ -n "$ident" ] && [ -z "$extra" ] && [ "$ident" = "$cur_ident" ]; then
-      case "$endpoint" in
-        ''|*[!0-9]*) ;;
-        *)
-          if [ "$endpoint" -le "$size" ]; then
-            printf '%s' "$endpoint"
-            return 0
-          fi
-          ;;
-      esac
-    fi
-  fi
-  rm -f -- "$receipt" || return 1
-  return 0
-}
-
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0
   lock="$state/.status-presentation-lock"
@@ -876,9 +862,7 @@ status_retire_presentation_task() {  # <state> <task-id>
   # durable proof that there is nothing to retire.
   if [ ! -e "$state/$task.status" ] && [ ! -L "$state/$task.status" ] \
     && [ ! -e "$state/.$task.open-decisions-cursor" ] \
-    && [ ! -L "$state/.$task.open-decisions-cursor" ] \
-    && [ ! -e "$state/.status-absorbed-$task" ] \
-    && [ ! -L "$state/.status-absorbed-$task" ]; then
+    && [ ! -L "$state/.$task.open-decisions-cursor" ]; then
     if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
       return 0
     fi
@@ -922,15 +906,14 @@ EOF
     fi
   fi
   if [ "$rc" -eq 0 ]; then
-    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" \
-      "$state/.status-absorbed-$task" || rc=1
+    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" || rc=1
   fi
   fm_lock_release "$lock" || rc=1
   return "$rc"
 }
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe absorbed
+  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
@@ -940,10 +923,6 @@ $fully_presented
     if [ "$safe" = false ]; then
       f="$state/$task.status"
       offset=$(status_presentation_cursor_offset "$f") || return 1
-      absorbed=$(status_absorbed_receipt_endpoint "$f") || return 1
-      [ -n "$absorbed" ] || absorbed=$offset
-      [ "$absorbed" -le "$endpoint" ] || absorbed=$endpoint
-      [ "$absorbed" -ge "$offset" ] || absorbed=$offset
       lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
       # Once any informational line in this span is presented fleet-wide, the
       # contiguous cursor may advance through the captured endpoint. Routine
@@ -959,7 +938,7 @@ $fully_presented
       done <<EOF
 $lines
 EOF
-      if [ "$safe" = false ]; then endpoint=$absorbed; fi
+      if [ "$safe" = false ]; then endpoint=$offset; fi
     fi
     printf '%s\t%s\t%s\n' "$task" "$endpoint" "$ident" || return 1
   done <<EOF
@@ -968,7 +947,7 @@ EOF
 }
 
 status_commit_presentation_snapshot() {  # <state> <snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f cur_ident size tmp absorbed receipt
+  local state=$1 snapshot=$2 task endpoint ident f cur_ident size tmp
   tmp="$state/.status-presentation-cursor.tmp.$$"
   : > "$tmp" || return 1
   while IFS=$(printf '\t') read -r task endpoint ident; do
@@ -989,17 +968,6 @@ status_commit_presentation_snapshot() {  # <state> <snapshot>
 $snapshot
 EOF
   mv -f "$tmp" "$state/.status-presentation-cursor" || { rm -f "$tmp"; return 1; }
-  while IFS=$(printf '\t') read -r task endpoint ident; do
-    [ -n "$task" ] || continue
-    f="$state/$task.status"
-    absorbed=$(status_absorbed_receipt_endpoint "$f") || return 1
-    [ -n "$absorbed" ] || continue
-    [ "$endpoint" -ge "$absorbed" ] || continue
-    receipt=$(_fm_status_absorbed_receipt_path "$f")
-    rm -f -- "$receipt" || return 1
-  done <<EOF
-$snapshot
-EOF
 }
 
 scan_open_decisions_snapshot() {  # <state> <task-and-endpoint-snapshot>
@@ -1143,32 +1111,6 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   return "$rc"
 }
 
-# Print non-blank lines from one explicitly captured byte span. Both endpoints
-# must belong to the current regular status file. This is the offset-aware
-# primitive delayed absorbed-status presentation needs so it can surface every
-# absorbed byte without treating later unrelated routine appends as presented.
-status_lines_between_offsets() {  # <status-file> <start-offset> <end-offset>
-  local f=$1 start=$2 end=$3 size chunk_file line rc=0
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-  case "$start:$end" in *[!0-9:]*) return 1 ;; esac
-  [ "$start" -le "$end" ] || return 1
-  size=$(_fm_status_file_size "$f") || return 1
-  size=${size//[[:space:]]/}
-  case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$end" -le "$size" ] || return 1
-  [ "$start" -lt "$end" ] || return 0
-  chunk_file="$(_fm_open_decisions_cursor_path "$f").span.$$"
-  _fm_status_read_span "$f" "$start" "$((end - start))" > "$chunk_file" 2>/dev/null \
-    || { rm -f "$chunk_file"; return 1; }
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      *[![:space:]]*) printf '%s\n' "$line" || { rc=1; break; } ;;
-    esac
-  done < "$chunk_file"
-  rm -f "$chunk_file"
-  return "$rc"
-}
-
 # 0 when a status line is an informational `note:` or a reserved-key
 # pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
 # drain's unread-status surface is their only guaranteed presentation.
@@ -1219,29 +1161,11 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f lines line offset absorbed
+  local state=$1 snapshot=$2 task endpoint ident f lines line
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
-    # A status file that vanished or was replaced by a symlink between the
-    # snapshot and this scan has nothing left to present; skip it rather than
-    # failing the whole presentation, matching status_new_lines_since_cursor.
-    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
-    offset=$(status_presentation_cursor_offset "$f") || return 1
-    absorbed=$(status_absorbed_receipt_endpoint "$f") || return 1
-    [ -n "$absorbed" ] || absorbed=$offset
-    [ "$absorbed" -le "$endpoint" ] || absorbed=$endpoint
-    [ "$absorbed" -ge "$offset" ] || absorbed=$offset
-    if [ "$absorbed" -gt "$offset" ]; then
-      lines=$(status_lines_between_offsets "$f" "$offset" "$absorbed") || return 1
-      while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        printf '%s\t%s\n' "$task" "$line"
-      done <<EOF
-$lines
-EOF
-    fi
-    lines=$(status_lines_between_offsets "$f" "$absorbed" "$endpoint") || return 1
+    lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
     [ -n "$lines" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -1335,68 +1259,6 @@ signal_reason_is_actionable() {  # <file> ...
     status_is_captain_relevant "$last" && return 0
   done
   return 1
-}
-
-# 0 only when every referenced signal path has a recognized routine shape.
-# Status files must end in a recognized nonterminal lifecycle verb (the progress
-# and declared-wait verbs, plus the informational `note:` verb, whose bytes are
-# still surfaced exactly once through the delayed presentation receipt); turn-end
-# markers may accompany them or stand alone. Missing files, unknown path kinds,
-# blank status logs, and every other verb are not routine, so both attended and
-# away supervisors fail toward waking on syntax they do not positively understand.
-signal_reason_is_routine_nonterminal() {  # <file> ...
-  local f last verb seen=0
-  for f in "$@"; do
-    case "$f" in
-      *.status)
-        [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-        last=$(last_status_line "$f")
-        [ -n "$last" ] || return 1
-        verb=$(status_line_verb "$last")
-        case "$verb" in
-          working|resolved|captain-held|note|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
-          *) return 1 ;;
-        esac
-        seen=1
-        ;;
-      *.turn-ended)
-        [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-        seen=1
-        ;;
-      *) return 1 ;;
-    esac
-  done
-  [ "$seen" -eq 1 ]
-}
-
-# Attended routine status absorption is safely default-on for the narrow shapes
-# above. FM_ATTENDED_ROUTINE_STATUS_ABSORB overrides the home-local
-# config/attended-routine-status-absorb value. Only exact `on` or `off` is
-# accepted; invalid input disables absorption so configuration drift wakes the
-# model instead of hiding work.
-attended_routine_status_absorb_enabled() {
-  local value=${FM_ATTENDED_ROUTINE_STATUS_ABSORB:-} home config
-  if [ -z "$value" ]; then
-    home=${FM_HOME:-${FM_ROOT_OVERRIDE:-$_FM_CLASSIFY_LIB_DIR/..}}
-    config="$home/config/attended-routine-status-absorb"
-    if [ -e "$config" ] || [ -L "$config" ]; then
-      [ -f "$config" ] && [ -r "$config" ] && [ ! -L "$config" ] || return 1
-      value=$(LC_ALL=C command cat "$config" 2>/dev/null) || return 1
-    else
-      value=on
-    fi
-  fi
-  [ "$value" = on ]
-}
-
-# The one attended signal-absorption policy. A caller may absorb only when the
-# feature is enabled, every signal has a recognized routine shape, no status is
-# captain-relevant, and every referenced crew has positive current-work proof.
-attended_signal_is_absorbable() {  # <file> ...
-  attended_routine_status_absorb_enabled || return 1
-  signal_reason_is_routine_nonterminal "$@" || return 1
-  signal_reason_is_actionable "$@" && return 1
-  signal_crew_provably_working "$@"
 }
 
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
@@ -1547,27 +1409,8 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # raised decision, a mirrored remote line), and a busy mate agent makes its note
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
-# The ONE owner of the mate routed-reply carve-out described directly above, so
-# every absorber that consults it agrees. 0 when any listed file is a
-# kind=secondmate task's .status; a mate's bare turn-ended ping is not one.
-signal_list_has_secondmate_status() {  # <file> ...
-  local f base dir task
-  for f in "$@"; do
-    base=${f##*/}
-    dir=${f%/*}
-    [ "$dir" != "$f" ] || dir=.
-    case "$base" in *.status) task=${base%.status} ;; *) continue ;; esac
-    [ -n "$task" ] || continue
-    if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
 signal_crew_provably_working() {  # <file> ...
   local f base dir task seen=""
-  signal_list_has_secondmate_status "$@" && return 1
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -1578,6 +1421,13 @@ signal_crew_provably_working() {  # <file> ...
       *)            continue ;;
     esac
     [ -n "$task" ] || continue
+    case "$base" in
+      *.status)
+        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+          return 1
+        fi
+        ;;
+    esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
     crew_is_provably_working "$task" || return 1

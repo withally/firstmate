@@ -99,7 +99,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'no-mistakes version v1.31.2 (fake) 2026-06-27T00:02:18Z'
+  printf '%s\n' 'no-mistakes version v1.46.0 (fake) 2026-06-27T00:02:18Z'
   exit 0
 fi
 exit 0
@@ -1369,6 +1369,65 @@ EOF
   pass "fm-session-start.sh composes the real fm-lock.sh, fm-bootstrap.sh, and fm-wake-drain.sh output verbatim"
 }
 
+test_branch_outcome_replay_and_lease_sweep() {
+  local rec root home fakebin out
+  rec=$(new_world branch-recovery)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" pi
+
+  # A crash window the locked start must close: the supervision branch stored
+  # an outcome durably that never reached main, plus one lease whose
+  # supervising process died and one still held by a live process.
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-b --verdict captain --summary 'PR https://example.com/pr/b checks green' >/dev/null \
+    || fail "could not seed the unread branch outcome"
+  printf 'branch\t999999\t123\n' > "$home/state/.lease-task-dead"
+  FM_HOME="$home" FM_SUPERVISION_ACTOR=branch FM_LEASE_HOLDER_PID=$$ "$ROOT/bin/fm-lease.sh" claim task-live --actor branch \
+    || fail "could not seed the live lease"
+
+  out=$(run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):" \
+    "locked start did not replay the unread branch outcome"
+  assert_contains "$out" "https://example.com/pr/b" "replayed outcome lost its content"
+  [ ! -e "$home/state/.lease-task-dead" ] || fail "locked start left a provably dead lease in place"
+  [ -e "$home/state/.lease-task-live" ] || fail "locked start swept a live lease"
+
+  # Replay is one-shot: presenting the digest is the delivery, so the next
+  # locked start stays silent about the same outcome.
+  out=$(run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  case "$out" in
+    *"BRANCH OUTCOMES"*) fail "second start re-presented already-replayed branch outcomes" ;;
+  esac
+  pass "locked Pi session start replays unread branch outcomes once and sweeps only dead leases"
+}
+
+test_non_pi_session_start_leaves_branch_state_untouched() {
+  local rec root home fakebin out
+  rec=$(new_world non-pi-branch-recovery)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-b --verdict captain --summary 'unread Pi branch outcome' >/dev/null \
+    || fail "could not seed the non-Pi unread branch outcome"
+  rm -f "$home/state/.branch-outcomes-cursor"
+  printf 'branch\t999999\t123\n' > "$home/state/.lease-task-dead"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  case "$out" in
+    *"BRANCH OUTCOMES"*|*"unread Pi branch outcome"*) fail "non-Pi session replayed Pi branch outcomes" ;;
+  esac
+  [ -e "$home/state/.lease-task-dead" ] || fail "non-Pi session swept a Pi branch lease"
+  [ ! -e "$home/state/.branch-outcomes-cursor" ] || fail "non-Pi session marked a Pi branch outcome read"
+  pass "non-Pi session start neither sweeps nor replays Pi branch state"
+}
+
 # --- deferred network stage -------------------------------------------------
 
 # install_slow_gh <fakebin> <seconds>: one external-network call the digest used
@@ -1957,97 +2016,6 @@ EOF
   pass "--reemit reprints the digest without repeating startup's mutating sweeps and still drains queued wakes"
 }
 
-test_compact_recovery_digest_carries_the_wake_acknowledgement() {
-  local rec root home fakebin compact
-  rec=$(new_world compact-ack)
-  IFS='|' read -r root home fakebin <<EOF
-$rec
-EOF
-  make_fake_toolchain "$fakebin"
-  make_fake_ps_harness "$fakebin" pi
-  printf '# Firstmate\n' > "$root/AGENTS.md"
-  # Take the lock so the compact digest runs its drain rather than skipping it.
-  FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup >/dev/null
-
-  append_wake "$home/state" stale w1 'stale: fm-sess:w1' \
-    || fail "could not queue a wake for the compact recovery"
-  compact=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --compact)
-
-  # The Pi compact route spawns fm-sessionstart-run.sh with stderr discarded
-  # (.pi/extensions/fm-primary-turnend-guard.ts), so the acknowledgement command
-  # only reaches the recovering session if the digest carries it on stdout.
-  assert_contains "$compact" "stale: fm-sess:w1" \
-    "compact recovery digest did not present the queued wake"
-  assert_contains "$compact" "WAKE_ACK_REQUIRED" \
-    "compact recovery digest dropped the acknowledgement command onto discarded stderr"
-  assert_contains "$compact" "--recovery-generation" \
-    "compact recovery acknowledgement command lost its recovery generation"
-  pass "the compact recovery digest carries its wake acknowledgement command on stdout"
-}
-
-test_new_session_digest_reprints_open_decisions_it_never_saw() {
-  local rec root home fakebin first second
-  rec=$(new_world new-session-decisions)
-  IFS='|' read -r root home fakebin <<EOF
-$rec
-EOF
-  make_fake_toolchain "$fakebin"
-  make_fake_ps_harness "$fakebin" pi
-  printf '# Firstmate\n' > "$root/AGENTS.md"
-  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$home/state/task1.status"
-
-  # Session one presents the decision in full and records that presentation.
-  first=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup)
-  assert_contains "$first" "task1" "the first session digest omitted the open decision"
-  assert_contains "$first" "[key=api-shape]" "the first session digest omitted the decision key"
-
-  # Session two is a different process with none of that context. The decision
-  # set is unchanged, so the collapse would hand it a bare count.
-  second=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup)
-  assert_not_contains "$second" "OPEN DECISIONS: unchanged" \
-    "a new session digest collapsed an open decision it had never been shown"
-  assert_contains "$second" "[key=api-shape]" \
-    "a new session digest omitted the open decision's key"
-  assert_contains "$second" "pick REST or RPC" \
-    "a new session digest omitted the open decision's note"
-  assert_contains "$second" "--resolve-key" \
-    "a new session digest omitted the resolve instruction"
-  pass "a new session's digest re-presents open decisions the previous session had already been shown"
-}
-
-test_compact_recovery_digest_reports_away_and_x_mode_state() {
-  local rec root home fakebin attended away
-  rec=$(new_world compact-supervision-state)
-  IFS='|' read -r root home fakebin <<EOF
-$rec
-EOF
-  make_fake_toolchain "$fakebin"
-  make_fake_ps_harness "$fakebin" pi
-  printf '# Firstmate\n' > "$root/AGENTS.md"
-  FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup >/dev/null
-
-  attended=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --compact)
-  assert_contains "$attended" "Away mode: inactive" \
-    "compact recovery digest did not report away-mode state"
-  assert_contains "$attended" "X mode: inactive" \
-    "compact recovery digest did not report X-mode state"
-
-  # Away mode and X mode both change who owns supervision and what a wake means,
-  # so a post-compaction digest must say so rather than reading identically.
-  date '+%s' > "$home/state/.afk"
-  printf 'FM_POLL=30\n' > "$home/config/x-mode.env"
-  away=$(FM_FAKE_HARNESS=pi run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --compact)
-  assert_contains "$away" "Away mode: active" \
-    "compact recovery digest hid active away mode while the daemon owned the watcher"
-  assert_contains "$away" "load /afk" \
-    "compact recovery digest omitted the away-mode handover instruction"
-  assert_contains "$away" "X mode: active" \
-    "compact recovery digest hid an active X mode"
-  assert_contains "$away" "$home/config/x-mode.env" \
-    "compact recovery digest omitted the X-mode cadence source requirement"
-  pass "the compact recovery digest always carries away-mode and X-mode supervision state"
-}
-
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact() {
   local rec root home fakebin startup compact_equal compact_first compact_second clear_out resume_out reset_out baseline baseline_after expected_hash refresh_line bootstrap_line
   rec=$(new_world agents-refresh)
@@ -2512,6 +2480,8 @@ test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
+test_branch_outcome_replay_and_lease_sweep
+test_non_pi_session_start_leaves_branch_state_untouched
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
@@ -2530,9 +2500,6 @@ test_portable_timeout_escalates_term_resistant_process
 test_runtime_bound_leaves_a_healthy_digest_untouched
 test_runtime_bound_leaves_harness_ancestry_headroom
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
-test_compact_recovery_digest_carries_the_wake_acknowledgement
-test_new_session_digest_reprints_open_decisions_it_never_saw
-test_compact_recovery_digest_reports_away_and_x_mode_state
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh

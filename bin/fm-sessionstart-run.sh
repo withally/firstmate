@@ -19,10 +19,9 @@
 #
 # Source routing (see docs/sessionstart-nudge.md for the per-harness names):
 #   startup, new            full digest - this process has not taken the helm
-#   compact                 compact recovery digest only when this lock owner
-#                           recorded a completed full startup; otherwise a full
-#                           digest so a startup killed mid-sweep is finished first
-#   clear                   `--reemit` digest under the same completion gate
+#   clear, compact          `--reemit` digest only when this lock owner recorded
+#                           a completed full startup; otherwise a full digest,
+#                           so a startup killed mid-sweep is finished first
 #   resume, reload, fork    delegate to the nudge wrapper. Prior context is
 #                           restored on these, so re-running is redundant when
 #                           this process still holds the lock (the nudge stays
@@ -70,10 +69,6 @@ done
 # agent and an unmarked task worktree can never run a session start for a home
 # they do not own.
 fm_is_gate_agent "$FM_ROOT" && exit 0
-if fm_root_is_registered_crew_worktree "$FM_ROOT"; then
-  fm_print_crew_worktree_suppression
-  exit 0
-fi
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 session_start_completed() {
@@ -118,14 +113,7 @@ case "$SOURCE" in
   resume|reload|fork)
     exec "$SCRIPT_DIR/fm-sessionstart-nudge.sh"
     ;;
-  compact)
-    if session_start_completed; then
-      "$SCRIPT_DIR/fm-session-start.sh" --compact --source "$SOURCE" || true
-    else
-      "$SCRIPT_DIR/fm-session-start.sh" --source "$SOURCE" || true
-    fi
-    ;;
-  clear)
+  clear|compact)
     if session_start_completed; then
       "$SCRIPT_DIR/fm-session-start.sh" --reemit --source "$SOURCE" || true
     else

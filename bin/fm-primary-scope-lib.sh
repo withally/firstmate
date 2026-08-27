@@ -17,35 +17,6 @@ fm_root_is_secondmate_home() {
   return 0
 }
 
-# Return 0 only when <root> is a linked worktree registered as a live crew task
-# in the primary checkout that owns its git common directory.
-fm_root_is_registered_crew_worktree() {  # <root>
-  local root=$1 git_dir git_common primary meta recorded resolved_root
-  fm_root_is_secondmate_home "$root" && return 1
-  git_dir=$(git -C "$root" rev-parse --git-dir 2>/dev/null) || return 1
-  git_common=$(git -C "$root" rev-parse --git-common-dir 2>/dev/null) || return 1
-  [ "$git_dir" != "$git_common" ] || return 1
-  case "$git_common" in
-    /*) ;;
-    *) git_common=$(cd "$root" && cd "$git_common" 2>/dev/null && pwd -P) || return 1 ;;
-  esac
-  case "$git_common" in */.git) primary=${git_common%/.git} ;; *) return 1 ;; esac
-  resolved_root=$(cd "$root" 2>/dev/null && pwd -P) || return 1
-  for meta in "$primary"/state/*.meta; do
-    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
-    recorded=$(awk -F= '$1 == "worktree" { sub(/^[^=]*=/, ""); print; exit }' "$meta" 2>/dev/null) || continue
-    [ -n "$recorded" ] || continue
-    [ -d "$recorded" ] || continue
-    recorded=$(cd "$recorded" 2>/dev/null && pwd -P) || continue
-    [ "$recorded" = "$resolved_root" ] && return 0
-  done
-  return 1
-}
-
-fm_print_crew_worktree_suppression() {
-  printf '%s\n' 'crew worktree - digest suppressed'
-}
-
 # Return 0 when $1 is a genuine primary root whose effective state dir is $2.
 # A valid secondmate marker force-includes a linked secondmate home.
 # Otherwise only a plain checkout is primary, never a linked task worktree.

@@ -178,14 +178,14 @@
 # Hosts without timeout, gtimeout, or perl use the shared pure-Bash watchdog, so
 # the digest never runs without the same hard bound and process-group cleanup.
 #
-# Usage: fm-session-start.sh [--reemit|--compact] [--source <source>]
+# Usage: fm-session-start.sh [--reemit] [--source <source>]
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
 #
 #   --reemit  This process ALREADY took the helm at its own startup and has
-#             only lost its context after a /clear. Skip the
+#             only lost its context (a /clear or a compaction). Skip the
 #             mutating sweeps that startup already reconciled - the stale Herdr
 #             projection cleanup and bootstrap's six mutating sweeps (fleet
 #             sync, secondmate convergence and liveness, PR-check migration,
@@ -198,12 +198,6 @@
 #             this session's own harness holds as its own, so the re-emit
 #             proceeds, while a lock another live session took meanwhile still
 #             produces the ordinary read-only path.
-#
-#   --compact Re-verify lock and watcher ownership, drain only the actionable
-#             queue and open decisions, print active task identities, then the
-#             exact next supervision instruction. Status tails, unread routine
-#             status, and unchanged context files are omitted; unread routine
-#             bytes remain unacknowledged for the next ordinary drain.
 #
 #   --source  The native session-open source, supplied only by
 #             fm-sessionstart-run.sh. A genuine `startup` that owns the active
@@ -228,16 +222,11 @@ COMPLETION_FILE="$STATE/.session-start-complete"
 AGENTS_BASELINE_FILE="$STATE/.session-start-agents-baseline"
 
 REEMIT=0
-COMPACT=0
 SESSION_SOURCE=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reemit)
       REEMIT=1
-      shift
-      ;;
-    --compact)
-      COMPACT=1
       shift
       ;;
     --source)
@@ -254,7 +243,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     *)
       printf 'fm-session-start: unknown argument: %s\n' "$1" >&2
-      printf 'usage: fm-session-start.sh [--reemit|--compact] [--source <source>]\n' >&2
+      printf 'usage: fm-session-start.sh [--reemit] [--source <source>]\n' >&2
       exit 2
       ;;
   esac
@@ -282,43 +271,13 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   # the deadline outright), so an unusable value falls back to the default
   # rather than silently removing the bound.
   case "$SESSION_START_BUDGET" in ''|*[!0-9]*|0) SESSION_START_BUDGET=120 ;; esac
-
-  # A worker in a registered worktree of this repository is not a fleet primary,
-  # so it emits the suppression line instead of a digest. The predicate shells
-  # out to git, which a stuck index.lock or an unresponsive filesystem can hang
-  # forever, so it runs bounded and only here in the parent - never inside the
-  # timed child, where it would spend the digest's whole budget before the first
-  # stage. Hitting the bound (or any failure) falls through to the digest: a
-  # loud, possibly redundant startup beats a silent one.
-  CREW_CHECK_BUDGET=5
-  [ "$SESSION_START_BUDGET" -ge "$CREW_CHECK_BUDGET" ] || CREW_CHECK_BUDGET=$SESSION_START_BUDGET
-  # shellcheck source=bin/fm-primary-scope-lib.sh
-  . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
-  # shellcheck disable=SC2016 # $1/$2 are the child bash -c positional args, expanded there, not here.
-  if fm_run_timed "$CREW_CHECK_BUDGET" bash -c \
-    '. "$1/fm-primary-scope-lib.sh"; fm_root_is_registered_crew_worktree "$2"' \
-    _ "$SCRIPT_DIR" "$FM_ROOT"; then
-    fm_print_crew_worktree_suppression
-    exit 0
-  fi
-
   SESSION_START_STAGE_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-stage.XXXXXX" 2>/dev/null) || SESSION_START_STAGE_FILE=
   if [ -z "$SESSION_START_STAGE_FILE" ]; then
     # Without a breadcrumb the bound still holds; only the banner's precision
     # is lost, so the child still runs bounded.
     SESSION_START_STAGE_FILE=/dev/null
   fi
-  if [ "$COMPACT" -eq 1 ]; then
-    if [ -n "$SESSION_SOURCE" ]; then
-      fm_run_timed "$SESSION_START_BUDGET" \
-        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-        "$SCRIPT_DIR/fm-session-start.sh" --compact --source "$SESSION_SOURCE"
-    else
-      fm_run_timed "$SESSION_START_BUDGET" \
-        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-        "$SCRIPT_DIR/fm-session-start.sh" --compact
-    fi
-  elif [ "$REEMIT" -eq 1 ]; then
+  if [ "$REEMIT" -eq 1 ]; then
     if [ -n "$SESSION_SOURCE" ]; then
       fm_run_timed "$SESSION_START_BUDGET" \
         env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
@@ -641,62 +600,6 @@ EOF
   fi
 }
 
-if [ "$COMPACT" -eq 1 ]; then
-  printf 'COMPACT RECOVERY - %s\n' "$FM_HOME"
-  printf 'LOCK AND WATCHER OWNERSHIP\n'
-  COMPACT_LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
-  COMPACT_LOCK_RC=$?
-  printf 'lock: %s\n' "$COMPACT_LOCK_OUT"
-  REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
-  print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
-  WATCH_PID=$(cat "$STATE/.watch.lock/pid" 2>/dev/null || true)
-  case "$WATCH_PID" in
-    ''|*[!0-9]*) printf 'watcher: no readable owner pid\n' ;;
-    *)
-      if kill -0 "$WATCH_PID" 2>/dev/null; then
-        printf 'watcher: owned by live pid %s\n' "$WATCH_PID"
-      else
-        printf 'watcher: recorded owner pid %s is not live\n' "$WATCH_PID"
-      fi
-      ;;
-  esac
-  COMPACT_AFK_PRESENT=0
-  [ -e "$STATE/.afk" ] && COMPACT_AFK_PRESENT=1
-  COMPACT_X_MODE_PRESENT=0
-  [ -f "$CONFIG/x-mode.env" ] && COMPACT_X_MODE_PRESENT=1
-  "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
-    --afk "$COMPACT_AFK_PRESENT" --x-mode "$COMPACT_X_MODE_PRESENT" --state-lines
-  printf 'ACTIONABLE QUEUE AND OPEN DECISIONS\n'
-  if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
-    "$SCRIPT_DIR/fm-wake-drain.sh" --compact 2>&1 || true
-  else
-    printf 'queue drain skipped because this session does not own the lock\n'
-  fi
-  printf 'ACTIVE TASK IDENTITIES\n'
-  COMPACT_META_FOUND=0
-  for meta in "$STATE"/*.meta; do
-    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
-    COMPACT_META_FOUND=1
-    id=$(basename "$meta" .meta)
-    kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
-    harness=$(fm_meta_get "$meta" harness 2>/dev/null || true)
-    backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
-    target=$(fm_backend_target_of_meta "$meta" 2>/dev/null || true)
-    printf '%s kind=%s harness=%s backend=%s target=%s\n' \
-      "$id" "${kind:-ship}" "${harness:-unknown}" "${backend:-unknown}" "${target:-unknown}"
-  done
-  [ "$COMPACT_META_FOUND" -eq 1 ] || printf '(none)\n'
-  printf 'NEXT SUPERVISION INSTRUCTION\n'
-  if [ "$COMPACT_LOCK_RC" -eq 0 ]; then
-    "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
-      --afk "$COMPACT_AFK_PRESENT" --next-line
-  else
-    "$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$PRIMARY_HARNESS" \
-      --read-only 1 --repair-line
-  fi
-  exit 0
-fi
-
 AGENTS_START_HASH=
 if [ "$REEMIT" -eq 0 ] && [ "$SESSION_SOURCE" = startup ]; then
   AGENTS_START_HASH=$(hash_file_sha256 "$FM_ROOT/AGENTS.md" 2>/dev/null || true)
@@ -789,10 +692,7 @@ fi
 # wake, without adding a daemon or external-network call.
 # Presented records are this turn's first work queue and remain durable until
 # post-handling acknowledgement. The drain's separate OPEN DECISIONS section
-# remains actionable even when that queue is empty (AGENTS.md sections 3 and 8);
-# --session-recovery is what keeps that true here, because a digest runs only when
-# this session's context was lost (start, /clear re-emit, compact) and the drain's
-# unchanged-decision collapse would otherwise carry across that boundary.
+# remains actionable even when that queue is empty (AGENTS.md sections 3 and 8).
 # The drain also runs fm-guard.sh internally on the locked path, so the
 # tangle/watcher-liveness alarms land right here too, ahead of the bulk digest
 # below. The read-only path never touches the queue because it lacks mutation
@@ -813,7 +713,20 @@ else
   if [ -n "$INACTIVE_OUT" ]; then
     printf 'inactive outcome reconciliation: %s\n' "$INACTIVE_OUT"
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" --session-recovery 2>&1)
+  # Pi supervision-branch recovery, locked path only: clear leases whose
+  # supervising session died, and surface outcomes the branch stored durably
+  # that never reached main (docs/pi-supervision-branch.md). Gated to the
+  # pi/pi-signed primary so a non-Pi home runs neither step - homes on any
+  # other harness stay entirely untouched (captain-decided criterion).
+  if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lease.sh" sweep 2>/dev/null || true
+    BRANCH_REPLAY_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-branch-outcome.sh" startup-replay 2>&1) || BRANCH_REPLAY_OUT=
+    if [ -n "$BRANCH_REPLAY_OUT" ]; then
+      printf '%s\n' "$BRANCH_REPLAY_OUT"
+    fi
+  fi
+  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   else
@@ -946,11 +859,12 @@ if fm_pf_relay_active "$FM_HOME" \
   && { fm_pf_has_registrations "$STATE" || fm_pf_has_events "$STATE"; }; then
   PUBLIC_FOLLOWUP=$("$SCRIPT_DIR/fm-public-followup.sh" pending 2>/dev/null) || PUBLIC_FOLLOWUP=
   if [ -n "$PUBLIC_FOLLOWUP" ]; then
-    subsection "Public commitments awaiting delivery"
+    subsection "Public commitments"
     printf '%s\n' "$PUBLIC_FOLLOWUP"
-    printf '\nEach line is a public reply this home still owes. Reconcile terminal results with\n'
-    printf '%s/bin/fm-public-followup.sh consume, then deliver a ready one with\n' "$FM_ROOT"
-    printf '%s/bin/fm-public-followup.sh deliver <id>. Load fmx-respond for the procedure.\n' "$FM_ROOT"
+    printf '\nEach line is a public loop this home still holds: a reply still owed, or an open loop with nothing owed.\n'
+    printf 'Reconcile terminal results with %s/bin/fm-public-followup.sh consume, then deliver a ready one with\n' "$FM_ROOT"
+    printf '%s/bin/fm-public-followup.sh deliver <id>. Hand a delivered loop on with rechain, or close it with\n' "$FM_ROOT"
+    printf '%s/bin/fm-public-followup.sh retire <id> --reason "...". Load fmx-respond for the procedure.\n' "$FM_ROOT"
   fi
 fi
 

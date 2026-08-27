@@ -120,104 +120,6 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
   pass "renderer preserves every harness ordinary-continuation and missing-cycle repair path"
 }
 
-test_next_line_is_self_contained_for_every_harness() {
-  local h line
-  # --next-line is the compact-recovery digest's only supervision instruction and
-  # that digest carries no protocol snippet, so a session that just lost its
-  # context must be able to act on this line alone.
-  for h in claude codex pi pi-signed opencode grok cursor bogus-harness; do
-    line=$("$RENDER" --harness "$h" --next-line) \
-      || fail "--next-line failed for harness $h"
-    [ "$(printf '%s\n' "$line" | grep -c .)" -eq 1 ] \
-      || fail "--next-line for $h was not a single line: $line"
-    case "$line" in
-      *below*) fail "$h next line points at content the compact digest omits: $line" ;;
-    esac
-    case "$line" in
-      *bin/fm-wake-drain.sh*) ;;
-      *) fail "$h next line omits the drain command: $line" ;;
-    esac
-    case "$line" in
-      *--ack-through*) ;;
-      *) fail "$h next line omits the acknowledgement step: $line" ;;
-    esac
-    case "$line" in
-      *docs/supervision-protocols/*.md*) ;;
-      *) fail "$h next line omits its owning protocol document: $line" ;;
-    esac
-  done
-
-  # Where the model owns the next cycle, the exact command has to be present.
-  line=$("$RENDER" --harness codex --next-line)
-  case "$line" in
-    *"bin/fm-watch-checkpoint.sh --seconds "[0-9]*) ;;
-    *) fail "codex next line omits the resolved checkpoint command: $line" ;;
-  esac
-  line=$("$RENDER" --harness grok --next-line)
-  case "$line" in
-    *"exec bin/fm-watch-arm.sh"*) ;;
-    *) fail "grok next line omits the tracked background arm command: $line" ;;
-  esac
-
-  # pi-signed renders Pi's protocol, so it must name Pi's document.
-  line=$("$RENDER" --harness pi-signed --next-line)
-  case "$line" in
-    *docs/supervision-protocols/pi.md*) ;;
-    *) fail "pi-signed next line named the wrong protocol document: $line" ;;
-  esac
-  # An unresolved harness falls back to the unknown protocol, not a missing file.
-  line=$("$RENDER" --harness bogus-harness --next-line)
-  case "$line" in
-    *docs/supervision-protocols/unknown.md*) ;;
-    *) fail "an unresolved harness named a protocol document it does not render: $line" ;;
-  esac
-  pass "every harness next line is self-contained: drain, acknowledge, exact command, owning protocol"
-}
-
-test_next_line_hands_an_active_away_mode_to_the_daemon() {
-  local h line
-  # Away mode changes who owns the durable queue: the daemon drains and triages it,
-  # so a recovering session must not be handed the attended drain/ack order.
-  for h in claude codex pi pi-signed opencode grok cursor bogus-harness; do
-    line=$("$RENDER" --harness "$h" --afk 1 --next-line) \
-      || fail "--next-line failed for harness $h under away mode"
-    [ "$(printf '%s\n' "$line" | grep -c .)" -eq 1 ] \
-      || fail "$h away-mode next line was not a single line: $line"
-    case "$line" in
-      *"/afk"*) ;;
-      *) fail "$h away-mode next line omits the /afk action: $line" ;;
-    esac
-    case "$line" in
-      *state/.afk*) ;;
-      *) fail "$h away-mode next line omits the condition that state/.afk is active: $line" ;;
-    esac
-    case "$line" in
-      *fm-supervise-daemon.sh*) ;;
-      *) fail "$h away-mode next line does not name the daemon that owns supervision: $line" ;;
-    esac
-    case "$line" in
-      *"do NOT run bin/fm-wake-drain.sh"*) ;;
-      *) fail "$h away-mode next line does not forbid the attended drain: $line" ;;
-    esac
-    case "$line" in
-      *--ack-through*) ;;
-      *) fail "$h away-mode next line does not name the acknowledgement it forbids: $line" ;;
-    esac
-    case "$line" in
-      *.md*) ;;
-      *) fail "$h away-mode next line omits its owning protocol document: $line" ;;
-    esac
-  done
-
-  # Attended mode is unchanged: the drain and acknowledgement are still ordered.
-  line=$("$RENDER" --harness pi --afk 0 --next-line)
-  case "$line" in
-    *"drain and handle this wake with bin/fm-wake-drain.sh"*) ;;
-    *) fail "attended next line lost its drain order: $line" ;;
-  esac
-  pass "an active away mode routes every harness next line to the daemon instead of an attended drain"
-}
-
 test_pi_signed_preserves_identity_with_pi_supervision_protocol() {
   local out ordinary
   out=$("$RENDER" --harness pi-signed)
@@ -279,8 +181,6 @@ test_unknown_fallback
 test_conditional_stanzas
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
-test_next_line_is_self_contained_for_every_harness
-test_next_line_hands_an_active_away_mode_to_the_daemon
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config

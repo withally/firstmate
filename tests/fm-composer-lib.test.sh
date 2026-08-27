@@ -271,17 +271,17 @@ test_matrix_herdr_halfblock_rule_bounds_bare_wrap() {
   # footer, whose real content turns an idle pane into a false `pending`.
   # Captured live from a herdr cursor pane.
   local screen plain out
-  plain=$'transcript\n \u2584\u2584\u2584\u2584\u2584\u2584\u2584\u2584\n  \u2192 Add a follow-up\n \u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580\n  Cursor Grok 4.5 High \u00b7 6.7%   Run Everything\n  ~/wt \u00b7 64cdd3a'
+  plain=$'transcript\n ▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 6.7%   Run Everything\n  ~/wt · 64cdd3a'
   # The closing rule must bound the region, so the footer below is not input.
-  fm_composer_row_has_edge " $(printf '\u2580\u2580\u2580')" \
+  fm_composer_row_has_edge " ▀▀▀" \
     || fail "a half-block rule row must count as a structural edge"
-  fm_composer_row_has_edge " $(printf '\u2584\u2584\u2584')" \
+  fm_composer_row_has_edge " ▄▄▄" \
     || fail "the upper half-block rule must count as a structural edge"
   # Non-vacuousness: the footer rows really are non-blank content that would be
   # swallowed if the rule did not bound the region.
   case "$plain" in *"Run Everything"*) : ;; *) fail "fixture lost its footer content" ;; esac
   ESC_LOCAL=$(printf '\033')
-  screen=$'transcript\n \u2584\u2584\u2584\u2584\u2584\u2584\u2584\u2584\n'"  ${ESC_LOCAL}[2m\u2192 ${ESC_LOCAL}[0;7mA${ESC_LOCAL}[0;2mdd a follow-up${ESC_LOCAL}[0m"$'\n \u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580\n  Cursor Grok 4.5 High \u00b7 6.7%   Run Everything\n  ~/wt \u00b7 64cdd3a'
+  screen=$'transcript\n ▄▄▄▄▄▄▄▄\n'"  ${ESC_LOCAL}[2m→ ${ESC_LOCAL}[0;7mA${ESC_LOCAL}[0;2mdd a follow-up${ESC_LOCAL}[0m"$'\n ▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 6.7%   Run Everything\n  ~/wt · 64cdd3a'
   out=$(fm_composer_classify_screen "$CAPS_STYLED" "$(printf '%b' "$screen")")
   [ "$out" = empty ] \
     || fail "an idle cursor composer inside herdr half-block rules must read empty, got '$out'"
@@ -291,11 +291,12 @@ test_matrix_herdr_halfblock_rule_bounds_bare_wrap() {
 test_matrix_pi_separated_needs_identity() {
   # Real idle pi: a blank row between two solid rules. The blank row alone is
   # exactly what the strict rule refuses; only structure PLUS a live
-  # idle/done/blocked pi identity proves the composer (herdr's rule, now
+  # idle/done pi identity proves the composer (herdr's rule, now
   # fleet-wide; tmux supplies identity from its foreground-process probe).
-  local screen typed pi_idle pi_working none
+  local screen typed pi_idle pi_working pi_blocked none
   screen=$'transcript\n────────────────────────\n\n────────────────────────\n footer'
   pi_idle=$(printf 'pi\tidle'); pi_working=$(printf 'pi\tworking'); none=$(printf 'zsh\t')
+  pi_blocked=$(printf 'pi\tblocked')
   assert_screen "pi idle with identity" empty "$CAPS_STYLED" "$screen" '' "$pi_idle"
   assert_screen "pi idle on tmux with identity" empty "$CAPS_TMUX" "$screen" 2 "$pi_idle"
   assert_screen "pi idle on zellij" unknown "$CAPS_STYLED_NOID" "$screen"
@@ -306,6 +307,10 @@ test_matrix_pi_separated_needs_identity() {
   assert_screen "pi pair without identity capability" unknown "$CAPS_PLAIN" "$screen"
   # A working pi cannot authorize injection into the blank region.
   assert_screen "working pi defers" unknown "$CAPS_STYLED" "$screen" '' "$pi_working"
+  # A pi parked on an interactive prompt reports `blocked`: it is waiting on a
+  # human keystroke, so the blank region is a menu's, not a free composer's.
+  # Typing there answers the prompt and the text is discarded (issue #2797).
+  assert_screen "blocked pi defers" unknown "$CAPS_STYLED" "$screen" '' "$pi_blocked"
   # The audit's live counterexample: a plain shell running sleep, cursor
   # parked on a blank line between two rules, NO pi process. The permissive
   # rule read this `empty`; identity+structure refuses it.

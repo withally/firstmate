@@ -339,28 +339,9 @@ _collapse_newlines() {  # <text>
 # summary firstmate would otherwise have to re-read.
 
 classify_signal() {  # <reason-after-colon> <state>
-  local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task seen live=""
-  # A path that no longer exists was retired by teardown, not left unclassified,
-  # and carries no content to act on, so it self-handles exactly as before rather
-  # than adding a contentless digest entry. Whatever remains must have a
-  # recognized shape: the same positive policy attended mode uses is the away
-  # classifier's syntax boundary too. Unknown verbs, unknown path kinds, and
-  # blank logs are escalated instead of becoming a second, broader dialect.
-  # shellcheck disable=SC2086 # reason is a space-separated signal path list
+  local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task seen
   for f in $reason; do
     [ -e "$f" ] || continue
-    live="${live}${live:+ }$f"
-  done
-  if [ -n "$live" ]; then
-    # shellcheck disable=SC2086 # live is a space-separated signal path list
-    if ! signal_reason_is_routine_nonterminal $live \
-      && ! signal_reason_is_actionable $live; then
-      printf 'escalate|unrecognized signal shape: %s' "$reason"
-      return
-    fi
-  fi
-  # shellcheck disable=SC2086 # live is a space-separated signal path list
-  for f in $live; do
     last=$(last_status_line "$f")
     [ -n "$last" ] || continue
     distilled="${distilled}$(basename "$f"): ${last} | "
@@ -1317,7 +1298,7 @@ handle_durable_wakes() {  # <watcher-reason> <state>
   local handled=0 ack_through ack_generation
   out=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || return 1
   err=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || { rm -f "$out"; return 1; }
-  if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" --no-presentation-commit > "$out" 2> "$err"; then
+  if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then
     cat "$err" >&2
     rm -f "$out" "$err"
     return 1

@@ -18,10 +18,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-operational-input.sh"
 
 fm_is_gate_agent "$FM_ROOT" && exit 0
-if fm_root_is_registered_crew_worktree "$FM_ROOT"; then
-  fm_print_crew_worktree_suppression
-  exit 0
-fi
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 lock_is_in_ancestry() {

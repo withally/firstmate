@@ -831,12 +831,6 @@ assert_no_ordering_lifecycle_calls_since "$FAIL_START" "failed presentation orde
 pass "real Herdr lab: forced workspace.move failure leaves a successful worker in default order with a warning and no cleanup"
 
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
-# A pane's foreground_cwd is always a real, live directory. Materialize the
-# non-worktree location the fixture points settled panes at so its filesystem
-# identity reads cleanly: the post-create abort must then come from
-# validate_spawn_worktree rejecting a real directory that is not an isolated
-# git worktree, not from an identity-read failure on a phantom path.
-mkdir -p "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
 spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &

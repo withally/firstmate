@@ -37,105 +37,6 @@ test_buried_decision_still_surfaces() {
   pass "a needs-decision buried under later routine/other-key lines still reports as open"
 }
 
-test_unchanged_open_decisions_use_compact_marker() {
-  local dir state first second
-  dir=$(make_case unchanged-marker); state="$dir/state"
-  first="$dir/first.out"; second="$dir/second.out"
-  printf 'needs-decision [key=route]: choose A or B\n' > "$state/task-marker.status"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" || fail "first decision drain failed"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "second decision drain failed"
-  grep -F 'task-marker [key=route]' "$first" >/dev/null \
-    || fail "first decision presentation omitted the full open decision"
-  [ "$(cat "$second")" = 'OPEN DECISIONS: unchanged, 1 open' ] \
-    || fail "unchanged decision did not collapse to the one-line marker: $(cat "$second")"
-  printf 'blocked [key=infra]: credentials missing\n' >> "$state/task-marker.status"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "changed decision drain failed"
-  grep -F 'credentials missing' "$second" >/dev/null \
-    || fail "a changed decision set did not restore the full block"
-  pass "unchanged open decisions collapse to one line and changed sets print in full"
-}
-
-test_compact_recovery_always_prints_the_full_open_decisions_block() {
-  local dir state first compact
-  dir=$(make_case compact-recovery-decisions); state="$dir/state"
-  first="$dir/first.out"; compact="$dir/compact.out"
-  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task1.status"
-  # A normal drain presents the block and commits the unchanged-collapse marker.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" || fail "first decision drain failed"
-  grep -F 'task1 [key=api-shape]' "$first" >/dev/null \
-    || fail "first decision presentation omitted the full open decision"
-
-  # Compaction destroys the context that collapse depends on, so the recovery
-  # drain must re-present the decision in full even though the set is unchanged.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --compact > "$compact" || fail "compact recovery drain failed"
-  grep -F 'OPEN DECISIONS: unchanged' "$compact" >/dev/null \
-    && fail "compact recovery collapsed open decisions to a bare count: $(cat "$compact")"
-  grep -F 'task1' "$compact" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
-    || fail "compact recovery lost the decision's task, key, and note: $(cat "$compact")"
-  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$compact" >/dev/null \
-    || fail "compact recovery omitted the resolve instruction: $(cat "$compact")"
-  pass "compact recovery re-presents the full open-decisions block instead of an unchanged count"
-}
-
-test_session_recovery_always_prints_the_full_open_decisions_block() {
-  local dir state first collapsed recovered
-  dir=$(make_case session-recovery-decisions); state="$dir/state"
-  first="$dir/first.out"; collapsed="$dir/collapsed.out"; recovered="$dir/recovered.out"
-  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task1.status"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" || fail "first decision drain failed"
-  grep -F 'task1 [key=api-shape]' "$first" >/dev/null \
-    || fail "first decision presentation omitted the full open decision"
-
-  # An ordinary mid-turn drain runs in the same context that saw the block, so it
-  # still collapses.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$collapsed" || fail "second decision drain failed"
-  [ "$(cat "$collapsed")" = 'OPEN DECISIONS: unchanged, 1 open' ] \
-    || fail "an in-context repeat drain stopped collapsing: $(cat "$collapsed")"
-
-  # A session-start / clear re-emit digest runs precisely because that context is
-  # gone, so it must re-present the decision in full.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --session-recovery > "$recovered" \
-    || fail "session-recovery drain failed"
-  grep -F 'OPEN DECISIONS: unchanged' "$recovered" >/dev/null \
-    && fail "session recovery collapsed open decisions to a bare count: $(cat "$recovered")"
-  grep -F 'task1' "$recovered" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
-    || fail "session recovery lost the decision's task, key, and note: $(cat "$recovered")"
-  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$recovered" >/dev/null \
-    || fail "session recovery omitted the resolve instruction: $(cat "$recovered")"
-  pass "a session-recovery drain re-presents the full open-decisions block while in-context repeats still collapse"
-}
-
-test_machine_consumer_drain_does_not_spend_the_open_decisions_presentation() {
-  local dir state daemon returning recovered
-  dir=$(make_case machine-consumer-decisions); state="$dir/state"
-  daemon="$dir/daemon.out"; returning="$dir/returning.out"; recovered="$dir/recovered.out"
-  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task1.status"
-
-  # The away-mode daemon drains to consume the TSV wake rows and discards the
-  # presented text, so it shows the block to nobody.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --no-presentation-commit > "$daemon" \
-    || fail "machine-consumer drain failed"
-  grep -F 'task1 [key=api-shape]' "$daemon" >/dev/null \
-    || fail "the machine-consumer drain changed the drain's own output shape: $(cat "$daemon")"
-
-  # The captain returns from away mode. Nobody has seen the block yet, so the
-  # collapse must not have been spent on the daemon's behalf.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$returning" || fail "returning drain failed"
-  grep -F 'OPEN DECISIONS: unchanged' "$returning" >/dev/null \
-    && fail "a drain nobody read spent the open-decisions presentation: $(cat "$returning")"
-  grep -F 'task1' "$returning" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
-    || fail "the away-mode handover lost the decision's task, key, and note: $(cat "$returning")"
-  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$returning" >/dev/null \
-    || fail "the away-mode handover omitted the resolve instruction: $(cat "$returning")"
-
-  # bin/fm-afk-return.sh drains in recovery mode, which re-presents regardless.
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --session-recovery > "$recovered" \
-    || fail "away-return recovery drain failed"
-  grep -F '[key=api-shape]' "$recovered" >/dev/null \
-    || fail "the away-return recovery drain omitted the open decision: $(cat "$recovered")"
-  pass "a drain whose presentation nobody reads never spends the open-decisions collapse"
-}
-
 test_explicit_resolution_closes_it() {
   local dir state out
   dir=$(make_case resolved)
@@ -315,10 +216,6 @@ test_over_long_decision_note_is_capped_with_a_marker() {
 }
 
 test_buried_decision_still_surfaces
-test_unchanged_open_decisions_use_compact_marker
-test_compact_recovery_always_prints_the_full_open_decisions_block
-test_session_recovery_always_prints_the_full_open_decisions_block
-test_machine_consumer_drain_does_not_spend_the_open_decisions_presentation
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

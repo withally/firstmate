@@ -103,34 +103,6 @@ test_unmarked_linked_worktree_is_silent() {
   pass "fm-sessionstart-nudge: an unmarked linked task worktree is silent"
 }
 
-test_registered_crew_worktree_suppresses_digest() {
-  local base="$TMP_ROOT/crew-base" root="$TMP_ROOT/crew-worktree" out status=0
-  fm_git_worktree "$base" "$root" fm/sessionstart-crew
-  mkdir -p "$base/state" "$root/bin" "$root/state"
-  : > "$root/AGENTS.md"
-  cat > "$base/state/sessionstart-crew.meta" <<EOF
-id=sessionstart-crew
-worktree=$root
-EOF
-
-  out=$(run_nudge "$root") || status=$?
-  expect_code 0 "$status" "registered crew nudge"
-  [ "$out" = "crew worktree - digest suppressed" ] \
-    || fail "registered crew nudge printed unexpected output: $out"
-
-  status=0
-  out=$(run_hook "$root" --source startup </dev/null) || status=$?
-  expect_code 0 "$status" "registered crew run wrapper"
-  [ "$out" = "crew worktree - digest suppressed" ] \
-    || fail "registered crew run wrapper printed unexpected output: $out"
-  status=0
-  out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$ROOT/bin/fm-session-start.sh" </dev/null) || status=$?
-  expect_code 0 "$status" "registered crew direct digest"
-  [ "$out" = "crew worktree - digest suppressed" ] \
-    || fail "registered crew direct digest printed unexpected output: $out"
-  pass "session-start hooks suppress the primary digest in a registered crew worktree"
-}
-
 test_linked_secondmate_primary_nudges() {
   local base="$TMP_ROOT/secondmate-base" root="$TMP_ROOT/secondmate-home" out status=0
   fm_git_worktree "$base" "$root" fm/sessionstart-secondmate
@@ -249,33 +221,23 @@ test_run_startup_runs_the_full_digest() {
   pass "run wrapper: startup runs the full digest and never also nudges"
 }
 
-test_run_clear_and_compact_recover() {
-  local root out status=0
-  root="$TMP_ROOT/run-clear"
-  make_run_primary "$root"
-  run_hook "$root" --source startup </dev/null >/dev/null
-  out=$(run_hook "$root" --source clear </dev/null) || status=$?
-  expect_code 0 "$status" "run wrapper clear"
-  assert_contains "$out" "$REEMIT_BANNER$root" "clear did not re-emit the digest"
-
-  root="$TMP_ROOT/run-compact"
-  make_run_primary "$root"
-  printf 'window=test:fm-active\nkind=ship\nharness=pi\nbackend=tmux\n' > "$root/state/active.meta"
-  printf 'working: routine tail that compact must omit\n' > "$root/state/active.status"
-  printf 'private context that compact must omit\n' > "$root/data/captain.md"
-  run_hook "$root" --source startup </dev/null >/dev/null
-  status=0
-  out=$(run_hook "$root" --source compact </dev/null) || status=$?
-  expect_code 0 "$status" "run wrapper compact"
-  assert_contains "$out" "COMPACT RECOVERY - $root" "compact recovery banner is missing"
-  assert_contains "$out" 'ACTIVE TASK IDENTITIES' "compact task identity section is missing"
-  assert_contains "$out" 'active kind=ship harness=pi backend=tmux target=test:fm-active' \
-    "compact recovery omitted the active task identity"
-  assert_contains "$out" 'NEXT SUPERVISION INSTRUCTION' "compact next instruction is missing"
-  assert_not_contains "$out" 'routine tail that compact must omit' "compact printed a status tail"
-  assert_not_contains "$out" 'private context that compact must omit' "compact printed an unchanged context file"
-  assert_not_contains "$out" 'FLEET STATE' "compact printed the full fleet digest"
-  pass "run wrapper: clear re-emits while compact emits only bounded recovery state"
+test_run_clear_and_compact_reemit() {
+  local root out source status
+  for source in clear compact; do
+    root="$TMP_ROOT/run-$source"
+    make_run_primary "$root"
+    run_hook "$root" --source startup </dev/null >/dev/null
+    assert_present "$root/state/.session-start-complete" \
+      "startup did not publish the completion proof needed by $source"
+    status=0
+    out=$(run_hook "$root" --source "$source" </dev/null) || status=$?
+    expect_code 0 "$status" "run wrapper $source"
+    assert_contains "$out" "$REEMIT_BANNER$root" "$source did not re-emit the digest"
+    assert_contains "$out" "are NOT repeated" "$source did not report the skipped startup sweeps"
+    assert_contains "$out" "Queued wakes ARE still drained" "$source did not preserve the wake-queue drain"
+    assert_not_contains "$out" "FIRSTMATE_OP" "a $source open also emitted the nudge instruction"
+  done
+  pass "run wrapper: clear and compact re-emit the digest without repeating startup sweeps"
 }
 
 test_run_rebuild_forwards_source_to_drifted_instruction_refresh() {
@@ -517,7 +479,7 @@ test_run_reads_source_from_the_hook_payload() {
   out=$(printf '{"session_id":"s1","hook_event_name":"SessionStart","source":"compact"}' |
     run_hook "$root") || status=$?
   expect_code 0 "$status" "run wrapper payload compact"
-  assert_contains "$out" "COMPACT RECOVERY - $root" "a compact hook payload was not routed to compact recovery"
+  assert_contains "$out" "$REEMIT_BANNER$root" "a compact hook payload was not routed to a re-emit"
 
   # A fresh root, because the compact case above legitimately took the lock and
   # an owned lock is exactly when the nudge is supposed to stay silent.
@@ -575,13 +537,12 @@ test_genuine_primary_nudges
 test_gate_env_is_silent
 test_gate_common_dir_is_silent
 test_unmarked_linked_worktree_is_silent
-test_registered_crew_worktree_suppresses_digest
 test_linked_secondmate_primary_nudges
 test_missing_state_is_silent
 test_owned_lock_is_silent
 test_opencode_plugin_delivers_exact_nudge_once
 test_run_startup_runs_the_full_digest
-test_run_clear_and_compact_recover
+test_run_clear_and_compact_reemit
 test_run_rebuild_forwards_source_to_drifted_instruction_refresh
 test_run_compact_without_completion_refreshes_before_finishing_startup
 test_run_clear_without_completion_finishes_startup

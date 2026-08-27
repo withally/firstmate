@@ -124,7 +124,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```
 
 3. Confirm the audit window from the recorded snapshot commit.
-   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step proves it is still what intake's boundary rule resolves to, because another sync merging first would make the brief's value stale and mis-size step 4's range.
+   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step catches a marker that moved after intake, which would mis-size step 4's range.
 
    ```sh
    git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
@@ -138,7 +138,9 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```
 
    `SETTLED` comes from the brief, never from the working tree: step 2 branched at `upstream/main`, where `docs/upstream-sync.md` does not exist, so re-deriving it here would resolve to empty and block a sync whose boundary is correct.
-   Read the current log with `git show origin/main:docs/upstream-sync.md` if you need it for any other reason.
+   The check is therefore narrow by design: when the brief records a `SETTLED`, that value stays the boundary and a concurrent sync's newer marker cannot trip this guard.
+   That is safe rather than complete — the resulting window is over-wide and the concurrent sync's own squash inside it is excluded by step 5 — but do not read this step as proving the boundary is still what intake would resolve today.
+   Read the current log with `git show origin/main:docs/upstream-sync.md` when you need the live row for any other reason.
 
 4. List the fork PRs after that snapshot; this is the complete audit set.
 
@@ -154,8 +156,14 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 6. Compare each audited PR against current upstream by behavior, using `git show <sha>` and a search of `upstream/main` for the same change.
    Record one verdict per PR: `already-upstream` (with the upstream PR number), `superseded` (with the upstream PR number), `no-longer-needed` (with the reason), or `kept`.
 7. Apply the keep rule from the doc without asking: default to upstream, keep only when current upstream lacks the behavior and the fork still has a concrete need for it.
-   The sync's own procedural spine is a mandatory keep, whatever the rule would otherwise say: `docs/upstream-sync.md`, `.agents/skills/upstream-sync/`, and the `AGENTS.md` pointer.
-   They are fork-local and absent from `upstream/main`, so dropping them would strip the next sync's checklist and catch-up log from the branch that becomes `origin/main`.
+   The sync's own procedural spine never goes through the audit at all: restore it from `origin/main` verbatim, before any cherry-pick.
+
+   ```sh
+   git checkout origin/main -- docs/upstream-sync.md .agents/skills/upstream-sync AGENTS.md
+   ```
+
+   Cherry-picking the fork PR that introduced these files would reinstate their state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
+   They are fork-local and absent from `upstream/main`, so the upstream-wins conflict rule does not apply to them and nothing upstream can be lost by taking them wholesale.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
 9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.
 
@@ -237,7 +245,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     followed by `Tier: weekly|monthly`, the validation commands actually run, and a `Follow-ups` list (possibly empty).
     Never push to `upstream` and never merge.
-13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the last fork commit this sync adjudicates, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
-    If the file is missing because step 7's mandatory keeps were not re-applied, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
+13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the last adjudicated fork commit as a bare backticked SHA in its own column, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+    Append to the copy step 7 restored from `origin/main`, so the row lands on top of every earlier row rather than on a stale snapshot of the file.
+    If the file is missing, or its newest row predates the one `git show origin/main:docs/upstream-sync.md` shows, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
     The last adjudicated fork commit is not optional: intake's window override reads it, and a row without it silently falls back to the stale marker.
 14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

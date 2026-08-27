@@ -47,12 +47,14 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    The delivery mode is `no-mistakes`, the doc's standing PR path; its Test step is intent-targeted, so it does not re-run the full suite and stays inside the weekly tier.
 
    ```sh
-   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes                # weekly
-   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes --herdr-lab   # monthly
+   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes                # weekly, no Herdr expected
+   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes --herdr-lab   # weekly known to touch Herdr, or after a blocked: regeneration
+   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes --herdr-lab   # monthly, always
    ```
 
    A monthly tier always needs `--herdr-lab` because the full suite drives Herdr lifecycle behavior through the lab.
-   A weekly tier normally does not; if the kept diff later turns out to select the `real-herdr-gated` family, the worker stops and reports so the brief is regenerated with `--herdr-lab` rather than adding lab commands by hand.
+   A weekly tier normally does not; if the kept diff later turns out to select the `real-herdr-gated` family, the worker stops with `blocked: sync touches Herdr, brief needs --herdr-lab`, and Firstmate reissues the same brief with `--herdr-lab` rather than letting the worker add lab commands by hand.
+   The regenerated weekly brief is what lets the worker run the Herdr family locally in step 10; regenerating it and then skipping that run leaves the lab contract unused.
 4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `TIER`, and `DATE`.
 5. Spawn per `AGENTS.md` section 7, record the sync as work under way, and supervise as usual.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
@@ -130,9 +132,19 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
       <(bin/fm-test-run.sh --list --family real-herdr-gated | sort -u)
     ```
 
-    Any output means the sync is Herdr-affecting, so it needs a brief scaffolded with `--herdr-lab`; see [`references/herdr-lab.md`](references/herdr-lab.md).
     Do not judge this from a hand-written path list: the map also routes `bin/fm-backend.sh`, `bin/fm-afk*`, `bin/fm-supervisor-target-lib.sh`, and several install and CI files to `real-herdr-gated`.
-    CI's portable shards on the PR are the weekly full gate; do not run `--all` locally.
+
+    No output means the sync is not Herdr-affecting and the weekly tier is done.
+    Any output means it is, and the next move depends on the brief.
+    If this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait for the regenerated brief; never add lab commands to a brief that declares `NOT ENABLED`.
+    If it was, the lab contract is live, so run the family now:
+
+    ```sh
+    bin/fm-test-run.sh --family real-herdr-gated --fail-on-gate-skip 'herdr not found'
+    ```
+
+    See [`references/herdr-lab.md`](references/herdr-lab.md) for the preconditions that run needs.
+    CI's portable shards and its required Herdr lane on the PR are the weekly full gate; do not run `--all` locally.
 
     Monthly:
 

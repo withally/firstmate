@@ -14,7 +14,7 @@ This is the one place the sync worker learns how the isolated Herdr lab works, s
 
 The brief must be scaffolded with `bin/fm-brief.sh ... --herdr-lab` whenever the lab is required.
 That flag emits the hard isolation contract naming `HERDR_LAB_HELPER` and the session name; a brief without it carries a loud `NOT ENABLED` declaration, and a worker must never add lab commands to such a brief by hand.
-If the need appears only after dispatch, the worker stops with a `blocked:` line and Firstmate regenerates the brief.
+If the need appears only after dispatch, the worker stops with a `blocked:` line and Firstmate regenerates the brief; on the regenerated brief the worker runs the family from the skill's step 10 rather than blocking again.
 
 ## Preconditions
 

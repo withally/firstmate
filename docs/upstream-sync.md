@@ -68,7 +68,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Both the append and its commit come before the ship in step 13, because the gate validates committed history only; a row left in the working tree or added after the PR is open never reaches `origin/main`.
 13. Ship through no-mistakes to the fork's PR path.
     Match the marker on the subject line, not with `git log --grep`, which matches any line of the message and so would find the title inside a merge commit's body.
-   Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
+    Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
     Never push to the canonical upstream remote and never merge without explicit captain approval.
 
 Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September is deliberately skipped).

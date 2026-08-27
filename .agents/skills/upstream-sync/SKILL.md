@@ -32,7 +32,8 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     *kunchenguid/firstmate|*kunchenguid/firstmate.git|*kunchenguid/firstmate/) ;;
+     git@github.com:kunchenguid/firstmate.git|ssh://git@github.com/kunchenguid/firstmate.git|\
+     https://github.com/kunchenguid/firstmate|https://github.com/kunchenguid/firstmate.git) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
    git remote set-url --push upstream DISABLED
@@ -68,7 +69,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 
 Each numbered step maps onto the same-numbered step of the doc's weekly procedure where one exists; the doc owns the rule, this list owns the command.
 
-1. Verify isolation per the brief, bind the brief's recorded values into this shell, ensure both remotes, and confirm the recorded base still equals `upstream/main`.
+1. Verify isolation per the brief, bind the brief's recorded values into this shell, ensure both remotes, and confirm the recorded base is still reachable from `upstream/main`.
    Every later step consumes `$UPSTREAM_BASE` and `$SNAPSHOT`, so bind them before anything else and keep working in the same shell; an unset `SNAPSHOT` makes step 4's range silently mean `HEAD..origin/main`, which is the over-wide set step 5 forbids.
    `UPSTREAM_BASE` is a deliberate pin, so ordinary upstream movement between intake and this step is fine and next week's sync absorbs it; the check is reachability, not equality.
    Only a base that is no longer an ancestor of `upstream/main` is disqualifying, because that means upstream history was rewritten or the recorded value never came from this parent.
@@ -80,7 +81,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: brief is missing UPSTREAM_BASE or SNAPSHOT'; exit 1; }
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     *kunchenguid/firstmate|*kunchenguid/firstmate.git|*kunchenguid/firstmate/) ;;
+     git@github.com:kunchenguid/firstmate.git|ssh://git@github.com/kunchenguid/firstmate.git|\
+     https://github.com/kunchenguid/firstmate|https://github.com/kunchenguid/firstmate.git) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
    git remote set-url --push upstream DISABLED
@@ -157,6 +159,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     If it was, the lab contract is live, so run the family now:
 
     ```sh
+    for t in herdr jq treehouse python3 tmux; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it the suites skip into a green result"; exit 1; }; done
     bin/fm-test-run.sh --family real-herdr-gated --fail-on-gate-skip 'herdr not found'
     ```
 
@@ -167,11 +170,13 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     ```sh
     bin/fm-lint.sh
+    for t in herdr jq treehouse python3 tmux; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it the suites skip into a green result"; exit 1; }; done
     bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'
     ```
 
     The full run includes the `real-herdr-gated` family, which needs a running default Herdr server and the lab contract from `--herdr-lab`; [`references/herdr-lab.md`](references/herdr-lab.md) owns that setup.
     `--fail-on-gate-skip` is not optional here: a gate skip is otherwise a success, so a clone without `herdr` on `PATH` would report the whole monthly suite green having run none of the Herdr lifecycle tests the tier exists to cover.
+    It takes a single token, so it cannot cover the family's other gates; the `command -v` loop above asserts every binary those suites gate on, because a missing `jq`, `treehouse`, `python3`, or `tmux` skips them into the same green result.
 11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
     Firstmate files each one as separate work after the PR is open.
 12. Ship through no-mistakes to the fork's PR path.

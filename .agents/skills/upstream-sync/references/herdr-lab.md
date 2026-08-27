@@ -18,7 +18,8 @@ If the need appears only after dispatch, the worker stops with a `blocked:` line
 
 ## Preconditions
 
-- `herdr` and `jq` on `PATH`.
+- `herdr`, `jq`, `treehouse`, `python3`, and `tmux` on `PATH`, because every suite in the family gates on one or more of them and a missing binary is a skip, not a failure.
+  `--fail-on-gate-skip` accepts one token only, so assert these with `command -v` before the run rather than relying on it.
 - Exactly one running `default` Herdr session, because the helper snapshots it as the fleet-state tripwire before provisioning and requires it byte-identical after teardown.
   Check with `herdr session list --json | jq '.sessions[] | select(.default == true)'`.
 - The worker is not inheriting a pane identity from a Herdr-hosted terminal that should place work elsewhere; `tests/herdr-test-safety.sh`'s `herdr_forget_inherited_pane` shows which variables the suites drop.

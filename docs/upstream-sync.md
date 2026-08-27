@@ -64,6 +64,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     The window end commit is the `origin/main` tip pinned when the audit set was listed, whether or not that commit was adjudicated, so the column is always fillable even when the window held nothing but an excluded snapshot squash.
     It is what step 4's boundary rule reads, so a row without it leaves the next sync on the stale marker and silently loses the accumulated fork delta.
     After a monthly sync, advance the `Next monthly full run` line to the first day of the following month.
+    Stage the file before committing it, since appending the row is a plain edit to a tracked file and `git commit -m` alone would stage nothing.
     Both the append and its commit come before the ship in step 13, because the gate validates committed history only; a row left in the working tree or added after the PR is open never reaches `origin/main`.
 13. Ship through no-mistakes to the fork's PR path.
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.

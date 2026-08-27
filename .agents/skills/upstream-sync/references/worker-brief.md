@@ -34,8 +34,8 @@ Fixed rules:
 - Decide every keep by the doc's keep rule yourself; no mid-flight approval.
 - Cherry-pick kept PRs with `-x`; upstream wins every conflict.
 - Run only the TIER's validation from the skill; CI's portable shards and its required Herdr lane on the PR are the weekly full gate.
-- Append and commit the catch-up log row before shipping, advancing the `Next monthly full run` line on a monthly tier; a row that is uncommitted or added after the PR is open is never validated and never reaches `origin/main`.
-- Ship the PR with `no-mistakes axi run --skip rebase --intent "weekly upstream sync of withally/firstmate onto kunchenguid/firstmate at {UPSTREAM_BASE}"`; `--intent` is required to start a run, and a cutover branch is cut from `upstream/main`, so rebasing it onto the fork's `origin/main` would replay the divergent fork history back onto the new base and undo the adoption.
+- Append the catch-up log row before shipping and commit it with `git add docs/upstream-sync.md && git commit -m 'docs: record the {DATE} catch-up'`, advancing the `Next monthly full run` line on a monthly tier; a row that is uncommitted or added after the PR is open is never validated and never reaches `origin/main`.
+- Ship the PR with `no-mistakes axi run --skip rebase --intent "{TIER} upstream sync of withally/firstmate onto kunchenguid/firstmate at {UPSTREAM_BASE}"`; `--intent` is required to start a run, and a cutover branch is cut from `upstream/main`, so rebasing it onto the fork's `origin/main` would replay the divergent fork history back onto the new base and undo the adoption.
 - Unrelated breakage is a `Follow-ups` entry in the PR, never a fix on this branch.
 - If the kept diff selects the `real-herdr-gated` family per the skill's `comm -12` check against `bin/fm-test-run.sh --list`, and this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait.
 - If that check selects the family and this brief does carry the lab contract, run the family locally per the skill's step 10; do not block a second time.

@@ -187,7 +187,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    A PR that touches spine and non-spine paths together is picked normally; only the spine-only case is exempt.
    If one is picked by mistake, recover with `git cherry-pick --skip` rather than `--allow-empty`, so the sequence continues without an empty commit.
    Commit the restore immediately, because `git checkout <ref> -- <paths>` also writes the index and `git cherry-pick` refuses to run against a dirty index even for unrelated paths.
-   Commit the three targeted edits immediately too, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.
+   Commit the three targeted edits immediately too, with `git add AGENTS.md bin/fm-test-run.sh docs/documentation-audiences.json && git commit -m 'chore: re-apply upstream-sync companion edits'`, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.
+   The `git add` is not optional here the way it is after the restore: these are plain edits to tracked files, so `git commit -m` alone stages nothing and exits non-zero.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
 9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.
 
@@ -260,12 +261,13 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
     It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
     "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
-    Commit it before step 13 ships, with `git commit -m 'docs: record the <DATE> catch-up'`, so the pipeline validates the row and the merged PR carries it.
+    Commit it before step 13 ships, with `git add docs/upstream-sync.md && git commit -m 'docs: record the <DATE> catch-up'`, so the pipeline validates the row and the merged PR carries it.
+    Appending the row is a plain edit to a tracked file, so `git commit -m` without the `git add` stages nothing and exits non-zero, leaving the row in the working tree.
     An uncommitted row is the silent failure: `axi run` validates committed history and ignores the working tree, so CI goes green and the merged commit carries no row at all.
     A row added after the PR is open is either never pushed or lands unvalidated, and intake's window override plus the monthly-tier check both read it from the merged commit.
 
-13. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase --intent "weekly upstream sync of withally/firstmate onto kunchenguid/firstmate at <UPSTREAM_BASE>"`.
-    `--intent` is required to start a run, so the bare command fails before the first pipeline step; name the tier in it when the tier is monthly.
+13. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase --intent "<TIER> upstream sync of withally/firstmate onto kunchenguid/firstmate at <UPSTREAM_BASE>"`.
+    `--intent` is required to start a run, so the bare command fails before the first pipeline step, and the tier belongs in it because the gate treats the intent as the run's authoritative goal rather than inferring one.
     The rebase step is skipped because a cutover branch is cut from `upstream/main` and rebasing it onto the fork's `origin/main` would replay the whole divergent fork history back onto the new base, undoing the adoption the sync exists to perform.
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
     The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.

@@ -156,14 +156,19 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 6. Compare each audited PR against current upstream by behavior, using `git show <sha>` and a search of `upstream/main` for the same change.
    Record one verdict per PR: `already-upstream` (with the upstream PR number), `superseded` (with the upstream PR number), `no-longer-needed` (with the reason), or `kept`.
 7. Apply the keep rule from the doc without asking: default to upstream, keep only when current upstream lacks the behavior and the fork still has a concrete need for it.
-   The sync's own procedural spine never goes through the audit at all: restore it from `origin/main` verbatim, before any cherry-pick.
+   The sync's own procedural spine never goes through the audit at all: restore it from `origin/main` verbatim, then commit, before any cherry-pick.
 
    ```sh
-   git checkout origin/main -- docs/upstream-sync.md .agents/skills/upstream-sync AGENTS.md
+   git checkout origin/main -- docs/upstream-sync.md .agents/skills/upstream-sync
+   git commit -m 'chore: restore fork sync spine'
    ```
 
-   Cherry-picking the fork PR that introduced these files would reinstate their state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
-   They are fork-local and absent from `upstream/main`, so the upstream-wins conflict rule does not apply to them and nothing upstream can be lost by taking them wholesale.
+   Only those two paths: they are fork-local and absent from `upstream/main`, so taking them wholesale can lose nothing upstream.
+   `AGENTS.md` is not on that list and must never be restored this way — it is a shared upstream document with hundreds of upstream commits, and overwriting it from `origin/main` would silently revert every upstream edit made since the last sync.
+   Re-add the fork's one-line `upstream-sync` pointer to upstream's `AGENTS.md` as a targeted edit instead, so the rest of the file stays upstream's.
+   Cherry-picking the fork PR that introduced the spine would reinstate its state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
+   Give that PR a `kept` verdict in the table but never cherry-pick it: step 9 would hit an add/add conflict against the files just restored, and the upstream-wins rule has no upstream side to choose.
+   Commit the restore immediately, because `git checkout <ref> -- <paths>` also writes the index and `git cherry-pick` refuses to run against a dirty index even for unrelated paths.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
 9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.
 

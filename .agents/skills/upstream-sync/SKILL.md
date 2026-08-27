@@ -30,13 +30,12 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 1. Fetch and record the base.
 
    ```sh
-   git -C projects/firstmate fetch upstream --prune
-   git -C projects/firstmate fetch origin --prune
-   UPSTREAM_BASE=$(git -C projects/firstmate rev-parse --short=12 upstream/main)
-   SNAPSHOT=$(git -C projects/firstmate log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
+   git fetch upstream --prune && git fetch origin --prune
+   UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
+   SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
    ```
 
-   Read the clone only; the worker repeats the fetch in its own worktree.
+   Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
 2. Determine the tier from the `Next monthly full run` line in [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
    The sync is `monthly` when today's date is on or after that line's date and no catch-up log row already records a `monthly` tier on or after it; otherwise it is `weekly`.
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.

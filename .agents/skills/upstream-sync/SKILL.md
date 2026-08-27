@@ -146,12 +146,15 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
    ```sh
    [ -n "$SNAPSHOT" ] || { echo 'blocked: SNAPSHOT unset; an empty range endpoint silently means HEAD'; exit 1; }
-   WINDOW_END=$(git rev-parse origin/main)
+   WINDOW_END=$(git rev-parse --verify origin/main)
    [ -n "$WINDOW_END" ] || { echo 'blocked: could not resolve origin/main for the window end'; exit 1; }
+   echo "WINDOW_END=$WINDOW_END"
    git log --reverse --first-parent --format='%h%x09%cs%x09%s' "$SNAPSHOT".."$WINDOW_END"
    ```
 
-   Pin `WINDOW_END` here and carry that exact value to step 13; never re-read `origin/main` later.
+   Pin `WINDOW_END` here and carry that exact value to step 12; never re-read `origin/main` later.
+   The `echo` is what makes it recoverable: an empty window prints no log lines, so without it the pinned value would exist only in a shell that is gone by the time the row is written.
+   `--verify` matters too, because plain `git rev-parse` on a missing ref writes the ref name to stdout and exits 128, which would satisfy the non-empty guard with garbage.
    Steps 6 through 12 take hours, and a fork PR that merges in the meantime would otherwise become the recorded boundary — landing in no sync's audit set, getting no verdict, and never being cherry-picked onto the new base.
 
 5. Never widen the set with `origin/main ^upstream/main` or the merge base; the doc explains why.
@@ -250,11 +253,21 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     It takes a single token, so it cannot cover the family's other gates; the checks above assert every head gate that exits a whole suite, because a missing `jq`, `treehouse`, or `python3`, or a non-executable lab helper, skips suites into the same green result.
 11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
     Firstmate files each one as separate work after the PR is open.
-12. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase`.
+12. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+    Append to the copy step 7 restored from `origin/main`, so the row lands on top of every earlier row rather than on a stale snapshot of the file.
+    If the file is missing, or its newest row predates the one `git show origin/main:docs/upstream-sync.md` shows, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
+    The window end commit is the `WINDOW_END` step 4 pinned — the last first-parent commit inside this window, whether or not it was adjudicated, including an excluded snapshot squash.
+    Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
+    It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
+    "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
+    Append it before step 13 ships, so the pipeline validates the row and the merged PR carries it.
+    A row added after the PR is open is either never pushed or lands unvalidated, and intake's window override plus the monthly-tier check both read it from the merged commit.
+
+13. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase`.
     The rebase step is skipped because a cutover branch is cut from `upstream/main` and rebasing it onto the fork's `origin/main` would replay the whole divergent fork history back onto the new base, undoing the adoption the sync exists to perform.
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
     The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.
-    The verdict table carries the same full accumulated keep-list step 5 and step 13 require, not just the window's own PRs, because it is the captain's single review surface for everything the branch re-applies.
+    The verdict table carries the same full accumulated keep-list step 5 and step 12 require, not just the window's own PRs, because it is the captain's single review surface for everything the branch re-applies.
     The PR description must contain the verdict table:
 
     ```markdown
@@ -268,11 +281,4 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     followed by `Tier: weekly|monthly`, the validation commands actually run, and a `Follow-ups` list (possibly empty).
     Never push to `upstream` and never merge.
-13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
-    Append to the copy step 7 restored from `origin/main`, so the row lands on top of every earlier row rather than on a stale snapshot of the file.
-    If the file is missing, or its newest row predates the one `git show origin/main:docs/upstream-sync.md` shows, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
-    The window end commit is the `WINDOW_END` step 4 pinned — the last first-parent commit inside this window, whether or not it was adjudicated, including an excluded snapshot squash.
-    Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
-    It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
-    "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
 14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

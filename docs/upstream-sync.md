@@ -50,7 +50,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
    Every audited PR and its verdict (already-upstream, superseded, no-longer-needed, or kept) goes in a table in the PR description, and the captain rules once at merge.
 9. Re-apply only the kept behaviors on top of the recorded upstream base.
    Resolve conflicts in favor of upstream and preserve newer upstream architecture, wording, tests, and safety contracts.
-10. Validate by tier, then ship through no-mistakes to the fork's PR path.
+10. Validate by tier, append the catch-up log row below, then ship through no-mistakes to the fork's PR path.
     A weekly sync runs `bin/fm-lint.sh` plus only the tests the repo's maintained changed-file-to-test map selects for the diff of the kept commits against the upstream base, via `bin/fm-test-run.sh --changed --base <upstream-base>`; Herdr lifecycle tests run locally only when that same selection includes the `real-herdr-gated` family, and then only from a brief carrying the lab contract; CI's portable shards and its required Herdr lane on the PR are the full gate.
     A monthly sync, the first sync on or after the 1st of a month named by the `Next monthly full run` line below, runs the full `bin/fm-test-run.sh` suite locally with the Herdr gate skip made fatal, so the Herdr lab is genuinely exercised rather than skipped into a green result.
     Unrelated breakage found during either tier is noted in the PR and filed as separate follow-up work, never fixed on the sync branch.
@@ -60,6 +60,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Its companion edits in upstream-owned files — the `AGENTS.md` pointer, the skill's arm in `bin/fm-test-run.sh`'s changed-file map, and its entries in `docs/documentation-audiences.json` — are re-applied as targeted edits onto upstream's copies, never restored wholesale.
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
 11. Append one row to the catch-up log below.
+    Append it before the ship in step 10, so the pipeline validates the row and the merged PR carries it; a row added after the PR is open is either never pushed or lands unvalidated.
     Record the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, post-catch-up PR audit set, and final verdict for every audited PR.
     The verdict list is cumulative: it carries the PRs recovered from a previous sync's excluded snapshot squash as well as the ones this window newly adjudicated, because the next sync rebuilds the fork delta from this row alone.
     The window end commit is the `origin/main` tip pinned when the audit set was listed, whether or not that commit was adjudicated, so the column is always fillable even when the window held nothing but an excluded snapshot squash.

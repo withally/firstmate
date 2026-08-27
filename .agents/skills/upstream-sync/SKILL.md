@@ -56,8 +56,10 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
    That direction is also what makes an unlanded log row harmless — the 2026-08-27 row's adopted base still lives only on an unmerged branch, and the worst it can do is widen the audit set.
    Record the resolved `SNAPSHOT` and the `SETTLED` it came from in the brief; the worker cannot re-derive them, because it branches at `upstream/main` where `docs/upstream-sync.md` does not exist.
-2. Determine the tier from the `Next monthly full run` line in [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
-   The sync is `monthly` when today's date is on or after that line's date and no catch-up log row already records a `monthly` tier on or after it; otherwise it is `weekly`.
+2. Determine the tier from the `Next monthly full run` line in the `$LOG` step 1 read out of `origin/main`, never from the checkout.
+   The sync is `monthly` when today's date is on or after that line's date and no catch-up log row in `$LOG` already records a `monthly` tier on or after it; otherwise it is `weekly`.
+   A stale code root is why this reads the merged copy: it would still show the pre-advance date with no monthly row after it, and every later weekly dispatch would resolve `monthly` and run the full suite.
+   Stop with `blocked: origin/main carries no upstream-sync doc; the tier rule has no source` when `$LOG` is empty, rather than guessing a tier.
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
    Do not ask; the line plus the log answer the question.
 3. Scaffold the brief with the tier-matched flags.
@@ -81,18 +83,16 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 
    ```sh
    git fetch origin --prune
-   SNAPSHOT=<SNAPSHOT recorded in this sync's brief>
-   [ -n "$SNAPSHOT" ] || { echo 'blocked: rebind SNAPSHOT from the brief before verifying the marker'; exit 1; }
+   MERGED=$(gh pr view <this sync's PR number> --json mergeCommitSha -q .mergeCommitSha)
+   [ -n "$MERGED" ] || { echo 'blocked: could not read this sync PR merge commit'; exit 1; }
    MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
    [ -n "$MARKER" ] || { echo 'blocked: origin/main first-parent carries no snapshot marker at all'; exit 1; }
-   if [ "$MARKER" = "$(git rev-parse "$SNAPSHOT^{commit}")" ] || ! git merge-base --is-ancestor "$SNAPSHOT" "$MARKER"; then
-     echo 'blocked: this sync did not add a newer snapshot marker to origin/main first-parent; squash-merge it under the marker title before the next sync'
-     exit 1
-   fi
+   [ "$MARKER" = "$MERGED" ] || { echo 'blocked: this sync merged without putting the marker on origin/main first-parent; re-land it as a squash merge under the marker title before the next sync'; exit 1; }
    ```
 
-   The test is that the latest first-parent marker has advanced past the brief's `SNAPSHOT`, not that it is `origin/main`'s tip.
+   The test is that this sync's own merge commit *is* the latest first-parent marker, not that the marker is `origin/main`'s tip.
    Unrelated fork PRs land after the sync merge all the time, and each one moves the tip without touching this invariant.
+   Comparing against the brief's `SNAPSHOT` instead would pass vacuously whenever the catch-up-log override resolved it to a commit older than the previous marker, which is the steady state; a merge commit or a rebase merge would then go undetected and the next sync would cherry-pick that squash and rewind the base.
 
 ## Worker checklist
 
@@ -189,8 +189,9 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    Cherry-picking the fork PR that introduced the spine would reinstate its state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
    Give that PR a `kept` verdict in the table but never cherry-pick it: step 9 would hit an add/add conflict against the files just restored, and the upstream-wins rule has no upstream side to choose.
    The same holds for any fork PR whose diff is confined to `docs/upstream-sync.md` and `.agents/skills/upstream-sync/`, not just the one that introduced them: step 7 already restored those paths, so every hunk is a no-op and `git cherry-pick` aborts the whole sequence as an empty commit.
-   The test is not the path shape but whether step 7 already re-applied everything the PR contributes: a PR is exempt when every path in its diff is either a spine path or one of the four companion files above, and is picked normally otherwise.
-   That is why the spine-introducing PR is exempt even though it is mixed — its non-spine hunks are exactly those companion edits — while a PR that also carries unrelated fork work is picked, its spine hunks three-way-merging against its own parent.
+   Spine-only is the general test: a PR that touches any path outside `docs/upstream-sync.md` and `.agents/skills/upstream-sync/` is picked normally, its spine hunks three-way-merging against its own parent.
+   The one named exception is the mixed PR that introduced the spine, and it is exempt only because its non-spine hunks are exactly the four companion edits step 7 re-applies; confirm that hunk by hunk with `git show <sha>` before exempting it, and pick it if anything else is in there.
+   Touching a companion file is not by itself grounds for exemption: fork PRs carry unrelated work in those files too — `#55` changes `AGENTS.md` and nothing else — and exempting one on path shape alone would drop its behavior while the table still records it `kept`.
    If one is picked by mistake, recover with `git cherry-pick --skip` rather than `--allow-empty`, so the sequence continues without an empty commit.
    Commit the restore immediately, because `git checkout <ref> -- <paths>` also writes the index and `git cherry-pick` refuses to run against a dirty index even for unrelated paths.
    Commit the four targeted edits immediately too, with `git add AGENTS.md bin/fm-test-run.sh docs/documentation-audiences.json tests/fm-test-run.test.sh && git commit -m 'chore: re-apply upstream-sync companion edits'`, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.

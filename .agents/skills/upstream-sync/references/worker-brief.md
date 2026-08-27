@@ -1,14 +1,14 @@
 # Worker brief template
 
 Firstmate scaffolds with `bin/fm-brief.sh <task-id> firstmate --mode no-mistakes`, adding `--herdr-lab` when the tier is `monthly` or the sync is already known to touch Herdr backend or lab code, and replaces `{TASK}` with the block below.
-Fill exactly six values; every other line is fixed text.
+Fill exactly eight values; every other line is fixed text.
 
 | Placeholder | Value |
 | --- | --- |
 | `UPSTREAM_BASE` | `git rev-parse --short=12 upstream/main` at intake |
 | `SNAPSHOT` | short hash of the latest `chore: snapshot upstream main` first-parent commit on `origin/main`, or the window end commit when a catch-up log row names an older one; take it from the skill's intake command block, not by hand |
 | `SETTLED` | window end commit from the newest catch-up log row, empty when no row names one; the worker cannot re-derive it after branching at `upstream/main` |
-| `VERDICT_INPUTS` | exactly three behavior entries copied by the dispatcher from backlog item `upstream-sync-20260829-verdict-inputs` |
+| `VERDICT_INPUT_1`, `VERDICT_INPUT_2`, `VERDICT_INPUT_3` | the three behavior entries, one per placeholder in the "Verdict-table inputs" section, copied by the dispatcher from backlog item `upstream-sync-20260829-verdict-inputs` |
 | `TIER` | `weekly` or `monthly`, from the skill's tier rule |
 | `DATE` | the sync date, `YYYY-MM-DD` |
 
@@ -24,7 +24,7 @@ Recorded values:
 - UPSTREAM_BASE: `{UPSTREAM_BASE}`
 - SNAPSHOT: `{SNAPSHOT}`
 - SETTLED: `{SETTLED}`
-- VERDICT_INPUTS: see the "Verdict-table inputs" section below.
+- VERDICT_INPUT_1, VERDICT_INPUT_2, VERDICT_INPUT_3: see the "Verdict-table inputs" section below.
 - TIER: `{TIER}`
 - DATE: `{DATE}`
 

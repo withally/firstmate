@@ -11,9 +11,16 @@
 # `check` is silent when no matching commit exists, so it is safe to run as a
 # registered watcher check.
 # `arm` writes and registers state/upstream-urgent.check.sh.
-# `disarm` removes that shim and its trust binding.
+# `disarm` removes that shim, its trust binding, and the report record.
+#
+# The report record state/.upstream-urgent carries the matching commit set the
+# last report was made from, uncut, so one urgent commit is reported once rather
+# than on every watcher poll while the recorded sync base still trails it.
 set -u
 export LC_ALL=C
+# The upstream probe must never stop to ask for credentials; an unauthenticated
+# fetch has to fail inside its bound instead of waiting for an answer.
+export GIT_TERMINAL_PROMPT=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -23,7 +30,12 @@ SYNC_LOG="$FM_ROOT/docs/upstream-sync.md"
 CHECK_ID=upstream-urgent
 CHECK_SHIM="$STATE/$CHECK_ID.check.sh"
 CHECK_TRUST="$STATE/$CHECK_ID.check-trust"
+RECORD="$STATE/.$CHECK_ID"
+RECORD_SCHEMA=fm-upstream-urgent-v1
 REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
+# Wider than the digest default because one finding names a 12-character hash
+# and a full commit subject, and a window can carry several of them.
+MAX_LINE=1000
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -31,6 +43,8 @@ REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
 . "$SCRIPT_DIR/fm-check-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-line-cap-lib.sh
+. "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
 FETCH_TIMEOUT=8
 
@@ -39,7 +53,7 @@ usage() {
 Usage:
   fm-upstream-urgent-check.sh check    fetch upstream/main and report urgent commits
   fm-upstream-urgent-check.sh arm      write and register the watcher check shim
-  fm-upstream-urgent-check.sh disarm   remove the watcher check shim and trust binding
+  fm-upstream-urgent-check.sh disarm   remove the check shim, its trust binding, and the record
   fm-upstream-urgent-check.sh --help   print this help
 
 The check reads the latest adopted upstream base from docs/upstream-sync.md.
@@ -55,13 +69,19 @@ die_usage() {
 }
 
 latest_sync_base() {
-  local field
+  local field tick=$'\140'
   [ -f "$SYNC_LOG" ] || return 1
   field=$(awk -F'|' '
     $0 ~ /^\| [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] \|/ { value=$3 }
     END { print value }
   ' "$SYNC_LOG") || return 1
-  printf '%s\n' "$field" | sed -n 's/.*`\([0-9a-f][0-9a-f]*\)`.*/\1/p' | head -n 1
+  # The column carries the adopted upstream base first and may name a later
+  # origin/main landing hash after it, so take the FIRST backticked bare hex
+  # token rather than letting a greedy match walk to the last one.
+  printf '%s\n' "$field" \
+    | grep -o "${tick}[0-9a-f]\{7,40\}${tick}" \
+    | head -n 1 \
+    | tr -d "$tick"
 }
 
 urgent_commits() {
@@ -80,8 +100,41 @@ urgent_commits() {
   '
 }
 
+RECORD_REPORTED=
+
+record_read() {
+  local line first=1
+  RECORD_REPORTED=
+  [ -f "$RECORD" ] || return 0
+  while IFS= read -r line; do
+    if [ "$first" = 1 ]; then
+      first=0
+      [ "$line" = "$RECORD_SCHEMA" ] || return 0
+      continue
+    fi
+    case "$line" in
+      reported=*) RECORD_REPORTED=${line#reported=} ;;
+    esac
+  done < "$RECORD"
+  return 0
+}
+
+record_write() {
+  local reported=$1 tmp
+  [ -e "$STATE" ] || mkdir -p "$STATE" 2>/dev/null || return 1
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  tmp=$(mktemp "$RECORD.XXXXXX" 2>/dev/null) || return 1
+  chmod 0600 "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  {
+    printf '%s\n' "$RECORD_SCHEMA"
+    printf 'reported=%s\n' "$reported"
+  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$RECORD" || { rm -f -- "$tmp"; return 1; }
+  return 0
+}
+
 action_check() {
-  local base base_commit upstream_tip remote_url matches
+  local base base_commit upstream_tip remote_url matches log
   base=$(latest_sync_base) || {
     printf 'upstream urgent check: latest sync base is unavailable\n' >&2
     return 1
@@ -100,12 +153,12 @@ action_check() {
   }
   # This is the only network operation in the tripwire.
   fm_run_timed "$FETCH_TIMEOUT" git -C "$FM_ROOT" fetch --quiet --no-tags upstream \
-    main:refs/remotes/upstream/main >/dev/null 2>&1 || {
+    +main:refs/remotes/upstream/main >/dev/null 2>&1 || {
     printf 'upstream urgent check: fetch failed\n' >&2
     return 1
   }
   upstream_tip=$(git -C "$FM_ROOT" rev-parse --verify --quiet \
-    refs/remotes/upstream/main^{commit}) || {
+    'refs/remotes/upstream/main^{commit}') || {
     printf 'upstream urgent check: upstream/main is unavailable after fetch\n' >&2
     return 1
   }
@@ -117,13 +170,36 @@ action_check() {
     printf 'upstream urgent check: recorded base is not an ancestor of upstream/main\n' >&2
     return 1
   }
-  matches=$(git -C "$FM_ROOT" log --reverse \
-    --format='%H%x09%s%x09%b%x1e' "$base_commit..$upstream_tip" | urgent_commits) || {
+  # The log is captured before it is matched, because a pipeline would take its
+  # status from awk alone and report a failed inspection as a clean check.
+  log=$(git -C "$FM_ROOT" log --reverse \
+    --format='%H%x09%s%x09%b%x1e' "$base_commit..$upstream_tip") || {
     printf 'upstream urgent check: could not inspect upstream commits\n' >&2
     return 1
   }
-  [ -n "$matches" ] || return 0
-  printf 'urgent upstream commits: %s\n' "$matches"
+  matches=$(printf '%s' "$log" | urgent_commits) || {
+    printf 'upstream urgent check: could not inspect upstream commits\n' >&2
+    return 1
+  }
+  record_read
+  [ -n "$matches" ] || {
+    # A window that no longer matches clears the record, so the same commit set
+    # is news again if the recorded base is ever rolled back.
+    [ -z "$RECORD_REPORTED" ] || record_write '' || true
+    return 0
+  }
+  fm_cap_line_var "urgent upstream commits: $matches" "$MAX_LINE"
+  # The cut line is what gets printed, but the whole match set decides whether
+  # this is news, because a commit that lands past the cut leaves the printed
+  # line unchanged and would otherwise be suppressed for good.
+  #
+  # Report before recording, so a record that cannot be written costs a repeated
+  # report rather than a lost one.
+  if [ "$matches" != "$RECORD_REPORTED" ]; then
+    printf '%s\n' "$FM_LINE_CAP_LINE"
+  fi
+  record_write "$matches" || true
+  return 0
 }
 
 shim_content() {
@@ -180,7 +256,7 @@ action_arm() {
 }
 
 action_disarm() {
-  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST"
+  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD"
   printf 'disarmed: state/%s.check.sh\n' "$CHECK_ID"
 }
 

@@ -173,6 +173,72 @@ test_recorded_base_is_excluded_from_the_range() {
   pass 'the recorded sync base is excluded from the urgent range'
 }
 
+# The tracked catch-up log records the adopted upstream base first and may name
+# a later origin/main landing hash in the same cell. Extracting the last hash
+# instead of the first resolves a commit that is by construction not on
+# upstream/main, which fails the ancestor guard and silently disables the
+# tripwire, so the real row shape is exercised directly.
+test_base_is_read_from_a_row_that_also_names_a_landing_hash() {
+  local repo out report commit base landed
+  repo=$(make_fixture_repo landing-hash)
+  base=$(git -C "$repo" rev-parse HEAD~1)
+  landed=$(git -C "$repo" rev-parse HEAD)
+  printf '%s\n' \
+    '# Upstream sync' \
+    '' \
+    '| Catch-up date | Catch-up commit or adopted upstream base | Window end commit | Tier | Local PR interval and final verdict |' \
+    '| --- | --- | --- | --- | --- |' \
+    "| 2026-08-27 | \`$base\` (\`upstream/main\`), landed on \`origin/main\` as \`$landed\` (\`#78\`) | \`$landed\` | full | fixture |" \
+    > "$repo/docs/upstream-sync.md"
+  commit=$(publish_upstream_commit "$repo" landing-hash 'fix: patch a security hole' 'Body.')
+  out="$TMP_ROOT/landing-hash/report.txt"
+  run_check "$repo" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" 'urgent upstream commits:' \
+    'a catch-up row naming a landing hash disabled the tripwire'
+  assert_contains "$report" "$(printf '%s' "$commit" | cut -c1-12)" \
+    'report did not name the commit found from the adopted base'
+  pass 'the adopted base is read past a later origin/main landing hash'
+}
+
+test_unchanged_match_set_is_reported_once() {
+  local repo first second third fourth
+  repo=$(make_fixture_repo report-once)
+  publish_upstream_commit "$repo" report-once 'security: rotate the signing key' 'Body.' >/dev/null
+  first="$TMP_ROOT/report-once/first.txt"
+  second="$TMP_ROOT/report-once/second.txt"
+  run_check "$repo" "$first"
+  [ -s "$first" ] || fail 'the first sweep did not report the matching commit'
+  run_check "$repo" "$second"
+  [ ! -s "$second" ] \
+    || fail "an unchanged match set was reported again: $(cat "$second")"
+
+  # A new matching commit is still news, so suppression is per match set rather
+  # than a latch that silences the tripwire for good.
+  publish_upstream_commit "$repo" report-once-more 'fix: revert the bad migration' 'Body.' >/dev/null
+  third="$TMP_ROOT/report-once/third.txt"
+  run_check "$repo" "$third"
+  [ -s "$third" ] || fail 'a newly matching upstream commit was suppressed'
+  fourth="$TMP_ROOT/report-once/fourth.txt"
+  run_check "$repo" "$fourth"
+  [ ! -s "$fourth" ] || fail "the grown match set was reported twice: $(cat "$fourth")"
+  pass 'one match set wakes once and a new match is still news'
+}
+
+test_disarm_removes_the_report_record() {
+  local repo out
+  repo=$(make_fixture_repo record-disarm)
+  publish_upstream_commit "$repo" record-disarm 'security: rotate the signing key' 'Body.' >/dev/null
+  out="$TMP_ROOT/record-disarm/report.txt"
+  run_check "$repo" "$out"
+  [ -f "$repo/state/.upstream-urgent" ] || fail 'the check wrote no report record'
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" disarm >/dev/null
+  [ ! -e "$repo/state/.upstream-urgent" ] || fail 'disarm left the report record behind'
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'a disarmed and re-run check did not report again'
+  pass 'disarm drops the report record so the next run reports again'
+}
+
 test_matching_upstream_commit_is_reported
 test_matching_upstream_body_is_reported
 test_nonmatching_upstream_commit_is_silent
@@ -180,3 +246,6 @@ test_recorded_base_is_excluded_from_the_range
 test_check_uses_one_fetch_and_finishes_quickly
 test_slow_fetch_is_bounded_before_ten_seconds
 test_arm_registers_and_disarm_removes_the_check
+test_base_is_read_from_a_row_that_also_names_a_landing_hash
+test_unchanged_match_set_is_reported_once
+test_disarm_removes_the_report_record

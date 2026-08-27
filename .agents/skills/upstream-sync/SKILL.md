@@ -63,7 +63,13 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `TIER`, and `DATE`.
 5. Spawn per `AGENTS.md` section 7, record the sync as work under way, and supervise as usual.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
-7. After the merge, refresh the clone through the guarded fleet-sync path, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
+7. After the merge, refresh the clone through the guarded fleet-sync path, then confirm the snapshot marker actually landed on `origin/main`'s first-parent line, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
+   Every window search (intake step 1, worker step 3, the doc's step 3) reads that marker, so a merge that leaves it off first-parent makes the next sync silently reuse the previous snapshot and re-audit everything this sync already reconciled.
+
+   ```sh
+   git fetch origin --prune
+   [ "$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')" = "$(git rev-parse origin/main)" ] || { echo 'blocked: the merged sync commit does not carry the snapshot marker on first-parent; re-land it with the marker before the next sync'; exit 1; }
+   ```
 
 ## Worker checklist
 
@@ -159,7 +165,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     If it was, the lab contract is live, so run the family now:
 
     ```sh
-    for t in herdr jq treehouse python3 tmux; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it the suites skip into a green result"; exit 1; }; done
+    for t in herdr jq treehouse python3; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it whole suites skip into a green result"; exit 1; }; done
     bin/fm-test-run.sh --family real-herdr-gated --fail-on-gate-skip 'herdr not found'
     ```
 
@@ -170,17 +176,18 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     ```sh
     bin/fm-lint.sh
-    for t in herdr jq treehouse python3 tmux; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it the suites skip into a green result"; exit 1; }; done
+    for t in herdr jq treehouse python3; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it whole suites skip into a green result"; exit 1; }; done
     bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'
     ```
 
     The full run includes the `real-herdr-gated` family, which needs a running default Herdr server and the lab contract from `--herdr-lab`; [`references/herdr-lab.md`](references/herdr-lab.md) owns that setup.
     `--fail-on-gate-skip` is not optional here: a gate skip is otherwise a success, so a clone without `herdr` on `PATH` would report the whole monthly suite green having run none of the Herdr lifecycle tests the tier exists to cover.
-    It takes a single token, so it cannot cover the family's other gates; the `command -v` loop above asserts every binary those suites gate on, because a missing `jq`, `treehouse`, `python3`, or `tmux` skips them into the same green result.
+    It takes a single token, so it cannot cover the family's other gates; the `command -v` loop above asserts the binaries whose absence exits a whole suite at its head, because a missing `jq`, `treehouse`, or `python3` skips it into the same green result.
 11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
     Firstmate files each one as separate work after the PR is open.
 12. Ship through no-mistakes to the fork's PR path.
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
+    The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.
     The PR description must contain the verdict table:
 
     ```markdown

@@ -18,7 +18,8 @@ If the need appears only after dispatch, the worker stops with a `blocked:` line
 
 ## Preconditions
 
-- `herdr`, `jq`, `treehouse`, `python3`, and `tmux` on `PATH`, because every suite in the family gates on one or more of them and a missing binary is a skip, not a failure.
+- `herdr`, `jq`, `treehouse`, and `python3` on `PATH`, because each one guards a whole suite at its head with `exit 0` and a missing binary is a skip, not a failure.
+  `tmux` is not on this list: its only checks are per-case `return 0` skips inside `tests/fm-afk-launch.test.sh`, so its absence never turns a suite green by skipping it.
   `--fail-on-gate-skip` accepts one token only, so assert these with `command -v` before the run rather than relying on it.
 - Exactly one running `default` Herdr session, because the helper snapshots it as the fleet-state tripwire before provisioning and requires it byte-identical after teardown.
   Check with `herdr session list --json | jq '.sessions[] | select(.default == true)'`.

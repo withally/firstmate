@@ -51,6 +51,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Unrelated breakage found during either tier is noted in the PR and filed as separate follow-up work, never fixed on the sync branch.
     The `upstream-sync` skill owns the exact commands, the tier decision, the worker brief, and the Herdr lab setup.
     Never push to the canonical upstream remote and never merge without explicit captain approval.
+    Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
 11. Append one row to the catch-up log below.
     Record the date, adopted base, tier, post-catch-up PR audit set, and final verdict for every audited PR.
     After a monthly sync, advance the `Next monthly full run` line to the first day of the following month.

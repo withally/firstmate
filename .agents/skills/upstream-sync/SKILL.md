@@ -41,17 +41,17 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
    SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
-   SETTLED=<last adjudicated fork commit from the newest catch-up log row in docs/upstream-sync.md whose adopted base is reachable from origin/main, empty otherwise>
-   if [ -n "$SETTLED" ] && ! git merge-base --is-ancestor "$SETTLED" origin/main; then SETTLED=; fi
+   SETTLED=<last adjudicated fork commit named by the newest catch-up log row in docs/upstream-sync.md, empty when no row names one>
    if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" "$SNAPSHOT"; then SNAPSHOT=$SETTLED; fi
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: no upstream tip or no snapshot commit'; exit 1; }
    ```
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
    Two boundaries can disagree: the first-parent marker, and the last adjudicated fork commit named by the newest catch-up log row.
-   Take the earlier of the two, and only after confirming the row's own commits are reachable from `origin/main`.
+   The override only ever moves the boundary earlier, so it can only widen the window, never narrow it.
    The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
-   A log row whose catch-up has not actually landed on `origin/main` — the 2026-08-27 row's adopted base still lives only on an unmerged branch — must not narrow the window at all, which is what the reachability test above enforces.
+   That direction is also what makes an unlanded log row harmless — the 2026-08-27 row's adopted base still lives only on an unmerged branch, and the worst it can do is widen the audit set.
+   Record the resolved `SNAPSHOT` and the `SETTLED` it came from in the brief; the worker cannot re-derive them, because it branches at `upstream/main` where `docs/upstream-sync.md` does not exist.
 2. Determine the tier from the `Next monthly full run` line in [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
    The sync is `monthly` when today's date is on or after that line's date and no catch-up log row already records a `monthly` tier on or after it; otherwise it is `weekly`.
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
@@ -68,7 +68,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    A monthly tier always needs `--herdr-lab` because the full suite drives Herdr lifecycle behavior through the lab.
    A weekly tier normally does not; if the kept diff later turns out to select the `real-herdr-gated` family, the worker stops with `blocked: sync touches Herdr, brief needs --herdr-lab`, and Firstmate reissues the same brief with `--herdr-lab` rather than letting the worker add lab commands by hand.
    The regenerated weekly brief is what lets the worker run the Herdr family locally in step 10; regenerating it and then skipping that run leaves the lab contract unused.
-4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `TIER`, and `DATE`.
+4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `SETTLED`, `TIER`, and `DATE`.
 5. Spawn per `AGENTS.md` section 7, record the sync as work under way, and supervise as usual.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
 7. After the merge, refresh the clone through the guarded fleet-sync path, then confirm the snapshot marker actually landed on `origin/main`'s first-parent line, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
@@ -129,16 +129,16 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```sh
    git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
    MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
-   SETTLED=<same value intake step 1 resolved, empty when the newest catch-up log row names no reachable commit>
+   SETTLED=<SETTLED recorded in this sync's brief, empty when the brief records none>
    [ -n "$SNAPSHOT" ] && [ -n "$MARKER" ] || { echo 'blocked: SNAPSHOT is unbound or origin/main carries no snapshot marker'; exit 1; }
    git merge-base --is-ancestor "$SNAPSHOT" origin/main || { echo 'blocked: SNAPSHOT is not reachable from origin/main; brief needs a fresh SNAPSHOT'; exit 1; }
    EXPECTED=$MARKER
-   if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" origin/main && git merge-base --is-ancestor "$SETTLED" "$EXPECTED"; then EXPECTED=$SETTLED; fi
+   if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" "$EXPECTED"; then EXPECTED=$SETTLED; fi
    [ "$(git rev-parse "$SNAPSHOT^{commit}")" = "$(git rev-parse "$EXPECTED^{commit}")" ] || { echo 'blocked: the window boundary moved since intake; brief needs a fresh SNAPSHOT'; exit 1; }
    ```
 
-   This re-runs intake step 1's boundary rule rather than asserting a fixed relationship to the marker, so the two can never disagree.
-   Restating the rule here in any other form is how the previous versions of this step deadlocked a sync whose boundary the catch-up log legitimately moved.
+   `SETTLED` comes from the brief, never from the working tree: step 2 branched at `upstream/main`, where `docs/upstream-sync.md` does not exist, so re-deriving it here would resolve to empty and block a sync whose boundary is correct.
+   Read the current log with `git show origin/main:docs/upstream-sync.md` if you need it for any other reason.
 
 4. List the fork PRs after that snapshot; this is the complete audit set.
 
@@ -148,9 +148,14 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```
 
 5. Never widen the set with `origin/main ^upstream/main` or the merge base; the doc explains why.
+   A first-parent commit whose subject starts with `chore: snapshot upstream main` is a previous sync's own squash, not a fork PR: never give it a verdict and never cherry-pick it.
+   Its diff is that sync's delta against the *old* fork tip, so replaying it onto the new base would rewind everything upstream changed in between.
+   When one falls inside the window, re-audit the fork PRs its catch-up log row marked `kept` and re-apply those individual commits instead.
 6. Compare each audited PR against current upstream by behavior, using `git show <sha>` and a search of `upstream/main` for the same change.
    Record one verdict per PR: `already-upstream` (with the upstream PR number), `superseded` (with the upstream PR number), `no-longer-needed` (with the reason), or `kept`.
 7. Apply the keep rule from the doc without asking: default to upstream, keep only when current upstream lacks the behavior and the fork still has a concrete need for it.
+   The sync's own procedural spine is a mandatory keep, whatever the rule would otherwise say: `docs/upstream-sync.md`, `.agents/skills/upstream-sync/`, and the `AGENTS.md` pointer.
+   They are fork-local and absent from `upstream/main`, so dropping them would strip the next sync's checklist and catch-up log from the branch that becomes `origin/main`.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
 9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.
 
@@ -233,5 +238,6 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     followed by `Tier: weekly|monthly`, the validation commands actually run, and a `Follow-ups` list (possibly empty).
     Never push to `upstream` and never merge.
 13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the last fork commit this sync adjudicates, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+    If the file is missing because step 7's mandatory keeps were not re-applied, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
     The last adjudicated fork commit is not optional: intake's window override reads it, and a row without it silently falls back to the stale marker.
 14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

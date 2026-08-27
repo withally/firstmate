@@ -33,7 +33,8 @@ The fork contributes changes upstream and stays close to the parent by adopting 
 4. Audit only the fork PRs after that catch-up commit.
    The newest catch-up log row below names the last fork commit it adjudicates; when that commit is reachable from `origin/main` and is older than the marker, start the window there instead.
    Take the earlier of the two boundaries, because re-auditing a settled PR only repeats a verdict while skipping one silently drops kept fork behavior.
-   A row whose commits are not reachable from `origin/main` records work that has not landed, so it never narrows the window.
+   The rule only ever moves the boundary earlier, so a row recording work that has not landed can widen the window but never narrow it.
+   A `chore: snapshot upstream main` commit inside the window is a previous sync's own squash: it is never adjudicated and never cherry-picked.
 
    ```sh
    git log --reverse --first-parent --format='%h%x09%cs%x09%s' <catch-up-commit>..origin/main

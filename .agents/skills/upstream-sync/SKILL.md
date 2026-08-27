@@ -95,9 +95,11 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```
 
 3. Confirm the audit window from the recorded snapshot commit.
+   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step proves it is still the latest snapshot on `origin/main`, because another sync merging first would make the brief's value stale and widen step 4's range.
 
    ```sh
-   git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'   # must name SNAPSHOT
+   git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
+   [ "$(git rev-parse "$SNAPSHOT^{commit}")" = "$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')" ] || { echo 'blocked: a newer snapshot commit landed on origin/main; brief needs a fresh SNAPSHOT'; exit 1; }
    ```
 
 4. List the fork PRs after that snapshot; this is the complete audit set.
@@ -164,10 +166,11 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     ```sh
     bin/fm-lint.sh
-    bin/fm-test-run.sh --all
+    bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'
     ```
 
     The full run includes the `real-herdr-gated` family, which needs a running default Herdr server and the lab contract from `--herdr-lab`; [`references/herdr-lab.md`](references/herdr-lab.md) owns that setup.
+    `--fail-on-gate-skip` is not optional here: a gate skip is otherwise a success, so a clone without `herdr` on `PATH` would report the whole monthly suite green having run none of the Herdr lifecycle tests the tier exists to cover.
 11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
     Firstmate files each one as separate work after the PR is open.
 12. Ship through no-mistakes to the fork's PR path.

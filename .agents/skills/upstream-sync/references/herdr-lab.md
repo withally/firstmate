@@ -5,7 +5,7 @@ This is the one place the sync worker learns how the isolated Herdr lab works, s
 
 ## When the lab is required
 
-- Every `monthly` tier, because `bin/fm-test-run.sh --all` includes the `real-herdr-gated` family.
+- Every `monthly` tier, because `bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'` includes the `real-herdr-gated` family and refuses to skip it.
 - A `weekly` tier whose kept diff selects the `real-herdr-gated` family, which `bin/fm-test-run.sh`'s changed-file-to-test map decides, not a hand-written path list.
   The skill's step 10 owns that check and the status guards it needs; a bare `comm` over two process substitutions reports a clean verdict when either listing fails, so do not re-derive it here.
 - Never otherwise; a weekly sync that does not touch Herdr runs `--exclude-family real-herdr-gated` and needs no lab.

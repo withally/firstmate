@@ -179,7 +179,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    Re-add the fork's one-line `upstream-sync` pointer to upstream's `AGENTS.md` as a targeted edit instead, so the rest of the file stays upstream's.
    Two more upstream-owned files carry companion edits the spine needs, and they get the same targeted treatment — never a wholesale restore:
    the `.agents/skills/*)` arm in `families_for_changed_path` in `bin/fm-test-run.sh`, without which step 10's `--changed` run dies on `no changed-test mapping for source path`;
-   and the four `.agents/skills/upstream-sync/**` plus `docs/upstream-sync.md` entries in `docs/documentation-audiences.json`, without which `bin/fm-doc-audience-check.sh` fails the restored files as unlisted surfaces.
+   and the three `.agents/skills/upstream-sync/**` entries plus the `docs/upstream-sync.md` entry in `docs/documentation-audiences.json`, without which `bin/fm-doc-audience-check.sh` fails the restored files as unlisted surfaces.
    Both failures are loud and would otherwise recur on every sync, because the restore puts those paths back in the diff while upstream's copies still lack the entries that cover them.
    Cherry-picking the fork PR that introduced the spine would reinstate its state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
    Give that PR a `kept` verdict in the table but never cherry-pick it: step 9 would hit an add/add conflict against the files just restored, and the upstream-wins rule has no upstream side to choose.
@@ -260,10 +260,12 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
     It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
     "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
-    Append it before step 13 ships, so the pipeline validates the row and the merged PR carries it.
+    Commit it before step 13 ships, with `git commit -m 'docs: record the <DATE> catch-up'`, so the pipeline validates the row and the merged PR carries it.
+    An uncommitted row is the silent failure: `axi run` validates committed history and ignores the working tree, so CI goes green and the merged commit carries no row at all.
     A row added after the PR is open is either never pushed or lands unvalidated, and intake's window override plus the monthly-tier check both read it from the merged commit.
 
-13. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase`.
+13. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase --intent "weekly upstream sync of withally/firstmate onto kunchenguid/firstmate at <UPSTREAM_BASE>"`.
+    `--intent` is required to start a run, so the bare command fails before the first pipeline step; name the tier in it when the tier is monthly.
     The rebase step is skipped because a cutover branch is cut from `upstream/main` and rebasing it onto the fork's `origin/main` would replay the whole divergent fork history back onto the new base, undoing the adoption the sync exists to perform.
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
     The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.

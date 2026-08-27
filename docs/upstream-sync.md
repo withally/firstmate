@@ -13,7 +13,8 @@ The fork contributes changes upstream and stays close to the parent by adopting 
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     git@github.com:kunchenguid/firstmate.git|ssh://git@github.com/kunchenguid/firstmate.git|\
+     git@github.com:kunchenguid/firstmate|git@github.com:kunchenguid/firstmate.git|\
+     ssh://git@github.com/kunchenguid/firstmate|ssh://git@github.com/kunchenguid/firstmate.git|\
      https://github.com/kunchenguid/firstmate|https://github.com/kunchenguid/firstmate.git) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
@@ -30,6 +31,8 @@ The fork contributes changes upstream and stays close to the parent by adopting 
    ```
 
 4. Audit only the fork PRs after that catch-up commit.
+   When the newest catch-up log row below records a catch-up later than that commit, it is the boundary instead, because a completed catch-up can land through a PR whose title carries no marker.
+   Each row names the last fork commit it adjudicates for exactly this purpose; start the window there.
 
    ```sh
    git log --reverse --first-parent --format='%h%x09%cs%x09%s' <catch-up-commit>..origin/main
@@ -62,8 +65,9 @@ Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September i
 
 Append one row after every weekly catch-up.
 Do not rewrite an older row merely because upstream later absorbs one of its retained changes.
+Every row names the last fork commit it adjudicates, so the next sync can start its window there when the row is newer than the latest first-parent snapshot marker.
 
 | Catch-up date | Catch-up commit or adopted upstream base | Tier | Local PR interval and final verdict |
 | --- | --- | --- | --- |
 | 2026-08-22 | `9e0374a` (`#65`, `chore: snapshot upstream main for 2026-08-22`) | full | Established the full-catch-up boundary. The local PRs that followed were #66 through #76, adjudicated in the next row. |
-| 2026-08-27 | `d63b0e2` (`upstream/main`) | full (predates the two-tier rule) | PRs following `9e0374a`: #66 dropped because upstream #2846 already carries it; #67 kept; #68 kept; #69 kept; #70 kept; #71 kept; #72 kept; #73 kept; #74 superseded by upstream #2953 and #3093; #75 kept; #76 superseded by upstream #2953 and #3093. |
+| 2026-08-27 | `d63b0e2` (`upstream/main`); last adjudicated fork commit `b0638f6` (`#76`) | full (predates the two-tier rule) | PRs following `9e0374a`: #66 dropped because upstream #2846 already carries it; #67 kept; #68 kept; #69 kept; #70 kept; #71 kept; #72 kept; #73 kept; #74 superseded by upstream #2953 and #3093; #75 kept; #76 superseded by upstream #2953 and #3093. |

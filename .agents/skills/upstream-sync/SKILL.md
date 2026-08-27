@@ -32,7 +32,8 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     git@github.com:kunchenguid/firstmate.git|ssh://git@github.com/kunchenguid/firstmate.git|\
+     git@github.com:kunchenguid/firstmate|git@github.com:kunchenguid/firstmate.git|\
+     ssh://git@github.com/kunchenguid/firstmate|ssh://git@github.com/kunchenguid/firstmate.git|\
      https://github.com/kunchenguid/firstmate|https://github.com/kunchenguid/firstmate.git) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
@@ -40,10 +41,14 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
    SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
+   SETTLED=<last adjudicated fork commit from the newest catch-up log row in docs/upstream-sync.md, empty when no row is newer than SNAPSHOT>
+   if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SNAPSHOT" "$SETTLED"; then SNAPSHOT=$SETTLED; fi
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: no upstream tip or no snapshot commit'; exit 1; }
    ```
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
+   The marker search is the default boundary, but the catch-up log overrides it: a completed catch-up can land through a PR whose title carries no marker, and the 2026-08-27 row is exactly that case.
+   When the newest log row records a catch-up later than the marker commit, take the last fork commit that row adjudicates as the window start, so the sync does not re-litigate PRs the log already settled.
 2. Determine the tier from the `Next monthly full run` line in [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
    The sync is `monthly` when today's date is on or after that line's date and no catch-up log row already records a `monthly` tier on or after it; otherwise it is `weekly`.
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
@@ -65,9 +70,12 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
 7. After the merge, refresh the clone through the guarded fleet-sync path, then confirm the snapshot marker actually landed on `origin/main`'s first-parent line, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
    Every window search (intake step 1, worker step 3, the doc's step 3) reads that marker, so a merge that leaves it off first-parent makes the next sync silently reuse the previous snapshot and re-audit everything this sync already reconciled.
+   This block runs long after intake step 1's shell, so rebind `SNAPSHOT` from the brief here rather than assuming it survived; an unset value makes the comparison below report a false failure on a correctly merged sync.
 
    ```sh
    git fetch origin --prune
+   SNAPSHOT=<SNAPSHOT recorded in this sync's brief>
+   [ -n "$SNAPSHOT" ] || { echo 'blocked: rebind SNAPSHOT from the brief before verifying the marker'; exit 1; }
    MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
    [ -n "$MARKER" ] || { echo 'blocked: origin/main first-parent carries no snapshot marker at all'; exit 1; }
    if [ "$MARKER" = "$(git rev-parse "$SNAPSHOT^{commit}")" ] || ! git merge-base --is-ancestor "$SNAPSHOT" "$MARKER"; then
@@ -95,7 +103,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: brief is missing UPSTREAM_BASE or SNAPSHOT'; exit 1; }
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     git@github.com:kunchenguid/firstmate.git|ssh://git@github.com/kunchenguid/firstmate.git|\
+     git@github.com:kunchenguid/firstmate|git@github.com:kunchenguid/firstmate.git|\
+     ssh://git@github.com/kunchenguid/firstmate|ssh://git@github.com/kunchenguid/firstmate.git|\
      https://github.com/kunchenguid/firstmate|https://github.com/kunchenguid/firstmate.git) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac

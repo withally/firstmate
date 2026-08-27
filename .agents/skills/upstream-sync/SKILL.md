@@ -146,8 +146,13 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
    ```sh
    [ -n "$SNAPSHOT" ] || { echo 'blocked: SNAPSHOT unset; an empty range endpoint silently means HEAD'; exit 1; }
-   git log --reverse --first-parent --format='%h%x09%cs%x09%s' "$SNAPSHOT"..origin/main
+   WINDOW_END=$(git rev-parse origin/main)
+   [ -n "$WINDOW_END" ] || { echo 'blocked: could not resolve origin/main for the window end'; exit 1; }
+   git log --reverse --first-parent --format='%h%x09%cs%x09%s' "$SNAPSHOT".."$WINDOW_END"
    ```
+
+   Pin `WINDOW_END` here and carry that exact value to step 13; never re-read `origin/main` later.
+   Steps 6 through 12 take hours, and a fork PR that merges in the meantime would otherwise become the recorded boundary — landing in no sync's audit set, getting no verdict, and never being cherry-picked onto the new base.
 
 5. Never widen the set with `origin/main ^upstream/main` or the merge base; the doc explains why.
    A first-parent commit whose subject starts with `chore: snapshot upstream main` is a previous sync's own squash, not a fork PR: never give it a verdict and never cherry-pick it.
@@ -175,6 +180,9 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    Both failures are loud and would otherwise recur on every sync, because the restore puts those paths back in the diff while upstream's copies still lack the entries that cover them.
    Cherry-picking the fork PR that introduced the spine would reinstate its state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
    Give that PR a `kept` verdict in the table but never cherry-pick it: step 9 would hit an add/add conflict against the files just restored, and the upstream-wins rule has no upstream side to choose.
+   The same holds for any fork PR whose diff is confined to `docs/upstream-sync.md` and `.agents/skills/upstream-sync/`, not just the one that introduced them: step 7 already restored those paths, so every hunk is a no-op and `git cherry-pick` aborts the whole sequence as an empty commit.
+   A PR that touches spine and non-spine paths together is picked normally; only the spine-only case is exempt.
+   If one is picked by mistake, recover with `git cherry-pick --skip` rather than `--allow-empty`, so the sequence continues without an empty commit.
    Commit the restore immediately, because `git checkout <ref> -- <paths>` also writes the index and `git cherry-pick` refuses to run against a dirty index even for unrelated paths.
    Commit the three targeted edits immediately too, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
@@ -242,7 +250,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     It takes a single token, so it cannot cover the family's other gates; the checks above assert every head gate that exits a whole suite, because a missing `jq`, `treehouse`, or `python3`, or a non-executable lab helper, skips suites into the same green result.
 11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
     Firstmate files each one as separate work after the PR is open.
-12. Ship through no-mistakes to the fork's PR path.
+12. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase`.
+    The rebase step is skipped because a cutover branch is cut from `upstream/main` and rebasing it onto the fork's `origin/main` would replay the whole divergent fork history back onto the new base, undoing the adoption the sync exists to perform.
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
     The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.
     The verdict table carries the same full accumulated keep-list step 5 and step 13 require, not just the window's own PRs, because it is the captain's single review surface for everything the branch re-applies.
@@ -262,7 +271,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
     Append to the copy step 7 restored from `origin/main`, so the row lands on top of every earlier row rather than on a stale snapshot of the file.
     If the file is missing, or its newest row predates the one `git show origin/main:docs/upstream-sync.md` shows, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
-    The window end commit is `origin/main`'s tip as step 4 read it — the last first-parent commit inside this window, whether or not it was adjudicated, including an excluded snapshot squash.
+    The window end commit is the `WINDOW_END` step 4 pinned — the last first-parent commit inside this window, whether or not it was adjudicated, including an excluded snapshot squash.
     Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
     It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
     "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.

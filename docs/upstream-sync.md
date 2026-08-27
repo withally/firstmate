@@ -31,7 +31,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
    ```
 
 4. Audit only the fork PRs after that catch-up commit.
-   The newest catch-up log row below names the last fork commit it adjudicates; when that commit is reachable from `origin/main` and is older than the marker, start the window there instead.
+   The newest catch-up log row below names its window end commit; when that commit is older than the marker, start the window there instead.
    Take the earlier of the two boundaries, because re-auditing a settled PR only repeats a verdict while skipping one silently drops kept fork behavior.
    The rule only ever moves the boundary earlier, so a row recording work that has not landed can widen the window but never narrow it.
    A `chore: snapshot upstream main` commit inside the window is a previous sync's own squash: it is never adjudicated and never cherry-picked.
@@ -62,7 +62,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
 11. Append one row to the catch-up log below.
     Record the date, adopted base, the window end commit as a bare backticked SHA in its own column, tier, post-catch-up PR audit set, and final verdict for every audited PR.
     The verdict list is cumulative: it carries the PRs recovered from a previous sync's excluded snapshot squash as well as the ones this window newly adjudicated, because the next sync rebuilds the fork delta from this row alone.
-    The window end commit is `origin/main`'s tip as step 4 read it, whether or not that commit was adjudicated, so the column is always fillable even when the window held nothing but an excluded snapshot squash.
+    The window end commit is the `origin/main` tip pinned when the audit set was listed, whether or not that commit was adjudicated, so the column is always fillable even when the window held nothing but an excluded snapshot squash.
     It is what step 4's boundary rule reads, so a row without it leaves the next sync on the stale marker and silently loses the accumulated fork delta.
     After a monthly sync, advance the `Next monthly full run` line to the first day of the following month.
 

@@ -34,6 +34,7 @@ Fixed rules:
 - Decide every keep by the doc's keep rule yourself; no mid-flight approval.
 - Cherry-pick kept PRs with `-x`; upstream wins every conflict.
 - Run only the TIER's validation from the skill; CI's portable shards and its required Herdr lane on the PR are the weekly full gate.
+- Ship the PR with `no-mistakes axi run --skip rebase`; a cutover branch is cut from `upstream/main`, so rebasing it onto the fork's `origin/main` would replay the divergent fork history back onto the new base and undo the adoption.
 - Unrelated breakage is a `Follow-ups` entry in the PR, never a fix on this branch.
 - If the kept diff selects the `real-herdr-gated` family per the skill's `comm -12` check against `bin/fm-test-run.sh --list`, and this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait.
 - If that check selects the family and this brief does carry the lab contract, run the family locally per the skill's step 10; do not block a second time.

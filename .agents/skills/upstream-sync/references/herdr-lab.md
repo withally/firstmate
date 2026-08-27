@@ -20,7 +20,8 @@ If the need appears only after dispatch, the worker stops with a `blocked:` line
 
 - `herdr`, `jq`, `treehouse`, and `python3` on `PATH`, because each one guards a whole suite at its head with `exit 0` and a missing binary is a skip, not a failure.
   `tmux` is not on this list: its only checks are per-case `return 0` skips inside `tests/fm-afk-launch.test.sh`, so its absence never turns a suite green by skipping it.
-- `$HERDR_LAB_HELPER` executable, defaulting to `bin/fm-herdr-lab.sh`, because `tests/fm-backend-herdr-presentation-e2e.test.sh` and `tests/fm-herdr-session-cleanup-e2e.test.sh` head-gate on `[ -x "$HERDR_LAB_HELPER" ]` and skip the whole suite otherwise.
+- `$HERDR_LAB_HELPER` executable, defaulting to `bin/fm-herdr-lab.sh`, because `tests/fm-backend-herdr-presentation-e2e.test.sh` and `tests/fm-herdr-session-cleanup-e2e.test.sh` in the family head-gate on `[ -x "$HERDR_LAB_HELPER" ]` and skip the whole suite otherwise.
+  A monthly `--all` run adds a third such suite, `tests/fm-backend-herdr-focus-flash-e2e.test.sh`, which the family listing does not carry because it is unclassified.
   A stale exported value pointing at a deleted tree, or a checkout copied without the executable bit, is the way this bites.
   `--fail-on-gate-skip` accepts one token only, so assert these with `command -v` before the run rather than relying on it.
 - Exactly one running `default` Herdr session, because the helper snapshots it as the fleet-state tripwire before provisioning and requires it byte-identical after teardown.

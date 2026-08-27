@@ -241,7 +241,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     ```sh
     for t in herdr jq treehouse python3; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it whole suites skip into a green result"; exit 1; }; done
-    [ -x "${HERDR_LAB_HELPER:-bin/fm-herdr-lab.sh}" ] || { echo 'blocked: the Herdr lab helper is not executable; two lifecycle suites would skip into a green result'; exit 1; }
+    [ -x "${HERDR_LAB_HELPER:-bin/fm-herdr-lab.sh}" ] || { echo 'blocked: the Herdr lab helper is not executable; lifecycle suites would skip into a green result'; exit 1; }
     bin/fm-test-run.sh --family real-herdr-gated --fail-on-gate-skip 'herdr not found'
     ```
 
@@ -253,7 +253,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     ```sh
     bin/fm-lint.sh
     for t in herdr jq treehouse python3; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it whole suites skip into a green result"; exit 1; }; done
-    [ -x "${HERDR_LAB_HELPER:-bin/fm-herdr-lab.sh}" ] || { echo 'blocked: the Herdr lab helper is not executable; two lifecycle suites would skip into a green result'; exit 1; }
+    [ -x "${HERDR_LAB_HELPER:-bin/fm-herdr-lab.sh}" ] || { echo 'blocked: the Herdr lab helper is not executable; lifecycle suites would skip into a green result'; exit 1; }
     bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'
     ```
 

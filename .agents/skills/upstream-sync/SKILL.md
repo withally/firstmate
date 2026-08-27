@@ -121,12 +121,17 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```
 
 3. Confirm the audit window from the recorded snapshot commit.
-   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step proves it is still the latest snapshot on `origin/main`, because another sync merging first would make the brief's value stale and widen step 4's range.
+   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step proves no newer snapshot landed after it, because another sync merging first would make the brief's value stale and widen step 4's range.
 
    ```sh
    git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
-   [ "$(git rev-parse "$SNAPSHOT^{commit}")" = "$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')" ] || { echo 'blocked: a newer snapshot commit landed on origin/main; brief needs a fresh SNAPSHOT'; exit 1; }
+   MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
+   [ -n "$SNAPSHOT" ] && [ -n "$MARKER" ] || { echo 'blocked: SNAPSHOT is unbound or origin/main carries no snapshot marker'; exit 1; }
+   git merge-base --is-ancestor "$MARKER" "$SNAPSHOT" || { echo 'blocked: a newer snapshot commit landed on origin/main; brief needs a fresh SNAPSHOT'; exit 1; }
    ```
+
+   The test is reachability, not equality: intake's catch-up-log override can legitimately set `SNAPSHOT` to a plain fork commit newer than the marker, and demanding equality would deadlock every sync that override exists to serve.
+   A genuinely newer marker is a descendant of `SNAPSHOT`, so it fails this check and stops the sync as intended.
 
 4. List the fork PRs after that snapshot; this is the complete audit set.
 
@@ -220,5 +225,6 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     followed by `Tier: weekly|monthly`, the validation commands actually run, and a `Follow-ups` list (possibly empty).
     Never push to `upstream` and never merge.
-13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, the last fork commit this sync adjudicates, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+    The last adjudicated fork commit is not optional: intake's window override reads it, and a row without it silently falls back to the stale marker.
 14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

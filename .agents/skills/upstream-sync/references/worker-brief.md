@@ -6,7 +6,7 @@ Fill exactly four values; every other line is fixed text.
 | Placeholder | Value |
 | --- | --- |
 | `UPSTREAM_BASE` | `git rev-parse --short=12 upstream/main` at intake |
-| `SNAPSHOT` | short hash of the latest `chore: snapshot upstream main` first-parent commit on `origin/main` |
+| `SNAPSHOT` | short hash of the latest `chore: snapshot upstream main` first-parent commit on `origin/main`, or the last adjudicated fork commit when a newer catch-up log row names one; take it from the skill's intake command block, not by hand |
 | `TIER` | `weekly` or `monthly`, from the skill's tier rule |
 | `DATE` | the sync date, `YYYY-MM-DD` |
 

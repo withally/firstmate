@@ -56,7 +56,8 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Never push to the canonical upstream remote and never merge without explicit captain approval.
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
 11. Append one row to the catch-up log below.
-    Record the date, adopted base, tier, post-catch-up PR audit set, and final verdict for every audited PR.
+    Record the date, adopted base, the last fork commit the sync adjudicates, tier, post-catch-up PR audit set, and final verdict for every audited PR.
+    The last adjudicated fork commit is what step 4's boundary rule reads, so a row without it leaves the next sync on the stale marker.
     After a monthly sync, advance the `Next monthly full run` line to the first day of the following month.
 
 Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September is deliberately skipped).

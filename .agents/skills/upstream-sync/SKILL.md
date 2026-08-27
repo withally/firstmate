@@ -68,8 +68,16 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 
    ```sh
    git fetch origin --prune
-   [ "$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')" = "$(git rev-parse origin/main)" ] || { echo 'blocked: the merged sync commit does not carry the snapshot marker on first-parent; re-land it with the marker before the next sync'; exit 1; }
+   MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
+   [ -n "$MARKER" ] || { echo 'blocked: origin/main first-parent carries no snapshot marker at all'; exit 1; }
+   if [ "$MARKER" = "$(git rev-parse "$SNAPSHOT^{commit}")" ] || ! git merge-base --is-ancestor "$SNAPSHOT" "$MARKER"; then
+     echo 'blocked: this sync did not add a newer snapshot marker to origin/main first-parent; squash-merge it under the marker title before the next sync'
+     exit 1
+   fi
    ```
+
+   The test is that the latest first-parent marker has advanced past the brief's `SNAPSHOT`, not that it is `origin/main`'s tip.
+   Unrelated fork PRs land after the sync merge all the time, and each one moves the tip without touching this invariant.
 
 ## Worker checklist
 
@@ -166,6 +174,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     ```sh
     for t in herdr jq treehouse python3; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it whole suites skip into a green result"; exit 1; }; done
+    [ -x "${HERDR_LAB_HELPER:-bin/fm-herdr-lab.sh}" ] || { echo 'blocked: the Herdr lab helper is not executable; two lifecycle suites would skip into a green result'; exit 1; }
     bin/fm-test-run.sh --family real-herdr-gated --fail-on-gate-skip 'herdr not found'
     ```
 
@@ -177,12 +186,13 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     ```sh
     bin/fm-lint.sh
     for t in herdr jq treehouse python3; do command -v "$t" >/dev/null || { echo "blocked: the Herdr family needs $t on PATH; without it whole suites skip into a green result"; exit 1; }; done
+    [ -x "${HERDR_LAB_HELPER:-bin/fm-herdr-lab.sh}" ] || { echo 'blocked: the Herdr lab helper is not executable; two lifecycle suites would skip into a green result'; exit 1; }
     bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'
     ```
 
     The full run includes the `real-herdr-gated` family, which needs a running default Herdr server and the lab contract from `--herdr-lab`; [`references/herdr-lab.md`](references/herdr-lab.md) owns that setup.
     `--fail-on-gate-skip` is not optional here: a gate skip is otherwise a success, so a clone without `herdr` on `PATH` would report the whole monthly suite green having run none of the Herdr lifecycle tests the tier exists to cover.
-    It takes a single token, so it cannot cover the family's other gates; the `command -v` loop above asserts the binaries whose absence exits a whole suite at its head, because a missing `jq`, `treehouse`, or `python3` skips it into the same green result.
+    It takes a single token, so it cannot cover the family's other gates; the checks above assert every head gate that exits a whole suite, because a missing `jq`, `treehouse`, or `python3`, or a non-executable lab helper, skips suites into the same green result.
 11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
     Firstmate files each one as separate work after the PR is open.
 12. Ship through no-mistakes to the fork's PR path.

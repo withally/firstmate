@@ -56,7 +56,8 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Unrelated breakage found during either tier is noted in the PR and filed as separate follow-up work, never fixed on the sync branch.
     The `upstream-sync` skill owns the exact commands, the tier decision, the worker brief, and the Herdr lab setup.
     Never push to the canonical upstream remote and never merge without explicit captain approval.
-    The fork-local sync spine — `docs/upstream-sync.md` and `.agents/skills/upstream-sync/` — is restored from `origin/main` rather than re-applied through the audit, so its accumulated catch-up rows survive; `AGENTS.md` is shared upstream material and is never restored that way.
+    The fork-local sync spine — `docs/upstream-sync.md` and `.agents/skills/upstream-sync/` — is restored from `origin/main` rather than re-applied through the audit, so its accumulated catch-up rows survive.
+    Its companion edits in upstream-owned files — the `AGENTS.md` pointer, the skill's arm in `bin/fm-test-run.sh`'s changed-file map, and its entries in `docs/documentation-audiences.json` — are re-applied as targeted edits onto upstream's copies, never restored wholesale.
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
 11. Append one row to the catch-up log below.
     Record the date, adopted base, the last adjudicated fork commit as a bare backticked SHA in its own column, tier, post-catch-up PR audit set, and final verdict for every audited PR.

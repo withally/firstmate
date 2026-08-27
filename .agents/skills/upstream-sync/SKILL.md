@@ -31,6 +31,10 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
+   case "$(git remote get-url upstream)" in
+     *kunchenguid/firstmate*) ;;
+     *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
+   esac
    git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
@@ -66,13 +70,17 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
 1. Verify isolation per the brief, bind the brief's recorded values into this shell, ensure both remotes, and confirm the recorded base still equals `upstream/main`.
    Every later step consumes `$UPSTREAM_BASE` and `$SNAPSHOT`, so bind them before anything else and keep working in the same shell; an unset `SNAPSHOT` makes step 4's range silently mean `HEAD..origin/main`, which is the over-wide set step 5 forbids.
-   The `upstream` remote setup is the doc's step 1; a clone that never ran it has `origin` only.
+   The `upstream` remote setup is the doc's step 1; a clone that never ran it has `origin` only, and a clone where someone pointed `upstream` at some other fork must fail rather than record that fork's tip as the base.
 
    ```sh
    UPSTREAM_BASE=<UPSTREAM_BASE from the brief>
    SNAPSHOT=<SNAPSHOT from the brief>
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: brief is missing UPSTREAM_BASE or SNAPSHOT'; exit 1; }
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
+   case "$(git remote get-url upstream)" in
+     *kunchenguid/firstmate*) ;;
+     *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
+   esac
    git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    git rev-parse --verify --quiet "$SNAPSHOT^{commit}" >/dev/null || { echo 'blocked: SNAPSHOT is not a commit in this clone'; exit 1; }

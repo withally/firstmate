@@ -8,9 +8,14 @@ The fork contributes changes upstream and stays close to the parent by adopting 
 1. Fetch both remotes and record the exact `upstream/main` commit that will become the new base.
    `origin` is `withally/firstmate` and `upstream` is the canonical parent `kunchenguid/firstmate`; a fresh clone carries only `origin`, so every sync starts by ensuring `upstream` exists.
    The push URL is disabled on purpose, because the fork never pushes to the canonical parent.
+   An existing `upstream` that names any other repository is a hard stop, since every recorded base and every audit range would otherwise be measured against the wrong parent.
 
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
+   case "$(git remote get-url upstream)" in
+     *kunchenguid/firstmate*) ;;
+     *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
+   esac
    git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    ```

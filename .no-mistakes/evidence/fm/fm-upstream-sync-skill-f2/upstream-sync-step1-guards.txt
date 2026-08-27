@@ -1,0 +1,40 @@
+=== upstream-sync SKILL.md step 1 guard block, extracted verbatim and executed against a real read-only clone of withally/firstmate ===
+real upstream/main tip (kunchenguid/firstmate) = 10b93b2cc6f4241e87fccaee2e357c33a7347a53
+latest 'chore: snapshot upstream main' marker on origin/main = 34d9081e491b98cb7800eb919dbd1bbf47395e72
+
+### scenario: brief missing SNAPSHOT
+    blocked: brief is missing UPSTREAM_BASE or SNAPSHOT
+    -> exit=1
+
+### scenario: upstream remote points at some other fork
+    blocked: upstream remote does not point at kunchenguid/firstmate
+    -> exit=1
+
+### scenario: SNAPSHOT is not a commit in this clone
+    From https://github.com/kunchenguid/firstmate
+    ... (25 remote-tracking branches fetched from upstream)
+    fatal: remote error: upload-pack: not our ref deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    fatal: remote error: upload-pack: not our ref deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    blocked: SNAPSHOT is not a commit in this clone
+    -> exit=1
+
+### scenario: recorded base is not an ancestor of upstream/main
+    From https://github.com/kunchenguid/firstmate
+    ... (25 remote-tracking branches fetched from upstream)
+    blocked: recorded UPSTREAM_BASE is not an ancestor of upstream/main; upstream history was rewritten or the base is not upstream material
+    -> exit=1
+
+### scenario: valid brief (real values)
+    From https://github.com/kunchenguid/firstmate
+    ... (25 remote-tracking branches fetched from upstream)
+    -> exit=0
+
+=== after the valid run, can the worker push to upstream? ===
+    fetch url = https://github.com/kunchenguid/firstmate.git
+    push  url = DISABLED
+    fatal: 'DISABLED' does not appear to be a git repository
+    fatal: Could not read from remote repository.
+    
+    Please make sure you have the correct access rights
+    and the repository exists.
+    -> git push upstream exit=128

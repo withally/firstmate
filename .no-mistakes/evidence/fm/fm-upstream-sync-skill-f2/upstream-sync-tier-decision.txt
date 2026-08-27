@@ -1,0 +1,16 @@
+=== tier resolution, applying the skill step 2 rule to the doc declared state ===
+  parsed Next monthly full run date : 2026-10-01
+  catch-up log rows and their tiers :
+    2026-08-22 -> tier full
+    2026-08-27 -> tier full (predates the two-tier rule)
+
+  catch-up rows recording a full/monthly run on or after 2026-10-01 : none
+
+  today=2026-08-27  -> TIER=weekly
+  today=2026-09-05  -> TIER=weekly
+  today=2026-09-30  -> TIER=weekly
+  today=2026-10-01  -> TIER=monthly
+  today=2026-10-03  -> TIER=monthly
+
+  September dates stay weekly because the captain skipped September deliberately;
+  the first sync on or after 2026-10-01 resolves monthly and runs the full suite with the Herdr gate skip made fatal.

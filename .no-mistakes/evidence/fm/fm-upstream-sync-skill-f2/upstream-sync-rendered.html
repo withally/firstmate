@@ -1,0 +1,888 @@
+<html><head><meta charset="utf-8"><title>upstream-sync skill &amp; docs (PR 77)</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#1b1f23}h1{border-bottom:2px solid #d0d7de;padding-bottom:.3em}h2{border-bottom:1px solid #d0d7de;padding-bottom:.2em;margin-top:2em}pre{background:#f6f8fa;padding:.8em;overflow-x:auto;border-radius:6px}code{background:#f6f8fa;padding:.15em .35em;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d0d7de;padding:.4em .6em;vertical-align:top;font-size:.9em}hr{margin:3em 0;border:0;border-top:3px solid #0969da}.file{background:#0969da;color:#fff;padding:.4em .8em;border-radius:6px;font-family:ui-monospace,monospace;display:inline-block;margin-top:2.5em}</style></head><body>
+<h1>upstream-sync: rendered surfaces added by PR 77</h1>
+<div class="file">docs/upstream-sync.md</div>
+<h1 id="upstream-sync">Upstream sync</h1>
+<p>This repository is the <code>withally/firstmate</code> fork of the
+canonical parent at <code>kunchenguid/firstmate</code>. The fork
+contributes changes upstream and stays close to the parent by adopting
+<code>upstream/main</code> wholesale, then carrying only the smallest
+behaviorally necessary local delta.</p>
+<h2 id="weekly-procedure">Weekly procedure</h2>
+<ol type="1">
+<li><p>Fetch both remotes and record the exact
+<code>upstream/main</code> commit that will become the new base.
+<code>origin</code> is <code>withally/firstmate</code> and
+<code>upstream</code> is the canonical parent
+<code>kunchenguid/firstmate</code>; a fresh clone carries only
+<code>origin</code>, so every sync starts by ensuring
+<code>upstream</code> exists. The push URL is disabled on purpose,
+because the fork never pushes to the canonical parent. An existing
+<code>upstream</code> that names any other repository is a hard stop,
+since every recorded base and every audit range would otherwise be
+measured against the wrong parent.</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> remote get-url upstream <span class="op">&gt;</span>/dev/null <span class="dv">2</span><span class="op">&gt;&amp;</span><span class="dv">1</span> <span class="kw">||</span> <span class="fu">git</span> remote add upstream git@github.com:kunchenguid/firstmate.git</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="cf">case</span> <span class="st">&quot;</span><span class="va">$(</span><span class="fu">git</span> remote get-url upstream<span class="va">)</span><span class="st">&quot;</span> <span class="kw">in</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>  <span class="ss">git@github.com:kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">git@github.com:kunchenguid/firstmate.git</span><span class="kw">|</span><span class="dt">\</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  <span class="ss">ssh://git@github.com/kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">ssh://git@github.com/kunchenguid/firstmate.git</span><span class="kw">|</span><span class="dt">\</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>  <span class="ss">https://github.com/kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">https://github.com/kunchenguid/firstmate.git</span><span class="kw">)</span> <span class="cf">;;</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>  <span class="pp">*</span><span class="kw">)</span> <span class="bu">echo</span> <span class="st">&#39;blocked: upstream remote does not point at kunchenguid/firstmate&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1 <span class="cf">;;</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="cf">esac</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> remote set-url <span class="at">--push</span> upstream DISABLED</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> fetch upstream <span class="at">--prune</span> <span class="kw">&amp;&amp;</span> <span class="fu">git</span> fetch origin <span class="at">--prune</span></span></code></pre></div></li>
+<li><p>Create the sync branch directly at that upstream commit. Do not
+merge <code>origin/main</code> into it and do not start from the fork's
+divergent tip.</p></li>
+<li><p>Locate the most recent full catch-up on <code>origin/main</code>
+by finding the latest first-parent commit whose subject starts with
+<code>chore: snapshot upstream main</code>.</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> log origin/main <span class="at">--first-parent</span> <span class="at">--format</span><span class="op">=</span><span class="st">&#39;%H%x09%cs%x09%s&#39;</span> <span class="kw">|</span> <span class="fu">awk</span> <span class="at">-F</span><span class="st">&#39;\t&#39;</span> <span class="st">&#39;$3 ~ /^chore: snapshot upstream main/ {print; exit}&#39;</span></span></code></pre></div></li>
+<li><p>Audit only the fork PRs after that catch-up commit. The newest
+catch-up log row below names its window end commit; when that commit is
+older than the marker, start the window there instead. Take the earlier
+of the two boundaries, because re-auditing a settled PR only repeats a
+verdict while skipping one silently drops kept fork behavior. The rule
+only ever moves the boundary earlier, so a row recording work that has
+not landed can widen the window but never narrow it. A
+<code>chore: snapshot upstream main</code> commit inside the window is a
+previous sync's own squash: it is never adjudicated and never
+cherry-picked.</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> log <span class="at">--reverse</span> <span class="at">--first-parent</span> <span class="at">--format</span><span class="op">=</span><span class="st">&#39;%h%x09%cs%x09%s&#39;</span> <span class="op">&lt;</span>catch-up-commit<span class="op">&gt;</span>..origin/main</span></code></pre></div></li>
+<li><p>Do not derive the audit set from
+<code>origin/main ^upstream/main</code> or from the merge base. Those
+ranges overcount older fork commits that a prior snapshot already
+reconciled and that current upstream has since absorbed or
+superseded.</p></li>
+<li><p>Compare each post-catch-up PR by behavior and current content,
+not by commit hash alone. Classify it as already upstream, superseded,
+no longer needed, or genuinely still local.</p></li>
+<li><p>Default to upstream. Keep a local behavior only when current
+upstream lacks it and the fork still has a concrete need for
+it.</p></li>
+<li><p>Decide the keep-list by that rule without a mid-flight captain
+gate. Every audited PR and its verdict (already-upstream, superseded,
+no-longer-needed, or kept) goes in a table in the PR description, and
+the captain rules once at merge.</p></li>
+<li><p>Re-apply only the kept behaviors on top of the recorded upstream
+base. Resolve conflicts in favor of upstream and preserve newer upstream
+architecture, wording, tests, and safety contracts. The fork-local sync
+spine — <code>docs/upstream-sync.md</code> and
+<code>.agents/skills/upstream-sync/</code> — is restored from
+<code>origin/main</code> rather than re-applied through the audit, so
+its accumulated catch-up rows survive. Its companion edits in
+upstream-owned files — the <code>AGENTS.md</code> pointer, the skill's
+arm in <code>bin/fm-test-run.sh</code>'s changed-file map, its entries
+in <code>docs/documentation-audiences.json</code>, and the case covering
+that arm in <code>tests/fm-test-run.test.sh</code> — are re-applied as
+targeted edits onto upstream's copies, never restored
+wholesale.</p></li>
+<li><p>Validate by tier. A weekly sync runs <code>bin/fm-lint.sh</code>
+plus only the tests the repo's maintained changed-file-to-test map
+selects for the diff of the kept commits against the upstream base, via
+<code>bin/fm-test-run.sh --changed --base &lt;upstream-base&gt;</code>;
+Herdr lifecycle tests run locally only when that same selection includes
+the <code>real-herdr-gated</code> family, and then only from a brief
+carrying the lab contract; CI's portable shards and its required Herdr
+lane on the PR are the full gate. A monthly sync, the first sync on or
+after the 1st of a month named by the <code>Next monthly full run</code>
+line below, runs the full <code>bin/fm-test-run.sh</code> suite locally
+with the Herdr gate skip made fatal, so the Herdr lab is genuinely
+exercised rather than skipped into a green result. The
+<code>upstream-sync</code> skill owns the exact commands, the tier
+decision, the worker brief, and the Herdr lab setup.</p></li>
+<li><p>Treat any failure not caused by a kept commit as unrelated
+breakage. Unrelated breakage found during either tier is noted in the PR
+and filed as separate follow-up work, never fixed on the sync
+branch.</p></li>
+<li><p>Append one row to the catch-up log below, and commit it. Record
+the date, adopted base, the window end commit as a bare backticked SHA
+in its own column, tier, post-catch-up PR audit set, and final verdict
+for every audited PR. The verdict list is cumulative: it carries the PRs
+recovered from a previous sync's excluded snapshot squash as well as the
+ones this window newly adjudicated, because the next sync rebuilds the
+fork delta from this row alone. The window end commit is the
+<code>origin/main</code> tip pinned when the audit set was listed,
+whether or not that commit was adjudicated, so the column is always
+fillable even when the window held nothing but an excluded snapshot
+squash. It is what step 4's boundary rule reads, so a row without it
+leaves the next sync on the stale marker and silently loses the
+accumulated fork delta. After a monthly sync, advance the
+<code>Next monthly full run</code> line to the first day of the
+following month. Stage the file before committing it, since appending
+the row is a plain edit to a tracked file and <code>git commit -m</code>
+alone would stage nothing. Both the append and its commit come before
+the ship in step 13, because the gate validates committed history only;
+a row left in the working tree or added after the PR is open never
+reaches <code>origin/main</code>.</p></li>
+<li><p>Ship through no-mistakes to the fork's PR path. Match the marker
+on the subject line, not with <code>git log --grep</code>, which matches
+any line of the message and so would find the title inside a merge
+commit's body. Squash-merge the approved sync PR under its
+<code>chore: snapshot upstream main for &lt;DATE&gt;</code> title,
+because a merge commit or a rebase merge leaves that marker off
+<code>origin/main</code>'s first-parent subject and the next sync's step
+3 search would then reuse the previous snapshot and widen its audit
+window. Never push to the canonical upstream remote and never merge
+without explicit captain approval.</p></li>
+</ol>
+<p>Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27;
+September is deliberately skipped).</p>
+<h2 id="catch-up-log">Catch-up log</h2>
+<p>Append one row after every weekly catch-up. Do not rewrite an older
+row merely because upstream later absorbs one of its retained changes.
+The <code>Window end commit</code> column holds a bare backticked SHA
+and nothing else, because intake parses it to resolve the next window's
+start. A row that leaves it out drops the next sync back to the marker,
+which in steady state is later than the true boundary and silently skips
+the fork PRs that merged during this sync's review. The 2026-08-27 row
+names <code>b0638f6</code> because that was <code>origin/main</code>'s
+tip when its audit listed the set, which is what the positional rule
+above asks for.</p>
+<table>
+<thead>
+<tr>
+<th>Catch-up date</th>
+<th>Catch-up commit or adopted upstream base</th>
+<th>Window end commit</th>
+<th>Tier</th>
+<th>Local PR interval and final verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-22</td>
+<td><code>9e0374a</code> (<code>#65</code>,
+<code>chore: snapshot upstream main for 2026-08-22</code>)</td>
+<td><code>9e0374a</code></td>
+<td>full</td>
+<td>Established the full-catch-up boundary. The local PRs that followed
+were #66 through #76, adjudicated in the next row.</td>
+</tr>
+<tr>
+<td>2026-08-27</td>
+<td><code>d63b0e2</code> (<code>upstream/main</code>), landed on
+<code>origin/main</code> as <code>34d9081</code> (<code>#78</code>)</td>
+<td><code>b0638f6</code></td>
+<td>full (predates the two-tier rule)</td>
+<td>PRs following <code>9e0374a</code>: #66 dropped because upstream
+#2846 already carries it; #67 kept; #68 kept; #69 kept; #70 kept; #71
+kept; #72 kept; #73 kept; #74 superseded by upstream #2953 and #3093;
+#75 kept; #76 superseded by upstream #2953 and #3093. The kept PRs were
+re-applied onto <code>d63b0e2</code> and landed with that cutover, so
+the next sync starts after this interval rather than re-auditing
+it.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<div class="file">.agents/skills/upstream-sync/SKILL.md</div>
+<h1 id="upstream-sync">upstream-sync</h1>
+<p>The procedural spine is <a
+href="../../../docs/upstream-sync.md"><code>docs/upstream-sync.md</code></a>.
+That document owns the remotes, the branch-at-upstream rule, the
+snapshot-commit audit window, the keep rule, and the catch-up log. This
+skill does not restate it; it adds only what the standing procedure
+needs to run without a re-authored brief: the tier decision, the fixed
+worker brief, the exact commands, the PR verdict table, and the Herdr
+lab setup.</p>
+<p>Standing captain rulings (2026-08-27), each implemented below:</p>
+<ol type="1">
+<li>The keep-list is decided by the worker under the doc's keep rule and
+reviewed once, at the PR, with no mid-flight captain gate.</li>
+<li>Validation is two-tier: weekly runs lint plus the tests colocated
+with the kept diff, monthly runs the full suite including the Herdr
+lab.</li>
+<li>Unrelated breakage found during a sync is filed as follow-up work,
+never fixed on the sync branch.</li>
+<li>The instructions are standing: this skill and the doc, never a
+re-authored brief.</li>
+<li>The Herdr lab setup is documented once, in <a
+href="references/herdr-lab.md"><code>references/herdr-lab.md</code></a>.</li>
+</ol>
+<h2 id="firstmate-intake-dispatcher">Firstmate intake (dispatcher)</h2>
+<p>Firstmate resolves five values and nothing else —
+<code>UPSTREAM_BASE</code>, <code>SNAPSHOT</code>, <code>SETTLED</code>,
+<code>TIER</code>, and <code>DATE</code>; the brief is fixed text.</p>
+<ol type="1">
+<li><p>Fetch and record the base.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> remote get-url upstream <span class="op">&gt;</span>/dev/null <span class="dv">2</span><span class="op">&gt;&amp;</span><span class="dv">1</span> <span class="kw">||</span> <span class="fu">git</span> remote add upstream git@github.com:kunchenguid/firstmate.git</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="cf">case</span> <span class="st">&quot;</span><span class="va">$(</span><span class="fu">git</span> remote get-url upstream<span class="va">)</span><span class="st">&quot;</span> <span class="kw">in</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>  <span class="ss">git@github.com:kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">git@github.com:kunchenguid/firstmate.git</span><span class="kw">|</span><span class="dt">\</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  <span class="ss">ssh://git@github.com/kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">ssh://git@github.com/kunchenguid/firstmate.git</span><span class="kw">|</span><span class="dt">\</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>  <span class="ss">https://github.com/kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">https://github.com/kunchenguid/firstmate.git</span><span class="kw">)</span> <span class="cf">;;</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>  <span class="pp">*</span><span class="kw">)</span> <span class="bu">echo</span> <span class="st">&#39;blocked: upstream remote does not point at kunchenguid/firstmate&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1 <span class="cf">;;</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="cf">esac</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> remote set-url <span class="at">--push</span> upstream DISABLED</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> fetch upstream <span class="at">--prune</span> <span class="kw">&amp;&amp;</span> <span class="fu">git</span> fetch origin <span class="at">--prune</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="va">UPSTREAM_BASE</span><span class="op">=</span><span class="va">$(</span><span class="fu">git</span> rev-parse <span class="at">--short</span><span class="op">=</span>12 upstream/main<span class="va">)</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="va">SNAPSHOT</span><span class="op">=</span><span class="va">$(</span><span class="fu">git</span> log origin/main <span class="at">--first-parent</span> <span class="at">--format</span><span class="op">=</span><span class="st">&#39;%h%x09%s&#39;</span> <span class="kw">|</span> <span class="fu">awk</span> <span class="at">-F</span><span class="st">&#39;\t&#39;</span> <span class="st">&#39;$2 ~ /^chore: snapshot upstream main/ {print $1; exit}&#39;</span><span class="va">)</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="va">LOG</span><span class="op">=</span><span class="va">$(</span><span class="fu">git</span> show origin/main:docs/upstream-sync.md <span class="dv">2</span><span class="op">&gt;</span>/dev/null<span class="va">)</span> <span class="kw">||</span> <span class="va">LOG</span><span class="op">=</span><span class="st">&#39;&#39;</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a><span class="va">SETTLED</span><span class="op">=&lt;</span>window <span class="ex">end</span> commit named by the newest catch-up log row in <span class="st">&quot;</span><span class="va">$LOG</span><span class="st">&quot;</span>, empty when <span class="st">&quot;</span><span class="va">$LOG</span><span class="st">&quot;</span> is empty<span class="op">&gt;</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-z</span> <span class="st">&quot;</span><span class="va">$LOG</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$SETTLED</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: origin/main has a catch-up log whose newest row names no window end commit&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$SETTLED</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">&amp;&amp;</span> <span class="fu">git</span> merge-base <span class="at">--is-ancestor</span> <span class="st">&quot;</span><span class="va">$SETTLED</span><span class="st">&quot;</span> <span class="st">&quot;</span><span class="va">$SNAPSHOT</span><span class="st">&quot;</span><span class="kw">;</span> <span class="cf">then</span> <span class="va">SNAPSHOT</span><span class="op">=</span><span class="va">$SETTLED</span><span class="kw">;</span> <span class="cf">fi</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">&amp;&amp;</span> <span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$SNAPSHOT</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: no upstream tip or no snapshot commit&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span></code></pre></div>
+<p>Run these from the firstmate code root; a fetch updates
+remote-tracking refs only and touches no checkout, and the worker
+repeats it in its own worktree. Read the log out of
+<code>origin/main</code> rather than the checkout for exactly that
+reason: the code root may sit on a stale commit or a branch without the
+spine, and a row read from there would resolve <code>SETTLED</code>
+empty and silently drop the window back to the marker. An absent log
+leaves <code>SETTLED</code> empty and the marker as the boundary for
+this block alone, since step 2 then stops the dispatch outright; a log
+whose newest row names no window end is instead a misrecorded sync and
+stops here rather than losing the fork PRs that merged during its
+review. Two boundaries can disagree: the first-parent marker, and the
+window end commit named by the newest catch-up log row. The override
+only ever moves the boundary earlier, so it can only widen the window,
+never narrow it. The asymmetry is deliberate: an over-wide window merely
+re-issues a verdict for a PR already settled, while an under-wide one
+silently drops kept fork behavior that never gets cherry-picked onto the
+new base. That direction is also what makes a row whose catch-up never
+landed harmless: the worst such a row can do is widen the audit set,
+never narrow it. Record the resolved <code>SNAPSHOT</code> and the
+<code>SETTLED</code> it came from in the brief; the worker cannot
+re-derive them, because it branches at <code>upstream/main</code> where
+<code>docs/upstream-sync.md</code> does not exist.</p></li>
+<li><p>Determine the tier from the <code>Next monthly full run</code>
+line in the <code>$LOG</code> step 1 read out of
+<code>origin/main</code>, never from the checkout. The sync is
+<code>monthly</code> when today's date is on or after that line's date
+and no catch-up log row in <code>$LOG</code> already records a
+<code>monthly</code> tier on or after it; otherwise it is
+<code>weekly</code>. A stale code root is why this reads the merged
+copy: it would still show the pre-advance date with no monthly row after
+it, and every later weekly dispatch would resolve <code>monthly</code>
+and run the full suite. Stop with
+<code>blocked: origin/main carries no upstream-sync doc; the tier rule has no source</code>
+when <code>$LOG</code> is empty, rather than guessing a tier; that is
+the one disposition of an absent log, and it is why step 1's
+empty-<code>SETTLED</code> fallback never reaches a real sync. The
+captain set the next monthly full run to 2026-10-01 and deliberately
+skipped September, so a September Saturday is <code>weekly</code> even
+though it falls after the 1st. Do not ask; the line plus the log answer
+the question.</p></li>
+<li><p>Scaffold the brief with the tier-matched flags. The delivery mode
+is <code>no-mistakes</code>, the doc's standing PR path; its Test step
+is intent-targeted, so it does not re-run the full suite and stays
+inside the weekly tier.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-brief.sh</span> <span class="op">&lt;</span>task-id<span class="op">&gt;</span> firstmate <span class="at">--mode</span> no-mistakes                <span class="co"># weekly, no Herdr expected</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-brief.sh</span> <span class="op">&lt;</span>task-id<span class="op">&gt;</span> firstmate <span class="at">--mode</span> no-mistakes <span class="at">--herdr-lab</span>   <span class="co"># weekly known to touch Herdr, or after a blocked: regeneration</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-brief.sh</span> <span class="op">&lt;</span>task-id<span class="op">&gt;</span> firstmate <span class="at">--mode</span> no-mistakes <span class="at">--herdr-lab</span>   <span class="co"># monthly, always</span></span></code></pre></div>
+<p>A monthly tier always needs <code>--herdr-lab</code> because the full
+suite drives Herdr lifecycle behavior through the lab. A weekly tier
+normally does not; if the kept diff later turns out to select the
+<code>real-herdr-gated</code> family, the worker stops with
+<code>blocked: sync touches Herdr, brief needs --herdr-lab</code>, and
+Firstmate reissues the same brief with <code>--herdr-lab</code> rather
+than letting the worker add lab commands by hand. The regenerated weekly
+brief is what lets the worker run the Herdr family locally in step 10;
+regenerating it and then skipping that run leaves the lab contract
+unused.</p></li>
+<li><p>Replace <code>{TASK}</code> with <a
+href="references/worker-brief.md"><code>references/worker-brief.md</code></a>,
+filling only <code>UPSTREAM_BASE</code>, <code>SNAPSHOT</code>,
+<code>SETTLED</code>, <code>TIER</code>, and <code>DATE</code>.</p></li>
+<li><p>Spawn per <code>AGENTS.md</code> section 7, record the sync as
+work under way, and supervise as usual.</p></li>
+<li><p>At the PR, relay the verdict table to the captain with the full
+PR URL; the captain rules once at merge.</p></li>
+<li><p>After the merge, refresh the clone through the guarded fleet-sync
+path, then confirm the snapshot marker actually landed on
+<code>origin/main</code>'s first-parent line, and when the tier was
+<code>monthly</code>, confirm the worker advanced the
+<code>Next monthly full run</code> line to the first day of the
+following month. Every window search (intake step 1, worker step 3, the
+doc's step 3) reads that marker, so a merge that leaves it off
+first-parent makes the next sync silently reuse the previous snapshot
+and re-audit everything this sync already reconciled. The block needs
+this sync's PR number at hand and a <code>gh</code> authenticated
+against the fork; it compares that PR's own merge commit with the
+marker, so no value from intake step 1's shell has to survive. The
+marker search is subject-anchored rather than <code>--grep</code>,
+because <code>--grep</code> matches any line of the message and a merge
+commit carries the PR title in its body — which would make a
+merge-commit merge look correctly marked while step 5's subject-keyed
+exclusion still misses it.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> fetch origin <span class="at">--prune</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="va">MERGED</span><span class="op">=</span><span class="va">$(</span><span class="ex">gh</span> pr view <span class="op">&lt;</span>this sync<span class="st">&#39;s PR number&gt; --json mergeCommit -q .mergeCommit.oid)</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="st">case &quot;$MERGED&quot; in &#39;&#39;|null) echo &#39;</span>blocked: this sync PR reports no merge commit<span class="kw">;</span> <span class="ex">it</span> is unmerged or gh cannot read it<span class="st">&#39;; exit 1 ;; esac</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="st">MARKER=$(git log origin/main --first-parent --format=&#39;</span>%H%x09%s<span class="st">&#39; | awk -F&#39;</span><span class="dt">\t</span><span class="st">&#39; &#39;</span><span class="va">$2</span> ~ /^chore: snapshot upstream main/ {print <span class="va">$1</span><span class="kw">;</span> <span class="ex">exit}</span><span class="st">&#39;)</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="st">[ -n &quot;$MARKER&quot; ] || { echo &#39;</span><span class="ex">blocked:</span> origin/main first-parent carries no snapshot marker at all<span class="st">&#39;; exit 1; }</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="st">[ &quot;$MARKER&quot; = &quot;$MERGED&quot; ] || { echo &#39;</span>blocked: this sync merged without putting the marker on origin/main first-parent<span class="kw">;</span> <span class="ex">re-land</span> it as a squash merge under the marker title before the next sync<span class="st">&#39;; exit 1; }</span></span></code></pre></div>
+<p>The test is that this sync's own merge commit <em>is</em> the latest
+first-parent marker, not that the marker is <code>origin/main</code>'s
+tip. Unrelated fork PRs land after the sync merge all the time, and each
+one moves the tip without touching this invariant. Comparing against the
+brief's <code>SNAPSHOT</code> instead would pass vacuously whenever the
+catch-up-log override resolved it to a commit older than the previous
+marker, which is the steady state; a merge commit or a rebase merge
+would then go undetected and the next sync would cherry-pick that squash
+and rewind the base.</p></li>
+</ol>
+<h2 id="worker-checklist">Worker checklist</h2>
+<p>Each numbered step maps onto the same-numbered step of the doc's
+weekly procedure where one exists; the doc owns the rule, this list owns
+the command.</p>
+<ol type="1">
+<li><p>Verify isolation per the brief, bind the brief's recorded values
+into this shell, ensure both remotes, and confirm the recorded base is
+still reachable from <code>upstream/main</code>. Every later step
+consumes <code>$UPSTREAM_BASE</code> and <code>$SNAPSHOT</code>, so bind
+them before anything else and keep working in the same shell; an unset
+<code>SNAPSHOT</code> makes step 4's range silently mean
+<code>HEAD..origin/main</code>, which is the over-wide set step 5
+forbids. <code>UPSTREAM_BASE</code> is a deliberate pin, so ordinary
+upstream movement between intake and this step is fine and next week's
+sync absorbs it; the check is reachability, not equality. Only a base
+that is no longer an ancestor of <code>upstream/main</code> is
+disqualifying, because that means upstream history was rewritten or the
+recorded value never came from this parent. The <code>upstream</code>
+remote setup is the doc's step 1; a clone that never ran it has
+<code>origin</code> only, and a clone where someone pointed
+<code>upstream</code> at some other fork must fail rather than record
+that fork's tip as the base.</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="va">UPSTREAM_BASE</span><span class="op">=&lt;</span>UPSTREAM_BASE <span class="ex">from</span> the brief<span class="op">&gt;</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="va">SNAPSHOT</span><span class="op">=&lt;</span>SNAPSHOT <span class="ex">from</span> the brief<span class="op">&gt;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">&amp;&amp;</span> <span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$SNAPSHOT</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: brief is missing UPSTREAM_BASE or SNAPSHOT&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> remote get-url upstream <span class="op">&gt;</span>/dev/null <span class="dv">2</span><span class="op">&gt;&amp;</span><span class="dv">1</span> <span class="kw">||</span> <span class="fu">git</span> remote add upstream git@github.com:kunchenguid/firstmate.git</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="cf">case</span> <span class="st">&quot;</span><span class="va">$(</span><span class="fu">git</span> remote get-url upstream<span class="va">)</span><span class="st">&quot;</span> <span class="kw">in</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>  <span class="ss">git@github.com:kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">git@github.com:kunchenguid/firstmate.git</span><span class="kw">|</span><span class="dt">\</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  <span class="ss">ssh://git@github.com/kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">ssh://git@github.com/kunchenguid/firstmate.git</span><span class="kw">|</span><span class="dt">\</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>  <span class="ss">https://github.com/kunchenguid/firstmate</span><span class="kw">|</span><span class="ss">https://github.com/kunchenguid/firstmate.git</span><span class="kw">)</span> <span class="cf">;;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>  <span class="pp">*</span><span class="kw">)</span> <span class="bu">echo</span> <span class="st">&#39;blocked: upstream remote does not point at kunchenguid/firstmate&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1 <span class="cf">;;</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="cf">esac</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> remote set-url <span class="at">--push</span> upstream DISABLED</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> fetch upstream <span class="at">--prune</span> <span class="kw">&amp;&amp;</span> <span class="fu">git</span> fetch origin <span class="at">--prune</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> rev-parse <span class="at">--verify</span> <span class="at">--quiet</span> <span class="st">&quot;</span><span class="va">$SNAPSHOT</span><span class="st">^{commit}&quot;</span> <span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: SNAPSHOT is not a commit in this clone&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> merge-base <span class="at">--is-ancestor</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span> upstream/main <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: recorded UPSTREAM_BASE is not an ancestor of upstream/main; upstream history was rewritten or the base is not upstream material&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span></code></pre></div></li>
+<li><p>Branch directly at the upstream tip.</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> checkout <span class="at">-b</span> fm/<span class="op">&lt;</span>task-id<span class="op">&gt;</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span></span></code></pre></div></li>
+<li><p>Confirm the audit window from the recorded snapshot commit. Step
+1 only proves <code>SNAPSHOT</code> is a commit in this clone; this step
+catches a marker that moved after intake, which would mis-size step 4's
+range.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> log origin/main <span class="at">--first-parent</span> <span class="at">--format</span><span class="op">=</span><span class="st">&#39;%H%x09%cs%x09%s&#39;</span> <span class="kw">|</span> <span class="fu">awk</span> <span class="at">-F</span><span class="st">&#39;\t&#39;</span> <span class="st">&#39;$3 ~ /^chore: snapshot upstream main/ {print; exit}&#39;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="va">MARKER</span><span class="op">=</span><span class="va">$(</span><span class="fu">git</span> log origin/main <span class="at">--first-parent</span> <span class="at">--format</span><span class="op">=</span><span class="st">&#39;%H%x09%s&#39;</span> <span class="kw">|</span> <span class="fu">awk</span> <span class="at">-F</span><span class="st">&#39;\t&#39;</span> <span class="st">&#39;$2 ~ /^chore: snapshot upstream main/ {print $1; exit}&#39;</span><span class="va">)</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="va">SETTLED</span><span class="op">=&lt;</span>SETTLED <span class="ex">recorded</span> in this sync<span class="st">&#39;s brief, empty when the brief records none&gt;</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="st">[ -n &quot;$SNAPSHOT&quot; ] &amp;&amp; [ -n &quot;$MARKER&quot; ] || { echo &#39;</span>blocked: SNAPSHOT is unbound or origin/main carries no snapshot marker<span class="st">&#39;; exit 1; }</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="st">git merge-base --is-ancestor &quot;$SNAPSHOT&quot; origin/main || { echo &#39;</span>blocked: SNAPSHOT is not reachable from origin/main<span class="kw">;</span> <span class="ex">brief</span> needs a fresh SNAPSHOT<span class="st">&#39;; exit 1; }</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="st">EXPECTED=$MARKER</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="st">if [ -n &quot;$SETTLED&quot; ] &amp;&amp; git merge-base --is-ancestor &quot;$SETTLED&quot; &quot;$EXPECTED&quot;; then EXPECTED=$SETTLED; fi</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="st">[ &quot;$(git rev-parse &quot;$SNAPSHOT^{commit}&quot;)&quot; = &quot;$(git rev-parse &quot;$EXPECTED^{commit}&quot;)&quot; ] || { echo &#39;</span>blocked: the window boundary moved since intake<span class="kw">;</span> <span class="ex">brief</span> needs a fresh SNAPSHOT<span class="st">&#39;; exit 1; }</span></span></code></pre></div>
+<p><code>SETTLED</code> comes from the brief, never from the working
+tree: step 2 branched at <code>upstream/main</code>, where
+<code>docs/upstream-sync.md</code> does not exist, so re-deriving it
+here would resolve to empty and block a sync whose boundary is correct.
+The check is therefore narrow by design: when the brief records a
+<code>SETTLED</code>, that value stays the boundary and a concurrent
+sync's newer marker cannot trip this guard. That is safe rather than
+complete — the resulting window is over-wide and the concurrent sync's
+own squash inside it is excluded by step 5 — but do not read this step
+as proving the boundary is still what intake would resolve today. Read
+the current log with
+<code>git show origin/main:docs/upstream-sync.md</code> when you need
+the live row for any other reason.</p></li>
+<li><p>List the fork PRs after that snapshot; this is the complete audit
+set.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$SNAPSHOT</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: SNAPSHOT unset; an empty range endpoint silently means HEAD&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="va">WINDOW_END</span><span class="op">=</span><span class="va">$(</span><span class="fu">git</span> rev-parse <span class="at">--verify</span> origin/main<span class="va">)</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$WINDOW_END</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: could not resolve origin/main for the window end&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;WINDOW_END=</span><span class="va">$WINDOW_END</span><span class="st">&quot;</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> log <span class="at">--reverse</span> <span class="at">--first-parent</span> <span class="at">--format</span><span class="op">=</span><span class="st">&#39;%h%x09%cs%x09%s&#39;</span> <span class="st">&quot;</span><span class="va">$SNAPSHOT</span><span class="st">&quot;</span>..<span class="st">&quot;</span><span class="va">$WINDOW_END</span><span class="st">&quot;</span></span></code></pre></div>
+<p>Pin <code>WINDOW_END</code> here and carry that exact value to step
+12; never re-read <code>origin/main</code> later. The <code>echo</code>
+is what makes it recoverable: an empty window prints no log lines, so
+without it the pinned value would exist only in a shell that is gone by
+the time the row is written. <code>--verify</code> matters too, because
+plain <code>git rev-parse</code> on a missing ref writes the ref name to
+stdout and exits 128, which would satisfy the non-empty guard with
+garbage. Steps 6 through 12 take hours, and a fork PR that merges in the
+meantime would otherwise become the recorded boundary — landing in no
+sync's audit set, getting no verdict, and never being cherry-picked onto
+the new base.</p></li>
+<li><p>Never widen the set with <code>origin/main ^upstream/main</code>
+or the merge base; the doc explains why. A first-parent commit whose
+subject starts with <code>chore: snapshot upstream main</code> is a
+previous sync's own squash, not a fork PR: never give it a verdict and
+never cherry-pick it. Its diff is that sync's delta against the
+<em>old</em> fork tip, so replaying it onto the new base would rewind
+everything upstream changed in between. When one falls inside the
+window, read its row with
+<code>git show origin/main:docs/upstream-sync.md</code> — the sync
+branch has no copy yet, because step 2 branched at
+<code>upstream/main</code> and step 7's restore has not run — then
+re-audit the fork PRs that row marked <code>kept</code> and re-apply
+those individual commits instead. Those recovered PRs also get verdicts
+in <em>this</em> sync's row, alongside the window's own PRs. Without
+that, each row would carry only one generation of keeps: the next sync
+excludes this sync's squash, reads this row, and finds the older keeps
+missing — so the accumulated fork delta erodes silently, one generation
+per sync. Every row therefore states the full accumulated keep-list, not
+just what the window newly adjudicated.</p></li>
+<li><p>Compare each audited PR against current upstream by behavior,
+using <code>git show &lt;sha&gt;</code> and a search of
+<code>upstream/main</code> for the same change. Record one verdict per
+PR: <code>already-upstream</code> (with the upstream PR number),
+<code>superseded</code> (with the upstream PR number),
+<code>no-longer-needed</code> (with the reason), or
+<code>kept</code>.</p></li>
+<li><p>Apply the keep rule from the doc without asking: default to
+upstream, keep only when current upstream lacks the behavior and the
+fork still has a concrete need for it. The sync's own procedural spine
+never goes through the audit at all: restore it from
+<code>origin/main</code> verbatim, then commit, before any
+cherry-pick.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> checkout origin/main <span class="at">--</span> docs/upstream-sync.md .agents/skills/upstream-sync</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> commit <span class="at">-m</span> <span class="st">&#39;chore: restore fork sync spine&#39;</span></span></code></pre></div>
+<p>Only those two paths: they are fork-local and absent from
+<code>upstream/main</code>, so taking them wholesale can lose nothing
+upstream. <code>AGENTS.md</code> is not on that list and must never be
+restored this way — it is a shared upstream document with hundreds of
+upstream commits, and overwriting it from <code>origin/main</code> would
+silently revert every upstream edit made since the last sync. Re-add the
+fork's one-line <code>upstream-sync</code> pointer to upstream's
+<code>AGENTS.md</code> as a targeted edit instead, so the rest of the
+file stays upstream's. Three more upstream-owned files carry companion
+edits the spine needs, and they get the same targeted treatment — never
+a wholesale restore: the <code>.agents/skills/*)</code> arm in
+<code>families_for_changed_path</code> in
+<code>bin/fm-test-run.sh</code>, without which step 10's
+<code>--changed</code> run dies on
+<code>no changed-test mapping for source path</code>; the three
+<code>.agents/skills/upstream-sync/**</code> entries plus the
+<code>docs/upstream-sync.md</code> entry in
+<code>docs/documentation-audiences.json</code>, without which
+<code>bin/fm-doc-audience-check.sh</code> fails the restored files as
+unlisted surfaces; and the skill-reference case in
+<code>tests/fm-test-run.test.sh</code>, which is what keeps that arm
+from silently regressing on the new base. Both failures are loud and
+would otherwise recur on every sync, because the restore puts those
+paths back in the diff while upstream's copies still lack the entries
+that cover them. Cherry-picking the fork PR that introduced the spine
+would reinstate its state at <em>that</em> PR, losing every catch-up row
+and <code>Next monthly full run</code> advance a later sync appended
+inside its own excluded squash. Give that PR a <code>kept</code> verdict
+in the table but never cherry-pick it: step 9 would hit an add/add
+conflict against the files just restored, and the upstream-wins rule has
+no upstream side to choose. The same holds for any fork PR whose diff is
+confined to <code>docs/upstream-sync.md</code> and
+<code>.agents/skills/upstream-sync/</code>, not just the one that
+introduced them: step 7 already restored those paths, so every hunk is a
+no-op and <code>git cherry-pick</code> aborts the whole sequence as an
+empty commit. Spine-only is the general test: a PR that touches any path
+outside <code>docs/upstream-sync.md</code> and
+<code>.agents/skills/upstream-sync/</code> is picked normally, its spine
+hunks three-way-merging against its own parent. The one named exception
+is the mixed PR that introduced the spine, and it is exempt only because
+its non-spine hunks are exactly the four companion edits step 7
+re-applies; confirm that hunk by hunk with
+<code>git show &lt;sha&gt;</code> before exempting it, and pick it if
+anything else is in there. Touching a companion file is not by itself
+grounds for exemption: fork PRs carry unrelated work in those files too
+— <code>#55</code> changes <code>AGENTS.md</code> and nothing else — and
+exempting one on path shape alone would drop its behavior while the
+table still records it <code>kept</code>. If one is picked by mistake,
+recover with <code>git cherry-pick --skip</code> rather than
+<code>--allow-empty</code>, so the sequence continues without an empty
+commit. Commit the restore immediately, because
+<code>git checkout &lt;ref&gt; -- &lt;paths&gt;</code> also writes the
+index and <code>git cherry-pick</code> refuses to run against a dirty
+index even for unrelated paths. Commit the four targeted edits
+immediately too, with
+<code>git add AGENTS.md bin/fm-test-run.sh docs/documentation-audiences.json tests/fm-test-run.test.sh &amp;&amp; git commit -m 'chore: re-apply upstream-sync companion edits'</code>,
+for the same reason in its unstaged form: <code>git cherry-pick</code>
+also refuses when a picked commit touches a file carrying uncommitted
+local changes, and fork PRs do touch <code>AGENTS.md</code>. The
+<code>git add</code> is not optional here the way it is after the
+restore: these are plain edits to tracked files, so
+<code>git commit -m</code> alone stages nothing and exits
+non-zero.</p></li>
+<li><p>Do not present the keep-list for approval; the PR verdict table
+is the review surface.</p></li>
+<li><p>Cherry-pick each <code>kept</code> PR in order, letting upstream
+win every conflict.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> cherry-pick <span class="at">-x</span> <span class="op">&lt;</span>sha<span class="op">&gt;</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="co"># on conflict: keep upstream&#39;s architecture, wording, tests, and safety contracts; resolve; git cherry-pick --continue</span></span></code></pre></div>
+<p>If a kept PR no longer applies meaningfully on top of upstream,
+downgrade its verdict to <code>superseded</code> or
+<code>no-longer-needed</code> and say why in the table.</p></li>
+<li><p>Run the tier's validation.</p>
+<p>Weekly:</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-lint.sh</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-test-run.sh</span> <span class="at">--changed</span> <span class="at">--base</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span> <span class="at">--exclude-family</span> real-herdr-gated</span></code></pre></div>
+<p>Never hand-roll the selection from <code>git diff --name-only</code>.
+The branch starts at <code>UPSTREAM_BASE</code>, so
+<code>--changed --base "$UPSTREAM_BASE"</code> resolves the kept diff
+through <code>families_for_changed_path</code> in
+<code>bin/fm-test-run.sh</code>, the repo's maintained
+changed-file-to-test map, and a diff that maps to nothing logs
+<code>no tests selected</code> instead of failing the tier. If the run
+stops with
+<code>no changed-test mapping for source path: &lt;path&gt;</code>, a
+kept commit brought in a file the map does not know: give it a family in
+<code>families_for_changed_path</code>, or add it to that function's
+no-test exemption arm if it is pure documentation, in the same sync
+commit, then re-run.</p>
+<p>Run the <code>real-herdr-gated</code> family too only when the kept
+diff selects it, which the same map decides:</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-n</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: UPSTREAM_BASE unset in this shell; re-bind it from the brief&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="va">changed</span><span class="op">=</span><span class="va">$(</span><span class="ex">bin/fm-test-run.sh</span> <span class="at">--list</span> <span class="at">--changed</span> <span class="at">--base</span> <span class="st">&quot;</span><span class="va">$UPSTREAM_BASE</span><span class="st">&quot;</span><span class="va">)</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: changed-test selection failed&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="va">gated</span><span class="op">=</span><span class="va">$(</span><span class="ex">bin/fm-test-run.sh</span> <span class="at">--list</span> <span class="at">--family</span> real-herdr-gated<span class="va">)</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: real-herdr-gated listing failed&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="va">overlap</span><span class="op">=</span><span class="va">$(</span><span class="fu">comm</span> <span class="at">-12</span> <span class="dt">\</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>  <span class="op">&lt;(</span><span class="bu">printf</span> <span class="st">&#39;%s\n&#39;</span> <span class="st">&quot;</span><span class="va">$changed</span><span class="st">&quot;</span> <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-v</span> <span class="st">&#39;^$&#39;</span> <span class="kw">|</span> <span class="fu">sort</span> <span class="at">-u</span><span class="op">)</span> <span class="dt">\</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>  <span class="op">&lt;(</span><span class="bu">printf</span> <span class="st">&#39;%s\n&#39;</span> <span class="st">&quot;</span><span class="va">$gated</span><span class="st">&quot;</span> <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-v</span> <span class="st">&#39;^$&#39;</span> <span class="kw">|</span> <span class="fu">sort</span> <span class="at">-u</span><span class="op">)</span><span class="va">)</span></span></code></pre></div>
+<p>Capture each list and check its status; never inline the two runs
+into <code>comm</code> through process substitution. Process
+substitution and the pipe into <code>sort</code> both discard the exit
+status, so a failed selection — an unset <code>UPSTREAM_BASE</code> in a
+fresh shell is the usual one — would produce empty output that reads as
+a clean "not Herdr-affecting" verdict. Do not judge this from a
+hand-written path list: the map also routes
+<code>bin/fm-backend.sh</code>, <code>bin/fm-afk*</code>,
+<code>bin/fm-supervisor-target-lib.sh</code>, and several install and CI
+files to <code>real-herdr-gated</code>.</p>
+<p>An empty <code>$overlap</code> means the sync is not Herdr-affecting
+and the weekly tier is done. A non-empty <code>$overlap</code> means it
+is, and the next move depends on the brief. If this brief was not
+scaffolded with <code>--herdr-lab</code>, stop with
+<code>blocked: sync touches Herdr, brief needs --herdr-lab</code> and
+wait for the regenerated brief; never add lab commands to a brief that
+declares <code>NOT ENABLED</code>. If it was, the lab contract is live,
+so run the family now:</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> t <span class="kw">in</span> herdr jq treehouse python3<span class="kw">;</span> <span class="cf">do</span> <span class="bu">command</span> <span class="at">-v</span> <span class="st">&quot;</span><span class="va">$t</span><span class="st">&quot;</span> <span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&quot;blocked: the Herdr family needs </span><span class="va">$t</span><span class="st"> on PATH; without it whole suites skip into a green result&quot;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">};</span> <span class="cf">done</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-x</span> <span class="st">&quot;</span><span class="va">${HERDR_LAB_HELPER</span><span class="op">:-</span>bin/fm-herdr-lab.sh<span class="va">}</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: the Herdr lab helper is not executable; two lifecycle suites would skip into a green result&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-test-run.sh</span> <span class="at">--family</span> real-herdr-gated <span class="at">--fail-on-gate-skip</span> <span class="st">&#39;herdr not found&#39;</span></span></code></pre></div>
+<p>See <a
+href="references/herdr-lab.md"><code>references/herdr-lab.md</code></a>
+for the preconditions that run needs. CI's portable shards and its
+required Herdr lane on the PR are the weekly full gate; do not run
+<code>--all</code> locally.</p>
+<p>Monthly:</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-lint.sh</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> t <span class="kw">in</span> herdr jq treehouse python3<span class="kw">;</span> <span class="cf">do</span> <span class="bu">command</span> <span class="at">-v</span> <span class="st">&quot;</span><span class="va">$t</span><span class="st">&quot;</span> <span class="op">&gt;</span>/dev/null <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&quot;blocked: the Herdr family needs </span><span class="va">$t</span><span class="st"> on PATH; without it whole suites skip into a green result&quot;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">};</span> <span class="cf">done</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="bu">[</span> <span class="ot">-x</span> <span class="st">&quot;</span><span class="va">${HERDR_LAB_HELPER</span><span class="op">:-</span>bin/fm-herdr-lab.sh<span class="va">}</span><span class="st">&quot;</span> <span class="bu">]</span> <span class="kw">||</span> <span class="kw">{</span> <span class="bu">echo</span> <span class="st">&#39;blocked: the Herdr lab helper is not executable; two lifecycle suites would skip into a green result&#39;</span><span class="kw">;</span> <span class="bu">exit</span> 1<span class="kw">;</span> <span class="kw">}</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-test-run.sh</span> <span class="at">--all</span> <span class="at">--fail-on-gate-skip</span> <span class="st">&#39;herdr not found&#39;</span></span></code></pre></div>
+<p>The full run includes the <code>real-herdr-gated</code> family, which
+needs a running default Herdr server and the lab contract from
+<code>--herdr-lab</code>; <a
+href="references/herdr-lab.md"><code>references/herdr-lab.md</code></a>
+owns that setup. <code>--fail-on-gate-skip</code> is not optional here:
+a gate skip is otherwise a success, so a clone without
+<code>herdr</code> on <code>PATH</code> would report the whole monthly
+suite green having run none of the Herdr lifecycle tests the tier exists
+to cover. It takes a single token, so it cannot cover the family's other
+gates; the checks above assert every head gate that exits a whole suite,
+because a missing <code>jq</code>, <code>treehouse</code>, or
+<code>python3</code>, or a non-executable lab helper, skips suites into
+the same green result.</p></li>
+<li><p>Treat any failure not caused by a kept commit as unrelated
+breakage: note it in the PR description under <code>Follow-ups</code>,
+and leave the code untouched on the sync branch. Firstmate files each
+one as separate work after the PR is open.</p></li>
+<li><p>Append the catch-up log row to <code>docs/upstream-sync.md</code>
+on the sync branch, recording the date, adopted base, the window end
+commit as a bare backticked SHA in its own column, tier, and every
+verdict, and on a monthly tier advance the
+<code>Next monthly full run</code> line to the first day of the
+following month. Append to the copy step 7 restored from
+<code>origin/main</code>, so the row lands on top of every earlier row
+rather than on a stale snapshot of the file. If the file is missing, or
+its newest row predates the one
+<code>git show origin/main:docs/upstream-sync.md</code> shows, stop with
+<code>blocked: the sync branch lost docs/upstream-sync.md</code> rather
+than recreating it from memory. The window end commit is the
+<code>WINDOW_END</code> step 4 pinned — the last first-parent commit
+inside this window, whether or not it was adjudicated, including an
+excluded snapshot squash. Defining it by position rather than by
+adjudication is what keeps it always present: step 5 forbids
+adjudicating a snapshot squash, so a window containing only one would
+otherwise leave this column empty. It is not optional: intake's window
+override reads it, an empty column drops the next sync back to the
+marker, and from there the accumulated fork delta is lost with no
+conflict and no warning. "Every verdict" means the full accumulated
+keep-list per step 5 — the window's own PRs plus every PR recovered from
+an excluded squash's row — because the next sync rebuilds the fork delta
+from this row alone. Commit it before step 13 ships, with
+<code>git add docs/upstream-sync.md &amp;&amp; git commit -m 'docs: record the &lt;DATE&gt; catch-up'</code>,
+so the pipeline validates the row and the merged PR carries it.
+Appending the row is a plain edit to a tracked file, so
+<code>git commit -m</code> without the <code>git add</code> stages
+nothing and exits non-zero, leaving the row in the working tree. An
+uncommitted row is the silent failure: <code>axi run</code> validates
+committed history and ignores the working tree, so CI goes green and the
+merged commit carries no row at all. A row added after the PR is open is
+either never pushed or lands unvalidated, and intake's window override
+plus the monthly-tier check both read it from the merged
+commit.</p></li>
+<li><p>Ship through no-mistakes to the fork's PR path, with
+<code>no-mistakes axi run --skip rebase --intent "&lt;TIER&gt; upstream sync of withally/firstmate onto kunchenguid/firstmate at &lt;UPSTREAM_BASE&gt;"</code>.
+<code>--intent</code> is required to start a run, so the bare command
+fails before the first pipeline step, and the tier belongs in it because
+the gate treats the intent as the run's authoritative goal rather than
+inferring one. The rebase step is skipped because a cutover branch is
+cut from <code>upstream/main</code> and rebasing it onto the fork's
+<code>origin/main</code> would replay the whole divergent fork history
+back onto the new base, undoing the adoption the sync exists to perform.
+Title the PR <code>chore: snapshot upstream main for &lt;DATE&gt;</code>
+so the next sync's snapshot-commit search (step 3) finds this merge. The
+PR must be squash-merged with that title, because the fork allows merge
+and rebase merges too and neither puts the marker on
+<code>origin/main</code>'s first-parent subject; intake step 7 verifies
+this after the merge. The verdict table carries the same full
+accumulated keep-list step 5 and step 12 require, not just the window's
+own PRs, because it is the captain's single review surface for
+everything the branch re-applies. The PR description must contain the
+verdict table:</p>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> Fork PR <span class="pp">|</span> Verdict <span class="pp">|</span> Evidence <span class="pp">|</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="pp">| ---</span> <span class="pp">| ---</span> <span class="pp">| ---</span> <span class="pp">|</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> #NN <span class="pp">|</span> already-upstream <span class="pp">|</span> upstream #MMMM <span class="pp">|</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> #NN <span class="pp">|</span> superseded <span class="pp">|</span> upstream #MMMM <span class="pp">|</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> #NN <span class="pp">|</span> no-longer-needed <span class="pp">|</span> <span class="dt">&lt;</span><span class="kw">reason</span><span class="dt">&gt;</span> <span class="pp">|</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> #NN <span class="pp">|</span> kept <span class="pp">|</span> <span class="dt">&lt;</span><span class="kw">what</span><span class="ot"> upstream still lacks and why the fork needs it</span><span class="dt">&gt;</span> <span class="pp">|</span></span></code></pre></div>
+<p>followed by <code>Tier: weekly|monthly</code>, the validation
+commands actually run, and a <code>Follow-ups</code> list (possibly
+empty). Never push to <code>upstream</code> and never merge.</p></li>
+<li><p>Hand back with <code>done: PR &lt;url&gt; checks green</code> per
+the brief; the captain rules on the keep-list at merge.</p></li>
+</ol>
+<hr>
+<div class="file">.agents/skills/upstream-sync/references/herdr-lab.md</div>
+<h1 id="herdr-lab-setup-for-upstream-sync">Herdr lab setup for upstream
+sync</h1>
+<p>This is the one place the sync worker learns how the isolated Herdr
+lab works, so nobody re-discovers it mid-sync.
+<code>bin/fm-herdr-lab.sh</code> and its <code>--help</code> own the
+exact commands and refusals; <code>docs/herdr-backend.md</code>
+"Destructive lab safety" owns the safety rationale.</p>
+<h2 id="when-the-lab-is-required">When the lab is required</h2>
+<ul>
+<li>Every <code>monthly</code> tier, because
+<code>bin/fm-test-run.sh --all --fail-on-gate-skip 'herdr not found'</code>
+includes the <code>real-herdr-gated</code> family and refuses to skip
+it.</li>
+<li>A <code>weekly</code> tier whose kept diff selects the
+<code>real-herdr-gated</code> family, which
+<code>bin/fm-test-run.sh</code>'s changed-file-to-test map decides, not
+a hand-written path list. The skill's step 10 owns that check and the
+status guards it needs; a bare <code>comm</code> over two process
+substitutions reports a clean verdict when either listing fails, so do
+not re-derive it here.</li>
+<li>Never otherwise; a weekly sync that does not touch Herdr runs
+<code>--exclude-family real-herdr-gated</code> and needs no lab.</li>
+</ul>
+<h2 id="what-the-brief-must-carry">What the brief must carry</h2>
+<p>The brief must be scaffolded with
+<code>bin/fm-brief.sh ... --herdr-lab</code> whenever the lab is
+required. That flag emits the hard isolation contract naming
+<code>HERDR_LAB_HELPER</code> and the session name; a brief without it
+carries a loud <code>NOT ENABLED</code> declaration, and a worker must
+never add lab commands to such a brief by hand. If the need appears only
+after dispatch, the worker stops with a <code>blocked:</code> line and
+Firstmate regenerates the brief; on the regenerated brief the worker
+runs the family from the skill's step 10 rather than blocking again.</p>
+<h2 id="preconditions">Preconditions</h2>
+<ul>
+<li><code>herdr</code>, <code>jq</code>, <code>treehouse</code>, and
+<code>python3</code> on <code>PATH</code>, because each one guards a
+whole suite at its head with <code>exit 0</code> and a missing binary is
+a skip, not a failure. <code>tmux</code> is not on this list: its only
+checks are per-case <code>return 0</code> skips inside
+<code>tests/fm-afk-launch.test.sh</code>, so its absence never turns a
+suite green by skipping it.</li>
+<li><code>$HERDR_LAB_HELPER</code> executable, defaulting to
+<code>bin/fm-herdr-lab.sh</code>, because
+<code>tests/fm-backend-herdr-presentation-e2e.test.sh</code> and
+<code>tests/fm-herdr-session-cleanup-e2e.test.sh</code> head-gate on
+<code>[ -x "$HERDR_LAB_HELPER" ]</code> and skip the whole suite
+otherwise. A stale exported value pointing at a deleted tree, or a
+checkout copied without the executable bit, is the way this bites.
+<code>--fail-on-gate-skip</code> accepts one token only, so assert these
+with <code>command -v</code> before the run rather than relying on
+it.</li>
+<li>Exactly one running <code>default</code> Herdr session, because the
+helper snapshots it as the fleet-state tripwire before provisioning and
+requires it byte-identical after teardown. Check with
+<code>herdr session list --json | jq '.sessions[] | select(.default == true)'</code>.</li>
+<li>The worker is not inheriting a pane identity from a Herdr-hosted
+terminal that should place work elsewhere;
+<code>tests/herdr-test-safety.sh</code>'s
+<code>herdr_forget_inherited_pane</code> shows which variables the
+suites drop.</li>
+</ul>
+<h2 id="the-helper">The helper</h2>
+<p><code>HERDR_LAB_HELPER</code> is the absolute path to
+<code>bin/fm-herdr-lab.sh</code>; the <code>--herdr-lab</code> brief
+section sets it. Session names must begin with <code>fm-lab-</code> and
+can never be <code>default</code>; the helper refuses anything else.</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>name</td>
+<td><code>S=$("$HERDR_LAB_HELPER" name &lt;label&gt;)</code></td>
+<td>Sanitizes the label, caps it at 16 characters, and appends process
+and random suffixes so socket paths stay short.</td>
+</tr>
+<tr>
+<td>prepare</td>
+<td><code>"$HERDR_LAB_HELPER" prepare "$S"</code></td>
+<td>Records the running default session as the tripwire without starting
+a server; provision calls it for you.</td>
+</tr>
+<tr>
+<td>provision</td>
+<td><code>"$HERDR_LAB_HELPER" provision "$S"</code></td>
+<td>Records the tripwire, starts a named server, and waits up to 60
+seconds for it to report running.</td>
+</tr>
+<tr>
+<td>run</td>
+<td><code>"$HERDR_LAB_HELPER" run "$S" &lt;herdr args...&gt;</code></td>
+<td>Runs one task-level Herdr command with a trailing
+<code>--session "$S"</code>; refuses caller-supplied
+<code>--session</code>, leading options, and every server or session
+lifecycle subcommand.</td>
+</tr>
+<tr>
+<td>stop</td>
+<td><code>"$HERDR_LAB_HELPER" stop "$S"</code></td>
+<td>Guarded mid-run session stop; re-checks refuse-default immediately
+before stopping.</td>
+</tr>
+<tr>
+<td>teardown</td>
+<td><code>"$HERDR_LAB_HELPER" teardown "$S"</code></td>
+<td>Guarded stop and delete, then verifies the default session is
+byte-identical to the tripwire and removes the record.</td>
+</tr>
+</tbody>
+</table>
+<p>Install <code>trap '"$HERDR_LAB_HELPER" teardown "$S"' EXIT</code>
+before provisioning so an aborted run still cleans up.</p>
+<h2 id="the-tripwire">The tripwire</h2>
+<p>Provision writes
+<code>${FM_HERDR_LAB_STATE_DIR:-${TMPDIR:-/tmp}/fm-herdr-lab-&lt;uid&gt;}/&lt;session&gt;.fleet-state.json</code>
+holding <code>{name, default, running, socket_path}</code> of the one
+running default session. Teardown and re-provision compare a fresh
+snapshot against it and refuse on any difference, printing
+<code>FLEET-STATE TRIPWIRE FAILED</code>. A missing, stopped, or changed
+default session is a hard failure, never a warning to ignore: stop and
+report it.</p>
+<h2 id="running-the-herdr-test-family">Running the Herdr test
+family</h2>
+<p>The <code>real-herdr-gated</code> suites provision their own
+<code>fm-lab-*</code> sessions through the helper; the worker does not
+provision one for them.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">bin/fm-test-run.sh</span> <span class="at">--family</span> real-herdr-gated <span class="at">--fail-on-gate-skip</span> <span class="st">&#39;herdr not found&#39;</span></span></code></pre></div>
+<p><code>--fail-on-gate-skip</code> turns a missing <code>herdr</code>
+binary into a failure instead of a silent skip, matching the required CI
+lane.</p>
+<h2 id="manual-proof-and-teardown">Manual proof and teardown</h2>
+<p>Use this when a kept commit needs a hand check against a live Herdr,
+or to confirm the lab works before a monthly run.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="va">HERDR_LAB_HELPER</span><span class="op">=</span><span class="va">$PWD</span>/bin/fm-herdr-lab.sh</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="va">S</span><span class="op">=</span><span class="va">$(</span><span class="st">&quot;</span><span class="va">$HERDR_LAB_HELPER</span><span class="st">&quot;</span> name <span class="op">&lt;</span>task-id<span class="op">&gt;</span><span class="va">)</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="bu">trap</span> <span class="st">&#39;&quot;$HERDR_LAB_HELPER&quot; teardown &quot;$S&quot;&#39;</span> EXIT</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="st">&quot;</span><span class="va">$HERDR_LAB_HELPER</span><span class="st">&quot;</span> provision <span class="st">&quot;</span><span class="va">$S</span><span class="st">&quot;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="st">&quot;</span><span class="va">$HERDR_LAB_HELPER</span><span class="st">&quot;</span> run <span class="st">&quot;</span><span class="va">$S</span><span class="st">&quot;</span> status <span class="at">--json</span> <span class="kw">|</span> <span class="ex">jq</span> <span class="st">&#39;.server.running&#39;</span>   <span class="co"># true</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="st">&quot;</span><span class="va">$HERDR_LAB_HELPER</span><span class="st">&quot;</span> teardown <span class="st">&quot;</span><span class="va">$S</span><span class="st">&quot;</span><span class="kw">;</span> <span class="bu">trap</span> <span class="at">-</span> EXIT</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="ex">herdr</span> session list <span class="at">--json</span> <span class="kw">|</span> <span class="ex">jq</span> <span class="at">-r</span> <span class="st">&#39;[.sessions[].name] | join(&quot;,&quot;)&#39;</span>  <span class="co"># the lab name is gone</span></span></code></pre></div>
+<p>Forbidden at all times: direct <code>herdr server stop</code>,
+<code>herdr session stop</code>, <code>herdr session delete</code>, any
+server-global operation, and any Herdr call scoped only by ambient or
+inline <code>HERDR_SESSION</code>. Other <code>fm-lab-*</code> sessions
+in the list belong to other live workers or suites; never stop or delete
+one you did not create.</p>
+<hr>
+<div class="file">.agents/skills/upstream-sync/references/worker-brief.md</div>
+<h1 id="worker-brief-template">Worker brief template</h1>
+<p>Firstmate scaffolds with
+<code>bin/fm-brief.sh &lt;task-id&gt; firstmate --mode no-mistakes</code>,
+adding <code>--herdr-lab</code> when the tier is <code>monthly</code> or
+the sync is already known to touch Herdr backend or lab code, and
+replaces <code>{TASK}</code> with the block below. Fill exactly five
+values; every other line is fixed text.</p>
+<table>
+<thead>
+<tr>
+<th>Placeholder</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UPSTREAM_BASE</code></td>
+<td><code>git rev-parse --short=12 upstream/main</code> at intake</td>
+</tr>
+<tr>
+<td><code>SNAPSHOT</code></td>
+<td>short hash of the latest <code>chore: snapshot upstream main</code>
+first-parent commit on <code>origin/main</code>, or the window end
+commit when a catch-up log row names an older one; take it from the
+skill's intake command block, not by hand</td>
+</tr>
+<tr>
+<td><code>SETTLED</code></td>
+<td>window end commit from the newest catch-up log row, empty when no
+row names one; the worker cannot re-derive it after branching at
+<code>upstream/main</code></td>
+</tr>
+<tr>
+<td><code>TIER</code></td>
+<td><code>weekly</code> or <code>monthly</code>, from the skill's tier
+rule</td>
+</tr>
+<tr>
+<td><code>DATE</code></td>
+<td>the sync date, <code>YYYY-MM-DD</code></td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">## Task: {TIER} upstream sync of withally/firstmate onto kunchenguid/firstmate</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>This is SHARED TRACKED firstmate material: load <span class="in">`firstmate-coding-guidelines`</span> before editing anything.</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>Then load <span class="in">`upstream-sync`</span> and follow its &quot;Worker checklist&quot; step by step; it owns every command.</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="in">`docs/upstream-sync.md`</span> owns the rules those commands implement.</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>Recorded values:</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>UPSTREAM_BASE: <span class="in">`{UPSTREAM_BASE}`</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>SNAPSHOT: <span class="in">`{SNAPSHOT}`</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>SETTLED: <span class="in">`{SETTLED}`</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>TIER: <span class="in">`{TIER}`</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>DATE: <span class="in">`{DATE}`</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>Fixed rules:</span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Bind UPSTREAM_BASE, SNAPSHOT, and SETTLED as shell variables from the recorded values above before running any checklist command, and stop if UPSTREAM_BASE or SNAPSHOT is empty.</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Branch at UPSTREAM_BASE; never merge origin/main into it.</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Audit only the first-parent commits in SNAPSHOT..WINDOW_END, where the skill&#39;s step 4 pins WINDOW_END from <span class="in">`origin/main`</span> at listing time; never re-read <span class="in">`origin/main`</span> for it later.</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Decide every keep by the doc&#39;s keep rule yourself; no mid-flight approval.</span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Cherry-pick kept PRs with <span class="in">`-x`</span>; upstream wins every conflict.</span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Run only the TIER&#39;s validation from the skill; CI&#39;s portable shards and its required Herdr lane on the PR are the weekly full gate.</span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Append the catch-up log row before shipping, recording that pinned WINDOW_END as the row&#39;s <span class="in">`Window end commit`</span>, and commit it with <span class="in">`git add docs/upstream-sync.md &amp;&amp; git commit -m &#39;docs: record the {DATE} catch-up&#39;`</span>, advancing the <span class="in">`Next monthly full run`</span> line on a monthly tier; a row that is uncommitted or added after the PR is open is never validated and never reaches <span class="in">`origin/main`</span>.</span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Ship the PR with <span class="in">`no-mistakes axi run --skip rebase --intent &quot;{TIER} upstream sync of withally/firstmate onto kunchenguid/firstmate at {UPSTREAM_BASE}&quot;`</span>; <span class="in">`--intent`</span> is required to start a run, and a cutover branch is cut from <span class="in">`upstream/main`</span>, so rebasing it onto the fork&#39;s <span class="in">`origin/main`</span> would replay the divergent fork history back onto the new base and undo the adoption.</span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Unrelated breakage is a <span class="in">`Follow-ups`</span> entry in the PR, never a fix on this branch.</span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>If the kept diff selects the <span class="in">`real-herdr-gated`</span> family per the skill&#39;s <span class="in">`comm -12`</span> check against <span class="in">`bin/fm-test-run.sh --list`</span>, and this brief was not scaffolded with <span class="in">`--herdr-lab`</span>, stop with <span class="in">`blocked: sync touches Herdr, brief needs --herdr-lab`</span> and wait.</span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>If that check selects the family and this brief does carry the lab contract, run the family locally per the skill&#39;s step 10; do not block a second time.</span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>PR title: <span class="in">`chore: snapshot upstream main for {DATE}`</span>; PR body carries the verdict table, <span class="in">`Tier: {TIER}`</span>, the validation commands run, and <span class="in">`Follow-ups`</span>.</span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Never push to <span class="in">`upstream`</span>; never merge.</span></code></pre></div>
+<hr>
+</body></html>

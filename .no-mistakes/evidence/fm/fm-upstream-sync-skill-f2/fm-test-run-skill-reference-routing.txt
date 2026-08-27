@@ -1,0 +1,49 @@
+=== bin/fm-test-run.sh changed-file selection for this change's own paths ===
+changed paths vs base b0638f6:
+    .agents/skills/upstream-sync/SKILL.md
+    .agents/skills/upstream-sync/references/herdr-lab.md
+    .agents/skills/upstream-sync/references/worker-brief.md
+    AGENTS.md
+    bin/fm-test-run.sh
+    docs/documentation-audiences.json
+    docs/upstream-sync.md
+    tests/fm-test-run.test.sh
+
+--- BEFORE (selector at base commit): a skill reference asset has no mapping
+    fm-test-run: no changed-test mapping for source path: .agents/skills/upstream-sync/references/herdr-lab.md
+    -> exit=2
+
+--- AFTER (selector on this branch): the same paths select pure-contract coverage
+    tests/fm-arm-pretool-check.test.sh
+    tests/fm-ask-user-authority.test.sh
+    tests/fm-bearings-board.test.sh
+    tests/fm-brief.test.sh
+    tests/fm-calm-pi-extension.test.sh
+    tests/fm-captain-hold-lifecycle.test.sh
+    tests/fm-cd-pretool-check.test.sh
+    tests/fm-classify-decision-key.test.sh
+    tests/fm-composer-ghost.test.sh
+    tests/fm-composer-lib.test.sh
+    tests/fm-crew-state.test.sh
+    tests/fm-documentation-audiences.test.sh
+    tests/fm-ensure-agents-md.test.sh
+    tests/fm-grok-harness.test.sh
+    tests/fm-herdr-lab.test.sh
+    tests/fm-kimi-harness.test.sh
+    tests/fm-lint-workflows.test.sh
+    tests/fm-lint.test.sh
+    tests/fm-muse-harness.test.sh
+    tests/fm-operational-input.test.sh
+    tests/fm-pi-primary-types.test.sh
+    tests/fm-send-popup-settle.test.sh
+    tests/fm-send-settle.test.sh
+    tests/fm-subagent-pretool-check.test.sh
+    tests/fm-supervision-instructions.test.sh
+    tests/fm-task-delivery.test.sh
+    tests/fm-test-isolation-proof.test.sh
+    tests/fm-test-run.test.sh
+    tests/fm-tmux-submit-busy.test.sh
+    tests/fm-trace-context-lib.test.sh
+    tests/fm-transition-lib.test.sh
+    tests/fm-vendor-auth-probe.test.sh
+    -> exit=0  (count=32)

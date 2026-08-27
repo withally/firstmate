@@ -1,0 +1,24 @@
+=== references/herdr-lab.md helper contract, exercised against bin/fm-herdr-lab.sh ===
+
+  "$HERDR_LAB_HELPER" name upstream-sync-weekly -> "fm-lab-upstream-sync-we-43292-18475"  (label capped at 16 chars, fm-lab- prefix, pid+random suffix)
+
+  refusal: session literally named default
+    fm-herdr-lab: refusing session name 'default'
+    -> exit=1
+
+  refusal: session name without the fm-lab- prefix
+    fm-herdr-lab: session name must start with 'fm-lab-' and contain only letters, digits, underscores, or dashes: not-a-lab-session
+    -> exit=1
+
+  refusal: caller-supplied --session on run
+    fm-herdr-lab: run forbids caller-supplied --session; the helper appends the lab session
+    -> exit=1
+
+  refusal: server lifecycle subcommand through run
+    fm-herdr-lab: run forbids server operations; use provision for the named lab server
+    -> exit=1
+
+  refusal: leading option on run
+    fm-herdr-lab: run forbids a leading option before the Herdr subcommand; it could shift a server or session lifecycle operation past the guard or subvert session isolation
+    -> exit=1
+

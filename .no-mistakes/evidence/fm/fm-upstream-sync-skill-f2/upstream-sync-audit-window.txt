@@ -1,0 +1,9 @@
+=== docs/upstream-sync.md steps 3-4 executed on the real fork (audit window from the latest catch-up marker) ===
+
+--- step 3: latest first-parent 'chore: snapshot upstream main' marker on origin/main
+    34d9081e491b98cb7800eb919dbd1bbf47395e72	2026-08-27	chore: snapshot upstream main for 2026-08-27 (#78)
+
+--- step 4: fork PRs to audit, i.e. $CATCHUP..origin/main first-parent
+
+--- step 5 negative control: the forbidden 'origin/main ^upstream/main' range, for contrast
+    commit count = 69  (vs 0 from the documented range)

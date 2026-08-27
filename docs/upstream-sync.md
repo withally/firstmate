@@ -31,7 +31,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
 9. Re-apply only the kept behaviors on top of the recorded upstream base.
    Resolve conflicts in favor of upstream and preserve newer upstream architecture, wording, tests, and safety contracts.
 10. Validate by tier, then ship through no-mistakes to the fork's PR path.
-    A weekly sync runs `bin/fm-lint.sh` plus only the test files colocated with the files the kept commits touch, derived from the diff of the kept commits against the upstream base; Herdr lifecycle tests run only when a kept commit touches the Herdr backend or lab code; CI's portable shards on the PR are the full gate.
+    A weekly sync runs `bin/fm-lint.sh` plus only the tests the repo's maintained changed-file-to-test map selects for the diff of the kept commits against the upstream base, via `bin/fm-test-run.sh --changed --base <upstream-base>`; Herdr lifecycle tests run only when that same selection includes the `real-herdr-gated` family; CI's portable shards on the PR are the full gate.
     A monthly sync, the first sync on or after the 1st of a month named by the `Next monthly full run` line below, runs the full `bin/fm-test-run.sh` suite locally, including the Herdr lab.
     Unrelated breakage found during either tier is noted in the PR and filed as separate follow-up work, never fixed on the sync branch.
     The `upstream-sync` skill owns the exact commands, the tier decision, the worker brief, and the Herdr lab setup.

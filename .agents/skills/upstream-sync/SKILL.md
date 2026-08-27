@@ -49,7 +49,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    ```
 
    A monthly tier always needs `--herdr-lab` because the full suite drives Herdr lifecycle behavior through the lab.
-   A weekly tier normally does not; if the audit later shows a kept commit touching Herdr backend or lab code, the worker stops and reports so the brief is regenerated with `--herdr-lab` rather than adding lab commands by hand.
+   A weekly tier normally does not; if the kept diff later turns out to select the `real-herdr-gated` family, the worker stops and reports so the brief is regenerated with `--herdr-lab` rather than adding lab commands by hand.
 4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `TIER`, and `DATE`.
 5. Spawn per `AGENTS.md` section 7, record the sync as work under way, and supervise as usual.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
@@ -103,16 +103,23 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
     ```sh
     bin/fm-lint.sh
-    # tests colocated with the kept diff: bin/<name>.sh -> tests/<name>*.test.sh, plus any changed tests/*.test.sh
-    git diff --name-only "$UPSTREAM_BASE"..HEAD > "$TMPDIR/sync-files.txt"
-    {
-      sed -n 's#^bin/\(fm-[^/]*\)\.sh$#tests/\1#p' "$TMPDIR/sync-files.txt" | while read -r stem; do ls "$stem"*.test.sh 2>/dev/null; done
-      grep '^tests/.*\.test\.sh$' "$TMPDIR/sync-files.txt"
-    } | sort -u > "$TMPDIR/sync-tests.txt"
-    bin/fm-test-run.sh --exclude-family real-herdr-gated $(cat "$TMPDIR/sync-tests.txt")
+    bin/fm-test-run.sh --changed --base "$UPSTREAM_BASE" --exclude-family real-herdr-gated
     ```
 
-    Run the `real-herdr-gated` family too only when the kept diff touches `bin/backends/herdr*`, `bin/fm-herdr-*`, or `tests/herdr-test-safety.sh`, and only from a brief scaffolded with `--herdr-lab`; see [`references/herdr-lab.md`](references/herdr-lab.md).
+    Never hand-roll the selection from `git diff --name-only`.
+    The branch starts at `UPSTREAM_BASE`, so `--changed --base "$UPSTREAM_BASE"` resolves the kept diff through `families_for_changed_path` in `bin/fm-test-run.sh`, the repo's maintained changed-file-to-test map, and a diff that maps to nothing logs `no tests selected` instead of failing the tier.
+    If the run stops with `no changed-test mapping for source path: <path>`, a kept commit brought in a file the map does not know: give it a family in `families_for_changed_path`, or add it to that function's no-test exemption arm if it is pure documentation, in the same sync commit, then re-run.
+
+    Run the `real-herdr-gated` family too only when the kept diff selects it, which the same map decides:
+
+    ```bash
+    comm -12 \
+      <(bin/fm-test-run.sh --list --changed --base "$UPSTREAM_BASE" | sort -u) \
+      <(bin/fm-test-run.sh --list --family real-herdr-gated | sort -u)
+    ```
+
+    Any output means the sync is Herdr-affecting, so it needs a brief scaffolded with `--herdr-lab`; see [`references/herdr-lab.md`](references/herdr-lab.md).
+    Do not judge this from a hand-written path list: the map also routes `bin/fm-backend.sh`, `bin/fm-afk*`, `bin/fm-supervisor-target-lib.sh`, and several install and CI files to `real-herdr-gated`.
     CI's portable shards on the PR are the weekly full gate; do not run `--all` locally.
 
     Monthly:

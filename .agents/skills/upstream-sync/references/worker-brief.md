@@ -32,7 +32,7 @@ Fixed rules:
 - Cherry-pick kept PRs with `-x`; upstream wins every conflict.
 - Run only the TIER's validation from the skill; CI's portable shards on the PR are the weekly full gate.
 - Unrelated breakage is a `Follow-ups` entry in the PR, never a fix on this branch.
-- If the kept diff touches Herdr backend or lab code and this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait.
+- If the kept diff selects the `real-herdr-gated` family per the skill's `comm -12` check against `bin/fm-test-run.sh --list`, and this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait.
 - PR title: `chore: snapshot upstream main for {DATE}`; PR body carries the verdict table, `Tier: {TIER}`, the validation commands run, and `Follow-ups`.
 - Append the catch-up log row; on a monthly tier advance the `Next monthly full run` line.
 - Never push to `upstream`; never merge.

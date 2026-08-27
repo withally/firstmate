@@ -6,7 +6,8 @@ This is the one place the sync worker learns how the isolated Herdr lab works, s
 ## When the lab is required
 
 - Every `monthly` tier, because `bin/fm-test-run.sh --all` includes the `real-herdr-gated` family.
-- A `weekly` tier whose kept diff touches `bin/backends/herdr*`, `bin/fm-herdr-*`, or `tests/herdr-test-safety.sh`, because that diff selects the `real-herdr-gated` family.
+- A `weekly` tier whose kept diff selects the `real-herdr-gated` family, which `bin/fm-test-run.sh`'s changed-file-to-test map decides, not a hand-written path list.
+  Check it with `comm -12 <(bin/fm-test-run.sh --list --changed --base "$UPSTREAM_BASE" | sort -u) <(bin/fm-test-run.sh --list --family real-herdr-gated | sort -u)`; any output means the lab is required.
 - Never otherwise; a weekly sync that does not touch Herdr runs `--exclude-family real-herdr-gated` and needs no lab.
 
 ## What the brief must carry

@@ -27,7 +27,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
 3. Locate the most recent full catch-up on `origin/main` by finding the latest first-parent commit whose subject starts with `chore: snapshot upstream main`.
 
    ```sh
-   git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
+   git log origin/main --first-parent --format='%H%x09%cs%x09%s' | awk -F'\t' '$3 ~ /^chore: snapshot upstream main/ {print; exit}'
    ```
 
 4. Audit only the fork PRs after that catch-up commit.
@@ -67,7 +67,8 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Stage the file before committing it, since appending the row is a plain edit to a tracked file and `git commit -m` alone would stage nothing.
     Both the append and its commit come before the ship in step 13, because the gate validates committed history only; a row left in the working tree or added after the PR is open never reaches `origin/main`.
 13. Ship through no-mistakes to the fork's PR path.
-    Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
+    Match the marker on the subject line, not with `git log --grep`, which matches any line of the message and so would find the title inside a merge commit's body.
+   Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
     Never push to the canonical upstream remote and never merge without explicit captain approval.
 
 Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September is deliberately skipped).

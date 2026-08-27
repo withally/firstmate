@@ -40,7 +40,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
-   SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
+   SNAPSHOT=$(git log origin/main --first-parent --format='%h%x09%s' | awk -F'\t' '$2 ~ /^chore: snapshot upstream main/ {print $1; exit}')
    LOG=$(git show origin/main:docs/upstream-sync.md 2>/dev/null) || LOG=''
    SETTLED=<window end commit named by the newest catch-up log row in "$LOG", empty when "$LOG" is empty>
    [ -z "$LOG" ] || [ -n "$SETTLED" ] || { echo 'blocked: origin/main has a catch-up log whose newest row names no window end commit'; exit 1; }
@@ -50,7 +50,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
    Read the log out of `origin/main` rather than the checkout for exactly that reason: the code root may sit on a stale commit or a branch without the spine, and a row read from there would resolve `SETTLED` empty and silently drop the window back to the marker.
-   An absent log is the legitimate pre-spine case and leaves the marker as the boundary, but a log whose newest row names no window end is a misrecorded sync and stops here rather than losing the fork PRs that merged during its review.
+   An absent log leaves `SETTLED` empty and the marker as the boundary for this block alone, since step 2 then stops the dispatch outright; a log whose newest row names no window end is instead a misrecorded sync and stops here rather than losing the fork PRs that merged during its review.
    Two boundaries can disagree: the first-parent marker, and the window end commit named by the newest catch-up log row.
    The override only ever moves the boundary earlier, so it can only widen the window, never narrow it.
    The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
@@ -59,7 +59,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 2. Determine the tier from the `Next monthly full run` line in the `$LOG` step 1 read out of `origin/main`, never from the checkout.
    The sync is `monthly` when today's date is on or after that line's date and no catch-up log row in `$LOG` already records a `monthly` tier on or after it; otherwise it is `weekly`.
    A stale code root is why this reads the merged copy: it would still show the pre-advance date with no monthly row after it, and every later weekly dispatch would resolve `monthly` and run the full suite.
-   Stop with `blocked: origin/main carries no upstream-sync doc; the tier rule has no source` when `$LOG` is empty, rather than guessing a tier.
+   Stop with `blocked: origin/main carries no upstream-sync doc; the tier rule has no source` when `$LOG` is empty, rather than guessing a tier; that is the one disposition of an absent log, and it is why step 1's empty-`SETTLED` fallback never reaches a real sync.
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
    Do not ask; the line plus the log answer the question.
 3. Scaffold the brief with the tier-matched flags.
@@ -79,13 +79,14 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
 7. After the merge, refresh the clone through the guarded fleet-sync path, then confirm the snapshot marker actually landed on `origin/main`'s first-parent line, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
    Every window search (intake step 1, worker step 3, the doc's step 3) reads that marker, so a merge that leaves it off first-parent makes the next sync silently reuse the previous snapshot and re-audit everything this sync already reconciled.
-   This block runs long after intake step 1's shell, so rebind `SNAPSHOT` from the brief here rather than assuming it survived; an unset value makes the comparison below report a false failure on a correctly merged sync.
+   The block needs this sync's PR number at hand and a `gh` authenticated against the fork; it compares that PR's own merge commit with the marker, so no value from intake step 1's shell has to survive.
+   The marker search is subject-anchored rather than `--grep`, because `--grep` matches any line of the message and a merge commit carries the PR title in its body — which would make a merge-commit merge look correctly marked while step 5's subject-keyed exclusion still misses it.
 
    ```sh
    git fetch origin --prune
-   MERGED=$(gh pr view <this sync's PR number> --json mergeCommitSha -q .mergeCommitSha)
-   [ -n "$MERGED" ] || { echo 'blocked: could not read this sync PR merge commit'; exit 1; }
-   MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
+   MERGED=$(gh pr view <this sync's PR number> --json mergeCommit -q .mergeCommit.oid)
+   case "$MERGED" in ''|null) echo 'blocked: this sync PR reports no merge commit; it is unmerged or gh cannot read it'; exit 1 ;; esac
+   MARKER=$(git log origin/main --first-parent --format='%H%x09%s' | awk -F'\t' '$2 ~ /^chore: snapshot upstream main/ {print $1; exit}')
    [ -n "$MARKER" ] || { echo 'blocked: origin/main first-parent carries no snapshot marker at all'; exit 1; }
    [ "$MARKER" = "$MERGED" ] || { echo 'blocked: this sync merged without putting the marker on origin/main first-parent; re-land it as a squash merge under the marker title before the next sync'; exit 1; }
    ```
@@ -131,8 +132,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    Step 1 only proves `SNAPSHOT` is a commit in this clone; this step catches a marker that moved after intake, which would mis-size step 4's range.
 
    ```sh
-   git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
-   MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
+   git log origin/main --first-parent --format='%H%x09%cs%x09%s' | awk -F'\t' '$3 ~ /^chore: snapshot upstream main/ {print; exit}'
+   MARKER=$(git log origin/main --first-parent --format='%H%x09%s' | awk -F'\t' '$2 ~ /^chore: snapshot upstream main/ {print $1; exit}')
    SETTLED=<SETTLED recorded in this sync's brief, empty when the brief records none>
    [ -n "$SNAPSHOT" ] && [ -n "$MARKER" ] || { echo 'blocked: SNAPSHOT is unbound or origin/main carries no snapshot marker'; exit 1; }
    git merge-base --is-ancestor "$SNAPSHOT" origin/main || { echo 'blocked: SNAPSHOT is not reachable from origin/main; brief needs a fresh SNAPSHOT'; exit 1; }

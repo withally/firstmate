@@ -41,14 +41,17 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
    SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
-   SETTLED=<last adjudicated fork commit from the newest catch-up log row in docs/upstream-sync.md, empty when no row is newer than SNAPSHOT>
-   if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SNAPSHOT" "$SETTLED"; then SNAPSHOT=$SETTLED; fi
+   SETTLED=<last adjudicated fork commit from the newest catch-up log row in docs/upstream-sync.md whose adopted base is reachable from origin/main, empty otherwise>
+   if [ -n "$SETTLED" ] && ! git merge-base --is-ancestor "$SETTLED" origin/main; then SETTLED=; fi
+   if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" "$SNAPSHOT"; then SNAPSHOT=$SETTLED; fi
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: no upstream tip or no snapshot commit'; exit 1; }
    ```
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
-   The marker search is the default boundary, but the catch-up log overrides it: a completed catch-up can land through a PR whose title carries no marker, and the 2026-08-27 row is exactly that case.
-   When the newest log row records a catch-up later than the marker commit, take the last fork commit that row adjudicates as the window start, so the sync does not re-litigate PRs the log already settled.
+   Two boundaries can disagree: the first-parent marker, and the last adjudicated fork commit named by the newest catch-up log row.
+   Take the earlier of the two, and only after confirming the row's own commits are reachable from `origin/main`.
+   The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
+   A log row whose catch-up has not actually landed on `origin/main` — the 2026-08-27 row's adopted base still lives only on an unmerged branch — must not narrow the window at all, which is what the reachability test above enforces.
 2. Determine the tier from the `Next monthly full run` line in [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
    The sync is `monthly` when today's date is on or after that line's date and no catch-up log row already records a `monthly` tier on or after it; otherwise it is `weekly`.
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
@@ -121,17 +124,21 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    ```
 
 3. Confirm the audit window from the recorded snapshot commit.
-   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step proves no newer snapshot landed after it, because another sync merging first would make the brief's value stale and widen step 4's range.
+   Step 1 only proves `SNAPSHOT` is a commit in this clone; this step proves it is still what intake's boundary rule resolves to, because another sync merging first would make the brief's value stale and mis-size step 4's range.
 
    ```sh
    git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'
    MARKER=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H')
+   SETTLED=<same value intake step 1 resolved, empty when the newest catch-up log row names no reachable commit>
    [ -n "$SNAPSHOT" ] && [ -n "$MARKER" ] || { echo 'blocked: SNAPSHOT is unbound or origin/main carries no snapshot marker'; exit 1; }
-   git merge-base --is-ancestor "$MARKER" "$SNAPSHOT" || { echo 'blocked: a newer snapshot commit landed on origin/main; brief needs a fresh SNAPSHOT'; exit 1; }
+   git merge-base --is-ancestor "$SNAPSHOT" origin/main || { echo 'blocked: SNAPSHOT is not reachable from origin/main; brief needs a fresh SNAPSHOT'; exit 1; }
+   EXPECTED=$MARKER
+   if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" origin/main && git merge-base --is-ancestor "$SETTLED" "$EXPECTED"; then EXPECTED=$SETTLED; fi
+   [ "$(git rev-parse "$SNAPSHOT^{commit}")" = "$(git rev-parse "$EXPECTED^{commit}")" ] || { echo 'blocked: the window boundary moved since intake; brief needs a fresh SNAPSHOT'; exit 1; }
    ```
 
-   The test is reachability, not equality: intake's catch-up-log override can legitimately set `SNAPSHOT` to a plain fork commit newer than the marker, and demanding equality would deadlock every sync that override exists to serve.
-   A genuinely newer marker is a descendant of `SNAPSHOT`, so it fails this check and stops the sync as intended.
+   This re-runs intake step 1's boundary rule rather than asserting a fixed relationship to the marker, so the two can never disagree.
+   Restating the rule here in any other form is how the previous versions of this step deadlocked a sync whose boundary the catch-up log legitimately moved.
 
 4. List the fork PRs after that snapshot; this is the complete audit set.
 

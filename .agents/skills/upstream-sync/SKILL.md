@@ -70,6 +70,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
 1. Verify isolation per the brief, bind the brief's recorded values into this shell, ensure both remotes, and confirm the recorded base still equals `upstream/main`.
    Every later step consumes `$UPSTREAM_BASE` and `$SNAPSHOT`, so bind them before anything else and keep working in the same shell; an unset `SNAPSHOT` makes step 4's range silently mean `HEAD..origin/main`, which is the over-wide set step 5 forbids.
+   Compare the recorded base against `upstream/main` by resolved commit, not by abbreviation, because `--short=12` widens on ambiguity.
    The `upstream` remote setup is the doc's step 1; a clone that never ran it has `origin` only, and a clone where someone pointed `upstream` at some other fork must fail rather than record that fork's tip as the base.
 
    ```sh
@@ -84,7 +85,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    git rev-parse --verify --quiet "$SNAPSHOT^{commit}" >/dev/null || { echo 'blocked: SNAPSHOT is not a commit in this clone'; exit 1; }
-   git rev-parse --short=12 upstream/main   # must equal UPSTREAM_BASE from the brief; stop and report if it moved
+   [ "$(git rev-parse "$UPSTREAM_BASE^{commit}" 2>/dev/null)" = "$(git rev-parse 'upstream/main^{commit}')" ] || { echo 'blocked: upstream/main moved since intake; brief needs a fresh UPSTREAM_BASE'; exit 1; }
    ```
 
 2. Branch directly at the upstream tip.
@@ -135,15 +136,20 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     Run the `real-herdr-gated` family too only when the kept diff selects it, which the same map decides:
 
     ```bash
-    comm -12 \
-      <(bin/fm-test-run.sh --list --changed --base "$UPSTREAM_BASE" | sort -u) \
-      <(bin/fm-test-run.sh --list --family real-herdr-gated | sort -u)
+    [ -n "$UPSTREAM_BASE" ] || { echo 'blocked: UPSTREAM_BASE unset in this shell; re-bind it from the brief'; exit 1; }
+    changed=$(bin/fm-test-run.sh --list --changed --base "$UPSTREAM_BASE") || { echo 'blocked: changed-test selection failed'; exit 1; }
+    gated=$(bin/fm-test-run.sh --list --family real-herdr-gated) || { echo 'blocked: real-herdr-gated listing failed'; exit 1; }
+    overlap=$(comm -12 \
+      <(printf '%s\n' "$changed" | grep -v '^$' | sort -u) \
+      <(printf '%s\n' "$gated" | grep -v '^$' | sort -u))
     ```
 
+    Capture each list and check its status; never inline the two runs into `comm` through process substitution.
+    Process substitution and the pipe into `sort` both discard the exit status, so a failed selection — an unset `UPSTREAM_BASE` in a fresh shell is the usual one — would produce empty output that reads as a clean "not Herdr-affecting" verdict.
     Do not judge this from a hand-written path list: the map also routes `bin/fm-backend.sh`, `bin/fm-afk*`, `bin/fm-supervisor-target-lib.sh`, and several install and CI files to `real-herdr-gated`.
 
-    No output means the sync is not Herdr-affecting and the weekly tier is done.
-    Any output means it is, and the next move depends on the brief.
+    An empty `$overlap` means the sync is not Herdr-affecting and the weekly tier is done.
+    A non-empty `$overlap` means it is, and the next move depends on the brief.
     If this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait for the regenerated brief; never add lab commands to a brief that declares `NOT ENABLED`.
     If it was, the lab contract is live, so run the family now:
 

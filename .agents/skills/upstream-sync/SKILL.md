@@ -153,6 +153,9 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    A first-parent commit whose subject starts with `chore: snapshot upstream main` is a previous sync's own squash, not a fork PR: never give it a verdict and never cherry-pick it.
    Its diff is that sync's delta against the *old* fork tip, so replaying it onto the new base would rewind everything upstream changed in between.
    When one falls inside the window, re-audit the fork PRs its catch-up log row marked `kept` and re-apply those individual commits instead.
+   Those recovered PRs also get verdicts in *this* sync's row, alongside the window's own PRs.
+   Without that, each row would carry only one generation of keeps: the next sync excludes this sync's squash, reads this row, and finds the older keeps missing — so the accumulated fork delta erodes silently, one generation per sync.
+   Every row therefore states the full accumulated keep-list, not just what the window newly adjudicated.
 6. Compare each audited PR against current upstream by behavior, using `git show <sha>` and a search of `upstream/main` for the same change.
    Record one verdict per PR: `already-upstream` (with the upstream PR number), `superseded` (with the upstream PR number), `no-longer-needed` (with the reason), or `kept`.
 7. Apply the keep rule from the doc without asking: default to upstream, keep only when current upstream lacks the behavior and the fork still has a concrete need for it.
@@ -173,6 +176,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    Cherry-picking the fork PR that introduced the spine would reinstate its state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
    Give that PR a `kept` verdict in the table but never cherry-pick it: step 9 would hit an add/add conflict against the files just restored, and the upstream-wins rule has no upstream side to choose.
    Commit the restore immediately, because `git checkout <ref> -- <paths>` also writes the index and `git cherry-pick` refuses to run against a dirty index even for unrelated paths.
+   Commit the three targeted edits immediately too, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
 9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.
 
@@ -258,4 +262,5 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     Append to the copy step 7 restored from `origin/main`, so the row lands on top of every earlier row rather than on a stale snapshot of the file.
     If the file is missing, or its newest row predates the one `git show origin/main:docs/upstream-sync.md` shows, stop with `blocked: the sync branch lost docs/upstream-sync.md` rather than recreating it from memory.
     The last adjudicated fork commit is not optional: intake's window override reads it, and a row without it silently falls back to the stale marker.
+    "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
 14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

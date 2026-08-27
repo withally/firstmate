@@ -1,0 +1,145 @@
+---
+name: upstream-sync
+description: >-
+  Agent-only checklist for the weekly catch-up of the withally/firstmate fork with kunchenguid/firstmate.
+  Use when the captain asks to sync, catch up, snapshot, or rebase onto upstream, or when the weekly upstream sync is due.
+  Owns the tier decision (weekly or monthly validation), the fixed worker brief, the PR verdict table, and the isolated Herdr lab setup, so the sync is a follow-the-checklist job rather than a re-authored brief.
+user-invocable: false
+metadata:
+  internal: true
+---
+
+# upstream-sync
+
+The procedural spine is [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
+That document owns the remotes, the branch-at-upstream rule, the snapshot-commit audit window, the keep rule, and the catch-up log.
+This skill does not restate it; it adds only what the standing procedure needs to run without a re-authored brief: the tier decision, the fixed worker brief, the exact commands, the PR verdict table, and the Herdr lab setup.
+
+Standing captain rulings (2026-08-27), each implemented below:
+
+1. The keep-list is decided by the worker under the doc's keep rule and reviewed once, at the PR, with no mid-flight captain gate.
+2. Validation is two-tier: weekly runs lint plus the tests colocated with the kept diff, monthly runs the full suite including the Herdr lab.
+3. Unrelated breakage found during a sync is filed as follow-up work, never fixed on the sync branch.
+4. The instructions are standing: this skill and the doc, never a re-authored brief.
+5. The Herdr lab setup is documented once, in [`references/herdr-lab.md`](references/herdr-lab.md).
+
+## Firstmate intake (dispatcher)
+
+Firstmate resolves four values and nothing else; the brief is fixed text.
+
+1. Fetch and record the base.
+
+   ```sh
+   git -C projects/firstmate fetch upstream --prune
+   git -C projects/firstmate fetch origin --prune
+   UPSTREAM_BASE=$(git -C projects/firstmate rev-parse --short=12 upstream/main)
+   SNAPSHOT=$(git -C projects/firstmate log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
+   ```
+
+   Read the clone only; the worker repeats the fetch in its own worktree.
+2. Determine the tier from the `Next monthly full run` line in [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
+   The sync is `monthly` when today's date is on or after that line's date and no catch-up log row already records a `monthly` tier on or after it; otherwise it is `weekly`.
+   The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
+   Do not ask; the line plus the log answer the question.
+3. Scaffold the brief with the tier-matched flags.
+   The delivery mode is `no-mistakes`, the doc's standing PR path; its Test step is intent-targeted, so it does not re-run the full suite and stays inside the weekly tier.
+
+   ```sh
+   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes                # weekly
+   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes --herdr-lab   # monthly
+   ```
+
+   A monthly tier always needs `--herdr-lab` because the full suite drives Herdr lifecycle behavior through the lab.
+   A weekly tier normally does not; if the audit later shows a kept commit touching Herdr backend or lab code, the worker stops and reports so the brief is regenerated with `--herdr-lab` rather than adding lab commands by hand.
+4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `TIER`, and `DATE`.
+5. Spawn per `AGENTS.md` section 7, record the sync as work under way, and supervise as usual.
+6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
+7. After the merge, refresh the clone through the guarded fleet-sync path, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
+
+## Worker checklist
+
+Each numbered step maps onto the same-numbered step of the doc's weekly procedure where one exists; the doc owns the rule, this list owns the command.
+
+1. Verify isolation per the brief, fetch both remotes, and confirm the recorded base still equals `upstream/main`.
+
+   ```sh
+   git fetch upstream --prune && git fetch origin --prune
+   git rev-parse --short=12 upstream/main   # must equal UPSTREAM_BASE from the brief; stop and report if it moved
+   ```
+
+2. Branch directly at the upstream tip.
+
+   ```sh
+   git checkout -b fm/<task-id> "$UPSTREAM_BASE"
+   ```
+
+3. Confirm the audit window from the recorded snapshot commit.
+
+   ```sh
+   git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%H %cs %s'   # must name SNAPSHOT
+   ```
+
+4. List the fork PRs after that snapshot; this is the complete audit set.
+
+   ```sh
+   git log --reverse --first-parent --format='%h%x09%cs%x09%s' "$SNAPSHOT"..origin/main
+   ```
+
+5. Never widen the set with `origin/main ^upstream/main` or the merge base; the doc explains why.
+6. Compare each audited PR against current upstream by behavior, using `git show <sha>` and a search of `upstream/main` for the same change.
+   Record one verdict per PR: `already-upstream` (with the upstream PR number), `superseded` (with the upstream PR number), `no-longer-needed` (with the reason), or `kept`.
+7. Apply the keep rule from the doc without asking: default to upstream, keep only when current upstream lacks the behavior and the fork still has a concrete need for it.
+8. Do not present the keep-list for approval; the PR verdict table is the review surface.
+9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.
+
+   ```sh
+   git cherry-pick -x <sha>
+   # on conflict: keep upstream's architecture, wording, tests, and safety contracts; resolve; git cherry-pick --continue
+   ```
+
+   If a kept PR no longer applies meaningfully on top of upstream, downgrade its verdict to `superseded` or `no-longer-needed` and say why in the table.
+10. Run the tier's validation.
+
+    Weekly:
+
+    ```sh
+    bin/fm-lint.sh
+    # tests colocated with the kept diff: bin/<name>.sh -> tests/<name>*.test.sh, plus any changed tests/*.test.sh
+    git diff --name-only "$UPSTREAM_BASE"..HEAD > "$TMPDIR/sync-files.txt"
+    {
+      sed -n 's#^bin/\(fm-[^/]*\)\.sh$#tests/\1#p' "$TMPDIR/sync-files.txt" | while read -r stem; do ls "$stem"*.test.sh 2>/dev/null; done
+      grep '^tests/.*\.test\.sh$' "$TMPDIR/sync-files.txt"
+    } | sort -u > "$TMPDIR/sync-tests.txt"
+    bin/fm-test-run.sh --exclude-family real-herdr-gated $(cat "$TMPDIR/sync-tests.txt")
+    ```
+
+    Run the `real-herdr-gated` family too only when the kept diff touches `bin/backends/herdr*`, `bin/fm-herdr-*`, or `tests/herdr-test-safety.sh`, and only from a brief scaffolded with `--herdr-lab`; see [`references/herdr-lab.md`](references/herdr-lab.md).
+    CI's portable shards on the PR are the weekly full gate; do not run `--all` locally.
+
+    Monthly:
+
+    ```sh
+    bin/fm-lint.sh
+    bin/fm-test-run.sh --all
+    ```
+
+    The full run includes the `real-herdr-gated` family, which needs a running default Herdr server and the lab contract from `--herdr-lab`; [`references/herdr-lab.md`](references/herdr-lab.md) owns that setup.
+11. Treat any failure not caused by a kept commit as unrelated breakage: note it in the PR description under `Follow-ups`, and leave the code untouched on the sync branch.
+    Firstmate files each one as separate work after the PR is open.
+12. Ship through no-mistakes to the fork's PR path.
+    Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
+    The PR description must contain the verdict table:
+
+    ```markdown
+    | Fork PR | Verdict | Evidence |
+    | --- | --- | --- |
+    | #NN | already-upstream | upstream #MMMM |
+    | #NN | superseded | upstream #MMMM |
+    | #NN | no-longer-needed | <reason> |
+    | #NN | kept | <what upstream still lacks and why the fork needs it> |
+    ```
+
+    followed by `Tier: weekly|monthly`, the validation commands actually run, and a `Follow-ups` list (possibly empty).
+    Never push to `upstream` and never merge.
+13. Append the catch-up log row to `docs/upstream-sync.md` on the sync branch, recording the date, adopted base, tier, and every verdict, and on a monthly tier advance the `Next monthly full run` line to the first day of the following month.
+14. Hand back with `done: PR <url> checks green` per the brief; the captain rules on the keep-list at merge.

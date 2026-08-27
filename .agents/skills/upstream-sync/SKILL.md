@@ -41,12 +41,16 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
    SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
-   SETTLED=<window end commit named by the newest catch-up log row in docs/upstream-sync.md, empty when no row names one>
+   LOG=$(git show origin/main:docs/upstream-sync.md 2>/dev/null) || LOG=''
+   SETTLED=<window end commit named by the newest catch-up log row in "$LOG", empty when "$LOG" is empty>
+   [ -z "$LOG" ] || [ -n "$SETTLED" ] || { echo 'blocked: origin/main has a catch-up log whose newest row names no window end commit'; exit 1; }
    if [ -n "$SETTLED" ] && git merge-base --is-ancestor "$SETTLED" "$SNAPSHOT"; then SNAPSHOT=$SETTLED; fi
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: no upstream tip or no snapshot commit'; exit 1; }
    ```
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
+   Read the log out of `origin/main` rather than the checkout for exactly that reason: the code root may sit on a stale commit or a branch without the spine, and a row read from there would resolve `SETTLED` empty and silently drop the window back to the marker.
+   An absent log is the legitimate pre-spine case and leaves the marker as the boundary, but a log whose newest row names no window end is a misrecorded sync and stops here rather than losing the fork PRs that merged during its review.
    Two boundaries can disagree: the first-parent marker, and the window end commit named by the newest catch-up log row.
    The override only ever moves the boundary earlier, so it can only widen the window, never narrow it.
    The asymmetry is deliberate: an over-wide window merely re-issues a verdict for a PR already settled, while an under-wide one silently drops kept fork behavior that never gets cherry-picked onto the new base.
@@ -177,17 +181,19 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    Only those two paths: they are fork-local and absent from `upstream/main`, so taking them wholesale can lose nothing upstream.
    `AGENTS.md` is not on that list and must never be restored this way — it is a shared upstream document with hundreds of upstream commits, and overwriting it from `origin/main` would silently revert every upstream edit made since the last sync.
    Re-add the fork's one-line `upstream-sync` pointer to upstream's `AGENTS.md` as a targeted edit instead, so the rest of the file stays upstream's.
-   Two more upstream-owned files carry companion edits the spine needs, and they get the same targeted treatment — never a wholesale restore:
+   Three more upstream-owned files carry companion edits the spine needs, and they get the same targeted treatment — never a wholesale restore:
    the `.agents/skills/*)` arm in `families_for_changed_path` in `bin/fm-test-run.sh`, without which step 10's `--changed` run dies on `no changed-test mapping for source path`;
-   and the three `.agents/skills/upstream-sync/**` entries plus the `docs/upstream-sync.md` entry in `docs/documentation-audiences.json`, without which `bin/fm-doc-audience-check.sh` fails the restored files as unlisted surfaces.
+   the three `.agents/skills/upstream-sync/**` entries plus the `docs/upstream-sync.md` entry in `docs/documentation-audiences.json`, without which `bin/fm-doc-audience-check.sh` fails the restored files as unlisted surfaces;
+   and the skill-reference case in `tests/fm-test-run.test.sh`, which is what keeps that arm from silently regressing on the new base.
    Both failures are loud and would otherwise recur on every sync, because the restore puts those paths back in the diff while upstream's copies still lack the entries that cover them.
    Cherry-picking the fork PR that introduced the spine would reinstate its state at *that* PR, losing every catch-up row and `Next monthly full run` advance a later sync appended inside its own excluded squash.
    Give that PR a `kept` verdict in the table but never cherry-pick it: step 9 would hit an add/add conflict against the files just restored, and the upstream-wins rule has no upstream side to choose.
    The same holds for any fork PR whose diff is confined to `docs/upstream-sync.md` and `.agents/skills/upstream-sync/`, not just the one that introduced them: step 7 already restored those paths, so every hunk is a no-op and `git cherry-pick` aborts the whole sequence as an empty commit.
-   A PR that touches spine and non-spine paths together is picked normally; only the spine-only case is exempt.
+   The test is not the path shape but whether step 7 already re-applied everything the PR contributes: a PR is exempt when every path in its diff is either a spine path or one of the four companion files above, and is picked normally otherwise.
+   That is why the spine-introducing PR is exempt even though it is mixed — its non-spine hunks are exactly those companion edits — while a PR that also carries unrelated fork work is picked, its spine hunks three-way-merging against its own parent.
    If one is picked by mistake, recover with `git cherry-pick --skip` rather than `--allow-empty`, so the sequence continues without an empty commit.
    Commit the restore immediately, because `git checkout <ref> -- <paths>` also writes the index and `git cherry-pick` refuses to run against a dirty index even for unrelated paths.
-   Commit the three targeted edits immediately too, with `git add AGENTS.md bin/fm-test-run.sh docs/documentation-audiences.json && git commit -m 'chore: re-apply upstream-sync companion edits'`, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.
+   Commit the four targeted edits immediately too, with `git add AGENTS.md bin/fm-test-run.sh docs/documentation-audiences.json tests/fm-test-run.test.sh && git commit -m 'chore: re-apply upstream-sync companion edits'`, for the same reason in its unstaged form: `git cherry-pick` also refuses when a picked commit touches a file carrying uncommitted local changes, and fork PRs do touch `AGENTS.md`.
    The `git add` is not optional here the way it is after the restore: these are plain edits to tracked files, so `git commit -m` alone stages nothing and exits non-zero.
 8. Do not present the keep-list for approval; the PR verdict table is the review surface.
 9. Cherry-pick each `kept` PR in order, letting upstream win every conflict.

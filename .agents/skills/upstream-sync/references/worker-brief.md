@@ -12,7 +12,7 @@ Fill exactly five values; every other line is fixed text.
 | `DATE` | the sync date, `YYYY-MM-DD` |
 
 ```markdown
-## Task: weekly upstream sync of withally/firstmate onto kunchenguid/firstmate
+## Task: {TIER} upstream sync of withally/firstmate onto kunchenguid/firstmate
 
 This is SHARED TRACKED firstmate material: load `firstmate-coding-guidelines` before editing anything.
 Then load `upstream-sync` and follow its "Worker checklist" step by step; it owns every command.

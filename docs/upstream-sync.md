@@ -13,7 +13,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     *kunchenguid/firstmate*) ;;
+     *kunchenguid/firstmate|*kunchenguid/firstmate.git|*kunchenguid/firstmate/) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
    git remote set-url --push upstream DISABLED

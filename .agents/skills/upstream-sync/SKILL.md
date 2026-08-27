@@ -32,7 +32,7 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
    ```sh
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     *kunchenguid/firstmate*) ;;
+     *kunchenguid/firstmate|*kunchenguid/firstmate.git|*kunchenguid/firstmate/) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
    git remote set-url --push upstream DISABLED
@@ -70,7 +70,8 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 
 1. Verify isolation per the brief, bind the brief's recorded values into this shell, ensure both remotes, and confirm the recorded base still equals `upstream/main`.
    Every later step consumes `$UPSTREAM_BASE` and `$SNAPSHOT`, so bind them before anything else and keep working in the same shell; an unset `SNAPSHOT` makes step 4's range silently mean `HEAD..origin/main`, which is the over-wide set step 5 forbids.
-   Compare the recorded base against `upstream/main` by resolved commit, not by abbreviation, because `--short=12` widens on ambiguity.
+   `UPSTREAM_BASE` is a deliberate pin, so ordinary upstream movement between intake and this step is fine and next week's sync absorbs it; the check is reachability, not equality.
+   Only a base that is no longer an ancestor of `upstream/main` is disqualifying, because that means upstream history was rewritten or the recorded value never came from this parent.
    The `upstream` remote setup is the doc's step 1; a clone that never ran it has `origin` only, and a clone where someone pointed `upstream` at some other fork must fail rather than record that fork's tip as the base.
 
    ```sh
@@ -79,13 +80,13 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
    [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: brief is missing UPSTREAM_BASE or SNAPSHOT'; exit 1; }
    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
    case "$(git remote get-url upstream)" in
-     *kunchenguid/firstmate*) ;;
+     *kunchenguid/firstmate|*kunchenguid/firstmate.git|*kunchenguid/firstmate/) ;;
      *) echo 'blocked: upstream remote does not point at kunchenguid/firstmate'; exit 1 ;;
    esac
    git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    git rev-parse --verify --quiet "$SNAPSHOT^{commit}" >/dev/null || { echo 'blocked: SNAPSHOT is not a commit in this clone'; exit 1; }
-   [ "$(git rev-parse "$UPSTREAM_BASE^{commit}" 2>/dev/null)" = "$(git rev-parse 'upstream/main^{commit}')" ] || { echo 'blocked: upstream/main moved since intake; brief needs a fresh UPSTREAM_BASE'; exit 1; }
+   git merge-base --is-ancestor "$UPSTREAM_BASE" upstream/main || { echo 'blocked: recorded UPSTREAM_BASE is not an ancestor of upstream/main; upstream history was rewritten or the base is not upstream material'; exit 1; }
    ```
 
 2. Branch directly at the upstream tip.

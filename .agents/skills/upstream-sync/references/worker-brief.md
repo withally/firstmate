@@ -26,6 +26,7 @@ Recorded values:
 
 Fixed rules:
 
+- Bind UPSTREAM_BASE and SNAPSHOT as shell variables from the recorded values above before running any checklist command, and stop if either is empty.
 - Branch at UPSTREAM_BASE; never merge origin/main into it.
 - Audit only the first-parent commits in SNAPSHOT..origin/main.
 - Decide every keep by the doc's keep rule yourself; no mid-flight approval.

@@ -6,6 +6,15 @@ The fork contributes changes upstream and stays close to the parent by adopting 
 ## Weekly procedure
 
 1. Fetch both remotes and record the exact `upstream/main` commit that will become the new base.
+   `origin` is `withally/firstmate` and `upstream` is the canonical parent `kunchenguid/firstmate`; a fresh clone carries only `origin`, so every sync starts by ensuring `upstream` exists.
+   The push URL is disabled on purpose, because the fork never pushes to the canonical parent.
+
+   ```sh
+   git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
+   git remote set-url --push upstream DISABLED
+   git fetch upstream --prune && git fetch origin --prune
+   ```
+
 2. Create the sync branch directly at that upstream commit.
    Do not merge `origin/main` into it and do not start from the fork's divergent tip.
 3. Locate the most recent full catch-up on `origin/main` by finding the latest first-parent commit whose subject starts with `chore: snapshot upstream main`.

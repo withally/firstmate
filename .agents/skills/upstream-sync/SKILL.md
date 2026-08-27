@@ -30,9 +30,12 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 1. Fetch and record the base.
 
    ```sh
+   git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
+   git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
    UPSTREAM_BASE=$(git rev-parse --short=12 upstream/main)
    SNAPSHOT=$(git log origin/main --first-parent --grep='^chore: snapshot upstream main' -1 --format='%h')
+   [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: no upstream tip or no snapshot commit'; exit 1; }
    ```
 
    Run these from the firstmate code root; a fetch updates remote-tracking refs only and touches no checkout, and the worker repeats it in its own worktree.
@@ -59,10 +62,18 @@ Firstmate resolves four values and nothing else; the brief is fixed text.
 
 Each numbered step maps onto the same-numbered step of the doc's weekly procedure where one exists; the doc owns the rule, this list owns the command.
 
-1. Verify isolation per the brief, fetch both remotes, and confirm the recorded base still equals `upstream/main`.
+1. Verify isolation per the brief, bind the brief's recorded values into this shell, ensure both remotes, and confirm the recorded base still equals `upstream/main`.
+   Every later step consumes `$UPSTREAM_BASE` and `$SNAPSHOT`, so bind them before anything else and keep working in the same shell; an unset `SNAPSHOT` makes step 4's range silently mean `HEAD..origin/main`, which is the over-wide set step 5 forbids.
+   The `upstream` remote setup is the doc's step 1; a clone that never ran it has `origin` only.
 
    ```sh
+   UPSTREAM_BASE=<UPSTREAM_BASE from the brief>
+   SNAPSHOT=<SNAPSHOT from the brief>
+   [ -n "$UPSTREAM_BASE" ] && [ -n "$SNAPSHOT" ] || { echo 'blocked: brief is missing UPSTREAM_BASE or SNAPSHOT'; exit 1; }
+   git remote get-url upstream >/dev/null 2>&1 || git remote add upstream git@github.com:kunchenguid/firstmate.git
+   git remote set-url --push upstream DISABLED
    git fetch upstream --prune && git fetch origin --prune
+   git rev-parse --verify --quiet "$SNAPSHOT^{commit}" >/dev/null || { echo 'blocked: SNAPSHOT is not a commit in this clone'; exit 1; }
    git rev-parse --short=12 upstream/main   # must equal UPSTREAM_BASE from the brief; stop and report if it moved
    ```
 
@@ -81,6 +92,7 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
 4. List the fork PRs after that snapshot; this is the complete audit set.
 
    ```sh
+   [ -n "$SNAPSHOT" ] || { echo 'blocked: SNAPSHOT unset; an empty range endpoint silently means HEAD'; exit 1; }
    git log --reverse --first-parent --format='%h%x09%cs%x09%s' "$SNAPSHOT"..origin/main
    ```
 

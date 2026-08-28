@@ -1043,7 +1043,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
 }
 
 test_watch_restart_rejects_reused_pid() {
-  local dir state fakebin out live pid i
+  local dir state fakebin out live pid i lock_pid
   dir=$(make_case restart-reused-pid)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -1059,19 +1059,33 @@ test_watch_restart_rejects_reused_pid() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" --restart > "$out" &
   pid=$!
   i=0
-  while [ "$i" -lt 80 ] && is_live_non_zombie "$pid"; do
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$out" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
   done
   is_live_non_zombie "$pid" \
-    && fail "restart did not surface recovery after replacing a reused-pid lock"
-  wait "$pid" 2>/dev/null || true
-  grep -F 'check: rearm-resurface' "$out" >/dev/null \
-    || fail "restart replaced reused-pid lock without surfacing recovery: $(cat "$out")"
+    || fail "restart closed after replacing a reused-pid lock with no durable work"
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  if [ -z "$lock_pid" ] || [ "$lock_pid" = "$live" ] || ! is_live_non_zombie "$lock_pid"; then
+    fail "restart did not leave exactly one confirmed watcher after replacing the reused-pid lock"
+  fi
+  grep -F "watcher: started pid=$lock_pid (beacon fresh)" "$out" >/dev/null \
+    || fail "restart did not report the confirmed replacement watcher"
+  # Upstream PR #2914 keeps quiet reclaim inside the tracked task instead of synthesizing a recovery wake.
+  ! grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "restart emitted a no-work recovery after replacing a reused-pid lock: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "restart queued a recovery wake despite having no durable work"
   is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
+  printf 'done: reused-pid restart fixture cleanup\n' > "$state/cleanup.status"
+  wait_for_exit "$pid" 80 || fail "reused-pid restart cleanup wake did not surface"
+  wait "$pid" 2>/dev/null || true
+  grep -q "arm_pid=$pid.*watcher_pid=$lock_pid.*origin=started.*reason=actionable-signal" "$state/.watch-cycle-exits.log" \
+    || fail "reused-pid restart cleanup was not classified in the lifecycle ledger"
   kill "$live" 2>/dev/null || true
   wait "$live" 2>/dev/null || true
-  pass "watch restart preserves recovery without signaling a reused pid"
+  pass "watch restart preserves quiet recovery without signaling a reused pid"
 }
 
 test_watch_restart_attaches_to_healthy_peer() {
@@ -1293,20 +1307,17 @@ test_arm_starts_and_self_heals() {
     armpid=$!
     i=0
     while [ "$i" -lt 80 ]; do
-      if [ "$row" = dead-pid ]; then
-        is_live_non_zombie "$armpid" || break
-      else
-        grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
-      fi
+      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
       sleep 0.1; i=$((i + 1))
     done
     if [ "$row" = dead-pid ]; then
       is_live_non_zombie "$armpid" \
-        && fail "arm did not surface recovery after reclaiming a dead-pid lock"
-      wait "$armpid" 2>/dev/null || true
-      grep -F 'check: rearm-resurface' "$armout" >/dev/null \
-        || fail "arm reclaimed dead-pid lock without surfacing recovery: $(cat "$armout")"
-      continue
+        || fail "arm closed after reclaiming a dead-pid lock with no durable work"
+      # Upstream PR #2914 keeps quiet reclaim inside the tracked task instead of synthesizing a recovery wake.
+      ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+        || fail "arm emitted a no-work recovery after reclaiming a dead-pid lock: $(cat "$armout")"
+      [ ! -s "$state/.wake-queue" ] \
+        || fail "arm queued a recovery wake after reclaiming a dead-pid lock with no durable work"
     fi
     grep -qF 'watcher: started pid=' "$armout" || fail "arm ($row) did not report a started watcher"
     ! grep -qE 'watcher: (healthy|attached)' "$armout" || fail "arm ($row) wrongly reported attached/healthy instead of starting a fresh watcher"
@@ -1316,10 +1327,18 @@ test_arm_starts_and_self_heals() {
     grep -F "watcher: started pid=$lock_pid (beacon fresh)" "$armout" >/dev/null \
       || fail "arm ($row) started line did not name the confirmed live watcher (lock '$lock_pid')"
     kill -0 "$lock_pid" 2>/dev/null || fail "arm ($row) confirmed-started watcher is not actually alive"
-    kill "$armpid" "$lock_pid" 2>/dev/null || true
-    wait "$armpid" 2>/dev/null || true
+    if [ "$row" = dead-pid ]; then
+      printf 'done: dead-pid fixture cleanup\n' > "$state/cleanup.status"
+      wait_for_exit "$armpid" 80 || fail "dead-pid cleanup wake did not surface"
+      wait "$armpid" 2>/dev/null || true
+      grep -q "arm_pid=$armpid.*watcher_pid=$lock_pid.*origin=started.*reason=actionable-signal" "$state/.watch-cycle-exits.log" \
+        || fail "dead-pid cleanup was not classified in the lifecycle ledger"
+    else
+      kill "$armpid" "$lock_pid" 2>/dev/null || true
+      wait "$armpid" 2>/dev/null || true
+    fi
   done
-  pass "arm starts cleanly and resurfaces recovery after a dead-pid lock"
+  pass "arm starts cleanly and keeps quiet recovery live after a dead-pid lock"
 }
 
 test_arm_hup_cleans_child_and_temp_output() {

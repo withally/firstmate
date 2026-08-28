@@ -1760,6 +1760,7 @@ test_discover_supervisor_target_herdr() {
   pass "discover_supervisor_target: override > TMUX_PANE > herdr '<session>:<pane-id>' composition > firstmate:0 fallback"
 }
 
+# shellcheck disable=SC2030 # The harness fixture is intentionally scoped to the isolated injection subshell.
 test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   local dir
   dir=$(make_supercase inject-herdr-claude-native-busy-idle)
@@ -1780,6 +1781,7 @@ test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   pass "inject_msg: Herdr+Claude native busy does not block an idle rendered pane with an empty composer"
 }
 
+# shellcheck disable=SC2031 # The assertion intentionally inspects harness detection within the isolated subshell.
 test_inject_msg_detects_claude_harness_before_submit() {
   local dir state
   dir=$(make_supercase inject-herdr-claude-detected-harness)

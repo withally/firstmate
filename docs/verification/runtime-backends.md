@@ -143,7 +143,7 @@ Zellij has no verified recovery-grade agent process probe, while Orca and cmux d
 
 The current classifier matrix and its refresh guard are recorded in [Composer classification matrix](#composer-classification-matrix), with portable shape coverage in `tests/fm-composer-lib.test.sh` and `tests/fm-composer-ghost.test.sh`.
 Kimi pointer delivery and OpenCode 1.18.4 busy-queue behavior remain pinned by `tests/fm-kimi-harness.test.sh`, `tests/fm-tmux-submit-busy.test.sh`, and `tests/fm-composer-lib.test.sh`.
-Herdr's Claude submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`; the away-mode primary additionally requires a rendered Claude transition or a cleared composer, never native `working` alone.
+Herdr's Claude submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`; the known-Claude rule is owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), and the away-mode guard additionally requires rendered or composer proof rather than native `working` alone.
 
 ### Cleanup endpoint identity
 
@@ -278,7 +278,7 @@ Measured 2026-08-19 against Herdr 0.8.0 and Claude Code 2.1.236 in an isolated `
 `herdr agent get` reported `agent_status=idle` on every sample across a landed one-word turn and an 8-second `sleep` tool call, while the pane rendered `Pontificating…` then `Sock-hopping… (11s · ↓ 234 tokens)`.
 `fm_backend_herdr_send_text_submit` therefore cannot treat native idle alone as either delivery proof or proof of a swallow.
 The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-composer-lib.test.sh` pin the non-Claude verdicts: native idle plus a cleared composer is delivery, proven pending plus idle is a swallow, and proven pending plus a generating busy signal is a queued Enter.
-For the away-mode Claude primary, native `working` is diagnostic only; a pending composer requires a rendered Claude idle-to-busy transition across that Enter, while a cleared composer remains sufficient.
+The known-Claude submit cases exercise the rendered-transition-or-cleared-composer rule owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), so native `working` alone is never delivery proof.
 Refresh the live Claude proof with:
 
 ```sh

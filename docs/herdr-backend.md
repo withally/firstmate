@@ -216,11 +216,11 @@ On an idle or done native baseline, the adapter samples for `working` or `blocke
 For known non-Claude harnesses whose native state is a foreground-turn signal, a detected submit-active status confirms delivery.
 If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
 After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter for those non-Claude harnesses, and keeps an idle pending composer as a genuine swallow.
-For the away-mode Claude primary, Herdr's native `working` signal is not that generating proof because the tracked daemon shell can keep it set after the foreground turn ends.
+For a known Claude target, Herdr's native `working` signal is not that generating proof because a tracked background shell can keep it set after the foreground turn ends.
 A Claude queued Enter is confirmed only when the rendered Claude active-turn signature changes from idle immediately before that Enter to busy after it, or when the composer clears; native `working` alone and a pre-existing rendered-busy footer never prove that Enter.
 Rendered idle with pending text remains unconfirmed and preserves the escalation for retry.
 For a non-Claude target with an already active or unreadable native baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
-A Claude target captures its rendered baseline before each Enter, so a pre-existing active-turn footer cannot serve as submit confirmation.
+A known Claude target captures its rendered baseline before each Enter, so a pre-existing active-turn footer cannot serve as submit confirmation.
 A fully unreadable target stops retrying and reports unknown.
 blocked is not treated as a queued-Enter busy signal, so a Cursor pane that reports blocked in every state does not receive that conversion.
 
@@ -350,6 +350,7 @@ tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
+tests/fm-daemon.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh

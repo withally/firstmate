@@ -209,7 +209,7 @@ tests/fm-crew-state.test.sh
 
 The final Herdr-lab regression passed with Herdr 0.8.2 and Claude Code 2.1.248.
 Native `agent_status=working` with a rendered-idle Claude pane and an `empty` composer delivered one queued escalation and cleared the buffer, a genuine foreground turn produced a `rendered-busy` deferral carrying `native-state=working`, and bright human composer text remained pending and unchanged with a `composer=pending` deferral.
-The colocated unit suite also proves that Claude native working plus rendered-idle pending text is not confirmed, accepts rendered active-turn proof, hard-defers unreadable capture, and preserves the `native-busy` fast path for every non-Herdr+Claude combination.
+The colocated unit suites in `tests/fm-daemon.test.sh` and `tests/fm-backend-herdr.test.sh` also prove that Claude native working plus rendered-idle pending text is not confirmed, accept rendered active-turn proof, hard-defer unreadable capture, and preserve the `native-busy` fast path for every non-Herdr+Claude combination.
 
 ```sh
 FM_AFK_HERDR_CLAUDE_LIVE=1 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh

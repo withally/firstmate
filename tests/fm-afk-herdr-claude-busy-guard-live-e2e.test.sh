@@ -109,7 +109,7 @@ CLAUDE_TEST_SYSTEM_PROMPT="This is a live away-mode guard test. For an injected 
 printf '%s\n' 'Reply with the single word ready and stop.' > "$PROMPT_FILE"
 # shellcheck disable=SC2016 # The generated launcher expands $(cat ...) when it runs.
 printf -v CLAUDE_LAUNCHER_CONTENT \
-  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nexec %q --dangerously-skip-permissions --append-system-prompt %q "\$(cat %q)"\n' \
+  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nexec %q --dangerously-skip-permissions --append-system-prompt %q "$(cat %q)"\n' \
   "$ROOT" "$FAKEBIN:$ORIGINAL_PATH" "$FM_HOME" "$STATE_DIR" "$ROOT" \
   "$HERDR_LAB_SESSION" "$CLAUDE_BIN" "$CLAUDE_TEST_SYSTEM_PROMPT" "$PROMPT_FILE"
 printf '%s' "$CLAUDE_LAUNCHER_CONTENT" > "$CLAUDE_LAUNCHER"

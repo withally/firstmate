@@ -72,6 +72,7 @@ MAX_LINE=1000
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
+CHECK_TIMEOUT=8
 FETCH_TIMEOUT=8
 
 usage() {
@@ -207,7 +208,7 @@ check_unusable() {
   return 1
 }
 
-action_check() {
+action_check_inner() {
   local base base_commit upstream_tip remote_url matches log
   base=$(latest_sync_base) || {
     check_unusable 'latest sync base is unavailable'
@@ -265,6 +266,17 @@ action_check() {
   }
   report_hit "urgent upstream commits: $matches"
   return 0
+}
+
+action_check() {
+  local status=0
+  fm_run_timed "$CHECK_TIMEOUT" "$SCRIPT_DIR/fm-upstream-urgent-check.sh" \
+    __check_inner || status=$?
+  if [ "$status" -eq 124 ]; then
+    check_retryable 'check timed out'
+    return 1
+  fi
+  return "$status"
 }
 
 shim_content() {
@@ -386,12 +398,16 @@ action_arm() {
 }
 
 action_disarm() {
-  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD"
+  if ! rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD"; then
+    printf 'fm-upstream-urgent-check: could not fully disarm state/%s.check.sh\n' "$CHECK_ID" >&2
+    return 1
+  fi
   printf 'disarmed: state/%s.check.sh\n' "$CHECK_ID"
 }
 
 case "${1:-check}" in
   check) [ "$#" -eq 1 ] || die_usage 'check takes no additional arguments'; action_check ;;
+  __check_inner) [ "$#" -eq 1 ] || die_usage 'internal check takes no additional arguments'; action_check_inner ;;
   arm) [ "$#" -eq 1 ] || die_usage 'arm takes no additional arguments'; action_arm ;;
   disarm) [ "$#" -eq 1 ] || die_usage 'disarm takes no additional arguments'; action_disarm ;;
   -h|--help) [ "$#" -eq 1 ] || die_usage '--help takes no additional arguments'; usage ;;

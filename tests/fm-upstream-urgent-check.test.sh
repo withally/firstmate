@@ -115,6 +115,33 @@ SH
   pass 'slow fetch is bounded before ten seconds'
 }
 
+test_slow_local_scan_is_bounded_before_ten_seconds() {
+  local repo out err fakebin real_git elapsed status=0
+  repo=$(make_fixture_repo slow-log)
+  publish_upstream_commit "$repo" slow-log 'docs: refresh examples' 'Routine wording cleanup.' >/dev/null
+  fakebin="$TMP_ROOT/slow-log/fakebin"
+  mkdir -p "$fakebin"
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+case " \$* " in
+  *' log '*) sleep 11; exit 1 ;;
+esac
+exec '$real_git' "\$@"
+SH
+  chmod 0755 "$fakebin/git"
+  out="$TMP_ROOT/slow-log/report.txt"
+  err="$TMP_ROOT/slow-log/error.txt"
+  SECONDS=0
+  env PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    "$CHECK" check >"$out" 2>"$err" || status=$?
+  elapsed=$SECONDS
+  [ "$status" -ne 0 ] || fail 'a stalled local scan was reported as a clean check'
+  [ "$elapsed" -lt 10 ] || fail "slow local scan took ${elapsed}s, expected a sub-ten-second bound"
+  [ ! -s "$out" ] || fail "a timed-out local scan woke firstmate: $(cat "$out")"
+  pass 'slow local scan is bounded before ten seconds'
+}
+
 test_arm_registers_and_disarm_removes_the_check() {
   local repo shim out
   repo=$(make_fixture_repo arm)
@@ -131,6 +158,24 @@ test_arm_registers_and_disarm_removes_the_check() {
   [ ! -e "$repo/state/upstream-urgent.check-trust" ] \
     || fail 'disarm left the check trust binding in place'
   pass 'arm registers and disarm removes the tripwire check'
+}
+
+test_disarm_reports_cleanup_failure() {
+  local repo out status=0
+  repo=$(make_fixture_repo disarm-failure)
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" arm >/dev/null
+  rm -f "$repo/state/upstream-urgent.check.sh"
+  mkdir "$repo/state/upstream-urgent.check.sh"
+  out="$TMP_ROOT/disarm-failure/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" disarm >"$out" 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail 'disarm reported success after rm failed'
+  [ -d "$repo/state/upstream-urgent.check.sh" ] \
+    || fail 'disarm unexpectedly removed the failed cleanup target'
+  [ ! -e "$repo/state/upstream-urgent.check-trust" ] \
+    || fail 'disarm stopped before removing the trust binding'
+  assert_not_contains "$(cat "$out")" 'disarmed: state/upstream-urgent.check.sh' \
+    'disarm claimed success after incomplete cleanup'
+  pass 'disarm reports incomplete cleanup as a failure'
 }
 
 # A pending urgent commit stays pending for days, until a sync advances the
@@ -439,7 +484,9 @@ test_nonmatching_upstream_commit_is_silent
 test_recorded_base_is_excluded_from_the_range
 test_check_uses_one_fetch_and_finishes_quickly
 test_slow_fetch_is_bounded_before_ten_seconds
+test_slow_local_scan_is_bounded_before_ten_seconds
 test_arm_registers_and_disarm_removes_the_check
+test_disarm_reports_cleanup_failure
 test_base_is_read_from_a_row_that_also_names_a_landing_hash
 test_unchanged_match_set_is_reported_once
 test_disarm_removes_the_report_record

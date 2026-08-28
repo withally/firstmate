@@ -9,6 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARM="$SCRIPT_DIR/fm-watch-arm.sh"
 STATE="${FM_STATE_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}/state}"
 mkdir -p "$STATE"
+# shellcheck source=bin/fm-watch-loop-lib.sh
+. "$SCRIPT_DIR/fm-watch-loop-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 out=
 
 cleanup() {
@@ -20,14 +24,20 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 routine_declared_wait() {
-  local out=$1 count reason
+  local out=$1 count reason open unread
   count=$(grep -Ec '^(signal:|stale:|check:|heartbeat($|:))' "$out" 2>/dev/null || true)
   [ "$count" -eq 1 ] || return 1
   reason=$(grep -E '^(signal:|stale:|check:|heartbeat($|:))' "$out" 2>/dev/null | head -1 || true)
   case "$reason" in
-    stale:*'declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)') return 0 ;;
-    stale:*'verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)') return 0 ;;
-    *) return 1 ;;
+    'check: rearm-resurface')
+      fm_watch_recovery_queue_is_routine "$STATE/.wake-queue" || return 1
+      open=$(scan_open_decisions_incremental "$STATE") || return 1
+      unread=$(scan_unread_surface_lines "$STATE") || return 1
+      [ -z "$open" ] && [ -z "$unread" ]
+      ;;
+    *)
+      fm_watch_reason_is_routine "$reason"
+      ;;
   esac
 }
 
@@ -37,7 +47,12 @@ while :; do
     exit 1
   }
   status=0
-  "$ARM" >"$out" 2>&1 || status=$?
+  FM_WATCH_GROK_LONGRUN=1 "$ARM" >"$out" 2>&1 || status=$?
+  if [ "$status" -eq "$(fm_watch_routine_exit_code)" ]; then
+    rm -f "$out"
+    out=
+    continue
+  fi
   if [ "$status" -ne 0 ]; then
     cat "$out"
     rm -f "$out"

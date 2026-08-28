@@ -104,6 +104,11 @@ wake() {
   if [ -n "$FM_WAKE_POST_OUTPUT_ACTION" ]; then
     "$FM_WAKE_POST_OUTPUT_ACTION" "$output_status" || true
   fi
+  if [ "$output_status" -eq 0 ] \
+    && [ "${FM_WATCH_GROK_LONGRUN:-0}" = 1 ] \
+    && [ "${FM_WATCH_CYCLE_CLASS:-}" = routine ]; then
+    exit "$(fm_watch_routine_exit_code)"
+  fi
   [ "$output_status" -eq 0 ] || exit "$output_status"
   exit 0
 }

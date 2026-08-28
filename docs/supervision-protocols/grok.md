@@ -26,10 +26,11 @@ When Grok injects a background-task-completed reminder for the long-runner:
 1. Run `bin/fm-wake-drain.sh` first.
 2. Optionally fetch the task output with `get_command_or_subagent_output(<task_id>)` for the reason line.
 3. Handle `signal`, non-routine `stale`, `check`, or `heartbeat` using the harness-neutral contract in `AGENTS.md`.
-4. Re-arm one new tracked `bin/fm-watch-grok-longrun.sh` task if work remains in flight or Relay still needs polling.
-5. Do not invent a wake from a `watcher: started ...` or `watcher: attached ...` line alone.
+4. A `watcher: FAILED ...` line means supervision is down; repair the arm and re-arm the long-runner.
+5. Re-arm one new tracked `bin/fm-watch-grok-longrun.sh` task if work remains in flight or Relay still needs polling.
+6. Do not invent a wake from a `watcher: started ...` or `watcher: attached ...` line alone.
    Drain the queue and act only on real wake records, the drain's `OPEN DECISIONS` and `UNREAD STATUS` entries, or a real watcher reason line.
-6. See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer singleton, liveness, recovery, and clean-close failure contract.
+7. See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer singleton, liveness, recovery, and clean-close failure contract.
 
 The primary project Stop hook runs `bin/fm-turnend-guard-grok.sh` as a strict backstop, not the normal wake path.
 [`turnend-guard.md`](../turnend-guard.md) owns its running-payload capability selection between native same-process blocking and the pre-native bounded resume fallback.

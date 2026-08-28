@@ -64,6 +64,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-watch-loop-lib.sh
+. "$SCRIPT_DIR/fm-watch-loop-lib.sh"
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
@@ -491,6 +493,15 @@ child_done=0
 owned_child_finished() {
   local rc=$1 signal reason_type status
   signal=$(cycle_signal_name "$rc")
+  if [ "$rc" -eq "$(fm_watch_routine_exit_code)" ] \
+    && [ "${FM_WATCH_GROK_LONGRUN:-0}" = 1 ] \
+    && watch_output_has_wake "$child_out"; then
+    cycle_log_append "$rc" "$signal" routine-declared-wait none
+    rm -f "$child_out" 2>/dev/null || true
+    child=
+    child_out=
+    return "$rc"
+  fi
   if [ "$rc" -eq 0 ] && watch_output_has_wake "$child_out"; then
     reason_type=$(watch_output_reason_type "$child_out")
     cycle_log_append "$rc" "$signal" "$reason_type" none

@@ -104,6 +104,8 @@ mkdir -p "$STATE"
 # runtime can exceed the bounded CI lint worker while adding no uncovered file.
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
+# shellcheck source=bin/fm-watch-loop-lib.sh
+. "$SCRIPT_DIR/fm-watch-loop-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # Single owner of durable merge-outcome publication, shared with
@@ -501,6 +503,7 @@ resurface_absorbed() {  # <window> <throttle-marker> <age> <reason>
   [ "$(age_of "$throttle")" -ge "$PAUSE_RESURFACE_SECS" ] || return 0   # 999999 when no prior re-surface
   fm_wake_append stale "$win" "$reason" || exit 1
   date +%s > "$throttle"
+  FM_WATCH_CYCLE_CLASS=$(fm_watch_cycle_class_for_reason "$reason")
   wake "$reason"
 }
 
@@ -1065,6 +1068,50 @@ event_wait_or_sleep() {
   esac
 }
 
+resurface_after_downtime() {
+  local open unread recovery_class recovery_needed
+  # Handling successors already have a predecessor-delivered wake on the way.
+  # Re-announcing from this cycle is what turned a lost handshake into an
+  # unbounded recovery loop; stay in the poll loop and supervise instead.
+  if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
+    return 0
+  fi
+  if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
+    if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+      echo "watcher: recovery state could not be consumed safely" >&2
+      exit 1
+    fi
+    [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
+  fi
+  # A recovery marker can exist with no durable wake and no open decision.
+  # Closing that empty cycle makes Grok inject a billed completion prompt even
+  # though there is nothing to handle. Keep this watcher live through the quiet
+  # episode after the recovery state is safely consumed.
+  recovery_class=actionable
+  recovery_needed=0
+  if [ -s "$FM_WAKE_QUEUE" ]; then
+    recovery_needed=1
+    if fm_watch_recovery_queue_is_routine "$FM_WAKE_QUEUE"; then
+      recovery_class=routine
+    fi
+  fi
+  if ! open=$(scan_open_decisions_incremental "$STATE"); then
+    recovery_needed=1
+    recovery_class=actionable
+  fi
+  if ! unread=$(scan_unread_surface_lines "$STATE"); then
+    recovery_needed=1
+    recovery_class=actionable
+  fi
+  if [ -n "$open" ] || [ -n "$unread" ]; then
+    recovery_needed=1
+    recovery_class=actionable
+  fi
+  [ "$recovery_needed" -eq 1 ] || return 0
+  FM_WATCH_CYCLE_CLASS=$recovery_class
+  wake "check: rearm-resurface"
+}
+
 # --- Main entry: the runtime below runs only when this file is executed as a
 # script. When sourced (unit tests loading the functions above), return here
 # before acquiring the singleton lock or entering the blocking loop.
@@ -1172,30 +1219,6 @@ retire_merged_pr_poll() {  # <id>
   else
     triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
   fi
-}
-
-resurface_after_downtime() {
-  # Handling successors already have a predecessor-delivered wake on the way.
-  # Re-announcing from this cycle is what turned a lost handshake into an
-  # unbounded recovery loop; stay in the poll loop and supervise instead.
-  if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
-    return 0
-  fi
-  if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
-    if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
-      echo "watcher: recovery state could not be consumed safely" >&2
-      exit 1
-    fi
-    [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
-  fi
-  # A recovery marker can exist with no durable wake and no open decision.
-  # Closing that empty cycle makes Grok inject a billed completion prompt even
-  # though there is nothing to handle. Keep this watcher live through the quiet
-  # episode after the recovery state is safely consumed.
-  [ -s "$FM_WAKE_QUEUE" ] && wake "check: rearm-resurface"
-  open=$(scan_open_decisions "$STATE") || wake "check: rearm-resurface"
-  [ -n "$open" ] || return 0
-  wake "check: rearm-resurface"
 }
 
 while :; do

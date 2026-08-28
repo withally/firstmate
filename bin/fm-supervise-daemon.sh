@@ -590,14 +590,36 @@ fm_daemon_primary_harness() {
 
 pane_is_busy() {  # <target> [backend]
   local target=$1 backend=${2:-tmux} native tail40 harness
+  FM_PANE_BUSY_REASON=
+  FM_PANE_NATIVE_BUSY_STATE=
   harness=$(fm_daemon_primary_harness)
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
+  FM_PANE_NATIVE_BUSY_STATE="$native"
+  if [ "$backend" = herdr ] && [ "$harness" = claude ]; then
+    # Herdr's native working state includes Claude's tracked away daemon shell.
+    # For this pair, native state is diagnostic only and the rendered Claude
+    # active-turn signature is the positive foreground-busy proof.
+    tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
+    if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
+      | fm_busy_lines_match claude; then
+      FM_PANE_BUSY_REASON='rendered-busy'
+      return 0
+    fi
+    return 1
+  fi
   case "$native" in
-    busy) return 0 ;;
+    busy)
+      FM_PANE_BUSY_REASON='native-busy'
+      return 0
+      ;;
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
-  printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"
+  if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
+    | fm_busy_lines_match "$harness"; then
+    FM_PANE_BUSY_REASON='rendered-busy'
+    return 0
+  fi
+  return 1
 }
 
 # pane_input_pending dispatches through fm_backend_composer_state and treats
@@ -1127,7 +1149,7 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded
+  local msg=$1 state target backend retries sleep_s verdict composer encoded native_state
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -1149,8 +1171,18 @@ inject_msg() {  # <message> [state]
   backend="${FM_SUPERVISOR_BACKEND:-tmux}"
   fm_backend_target_exists "$backend" "$target" || return 1
   # (3) Busy-guard: never inject into an in-use supervisor pane.
+  FM_PANE_BUSY_REASON=
+  FM_PANE_NATIVE_BUSY_STATE=
   if pane_is_busy "$target" "$backend"; then
-    log "inject deferred: supervisor pane busy (agent mid-turn)"
+    native_state=${FM_PANE_NATIVE_BUSY_STATE:-unknown}
+    case "${FM_PANE_BUSY_REASON:-native-busy}" in
+      native-busy|rendered-busy)
+        log "inject deferred: supervisor pane busy (agent mid-turn; subcause=${FM_PANE_BUSY_REASON:-native-busy}; native-state=$native_state)"
+        ;;
+      *)
+        log "inject deferred: supervisor pane unreadable (subcause=${FM_PANE_BUSY_REASON:-unknown}; native-state=$native_state)"
+        ;;
+    esac
     return 1
   fi
   #   b) Composer-guard: inject ONLY into a confirmed-empty GENUINE agent
@@ -1162,9 +1194,10 @@ inject_msg() {  # <message> [state]
   #      target - typing the escalation into a shell could execute it - so defer
   #      on anything that is not affirmatively 'empty'. A deferred escalation
   #      stays buffered for the next cycle or the catch-up flush.
+  native_state=${FM_PANE_NATIVE_BUSY_STATE:-unknown}
   composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
   if [ "$composer" != empty ]; then
-    log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input, dead-shell prompt, or unreadable pane)"
+    log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input, dead-shell prompt, or unreadable pane; subcause=composer=${composer:-unknown}; native-state=$native_state)"
     return 1
   fi
   # (4) Type the digest ONCE, then submit with Enter (retry Enter only, never

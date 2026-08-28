@@ -291,6 +291,12 @@ It refuses Zellij, Orca, and cmux as supervisor backends rather than applying th
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
+For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
+`pane_is_busy` therefore requires the rendered Claude active-turn signature, such as `esc to interrupt` or a spinner with elapsed time, before declaring the pane busy.
+When the rendered pane is idle, injection falls through to the affirmative `empty` composer guard, while an unreadable capture or any non-`empty` composer verdict still defers.
+Each deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`.
+Every other harness/backend combination retains its native-busy fast path.
+
 Harnesses with native tracked background execution can run the daemon in their terminal.
 Pi has no such mechanism.
 `bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
@@ -339,6 +345,7 @@ tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
+tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 

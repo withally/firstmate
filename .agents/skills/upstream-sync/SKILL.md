@@ -3,7 +3,7 @@ name: upstream-sync
 description: >-
   Agent-only checklist for the weekly catch-up of the withally/firstmate fork with kunchenguid/firstmate.
   Use when the captain asks to sync, catch up, snapshot, or rebase onto upstream, or when the weekly upstream sync is due.
-  Owns the tier decision (weekly or monthly validation), the fixed worker brief, the PR verdict table, and the isolated Herdr lab setup, so the sync is a follow-the-checklist job rather than a re-authored brief.
+  Owns the tier decision (weekly or monthly validation), the fixed worker brief, the PR verdict table and its inputs, the isolated Herdr lab setup, and the optional urgent-upstream tripwire, so the sync is a follow-the-checklist job rather than a re-authored brief.
 user-invocable: false
 metadata:
   internal: true
@@ -13,7 +13,7 @@ metadata:
 
 The procedural spine is [`docs/upstream-sync.md`](../../../docs/upstream-sync.md).
 That document owns the remotes, the branch-at-upstream rule, the snapshot-commit audit window, the keep rule, and the catch-up log.
-This skill does not restate it; it adds only what the standing procedure needs to run without a re-authored brief: the tier decision, the fixed worker brief, the exact commands, the PR verdict table, and the Herdr lab setup.
+This skill does not restate it; it adds only what the standing procedure needs to run without a re-authored brief: the tier decision, the fixed worker brief, the exact commands, the PR verdict table, the Herdr lab setup, and the optional urgent-upstream tripwire.
 
 Standing captain rulings (2026-08-27), each implemented below:
 
@@ -23,9 +23,25 @@ Standing captain rulings (2026-08-27), each implemented below:
 4. The instructions are standing: this skill and the doc, never a re-authored brief.
 5. The Herdr lab setup is documented once, in [`references/herdr-lab.md`](references/herdr-lab.md).
 
+## Optional urgent-upstream tripwire
+
+The tripwire is an opt-in registered custom check for commits added to `upstream/main` after the latest adopted upstream base in `docs/upstream-sync.md`.
+It performs one fetch per check, matches only `security`, `CVE`, `breaking`, `revert`, `data loss`, or `credential` in a commit subject or body, and stays silent otherwise.
+On a hit it emits one line naming the matching commit and subject, so the existing watcher delivers one actionable check wake for an out-of-cycle sync decision.
+That line is emitted once per matching commit set, because `state/.upstream-urgent` records the set the last report was made from, and a set unchanged since that report stays silent.
+An armed but unusable tripwire - no readable base, no `upstream` remote, a non-canonical `upstream` remote, or a recorded base that is not a commit here or not an ancestor of `upstream/main` - reports one diagnostic on stderr for a hand run, but emits no stdout and never wakes firstmate.
+None of those clear on a retry, so the tripwire is dead until someone repairs the catch-up log or the remote.
+A retryable failure - a failed fetch, a missing ref right after one, an unreadable log - stays off that path entirely and only sets stderr and a non-zero exit, so a flapping link never wakes firstmate.
+It does not invoke an LLM, open a review window, or make a captain call by itself.
+
+Arm it from the firstmate code root with `bin/fm-upstream-urgent-check.sh arm`.
+Disarm it with `bin/fm-upstream-urgent-check.sh disarm`.
+The arm command writes and trust-registers `state/upstream-urgent.check.sh`, and disarm removes that shim, its trust binding, and the `state/.upstream-urgent` report record.
+The check is not active unless it is armed, and the normal watcher cadence owns when the registered check runs.
+
 ## Firstmate intake (dispatcher)
 
-Firstmate resolves five values and nothing else — `UPSTREAM_BASE`, `SNAPSHOT`, `SETTLED`, `TIER`, and `DATE`; the brief is fixed text.
+Firstmate resolves eight values and nothing else: `UPSTREAM_BASE`, `SNAPSHOT`, `SETTLED`, `VERDICT_INPUT_1`, `VERDICT_INPUT_2`, `VERDICT_INPUT_3`, `TIER`, and `DATE`; the brief is fixed text.
 
 1. Fetch and record the base.
 
@@ -74,7 +90,9 @@ Firstmate resolves five values and nothing else — `UPSTREAM_BASE`, `SNAPSHOT`,
    A monthly tier always needs `--herdr-lab` because the full suite drives Herdr lifecycle behavior through the lab.
    A weekly tier normally does not; if the kept diff later turns out to select the `real-herdr-gated` family, the worker stops with `blocked: sync touches Herdr, brief needs --herdr-lab`, and Firstmate reissues the same brief with `--herdr-lab` rather than letting the worker add lab commands by hand.
    The regenerated weekly brief is what lets the worker run the Herdr family locally in step 10; regenerating it and then skipping that run leaves the lab contract unused.
-4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `SETTLED`, `TIER`, and `DATE`.
+4. Replace `{TASK}` with [`references/worker-brief.md`](references/worker-brief.md), filling only `UPSTREAM_BASE`, `SNAPSHOT`, `SETTLED`, `VERDICT_INPUT_1`, `VERDICT_INPUT_2`, `VERDICT_INPUT_3`, `TIER`, and `DATE`.
+   Read the backlog item `upstream-sync-20260829-verdict-inputs` through the configured backlog backend and copy its three shortlisted behavior entries into `{VERDICT_INPUT_1}`, `{VERDICT_INPUT_2}`, and `{VERDICT_INPUT_3}` exactly as written, one entry per placeholder.
+   Stop with `blocked: verdict-input backlog item is missing or does not contain exactly three behavior entries` when that item cannot supply exactly three entries, rather than guessing or dropping an input.
 5. Spawn per `AGENTS.md` section 7, record the sync as work under way, and supervise as usual.
 6. At the PR, relay the verdict table to the captain with the full PR URL; the captain rules once at merge.
 7. After the merge, refresh the clone through the guarded fleet-sync path, then confirm the snapshot marker actually landed on `origin/main`'s first-parent line, and when the tier was `monthly`, confirm the worker advanced the `Next monthly full run` line to the first day of the following month.
@@ -211,9 +229,14 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     Weekly:
 
     ```sh
+    FM_BOOTSTRAP_DETECT_ONLY=1 bin/fm-bootstrap.sh
     bin/fm-lint.sh
     bin/fm-test-run.sh --changed --base "$UPSTREAM_BASE" --exclude-family real-herdr-gated
     ```
+
+    The first command is the weekly tool-currency and compatibility check.
+    Record one row in the PR body using `| Tool currency | \`FM_BOOTSTRAP_DETECT_ONLY=1 bin/fm-bootstrap.sh\` | pass - no required-tool floor diagnostic |` when it emits no required-tool floor diagnostic, or replace the result cell with the exact `MISSING` or floor diagnostic when it does.
+    A required tool below its floor is a blocker that must be reported, while optional-tool or unrelated bootstrap diagnostics remain follow-up evidence and do not create a separate captain call.
 
     Never hand-roll the selection from `git diff --name-only`.
     The branch starts at `UPSTREAM_BASE`, so `--changed --base "$UPSTREAM_BASE"` resolves the kept diff through `families_for_changed_path` in `bin/fm-test-run.sh`, the repo's maintained changed-file-to-test map, and a diff that maps to nothing logs `no tests selected` instead of failing the tier.

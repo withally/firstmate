@@ -115,6 +115,7 @@ state/               runtime records and signals; gitignored
   .pr-check-migration-scan-v1  private marker proving the non-executing scan disabled every unsafe legacy check; .pr-check-migration-v1 separately records completed private repairs
   x-watch.check.sh   generated Relay poll shim; present only when opted in (section 14)
   tool-updates.check.sh  generated watched-tool update poll shim and its .check-trust binding; present only after bin/fm-tool-update-check.sh arm; its report record .tool-updates is what keeps one pending update from being reported on every poll
+  upstream-urgent.check.sh  generated urgent-upstream tripwire shim and its .check-trust binding; present only after bin/fm-upstream-urgent-check.sh arm; its report record .upstream-urgent is what keeps one matching upstream commit set from being reported on every poll (.agents/skills/upstream-sync/SKILL.md)
   pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (section 13)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
@@ -551,7 +552,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the Relay configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for a Relay-linked task before posting its completion follow-up; relevant only when Relay is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
-- `upstream-sync` - load when the captain asks to sync, catch up, or snapshot onto upstream, or when the weekly upstream sync is due; it owns the tier decision, the fixed worker brief, and the Herdr lab setup, over the procedure in `docs/upstream-sync.md`.
+- `upstream-sync` - load when the captain asks to sync, catch up, or snapshot onto upstream, or when the weekly upstream sync is due; it owns the tier decision, the fixed worker brief and verdict-table inputs, the Herdr lab setup, and the optional urgent-upstream tripwire, over the procedure in `docs/upstream-sync.md`.
 
 ## 14. Relay
 

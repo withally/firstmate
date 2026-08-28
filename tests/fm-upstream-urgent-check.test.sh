@@ -239,6 +239,119 @@ test_disarm_removes_the_report_record() {
   pass 'disarm drops the report record so the next run reports again'
 }
 
+# The watcher redirects a check's stderr to /dev/null and ignores its exit
+# status (bin/fm-watch.sh), so only stdout can tell it the tripwire stopped
+# working. An inspection failure that never reaches stdout is indistinguishable
+# from a clean all-clear for as long as the check stays armed.
+test_inspection_failure_is_reported_on_stdout_once() {
+  local repo stray out err second_out status=0
+  repo=$(make_fixture_repo unreachable-base)
+  # A base commit that exists in this clone but is not on upstream/main is the
+  # shape a catch-up row takes when it names an origin/main snapshot squash.
+  git -C "$repo" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m 'chore: snapshot upstream main for the fixture'
+  stray=$(git -C "$repo" rev-parse HEAD)
+  printf '%s\n' \
+    '# Upstream sync' \
+    '' \
+    '| Catch-up date | Catch-up commit or adopted upstream base | Window end commit | Tier | Local PR interval and final verdict |' \
+    '| --- | --- | --- | --- | --- |' \
+    "| 2026-08-29 | \`$stray\` (\`#65\`, \`chore: snapshot upstream main\`) | \`$stray\` | full | fixture |" \
+    > "$repo/docs/upstream-sync.md"
+  out="$TMP_ROOT/unreachable-base/out.txt"
+  err="$TMP_ROOT/unreachable-base/err.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
+  [ "$status" -ne 0 ] || fail 'a failed inspection exited zero'
+  assert_contains "$(cat "$out")" 'upstream urgent check failed:' \
+    'a failed inspection produced no stdout line, so the watcher would read it as all-clear'
+  assert_contains "$(cat "$out")" 'is not an ancestor of upstream/main' \
+    'the stdout failure line did not name the condition'
+  [ "$(wc -l < "$out" | tr -d '[:space:]')" = 1 ] \
+    || fail "the failure report must be exactly one line: $(cat "$out")"
+
+  second_out="$TMP_ROOT/unreachable-base/out2.txt"
+  status=0
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$second_out" 2>/dev/null || status=$?
+  [ "$status" -ne 0 ] || fail 'the second failed inspection exited zero'
+  [ ! -s "$second_out" ] \
+    || fail "an unchanged failure was reported again: $(cat "$second_out")"
+  pass 'an inspection failure reaches stdout, exits non-zero, and wakes once'
+}
+
+test_a_recovered_inspection_reports_a_later_hit() {
+  local repo out status=0
+  repo=$(make_fixture_repo failure-recovery)
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-recovery/absent.git"
+  out="$TMP_ROOT/failure-recovery/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  [ "$status" -ne 0 ] || fail 'a fetch against an absent remote exited zero'
+  [ -s "$out" ] || fail 'a fetch failure produced no stdout report'
+
+  # A failure must not latch the record against a real hit that follows.
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-recovery/upstream.git"
+  publish_upstream_commit "$repo" failure-recovery 'security: rotate the signing key' 'Body.' >/dev/null
+  run_check "$repo" "$out"
+  assert_contains "$(cat "$out")" 'urgent upstream commits:' \
+    'a hit after a reported failure was suppressed'
+  pass 'a recovered inspection still reports the hit that follows'
+}
+
+# An unregistered shim is not inert: bin/fm-watch.sh rejects it on every sweep
+# and wakes firstmate about unauthenticated state checks until someone deletes
+# it by hand, so a home that could not be armed has to come back to the state
+# it was in.
+test_a_failed_registration_leaves_no_unregistered_shim() {
+  local repo target status=0
+  repo=$(make_fixture_repo arm-register-fail)
+  mkdir -p "$repo/state"
+  target="$TMP_ROOT/arm-register-fail/not-the-trust.txt"
+  printf 'a file the trust binding must not touch\n' > "$target"
+  ln -s "$target" "$repo/state/upstream-urgent.check-trust"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" arm >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" 'arm with an unusable trust path exit'
+  [ ! -e "$repo/state/upstream-urgent.check.sh" ] \
+    || fail 'a failed registration left an unregistered check shim behind'
+  [ "$(cat "$target")" = 'a file the trust binding must not touch' ] \
+    || fail 'arm wrote through the trust symlink'
+
+  printf '#!/usr/bin/env bash\n# a shim armed earlier\nexit 0\n' \
+    > "$repo/state/upstream-urgent.check.sh"
+  chmod 0700 "$repo/state/upstream-urgent.check.sh"
+  status=0
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" arm >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" 'arm over an existing shim with an unusable trust path exit'
+  [ ! -e "$repo/state/upstream-urgent.check.sh" ] \
+    || fail 'a failed arm left a shim behind that no trust binding covers'
+  pass 'a failed registration never leaves a shim without a matching trust binding'
+}
+
+test_a_failed_rearm_restores_the_armed_shim() {
+  local repo bindir f before status=0
+  repo=$(make_fixture_repo arm-rearm-restore)
+  # The register runs as a separate program, so a failure that leaves the
+  # existing binding intact is staged by standing in for that program alone.
+  bindir="$TMP_ROOT/arm-rearm-restore/bin"
+  mkdir -p "$bindir"
+  for f in "$ROOT"/bin/*; do
+    ln -s "$f" "$bindir/$(basename "$f")"
+  done
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$bindir/fm-upstream-urgent-check.sh" arm >/dev/null \
+    || fail 'the first arm failed'
+  before=$(cat "$repo/state/upstream-urgent.check.sh")
+
+  rm -f "$bindir/fm-check-register.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bindir/fm-check-register.sh"
+  chmod 0755 "$bindir/fm-check-register.sh"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$bindir/fm-upstream-urgent-check.sh" arm \
+    >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" 're-arm with a failing register exit'
+  [ "$(cat "$repo/state/upstream-urgent.check.sh")" = "$before" ] \
+    || fail 'a failed re-arm did not restore the shim the home was armed with'
+  FM_HOME="$repo" "$ROOT/bin/fm-check-register.sh" upstream-urgent >/dev/null \
+    || fail 'a failed re-arm left the previously armed home unbound'
+  pass 'a failed re-arm restores the shim a working home was armed with'
+}
+
 test_matching_upstream_commit_is_reported
 test_matching_upstream_body_is_reported
 test_nonmatching_upstream_commit_is_silent
@@ -249,3 +362,7 @@ test_arm_registers_and_disarm_removes_the_check
 test_base_is_read_from_a_row_that_also_names_a_landing_hash
 test_unchanged_match_set_is_reported_once
 test_disarm_removes_the_report_record
+test_inspection_failure_is_reported_on_stdout_once
+test_a_recovered_inspection_reports_a_later_hit
+test_a_failed_registration_leaves_no_unregistered_shim
+test_a_failed_rearm_restores_the_armed_shim

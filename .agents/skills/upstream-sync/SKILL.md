@@ -29,6 +29,7 @@ The tripwire is an opt-in registered custom check for commits added to `upstream
 It performs one fetch per check, matches only `security`, `CVE`, `breaking`, `revert`, `data loss`, or `credential` in a commit subject or body, and stays silent otherwise.
 On a hit it emits one line naming the matching commit and subject, so the existing watcher delivers one actionable check wake for an out-of-cycle sync decision.
 That line is emitted once per matching commit set, because `state/.upstream-urgent` records the set the last report was made from, and a set unchanged since that report stays silent.
+A condition that stops the inspection — an unreadable base, a missing `upstream` remote, a failed fetch, a recorded base that is not an ancestor of `upstream/main` — is reported on the same one-line-once path rather than only on stderr, because the watcher discards a check's stderr and exit status and an armed tripwire that cannot inspect would otherwise look identical to a clean all-clear.
 It does not invoke an LLM, open a review window, or make a captain call by itself.
 
 Arm it from the firstmate code root with `bin/fm-upstream-urgent-check.sh arm`.

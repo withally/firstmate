@@ -13,9 +13,19 @@ fm_watch_reason_is_routine() {
 }
 
 fm_watch_recovery_queue_is_routine() {
-  local queue=$1 epoch seq kind key payload
+  local queue=$1 line epoch seq kind key payload
   [ -f "$queue" ] && [ ! -L "$queue" ] && [ -s "$queue" ] || return 1
-  while IFS=$(printf '\t') read -r epoch seq kind key payload; do
+  while :; do
+    line=
+    if ! IFS= read -r line; then
+      [ -n "$line" ] || break
+    fi
+    epoch=
+    seq=
+    kind=
+    key=
+    payload=
+    IFS=$(printf '\t') read -r epoch seq kind key payload <<< "$line"
     case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
     case "$seq" in ''|*[!0-9]*) return 1 ;; esac
     [ -n "$key" ] || return 1

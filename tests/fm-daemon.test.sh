@@ -1780,6 +1780,35 @@ test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   pass "inject_msg: Herdr+Claude native busy does not block an idle rendered pane with an empty composer"
 }
 
+test_inject_msg_detects_claude_harness_before_submit() {
+  local dir state
+  dir=$(make_supercase inject-herdr-claude-detected-harness)
+  state="$dir/state"
+  afk_enter "$state"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" claude' > "$dir/fakebin/fm-harness.sh"
+  chmod +x "$dir/fakebin/fm-harness.sh"
+  (
+    unset FM_DAEMON_PRIMARY_HARNESS
+    FM_DAEMON_DIR="$dir/fakebin"
+    fm_backend_target_exists() { return 0; }
+    fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_capture() { printf 'idle Claude prompt\n'; }
+    fm_busy_lines_match() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_send_text_submit() {
+      [ "${FM_DAEMON_PRIMARY_HARNESS:-}" = claude ] \
+        || fail "detected harness did not survive the busy guard before submit: ${FM_DAEMON_PRIMARY_HARNESS:-unset}"
+      printf 'empty'
+    }
+    LOG="$dir/daemon.log"
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    inject_msg "hello" "$state" \
+      || fail "a detected Claude harness with rendered idle and empty composer should reach submit"
+  ) || fail "detected Claude harness submit-boundary subshell failed"
+  pass "inject_msg: detected Claude harness survives pane_is_busy into the submit boundary"
+}
+
 test_pane_is_busy_herdr_claude_rendered_busy_state() {
   local dir
   dir=$(make_supercase primary-herdr-claude-rendered-busy)
@@ -2153,6 +2182,7 @@ test_fm_send_exits_nonzero_on_unproven_submit
 test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
 test_inject_msg_herdr_claude_native_busy_rendered_idle_submits
+test_inject_msg_detects_claude_harness_before_submit
 test_pane_is_busy_herdr_claude_rendered_busy_state
 test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard
 test_pane_is_busy_native_busy_fast_path_outside_herdr_claude

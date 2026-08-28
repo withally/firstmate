@@ -2773,12 +2773,16 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # native state, is not a queued mid-turn). When <allow-rendered> is 1, an idle
 # native baseline may also take the pane's rendered busy footer, because live
 # Claude keeps agent_status idle through a whole turn.
-fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
-  local target=$1 allow_rendered=${2:-0} raw
+fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [footer-baseline]
+  local target=$1 allow_rendered=${2:-0} footer_baseline=${3:-} raw
   raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
   if [ "${FM_DAEMON_PRIMARY_HARNESS:-}" = claude ]; then
     # Herdr native working includes Claude's tracked away daemon shell, so it
     # cannot by itself prove that this Enter was accepted and queued.
+    if [ "$allow_rendered" != 1 ] && [ "$footer_baseline" != idle ]; then
+      printf 'idle'
+      return 0
+    fi
     fm_backend_herdr_rendered_busy_state "$target" claude
     return 0
   fi
@@ -2865,7 +2869,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         printf 'send-failed'
       else
         fm_composer_queued_enter_verdict "$verdict" \
-          "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered")"
+          "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered" "$footer_baseline")"
       fi
       return 0
     fi

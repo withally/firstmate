@@ -592,7 +592,8 @@ pane_is_busy() {  # <target> [backend]
   local target=$1 backend=${2:-tmux} native tail40 visible harness
   FM_PANE_BUSY_REASON=
   FM_PANE_NATIVE_BUSY_STATE=
-  harness=$(fm_daemon_primary_harness)
+  fm_daemon_primary_harness >/dev/null
+  harness=${FM_DAEMON_PRIMARY_HARNESS:-unknown}
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
   FM_PANE_NATIVE_BUSY_STATE="$native"
   # Herdr's semantic busy value maps only agent_status=working; retain that

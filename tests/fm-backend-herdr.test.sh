@@ -3624,6 +3624,23 @@ test_send_text_submit_claude_working_pending_accepts_rendered_busy() {
   pass "fm_backend_herdr_send_text_submit: Claude rendered active-turn proof can confirm a queued Enter"
 }
 
+test_send_text_submit_claude_preexisting_rendered_busy_does_not_confirm_queued_enter() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-preexisting-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c 'FM_DAEMON_PRIMARY_HARNESS=claude; export FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] || fail "a pre-existing Claude busy footer must not confirm a queued Enter while the composer remains pending, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a pre-existing rendered busy footer should not trigger another Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: pre-existing Claude rendered activity cannot confirm a queued Enter"
+}
+
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-preexisting-working-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4663,6 +4680,7 @@ test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empt
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer
 test_send_text_submit_claude_working_pending_accepts_rendered_busy
+test_send_text_submit_claude_preexisting_rendered_busy_does_not_confirm_queued_enter
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
 test_send_text_submit_idle_baseline_does_not_confirm_failed_enter
 test_send_text_submit_idle_native_empty_composer_confirms_delivery

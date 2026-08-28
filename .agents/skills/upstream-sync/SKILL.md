@@ -29,8 +29,8 @@ The tripwire is an opt-in registered custom check for commits added to `upstream
 It performs one fetch per check, matches only `security`, `CVE`, `breaking`, `revert`, `data loss`, or `credential` in a commit subject or body, and stays silent otherwise.
 On a hit it emits one line naming the matching commit and subject, so the existing watcher delivers one actionable check wake for an out-of-cycle sync decision.
 That line is emitted once per matching commit set, because `state/.upstream-urgent` records the set the last report was made from, and a set unchanged since that report stays silent.
-One non-hit condition also reports on that same one-line-once path: the tripwire being armed but unusable — no readable base, no `upstream` remote, or a recorded base that is not a commit here or not an ancestor of `upstream/main`.
-None of those clear on a retry, so the tripwire is dead until someone repairs the catch-up log or the remote, and the watcher discards a check's stderr and exit status, which would otherwise leave a dead tripwire looking identical to a clean all-clear.
+An armed but unusable tripwire - no readable base, no `upstream` remote, or a recorded base that is not a commit here or not an ancestor of `upstream/main` - reports one diagnostic on stderr for a hand run, but emits no stdout and never wakes firstmate.
+None of those clear on a retry, so the tripwire is dead until someone repairs the catch-up log or the remote.
 A retryable failure — a failed fetch, a missing ref right after one, an unreadable log — stays off that path entirely and only sets stderr and a non-zero exit, so a flapping link never wakes firstmate.
 It does not invoke an LLM, open a review window, or make a captain call by itself.
 

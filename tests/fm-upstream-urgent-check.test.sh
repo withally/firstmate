@@ -385,19 +385,21 @@ test_disarm_rejects_symlinked_state() {
 # base. A report of the other kind between two successful polls must not make
 # the same unchanged commit set news again.
 test_an_interrupting_report_does_not_reannounce_an_unchanged_hit() {
-  local repo out status=0
+  local repo out err status=0
   repo=$(make_fixture_repo failure-between-hits)
   publish_upstream_commit "$repo" failure-between-hits 'security: rotate the signing key' 'Body.' >/dev/null
   out="$TMP_ROOT/failure-between-hits/out.txt"
   run_check "$repo" "$out"
   assert_contains "$(cat "$out")" 'urgent upstream commits:' 'the first sweep did not report the hit'
 
-  # An unusable-tripwire report is the one non-hit condition that does reach
-  # stdout, so it is what can evict the hit's suppression state.
+  # An unusable-tripwire report must stay off stdout, so it cannot wake
+  # firstmate or evict the hit's suppression state.
   git -C "$repo" remote remove upstream
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  err="$TMP_ROOT/failure-between-hits/err.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
   [ "$status" -ne 0 ] || fail 'a check with no upstream remote exited zero'
-  assert_contains "$(cat "$out")" 'upstream urgent check failed:' 'the interruption produced no report'
+  [ ! -s "$out" ] || fail "the interruption woke firstmate: $(cat "$out")"
+  assert_contains "$(cat "$err")" 'upstream urgent check failed:' 'the interruption produced no stderr diagnostic'
 
   git -C "$repo" remote add upstream "$CANONICAL_UPSTREAM_URL"
   run_check "$repo" "$out"
@@ -409,13 +411,15 @@ test_an_interrupting_report_does_not_reannounce_an_unchanged_hit() {
 # Only a condition a human had to clear can reach this path, so re-reporting it
 # after it genuinely came back is one wake per reintroduction, not per poll.
 test_a_reintroduced_unusable_tripwire_is_news_again() {
-  local repo out status=0
+  local repo out err status=0
   repo=$(make_fixture_repo failure-after-clean)
   out="$TMP_ROOT/failure-after-clean/out.txt"
+  err="$TMP_ROOT/failure-after-clean/err.txt"
   git -C "$repo" remote remove upstream
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
   [ "$status" -ne 0 ] || fail 'a check with no upstream remote exited zero'
-  [ -s "$out" ] || fail 'the first unusable-tripwire report was silent'
+  [ ! -s "$out" ] || fail 'the first unusable-tripwire report woke firstmate'
+  [ -s "$err" ] || fail 'the first unusable-tripwire diagnostic was silent'
 
   git -C "$repo" remote add upstream "$CANONICAL_UPSTREAM_URL"
   run_check "$repo" "$out"
@@ -423,9 +427,10 @@ test_a_reintroduced_unusable_tripwire_is_news_again() {
 
   git -C "$repo" remote remove upstream
   status=0
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
   [ "$status" -ne 0 ] || fail 'the reintroduced condition exited zero'
-  assert_contains "$(cat "$out")" 'upstream urgent check failed:' \
+  [ ! -s "$out" ] || fail "the reintroduced condition woke firstmate: $(cat "$out")"
+  assert_contains "$(cat "$err")" 'upstream urgent check failed:' \
     'a condition reintroduced after a repair was suppressed'
   pass 'a reintroduced unusable tripwire is news again'
 }
@@ -507,6 +512,25 @@ test_nonmatching_upstream_commit_is_silent() {
   run_check "$repo" "$out"
   [ ! -s "$out" ] || fail "nonmatching upstream commit produced a wake: $(cat "$out")"
   pass 'nonmatching upstream subject and body are silent'
+}
+
+test_unusable_inspection_does_not_wake_watcher() {
+  local repo out err status=0
+  repo=$(make_fixture_repo watcher-unusable)
+  git -C "$repo" remote remove upstream
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" arm >/dev/null \
+    || fail 'could not arm the watcher tripwire for the unusable inspection'
+  out="$TMP_ROOT/watcher-unusable/checkpoint.out"
+  err="$TMP_ROOT/watcher-unusable/checkpoint.err"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 3 >"$out" 2>"$err" || status=$?
+  expect_code 124 "$status" 'an unusable tripwire must stay quiet to the watcher'
+  assert_contains "$(cat "$out")" 'checkpoint: no actionable wake' \
+    'an unusable tripwire produced an actionable checkpoint output'
+  [ ! -s "$repo/state/.wake-queue" ] \
+    || fail "an unusable tripwire queued a firstmate wake: $(cat "$repo/state/.wake-queue")"
+  pass 'an unusable tripwire does not wake firstmate'
 }
 
 test_recorded_base_is_excluded_from_the_range() {
@@ -691,11 +715,11 @@ test_dangling_state_symlink_is_not_created() {
 }
 
 # The watcher redirects a check's stderr to /dev/null and ignores its exit
-# status (bin/fm-watch.sh), so only stdout can tell it the tripwire stopped
-# working. An inspection failure that never reaches stdout is indistinguishable
-# from a clean all-clear for as long as the check stays armed.
-test_inspection_failure_is_reported_on_stdout_once() {
-  local repo stray out err second_out status=0
+# status (bin/fm-watch.sh), so an unusable inspection must stay off stdout: only
+# a matching commit may wake firstmate. A hand run still receives one stderr
+# diagnostic.
+test_inspection_failure_is_reported_on_stderr_once() {
+  local repo stray out err second_out second_err status=0
   repo=$(make_fixture_repo unreachable-base)
   # A base commit that exists in this clone but is not on upstream/main is the
   # shape a catch-up row takes when it names an origin/main snapshot squash.
@@ -714,21 +738,25 @@ test_inspection_failure_is_reported_on_stdout_once() {
   env PATH="$(fixture_fakebin "$repo"):$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
     "$CHECK" check >"$out" 2>"$err" || status=$?
   [ "$status" -ne 0 ] || fail 'a failed inspection exited zero'
-  assert_contains "$(cat "$out")" 'upstream urgent check failed:' \
-    'a failed inspection produced no stdout line, so the watcher would read it as all-clear'
-  assert_contains "$(cat "$out")" 'is not an ancestor of upstream/main' \
-    'the stdout failure line did not name the condition'
-  [ "$(wc -l < "$out" | tr -d '[:space:]')" = 1 ] \
-    || fail "the failure report must be exactly one line: $(cat "$out")"
+  [ ! -s "$out" ] || fail "a failed inspection woke firstmate: $(cat "$out")"
+  assert_contains "$(cat "$err")" 'upstream urgent check failed:' \
+    'a failed inspection produced no stderr diagnostic'
+  assert_contains "$(cat "$err")" 'is not an ancestor of upstream/main' \
+    'the stderr failure line did not name the condition'
+  [ "$(wc -l < "$err" | tr -d '[:space:]')" = 1 ] \
+    || fail "the failure report must be exactly one line: $(cat "$err")"
 
   second_out="$TMP_ROOT/unreachable-base/out2.txt"
+  second_err="$TMP_ROOT/unreachable-base/err2.txt"
   status=0
   env PATH="$(fixture_fakebin "$repo"):$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
-    "$CHECK" check >"$second_out" 2>/dev/null || status=$?
+    "$CHECK" check >"$second_out" 2>"$second_err" || status=$?
   [ "$status" -ne 0 ] || fail 'the second failed inspection exited zero'
   [ ! -s "$second_out" ] \
     || fail "an unchanged failure was reported again: $(cat "$second_out")"
-  pass 'an inspection failure reaches stdout, exits non-zero, and wakes once'
+  [ ! -s "$second_err" ] \
+    || fail "an unchanged failure was reported again: $(cat "$second_err")"
+  pass 'an inspection failure stays off stdout and diagnoses once on stderr'
 }
 
 # A fetch failure is retryable, so it must cost a non-zero exit and a stderr
@@ -847,6 +875,7 @@ test_record_separator_in_body_keeps_commit_identity
 test_control_bytes_are_removed_from_subjects
 test_utf8_subject_truncation_preserves_character_boundaries
 test_nonmatching_upstream_commit_is_silent
+test_unusable_inspection_does_not_wake_watcher
 test_recorded_base_is_excluded_from_the_range
 test_check_uses_one_fetch_and_finishes_quickly
 test_slow_fetch_is_bounded_before_ten_seconds
@@ -870,7 +899,7 @@ test_nonprivate_record_does_not_suppress_a_hit
 test_malformed_record_does_not_suppress_a_hit
 test_record_directory_is_not_used_as_record_target
 test_dangling_state_symlink_is_not_created
-test_inspection_failure_is_reported_on_stdout_once
+test_inspection_failure_is_reported_on_stderr_once
 test_a_retryable_failure_never_reaches_stdout
 test_a_failed_registration_leaves_no_unregistered_shim
 test_a_failed_rearm_restores_the_armed_shim

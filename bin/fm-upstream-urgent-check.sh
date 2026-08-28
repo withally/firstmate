@@ -19,7 +19,7 @@
 #
 # A condition that stops the inspection is split by whether retrying can clear
 # it, because the watcher turns any stdout line into a firstmate wake and only
-# one of the two kinds is worth waking anyone about.
+# a matching commit is allowed to wake anyone about.
 #
 #   Retryable   a failed fetch, an upstream/main missing right after one, a log
 #               that could not be read. Network, sleep/wake, a concurrent gc.
@@ -29,10 +29,8 @@
 #   Unusable    no readable sync base, no upstream remote, a recorded base that
 #               is not a commit here or not an ancestor of upstream/main. No
 #               amount of retrying fixes these; the tripwire is armed and dead
-#               until a human edits the catch-up log or the remote. The watcher
-#               discards stderr and the exit status, so staying silent would
-#               leave a dead tripwire indistinguishable from a clean all-clear.
-#               These report on stdout, once, through the record.
+#               until a human edits the catch-up log or the remote. These report
+#               on stderr, once, for a hand run without waking firstmate.
 #
 # Every failure still exits non-zero, so a hand run and the test suite can tell
 # a failed inspection from a silent one either way.
@@ -97,11 +95,10 @@ Usage:
   fm-upstream-urgent-check.sh --help   print this help
 
 The check reads the latest adopted upstream base from docs/upstream-sync.md.
-It is silent unless a commit since that base matches security, CVE, breaking,
-revert, data loss, or credential, or the tripwire is armed but unusable until
-someone repairs its base or its remote. Either report is printed once per
-distinct report, on stdout. A retryable failure - a fetch, a missing ref, an
-unreadable log - only goes to stderr and a non-zero exit.
+It prints on stdout only when a commit since that base matches security, CVE,
+breaking, revert, data loss, or credential. An unusable tripwire reports once
+on stderr until someone repairs its base or remote; a retryable failure - a
+fetch, a missing ref, or an unreadable log - also goes only to stderr.
 EOF
 }
 
@@ -294,7 +291,7 @@ check_retryable() {
 check_unusable() {
   local payload="upstream urgent check failed: $1"
   record_read
-  report_emit "$payload" "$RECORD_FAILED"
+  report_emit "$payload" "$RECORD_FAILED" >&2
   # The match set the record already holds is carried through untouched, so a
   # report of this kind cannot make an unchanged pending commit set news again.
   record_write "$RECORD_REPORTED" "$payload" || true

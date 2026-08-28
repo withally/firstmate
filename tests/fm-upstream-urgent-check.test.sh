@@ -8,6 +8,13 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# The trust binding is a byte contract between arm and the watcher, so the tests
+# ask its owner whether a shim is registered rather than re-running the
+# registrar, which would rewrite the binding from whatever bytes it finds.
+# shellcheck source=bin/fm-pr-lib.sh
+. "$ROOT/bin/fm-pr-lib.sh"
+# shellcheck source=bin/fm-check-lib.sh
+. "$ROOT/bin/fm-check-lib.sh"
 
 CHECK="$ROOT/bin/fm-upstream-urgent-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-upstream-urgent-check)
@@ -117,13 +124,58 @@ test_arm_registers_and_disarm_removes_the_check() {
     'arm did not report the registered check'
   shim="$repo/state/upstream-urgent.check.sh"
   [ -x "$shim" ] || fail 'arm did not create an executable check shim'
-  FM_HOME="$repo" "$ROOT/bin/fm-check-register.sh" upstream-urgent >/dev/null \
-    || fail 'arm left a check whose trust binding does not validate'
+  fm_custom_check_registered "$repo/state" upstream-urgent \
+    || fail 'arm left a check whose trust binding does not cover its bytes'
   env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" disarm >"$out"
   [ ! -e "$shim" ] || fail 'disarm left the check shim in place'
   [ ! -e "$repo/state/upstream-urgent.check-trust" ] \
     || fail 'disarm left the check trust binding in place'
   pass 'arm registers and disarm removes the tripwire check'
+}
+
+# A pending urgent commit stays pending for days, until a sync advances the
+# base, while a fetch failure comes and goes with the network. A blip between
+# two successful polls must not make the same unchanged commit set news again.
+test_a_transient_failure_does_not_reannounce_an_unchanged_hit() {
+  local repo out status=0
+  repo=$(make_fixture_repo failure-between-hits)
+  publish_upstream_commit "$repo" failure-between-hits 'security: rotate the signing key' 'Body.' >/dev/null
+  out="$TMP_ROOT/failure-between-hits/out.txt"
+  run_check "$repo" "$out"
+  assert_contains "$(cat "$out")" 'urgent upstream commits:' 'the first sweep did not report the hit'
+
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-between-hits/absent.git"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  [ "$status" -ne 0 ] || fail 'a fetch against an absent remote exited zero'
+  assert_contains "$(cat "$out")" 'upstream urgent check failed:' 'the blip produced no failure report'
+
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-between-hits/upstream.git"
+  run_check "$repo" "$out"
+  [ ! -s "$out" ] \
+    || fail "a transient failure re-announced an unchanged hit: $(cat "$out")"
+  pass 'a transient failure never re-announces an unchanged commit set'
+}
+
+test_a_repeated_failure_after_a_clean_sweep_is_news_again() {
+  local repo out status=0
+  repo=$(make_fixture_repo failure-after-clean)
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-after-clean/absent.git"
+  out="$TMP_ROOT/failure-after-clean/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  [ "$status" -ne 0 ] || fail 'a fetch against an absent remote exited zero'
+  [ -s "$out" ] || fail 'the first failure produced no report'
+
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-after-clean/upstream.git"
+  run_check "$repo" "$out"
+  [ ! -s "$out" ] || fail "a clean sweep reported something: $(cat "$out")"
+
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-after-clean/absent.git"
+  status=0
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
+  [ "$status" -ne 0 ] || fail 'the returning failure exited zero'
+  assert_contains "$(cat "$out")" 'upstream urgent check failed:' \
+    'a failure that returned after a clean sweep was suppressed'
+  pass 'a failure that returns after a clean sweep is news again'
 }
 
 test_matching_upstream_commit_is_reported() {
@@ -325,29 +377,44 @@ test_a_failed_registration_leaves_no_unregistered_shim() {
   pass 'a failed registration never leaves a shim without a matching trust binding'
 }
 
-test_a_failed_rearm_restores_the_armed_shim() {
-  local repo bindir f before status=0
-  repo=$(make_fixture_repo arm-rearm-restore)
-  # The register runs as a separate program, so a failure that leaves the
-  # existing binding intact is staged by standing in for that program alone.
-  bindir="$TMP_ROOT/arm-rearm-restore/bin"
-  mkdir -p "$bindir"
+# A shim embeds the path it execs, so arming through a second directory of
+# symlinks produces genuinely different bytes. Without that the re-armed shim
+# would be byte-identical to the first and the restore assertion could not fail.
+mirror_bin() {
+  local dir=$1 f
+  mkdir -p "$dir"
   for f in "$ROOT"/bin/*; do
-    ln -s "$f" "$bindir/$(basename "$f")"
+    ln -s "$f" "$dir/$(basename "$f")"
   done
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$bindir/fm-upstream-urgent-check.sh" arm >/dev/null \
-    || fail 'the first arm failed'
+}
+
+test_a_failed_rearm_restores_the_armed_shim() {
+  local repo first_bin second_bin before status=0
+  repo=$(make_fixture_repo arm-rearm-restore)
+  first_bin="$TMP_ROOT/arm-rearm-restore/bin-one"
+  second_bin="$TMP_ROOT/arm-rearm-restore/bin-two"
+  mirror_bin "$first_bin"
+  mirror_bin "$second_bin"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$first_bin/fm-upstream-urgent-check.sh" arm \
+    >/dev/null || fail 'the first arm failed'
   before=$(cat "$repo/state/upstream-urgent.check.sh")
 
-  rm -f "$bindir/fm-check-register.sh"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$bindir/fm-check-register.sh"
-  chmod 0755 "$bindir/fm-check-register.sh"
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$bindir/fm-upstream-urgent-check.sh" arm \
+  # The register runs as a separate program, so a failure that leaves the
+  # existing binding intact is staged by standing in for that program alone.
+  rm -f "$second_bin/fm-check-register.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$second_bin/fm-check-register.sh"
+  chmod 0755 "$second_bin/fm-check-register.sh"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$second_bin/fm-upstream-urgent-check.sh" arm \
     >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" 're-arm with a failing register exit'
+  case "$(cat "$repo/state/upstream-urgent.check.sh")" in
+    *"$second_bin"*) fail 'a failed re-arm left the shim it was writing in place' ;;
+  esac
   [ "$(cat "$repo/state/upstream-urgent.check.sh")" = "$before" ] \
     || fail 'a failed re-arm did not restore the shim the home was armed with'
-  FM_HOME="$repo" "$ROOT/bin/fm-check-register.sh" upstream-urgent >/dev/null \
+  # The binding written by the first arm is the one that must still cover the
+  # restored bytes; re-running the registrar would rewrite it and prove nothing.
+  fm_custom_check_registered "$repo/state" upstream-urgent \
     || fail 'a failed re-arm left the previously armed home unbound'
   pass 'a failed re-arm restores the shim a working home was armed with'
 }
@@ -366,3 +433,5 @@ test_inspection_failure_is_reported_on_stdout_once
 test_a_recovered_inspection_reports_a_later_hit
 test_a_failed_registration_leaves_no_unregistered_shim
 test_a_failed_rearm_restores_the_armed_shim
+test_a_transient_failure_does_not_reannounce_an_unchanged_hit
+test_a_repeated_failure_after_a_clean_sweep_is_news_again

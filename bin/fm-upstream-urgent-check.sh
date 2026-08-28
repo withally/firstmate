@@ -13,9 +13,9 @@
 # `arm` writes and registers state/upstream-urgent.check.sh.
 # `disarm` removes that shim, its trust binding, and the report record.
 #
-# The report record state/.upstream-urgent carries the report the last line was
-# made from, uncut, so one urgent commit is reported once rather than on every
-# watcher poll while the recorded sync base still trails it.
+# The report record state/.upstream-urgent carries the reports the last lines
+# were made from, uncut, so one urgent commit is reported once rather than on
+# every watcher poll while the recorded sync base still trails it.
 #
 # Every condition that stops the inspection is reported on stdout through that
 # same record, never on stderr alone. The watcher discards a check's stderr and
@@ -23,6 +23,12 @@
 # remote, or fetch would otherwise be indistinguishable from a clean all-clear
 # for as long as it stays armed. It still exits non-zero, so a hand run and the
 # test suite can tell a failed inspection from a silent one.
+#
+# A hit and an inspection failure keep SEPARATE keys, because they interleave on
+# their own schedules: a pending urgent commit stays pending for days, until a
+# sync advances the base, while a fetch failure comes and goes with the network.
+# One shared slot would let a single blip evict the hit's suppression state and
+# re-announce the same commit set on the next poll that succeeds, once per blip.
 set -u
 export LC_ALL=C
 # The upstream probe must never stop to ask for credentials; an unauthenticated
@@ -38,7 +44,7 @@ CHECK_ID=upstream-urgent
 CHECK_SHIM="$STATE/$CHECK_ID.check.sh"
 CHECK_TRUST="$STATE/$CHECK_ID.check-trust"
 RECORD="$STATE/.$CHECK_ID"
-RECORD_SCHEMA=fm-upstream-urgent-v1
+RECORD_SCHEMA=fm-upstream-urgent-v2
 REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
 # Wider than the digest default because one finding names a 12-character hash
 # and a full commit subject, and a window can carry several of them.
@@ -109,10 +115,12 @@ urgent_commits() {
 }
 
 RECORD_REPORTED=
+RECORD_FAILED=
 
 record_read() {
   local line first=1
   RECORD_REPORTED=
+  RECORD_FAILED=
   [ -f "$RECORD" ] || return 0
   while IFS= read -r line; do
     if [ "$first" = 1 ]; then
@@ -122,13 +130,14 @@ record_read() {
     fi
     case "$line" in
       reported=*) RECORD_REPORTED=${line#reported=} ;;
+      failed=*) RECORD_FAILED=${line#failed=} ;;
     esac
   done < "$RECORD"
   return 0
 }
 
 record_write() {
-  local reported=$1 tmp
+  local reported=$1 failed=$2 tmp
   [ -e "$STATE" ] || mkdir -p "$STATE" 2>/dev/null || return 1
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
   tmp=$(mktemp "$RECORD.XXXXXX" 2>/dev/null) || return 1
@@ -136,34 +145,45 @@ record_write() {
   {
     printf '%s\n' "$RECORD_SCHEMA"
     printf 'reported=%s\n' "$reported"
+    printf 'failed=%s\n' "$failed"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   mv -f -- "$tmp" "$RECORD" || { rm -f -- "$tmp"; return 1; }
   return 0
 }
 
-report_once() {
+# The cut line is what gets printed, but the whole payload decides whether this
+# is news, because a commit that lands past the cut leaves the printed line
+# unchanged and would otherwise be suppressed for good.
+report_emit() {
+  local payload=$1 previous=$2
+  fm_cap_line_var "$payload" "$MAX_LINE"
+  [ "$payload" = "$previous" ] || printf '%s\n' "$FM_LINE_CAP_LINE"
+}
+
+# Report before recording throughout, so a record that cannot be written costs a
+# repeated report rather than a lost one.
+report_hit() {
   local payload=$1
   record_read
-  fm_cap_line_var "$payload" "$MAX_LINE"
-  # The cut line is what gets printed, but the whole payload decides whether
-  # this is news, because a commit that lands past the cut leaves the printed
-  # line unchanged and would otherwise be suppressed for good.
-  #
-  # Report before recording, so a record that cannot be written costs a repeated
-  # report rather than a lost one.
-  if [ "$payload" != "$RECORD_REPORTED" ]; then
-    printf '%s\n' "$FM_LINE_CAP_LINE"
-  fi
-  record_write "$payload" || true
+  report_emit "$payload" "$RECORD_REPORTED"
+  # An inspection that ran to its end retires any failure the record still held.
+  record_write "$payload" '' || true
 }
 
 report_clear() {
   record_read
-  [ -z "$RECORD_REPORTED" ] || record_write '' || true
+  if [ -n "$RECORD_REPORTED" ] || [ -n "$RECORD_FAILED" ]; then
+    record_write '' '' || true
+  fi
 }
 
 check_failed() {
-  report_once "upstream urgent check failed: $1"
+  local payload="upstream urgent check failed: $1"
+  record_read
+  report_emit "$payload" "$RECORD_FAILED"
+  # The match set the record already holds is carried through untouched, so a
+  # transient failure cannot make an unchanged pending commit set news again.
+  record_write "$RECORD_REPORTED" "$payload" || true
   return 1
 }
 
@@ -221,7 +241,7 @@ action_check() {
     report_clear
     return 0
   }
-  report_once "urgent upstream commits: $matches"
+  report_hit "urgent upstream commits: $matches"
   return 0
 }
 

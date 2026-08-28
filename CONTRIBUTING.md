@@ -15,6 +15,7 @@ The check refreshes live PR data and tolerates a temporarily stale attestation f
 After any later commit, including an automated gate repair, push through `git push no-mistakes` again to create a new head-bound attestation; never reuse or hand-edit an older one.
 It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
+The maintainer follow-up request for the shared verifier is recorded in [`docs/upstream-sync.md`](docs/upstream-sync.md#upstream-follow-up-pr-body-draft).
 
 ## Workflow
 

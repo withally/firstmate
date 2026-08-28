@@ -71,6 +71,10 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
     Never push to the canonical upstream remote and never merge without explicit captain approval.
 
+## Upstream follow-up (PR-body draft)
+
+Ask the `kunchenguid/no-mistakes` CI step to ignore its own `PR must be raised via no-mistakes` attestation check while the no-mistakes pipeline converges after its own auto-fix pushes, without weakening final failure for a PR that lacks a valid matching attestation.
+
 Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September is deliberately skipped).
 
 ## Catch-up log

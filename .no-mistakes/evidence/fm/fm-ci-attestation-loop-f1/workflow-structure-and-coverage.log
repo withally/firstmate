@@ -1,0 +1,2 @@
+semantic workflow model: pull_request=opened,edited,synchronize,reopened branch=main pull-requests=read timeout=15 cancel-in-progress=true refresh=actions/github-script@v8 verifier_inputs=pr-body,pr-head-sha,pr-head-ref,pr-author,pr-number
+FM_TEST_COVERAGE ok total=169 parallel=24 serial=133 serial_shards=4 herdr=12

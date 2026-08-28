@@ -1,0 +1,36 @@
+GitHub API: GET /repos/withally/firstmate/pulls/80
+head_ref: fm/fm-afk-herdr-claude-busy-guard-f1
+head_sha: ae15ed5701b5c25a75c4da77ee7e20d1da6d5f06
+html_url: "https://github.com/withally/firstmate/pull/80"
+number: 80
+state: open
+PR #80 body attestation marker returned by the same API response
+head_sha\":\"c8e5ed210d4547533cfcc5e0125e0593c4911acc\",\"steps\":[{\"step\":\"intent\",\"status\":\"complet
+GitHub API: GET /repos/withally/firstmate/commits/c8e5ed210d4547533cfcc5e0125e0593c4911acc
+committed_at: "2026-08-28T07:37:15Z"
+message: "no-mistakes(document): Updated Herdr Claude supervision documentation"
+sha: c8e5ed210d4547533cfcc5e0125e0593c4911acc
+GitHub API: GET /repos/withally/firstmate/commits/c8e5ed210d4547533cfcc5e0125e0593c4911acc/check-runs (required check only)
+[1]{completed_at,conclusion,details_url,html_url,name,started_at,status}:
+  "2026-08-28T07:42:23Z",success,"https://github.com/withally/firstmate/actions/runs/33152452203/job/98787375777","https://github.com/withally/firstmate/actions/runs/33152452203/job/98787375777",PR must be raised via no-mistakes,"2026-08-28T07:42:20Z",completed
+GitHub API: GET /repos/withally/firstmate/commits/d7e26f4f5c00dd032b004fc6d4578c162161e8b6
+committed_at: "2026-08-28T08:36:07Z"
+message: "no-mistakes: apply CI fixes"
+sha: d7e26f4f5c00dd032b004fc6d4578c162161e8b6
+GitHub API: GET /repos/withally/firstmate/commits/d7e26f4f5c00dd032b004fc6d4578c162161e8b6/check-runs (required check only)
+[1]{completed_at,conclusion,details_url,html_url,name,started_at,status}:
+  "2026-08-28T08:36:29Z",failure,"https://github.com/withally/firstmate/actions/runs/33156004464/job/98798812732","https://github.com/withally/firstmate/actions/runs/33156004464/job/98798812732",PR must be raised via no-mistakes,"2026-08-28T08:36:23Z",completed
+GitHub API: GET /repos/withally/firstmate/commits/3933dbab7d2eb39c67d2158fb763be5099694cfd
+committed_at: "2026-08-28T09:16:47Z"
+message: "no-mistakes: apply CI fixes"
+sha: 3933dbab7d2eb39c67d2158fb763be5099694cfd
+GitHub API: GET /repos/withally/firstmate/commits/3933dbab7d2eb39c67d2158fb763be5099694cfd/check-runs (required check only)
+[1]{completed_at,conclusion,details_url,html_url,name,started_at,status}:
+  "2026-08-28T09:17:09Z",failure,"https://github.com/withally/firstmate/actions/runs/33158722157/job/98807697460","https://github.com/withally/firstmate/actions/runs/33158722157/job/98807697460",PR must be raised via no-mistakes,"2026-08-28T09:17:04Z",completed
+GitHub API: GET /repos/withally/firstmate/commits/ae15ed5701b5c25a75c4da77ee7e20d1da6d5f06
+committed_at: "2026-08-28T09:49:27Z"
+message: "no-mistakes: apply CI fixes"
+sha: ae15ed5701b5c25a75c4da77ee7e20d1da6d5f06
+GitHub API: GET /repos/withally/firstmate/commits/ae15ed5701b5c25a75c4da77ee7e20d1da6d5f06/check-runs (required check only)
+[1]{completed_at,conclusion,details_url,html_url,name,started_at,status}:
+  "2026-08-28T09:49:45Z",failure,"https://github.com/withally/firstmate/actions/runs/33160953907/job/98815015795","https://github.com/withally/firstmate/actions/runs/33160953907/job/98815015795",PR must be raised via no-mistakes,"2026-08-28T09:49:41Z",completed

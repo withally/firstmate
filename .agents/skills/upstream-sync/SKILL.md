@@ -3,7 +3,7 @@ name: upstream-sync
 description: >-
   Agent-only checklist for the weekly catch-up of the withally/firstmate fork with kunchenguid/firstmate.
   Use when the captain asks to sync, catch up, snapshot, or rebase onto upstream, or when the weekly upstream sync is due.
-  Owns the tier decision (weekly or monthly validation), the fixed worker brief, the PR verdict table, and the isolated Herdr lab setup, so the sync is a follow-the-checklist job rather than a re-authored brief.
+  Owns the tier decision (weekly or monthly validation), the fixed worker brief, the PR verdict table and its inputs, the isolated Herdr lab setup, and the optional urgent-upstream tripwire, so the sync is a follow-the-checklist job rather than a re-authored brief.
 user-invocable: false
 metadata:
   internal: true
@@ -29,9 +29,9 @@ The tripwire is an opt-in registered custom check for commits added to `upstream
 It performs one fetch per check, matches only `security`, `CVE`, `breaking`, `revert`, `data loss`, or `credential` in a commit subject or body, and stays silent otherwise.
 On a hit it emits one line naming the matching commit and subject, so the existing watcher delivers one actionable check wake for an out-of-cycle sync decision.
 That line is emitted once per matching commit set, because `state/.upstream-urgent` records the set the last report was made from, and a set unchanged since that report stays silent.
-An armed but unusable tripwire - no readable base, no `upstream` remote, or a recorded base that is not a commit here or not an ancestor of `upstream/main` - reports one diagnostic on stderr for a hand run, but emits no stdout and never wakes firstmate.
+An armed but unusable tripwire - no readable base, no `upstream` remote, a non-canonical `upstream` remote, or a recorded base that is not a commit here or not an ancestor of `upstream/main` - reports one diagnostic on stderr for a hand run, but emits no stdout and never wakes firstmate.
 None of those clear on a retry, so the tripwire is dead until someone repairs the catch-up log or the remote.
-A retryable failure — a failed fetch, a missing ref right after one, an unreadable log — stays off that path entirely and only sets stderr and a non-zero exit, so a flapping link never wakes firstmate.
+A retryable failure - a failed fetch, a missing ref right after one, an unreadable log - stays off that path entirely and only sets stderr and a non-zero exit, so a flapping link never wakes firstmate.
 It does not invoke an LLM, open a review window, or make a captain call by itself.
 
 Arm it from the firstmate code root with `bin/fm-upstream-urgent-check.sh arm`.

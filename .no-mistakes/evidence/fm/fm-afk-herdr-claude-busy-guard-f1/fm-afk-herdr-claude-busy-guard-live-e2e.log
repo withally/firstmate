@@ -1,0 +1,3 @@
+ok - real Herdr 0.8.2 + Claude 2.1.250 (Claude Code): native working with rendered-idle empty composer submits once
+ok - real Herdr 0.8.2 + Claude 2.1.250 (Claude Code): rendered-busy and pending-composer deferrals preserve human text
+evidence: session=fm-lab-fm-afk-herdr-cla-1130-32720 native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1

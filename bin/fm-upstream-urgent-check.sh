@@ -43,7 +43,6 @@
 # the other kind evict the hit's suppression state and re-announce the same
 # commit set on the next poll that succeeds.
 set -u
-export LC_ALL=C
 # The upstream probe must never stop to ask for credentials; an unauthenticated
 # fetch has to fail inside its bound instead of waiting for an answer.
 export GIT_TERMINAL_PROMPT=0
@@ -73,9 +72,16 @@ MAX_LINE=1000
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
 WATCHER_CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
-case "$WATCHER_CHECK_TIMEOUT" in
-  ''|*[!0-9]*|0) WATCHER_CHECK_TIMEOUT=30 ;;
-esac
+if [[ "$WATCHER_CHECK_TIMEOUT" =~ ^0*([0-9]+)$ ]]; then
+  WATCHER_CHECK_TIMEOUT=${BASH_REMATCH[1]}
+else
+  WATCHER_CHECK_TIMEOUT=30
+fi
+[ "$WATCHER_CHECK_TIMEOUT" != 0 ] || WATCHER_CHECK_TIMEOUT=30
+if [ "${#WATCHER_CHECK_TIMEOUT}" -gt 9 ]; then
+  WATCHER_CHECK_TIMEOUT=10
+fi
+WATCHER_CHECK_TIMEOUT=$((10#$WATCHER_CHECK_TIMEOUT))
 CHECK_TIMEOUT=$((WATCHER_CHECK_TIMEOUT - 2))
 [ "$CHECK_TIMEOUT" -ge 1 ] || CHECK_TIMEOUT=1
 [ "$CHECK_TIMEOUT" -le 8 ] || CHECK_TIMEOUT=8
@@ -106,6 +112,8 @@ die_usage() {
 }
 
 latest_sync_base() {
+  local LC_ALL=C
+  export LC_ALL
   local field tick=$'\140'
   [ -f "$SYNC_LOG" ] || return 1
   field=$(awk -F'|' '
@@ -122,6 +130,8 @@ latest_sync_base() {
 }
 
 urgent_commits() {
+  local LC_ALL=C
+  export LC_ALL
   local commit subject body clean found=0
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
@@ -195,7 +205,7 @@ state_directory_prepare() {
 }
 
 record_read() {
-  local line first=1 device
+  local line line_number=0 valid=1 device
   RECORD_REPORTED=
   RECORD_FAILED=
   [ -f "$RECORD" ] || return 0
@@ -203,16 +213,30 @@ record_read() {
   device=$(fm_pr_file_device "$STATE") || return 0
   fm_pr_private_file_valid "$RECORD" 600 "$device" || return 0
   while IFS= read -r line; do
-    if [ "$first" = 1 ]; then
-      first=0
-      [ "$line" = "$RECORD_SCHEMA" ] || return 0
-      continue
-    fi
-    case "$line" in
-      reported=*) RECORD_REPORTED=${line#reported=} ;;
-      failed=*) RECORD_FAILED=${line#failed=} ;;
+    line_number=$((line_number + 1))
+    case "$line_number" in
+      1)
+        [ "$line" = "$RECORD_SCHEMA" ] || valid=0
+        ;;
+      2)
+        case "$line" in
+          reported=*) RECORD_REPORTED=${line#reported=} ;;
+          *) valid=0 ;;
+        esac
+        ;;
+      3)
+        case "$line" in
+          failed=*) RECORD_FAILED=${line#failed=} ;;
+          *) valid=0 ;;
+        esac
+        ;;
+      *) valid=0 ;;
     esac
   done < "$RECORD"
+  if [ "$line_number" -ne 3 ] || [ "$valid" -ne 1 ]; then
+    RECORD_REPORTED=
+    RECORD_FAILED=
+  fi
   return 0
 }
 

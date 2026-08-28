@@ -221,6 +221,20 @@ SH
   pass 'the check fits inside a configured watcher timeout'
 }
 
+test_timeout_parser_accepts_decimal_values_without_overflow() {
+  local repo out status value
+  repo=$(make_fixture_repo timeout-parser)
+  out="$TMP_ROOT/timeout-parser/out.txt"
+  for value in 08 09 00000000008 999999999999999999999999; do
+    status=0
+    env PATH="$(fixture_fakebin "$repo"):$PATH" FM_CHECK_TIMEOUT="$value" \
+      FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>&1 || status=$?
+    [ "$status" -eq 0 ] || fail "FM_CHECK_TIMEOUT=$value was rejected: $(cat "$out")"
+    [ ! -s "$out" ] || fail "FM_CHECK_TIMEOUT=$value produced output: $(cat "$out")"
+  done
+  pass 'timeout parsing accepts decimal values without overflow'
+}
+
 test_noncanonical_upstream_remote_is_rejected() {
   local repo out status=0
   repo=$(make_fixture_repo noncanonical-remote)
@@ -470,6 +484,21 @@ test_control_bytes_are_removed_from_subjects() {
   pass 'urgent subjects are emitted without control bytes'
 }
 
+test_utf8_subject_truncation_preserves_character_boundaries() {
+  local repo out report subject
+  repo=$(make_fixture_repo utf8-cap)
+  subject="security:$(printf '界%.0s' {1..1100})"
+  publish_upstream_commit "$repo" utf8-cap "$subject" 'Body.' >/dev/null
+  out="$TMP_ROOT/utf8-cap/report.txt"
+  env LC_ALL=en_US.UTF-8 PATH="$(fixture_fakebin "$repo"):$PATH" \
+    FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>&1
+  report=$(cat "$out")
+  assert_contains "$report" '[truncated]' 'the long UTF-8 urgent subject was not capped'
+  (set -o pipefail; LC_ALL=C iconv -f UTF-8 -t UTF-8 "$out" | LC_ALL=C wc -c >/dev/null) \
+    || fail 'the capped urgent report contains an incomplete UTF-8 character'
+  pass 'UTF-8 subject truncation preserves character boundaries'
+}
+
 test_nonmatching_upstream_commit_is_silent() {
   local repo out
   repo=$(make_fixture_repo no-hit)
@@ -600,6 +629,39 @@ test_nonprivate_record_does_not_suppress_a_hit() {
   run_check "$repo" "$out"
   [ -s "$out" ] || fail 'a non-private record suppressed the urgent hit'
   pass 'a non-private record cannot suppress an urgent hit'
+}
+
+test_malformed_record_does_not_suppress_a_hit() {
+  local repo out record reported failed malformed
+  repo=$(make_fixture_repo malformed-record)
+  publish_upstream_commit "$repo" malformed-record 'security: rotate the signing key' 'Body.' >/dev/null
+  out="$TMP_ROOT/malformed-record/report.txt"
+  run_check "$repo" "$out"
+  record="$repo/state/.upstream-urgent"
+  reported=$(sed -n '2s/^reported=//p' "$record")
+  failed=$(sed -n '3s/^failed=//p' "$record")
+  for malformed in missing duplicate unknown truncated; do
+    case "$malformed" in
+      missing)
+        printf '%s\n%s\n' 'fm-upstream-urgent-v2' "reported=$reported" > "$record"
+        ;;
+      duplicate)
+        printf '%s\n%s\n%s\n%s\n' 'fm-upstream-urgent-v2' "reported=$reported" \
+          "failed=$failed" "failed=$failed" > "$record"
+        ;;
+      unknown)
+        printf '%s\n%s\n%s\n%s\n' 'fm-upstream-urgent-v2' "reported=$reported" \
+          'unknown=field' "failed=$failed" > "$record"
+        ;;
+      truncated)
+        printf '%s\n%s\n%s' 'fm-upstream-urgent-v2' "reported=$reported" "failed=$failed" > "$record"
+        ;;
+    esac
+    chmod 0600 "$record"
+    run_check "$repo" "$out"
+    [ -s "$out" ] || fail "a $malformed record suppressed the urgent hit"
+  done
+  pass 'malformed report records cannot suppress urgent hits'
 }
 
 test_record_directory_is_not_used_as_record_target() {
@@ -783,12 +845,14 @@ test_matching_upstream_commit_is_reported
 test_matching_upstream_body_is_reported
 test_record_separator_in_body_keeps_commit_identity
 test_control_bytes_are_removed_from_subjects
+test_utf8_subject_truncation_preserves_character_boundaries
 test_nonmatching_upstream_commit_is_silent
 test_recorded_base_is_excluded_from_the_range
 test_check_uses_one_fetch_and_finishes_quickly
 test_slow_fetch_is_bounded_before_ten_seconds
 test_slow_local_scan_is_bounded_before_ten_seconds
 test_check_fits_inside_configured_watcher_timeout
+test_timeout_parser_accepts_decimal_values_without_overflow
 test_noncanonical_upstream_remote_is_rejected
 test_fatal_merge_base_failure_is_retryable
 test_arm_registers_and_disarm_removes_the_check
@@ -803,6 +867,7 @@ test_disarm_removes_the_report_record
 test_symlinked_record_does_not_suppress_a_hit
 test_hardlinked_record_does_not_suppress_a_hit
 test_nonprivate_record_does_not_suppress_a_hit
+test_malformed_record_does_not_suppress_a_hit
 test_record_directory_is_not_used_as_record_target
 test_dangling_state_symlink_is_not_created
 test_inspection_failure_is_reported_on_stdout_once

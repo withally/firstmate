@@ -1798,6 +1798,8 @@ test_inject_msg_detects_claude_harness_before_submit() {
     fm_backend_send_text_submit() {
       [ "${FM_DAEMON_PRIMARY_HARNESS:-}" = claude ] \
         || fail "detected harness did not survive the busy guard before submit: ${FM_DAEMON_PRIMARY_HARNESS:-unset}"
+      [ "${8:-}" = claude ] \
+        || fail "detected harness was not passed through the submit boundary: ${8:-unset}"
       printf 'empty'
     }
     LOG="$dir/daemon.log"

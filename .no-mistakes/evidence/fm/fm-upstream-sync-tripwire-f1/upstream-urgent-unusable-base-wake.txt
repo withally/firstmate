@@ -1,0 +1,8 @@
+Negative-path reproduction (fixture has no keyword-matching upstream commit; recorded base is deliberately not an ancestor):
+
+UNUSABLE_NON_HIT checkpoint_status=0
+check: <fixture-root>/repo/state/upstream-urgent.check.sh: upstream urgent check failed: recorded base 11e8d56448ae1521623fe5b6f8201b4a3db528d2 is not an ancestor of upstream/main
+UNUSABLE_NON_HIT queue:
+<epoch>\t1\tcheck\t<fixture-root>/repo/state/upstream-urgent.check.sh\tcheck: <fixture-root>/repo/state/upstream-urgent.check.sh: upstream urgent check failed: recorded base 11e8d56448ae1521623fe5b6f8201b4a3db528d2 is not an ancestor of upstream/main
+
+This is a firstmate wake without an urgent commit hit, contrary to the required "wake firstmate only on a hit" contract.

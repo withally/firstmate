@@ -1,0 +1,10 @@
+armed: state/upstream-urgent.check.sh
+hit checkpoint_status=0 elapsed_seconds=3 fetch_count=1
+hit watcher: check: /tmp/fm-urgent-e2e.y9Rdl5/hit/repo/state/upstream-urgent.check.sh: urgent upstream commits: 567c585eeb55 "security: rotate the signing key"
+hit durable_wake_queue:
+hit queue: 1787896746	1	check	/tmp/fm-urgent-e2e.y9Rdl5/hit/repo/state/upstream-urgent.check.sh	check: /tmp/fm-urgent-e2e.y9Rdl5/hit/repo/state/upstream-urgent.check.sh: urgent upstream commits: 567c585eeb55 "security: rotate the signing key"
+armed: state/upstream-urgent.check.sh
+no-hit checkpoint_status=124 elapsed_seconds=8 fetch_count=1
+no-hit watcher: checkpoint: no actionable wake within 8s
+no-hit durable_wake_queue:
+no-hit queue: empty

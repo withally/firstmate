@@ -1,0 +1,5 @@
+$ FM_BOOTSTRAP_DETECT_ONLY=1 bin/fm-bootstrap.sh
+exit_status=0
+stdout_bytes=0
+stderr_bytes=0
+PR row: | Tool currency | FM_BOOTSTRAP_DETECT_ONLY=1 bin/fm-bootstrap.sh | pass - no required-tool floor diagnostic |

@@ -147,8 +147,41 @@ urgent_commits() {
 RECORD_REPORTED=
 RECORD_FAILED=
 
+state_path_components_are_safe() {
+  local path=$STATE parent home
+  [ ! -L "$STATE" ] || return 1
+  if [ -z "${FM_STATE_OVERRIDE:-}" ]; then
+    home=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || return 1
+    path="$home/state"
+  else
+    case "$path" in
+      /*) ;;
+      *) path="$(pwd -P)/$path" || return 1 ;;
+    esac
+  fi
+  while :; do
+    [ ! -L "$path" ] || return 1
+    if [ -e "$path" ]; then
+      [ -d "$path" ] || return 1
+    fi
+    [ "$path" = / ] && return 0
+    parent=$(dirname -- "$path") || return 1
+    [ "$parent" != "$path" ] || return 0
+    path=$parent
+  done
+}
+
 state_directory_is_safe() {
-  [ -d "$STATE" ] && [ ! -L "$STATE" ]
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  state_path_components_are_safe
+}
+
+state_directory_prepare() {
+  state_path_components_are_safe || return 1
+  if [ ! -e "$STATE" ]; then
+    mkdir -p "$STATE" || return 1
+  fi
+  state_directory_is_safe
 }
 
 record_read() {
@@ -175,9 +208,7 @@ record_read() {
 
 record_write() {
   local reported=$1 failed=$2 tmp device
-  [ ! -L "$STATE" ] || return 1
-  [ -e "$STATE" ] || mkdir -p "$STATE" 2>/dev/null || return 1
-  state_directory_is_safe || return 1
+  state_directory_prepare || return 1
   device=$(fm_pr_file_device "$STATE") || return 1
   fm_pr_regular_destination_on_device_or_absent "$RECORD" "$device" || return 1
   tmp=$(mktemp "$RECORD.XXXXXX" 2>/dev/null) || return 1
@@ -402,8 +433,7 @@ arm_interrupted() {
 
 action_arm() {
   local home root content
-  mkdir -p "$STATE" || return 1
-  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  state_directory_prepare || return 1
   home=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || {
     printf 'fm-upstream-urgent-check: FM_HOME cannot be resolved\n' >&2
     return 1

@@ -216,6 +216,21 @@ test_arm_registers_and_disarm_removes_the_check() {
   pass 'arm registers and disarm removes the tripwire check'
 }
 
+test_arm_rejects_a_symlinked_state_parent() {
+  local repo outside target_state out status=0
+  repo=$(make_fixture_repo arm-symlink-parent)
+  outside="$TMP_ROOT/arm-symlink-parent/outside"
+  mkdir -p "$outside"
+  ln -s "$outside" "$repo/redirect"
+  target_state="$outside/state"
+  out="$TMP_ROOT/arm-symlink-parent/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    FM_STATE_OVERRIDE="$repo/redirect/state" "$CHECK" arm >"$out" 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail 'arm followed a symlinked state parent'
+  [ ! -e "$target_state" ] || fail 'arm created state through a symlinked parent'
+  pass 'arm rejects a symlinked state parent before creation'
+}
+
 test_disarm_reports_cleanup_failure() {
   local repo out status=0
   repo=$(make_fixture_repo disarm-failure)
@@ -691,6 +706,7 @@ test_slow_fetch_is_bounded_before_ten_seconds
 test_slow_local_scan_is_bounded_before_ten_seconds
 test_noncanonical_upstream_remote_is_rejected
 test_arm_registers_and_disarm_removes_the_check
+test_arm_rejects_a_symlinked_state_parent
 test_disarm_reports_cleanup_failure
 test_disarm_rejects_missing_state
 test_disarm_rejects_symlinked_state

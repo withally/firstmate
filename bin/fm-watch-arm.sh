@@ -495,8 +495,10 @@ owned_child_finished() {
   signal=$(cycle_signal_name "$rc")
   if [ "$rc" -eq "$(fm_watch_routine_exit_code)" ] \
     && [ "${FM_WATCH_GROK_LONGRUN:-0}" = 1 ] \
-    && watch_output_has_wake "$child_out"; then
+    && watch_output_has_wake "$child_out" \
+    && fm_watch_output_has_routine_handoff "$child_out"; then
     cycle_log_append "$rc" "$signal" routine-declared-wait none
+    fm_watch_routine_handoff_marker
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=

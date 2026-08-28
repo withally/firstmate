@@ -502,7 +502,10 @@ resurface_absorbed() {  # <window> <throttle-marker> <age> <reason>
   [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] || return 0
   [ "$(age_of "$throttle")" -ge "$PAUSE_RESURFACE_SECS" ] || return 0   # 999999 when no prior re-surface
   fm_wake_append stale "$win" "$reason" || exit 1
-  date +%s > "$throttle"
+  if ! date +%s > "$throttle"; then
+    echo "watcher: FAILED - stale wake throttle could not be persisted" >&2
+    exit 1
+  fi
   FM_WATCH_CYCLE_CLASS=$(fm_watch_cycle_class_for_reason "$reason")
   wake "$reason"
 }
@@ -1069,11 +1072,40 @@ event_wait_or_sleep() {
 }
 
 resurface_after_downtime() {
-  local open unread recovery_class recovery_needed
+  local open unread recovery_class recovery_needed queue_class
   # Handling successors already have a predecessor-delivered wake on the way.
   # Re-announcing from this cycle is what turned a lost handshake into an
   # unbounded recovery loop; stay in the poll loop and supervise instead.
   if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
+    if [ -n "${FM_WATCH_RECOVERY_QUEUE_BOUNDARY:-}" ]; then
+      queue_class=$(fm_watch_recovery_queue_class_after "$FM_WAKE_QUEUE" "$FM_WATCH_RECOVERY_QUEUE_BOUNDARY") || {
+        echo "watcher: recovery state could not be inspected safely" >&2
+        exit 1
+      }
+      case "$queue_class" in
+        none|routine|actionable) ;;
+        *)
+          echo "watcher: recovery state could not be classified safely" >&2
+          exit 1
+          ;;
+      esac
+      if ! open=$(scan_open_decisions_incremental "$STATE"); then
+        echo "watcher: open recovery decisions could not be inspected safely" >&2
+        exit 1
+      fi
+      if ! unread=$(scan_unread_surface_lines "$STATE"); then
+        echo "watcher: unread recovery status could not be inspected safely" >&2
+        exit 1
+      fi
+      if [ "$queue_class" != none ] || [ -n "$open" ] || [ -n "$unread" ]; then
+        recovery_class=actionable
+        if [ "$queue_class" = routine ] && [ -z "$open" ] && [ -z "$unread" ]; then
+          recovery_class=routine
+        fi
+        FM_WATCH_CYCLE_CLASS=$recovery_class
+        wake "check: rearm-resurface"
+      fi
+    fi
     return 0
   fi
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
@@ -1181,6 +1213,12 @@ watcher_cleanup() {
     && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
     echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
     cleanup_status=1
+  fi
+  if [ "$cleanup_status" -eq 0 ] \
+    && [ "${FM_WATCH_GROK_LONGRUN:-0}" = 1 ] \
+    && [ "${FM_WATCH_CYCLE_CLASS:-}" = routine ] \
+    && [ -n "${FM_WATCH_DELIVERED_REASON:-}" ]; then
+    fm_watch_routine_handoff_marker
   fi
   return "$cleanup_status"
 }

@@ -36,20 +36,28 @@ jobs:
           script: |
             const prefix = '<!-- no-mistakes-pipeline-attestation:v1 ';
             const closing = ' -->';
+            const signature = 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)';
             const maxAttempts = 11; // Initial read plus ten 60-second waits.
             const retryMilliseconds = 60_000;
 
-            function attestedHead(body) {
-              const start = body.indexOf(prefix);
-              if (start < 0) return '';
+            function latestAttestation(body) {
+              // Evidence may quote marker-shaped examples before the real
+              // protocol comment. The pinned verifier takes the first marker,
+              // so pass it only the latest live comment.
+              const start = body.lastIndexOf(prefix);
+              if (start < 0) return { head: '', comment: '' };
               const payloadStart = start + prefix.length;
               const end = body.indexOf(closing, payloadStart);
-              if (end < 0) return '';
+              if (end < 0) return { head: '', comment: body.slice(start) };
+              const comment = body.slice(start, end + closing.length);
               try {
                 const payload = JSON.parse(body.slice(payloadStart, end));
-                return typeof payload.head_sha === 'string' ? payload.head_sha : '';
+                return {
+                  head: typeof payload.head_sha === 'string' ? payload.head_sha : '',
+                  comment,
+                };
               } catch {
-                return '';
+                return { head: '', comment };
               }
             }
 
@@ -71,7 +79,7 @@ jobs:
               }
               pullRequest = response.data;
               const body = pullRequest.body || '';
-              const attested = attestedHead(body);
+              const attested = latestAttestation(body).head;
               const head = pullRequest.head.sha;
               if (attested === head) {
                 core.info(`Attestation caught up to PR head ${head} on attempt ${attempt}/${maxAttempts}.`);
@@ -94,7 +102,15 @@ jobs:
 
             // The shared action treats an empty input as "use the event body".
             // Pass a non-matching sentinel so a body cleared after the event cannot fall back to stale data.
-            core.setOutput('body', pullRequest.body || '[empty PR body]');
+            // Keep the original signature result, but give the first-marker
+            // parser only the final live attestation comment.
+            const liveBody = pullRequest.body || '';
+            const finalAttestation = latestAttestation(liveBody);
+            const verificationBody = [
+              liveBody.includes(signature) ? signature : '[no-mistakes signature missing]',
+              finalAttestation.comment || '[pipeline attestation missing]',
+            ].join('\n');
+            core.setOutput('body', liveBody ? verificationBody : '[empty PR body]');
             core.setOutput('head-sha', pullRequest.head.sha);
             core.setOutput('head-ref', pullRequest.head.ref);
             core.setOutput('author', pullRequest.user.login);

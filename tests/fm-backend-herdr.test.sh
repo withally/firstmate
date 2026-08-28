@@ -3556,6 +3556,55 @@ test_send_text_submit_claude_working_pending_requires_rendered_busy() {
   pass "fm_backend_herdr_send_text_submit: Claude native working alone does not confirm a queued Enter"
 }
 
+test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empty_proof() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-idle-native-working-rendered-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
+  printf '  ready\n' > "$resp/8.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c 'FM_DAEMON_PRIMARY_HARNESS=claude; export FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] || fail "Claude native working after an idle baseline must not confirm while rendered idle and composer text remains pending, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "the idle-baseline Claude proof check should not add an Enter when retries are exhausted, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: idle-baseline Claude native working requires rendered or cleared-composer proof"
+}
+
+test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-idle-native-working-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c 'FM_DAEMON_PRIMARY_HARNESS=claude; export FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "Claude native working after an idle baseline must confirm with a rendered active-turn signature, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "rendered Claude proof should confirm the original Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: idle-baseline Claude native working accepts rendered active-turn proof"
+}
+
+test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-idle-native-working-empty-composer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c 'FM_DAEMON_PRIMARY_HARNESS=claude; export FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "Claude native working after an idle baseline must confirm when the composer is cleared, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a cleared composer should confirm the original Enter, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: idle-baseline Claude native working accepts cleared-composer proof"
+}
+
 test_send_text_submit_claude_working_pending_accepts_rendered_busy() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-working-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4610,6 +4659,9 @@ test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_pending_is_queued_enter
 test_send_text_submit_claude_working_pending_requires_rendered_busy
+test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empty_proof
+test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof
+test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer
 test_send_text_submit_claude_working_pending_accepts_rendered_busy
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
 test_send_text_submit_idle_baseline_does_not_confirm_failed_enter

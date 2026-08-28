@@ -2695,12 +2695,14 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 #
 # Confirmation signal: when the target is legibly idle before Enter,
 # submission is confirmed by fm_backend_herdr_wait_for_working observing a
-# submit-active agent_status after Enter. Live Claude on Herdr 0.8.0 can
-# keep agent_status idle for a whole landed turn, so an idle native result
-# falls through to the shared composer verdict: empty is positive delivery,
-# proven pending retries Enter, and retries-exhausted pending plus a
-# generating busy signal is a queued Enter via
-# fm_composer_queued_enter_verdict (bin/fm-composer-lib.sh).
+# submit-active agent_status after Enter for harnesses whose native state is a
+# foreground-turn signal. The away-mode Claude primary is the exception:
+# native working must be paired with a rendered Claude active-turn signature or
+# a cleared composer. Live Claude on Herdr 0.8.0 can keep agent_status idle for
+# a whole landed turn, so an idle native result falls through to the shared
+# composer verdict: empty is positive delivery, proven pending retries Enter,
+# and retries-exhausted pending plus a generating busy signal is a queued Enter
+# via fm_composer_queued_enter_verdict (bin/fm-composer-lib.sh).
 #
 # Incident (2026-07-07, followed up on 2026-07-08): a redelivery loop in the
 # away-mode daemon. Root cause: composer-content submit confirmation was too
@@ -2822,11 +2824,21 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
       case "$verdict" in
-        busy) printf 'empty'; return 0 ;;
+        busy)
+          if [ "${FM_DAEMON_PRIMARY_HARNESS:-}" != claude ]; then
+            printf 'empty'
+            return 0
+          fi
+          if [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
+            printf 'empty'
+            return 0
+          fi
+          ;;
         unknown) printf 'unknown'; return 0 ;;
       esac
-      # Native stayed idle. Composer empty is positive delivery (a landed
-      # Claude turn that never flipped agent_status). Proven pending retries.
+      # Native did not provide sufficient Claude proof. Composer empty is
+      # positive delivery (a landed Claude turn that never flipped
+      # agent_status), while proven pending retries.
       verdict=$(fm_backend_herdr_composer_state "$target")
       case "$verdict" in
         empty) printf 'empty'; return 0 ;;

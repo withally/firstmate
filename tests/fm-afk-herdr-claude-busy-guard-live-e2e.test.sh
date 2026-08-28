@@ -104,7 +104,8 @@ HERDR_VERSION=$(lab status --json 2>/dev/null | jq -r '.client.version // "unkno
 
 PROMPT_FILE="$TMP_ROOT/claude-prompt.txt"
 CLAUDE_LAUNCHER="$TMP_ROOT/launch-claude.sh"
-CLAUDE_TEST_SYSTEM_PROMPT='This is a live away-mode guard test. Do not execute tools or investigate supervisor messages in response to an injected away-mode message. The explicit foreground-turn test instruction is an exception: when the user message asks you to use Bash for the exact sleep command and then reply with its token, execute that Bash command and wait before replying. When the test sends the literal /afk command, invoke the afk skill and perform that lifecycle action, then return to the idle composer without taking any other action.'
+AWAY_ACK_TOKEN="FM_AFK_CLAUDE_GUARD_ACK_$$"
+CLAUDE_TEST_SYSTEM_PROMPT="This is a live away-mode guard test. For an injected away-mode supervisor message, do not execute tools or investigate it; reply exactly $AWAY_ACK_TOKEN and nothing else. The explicit foreground-turn test instruction is an exception: when the user message asks you to use Bash for the exact sleep command and then reply with its token, execute that Bash command and wait before replying. When the test sends the literal /afk command, invoke the afk skill and perform that lifecycle action, then return to the idle composer without taking any other action."
 printf '%s\n' 'Reply with the single word ready and stop.' > "$PROMPT_FILE"
 # shellcheck disable=SC2016 # The generated launcher expands $(cat ...) when it runs.
 printf -v CLAUDE_LAUNCHER_CONTENT \
@@ -217,10 +218,14 @@ token_count() {
 }
 
 wait_for_single_delivery() {
-  local token=$1 count
+  local token=$1 ack=$2 count ack_count composer screen
   for _ in $(seq 1 60); do
-    count=$(token_count "$token")
-    if [ "$count" -eq 1 ] && [ ! -s "$STATE_DIR/.subsuper-escalations" ]; then
+    screen=$(screen_text)
+    count=$(printf '%s\n' "$screen" | grep -F -c "$token" || true)
+    ack_count=$(printf '%s\n' "$screen" | grep -F -c "$ack" || true)
+    composer=$(composer_state)
+    if [ "$count" -eq 1 ] && [ "$ack_count" -eq 1 ] \
+      && [ "$composer" = empty ] && [ ! -s "$STATE_DIR/.subsuper-escalations" ]; then
       return 0
     fi
     sleep 1
@@ -229,8 +234,14 @@ wait_for_single_delivery() {
 }
 
 wait_for_rendered_busy() {
+  local token=$1 screen status composer
   for _ in $(seq 1 30); do
-    if [ "$(agent_status)" = working ] && rendered_claude_busy; then
+    screen=$(screen_text)
+    status=$(agent_status)
+    composer=$(composer_state)
+    if [ "$status" = working ] && [ "$composer" = empty ] \
+      && printf '%s\n' "$screen" | grep -Fq "$token" \
+      && rendered_claude_busy; then
       return 0
     fi
     sleep 1
@@ -252,16 +263,18 @@ wait_for_human_pending() {
 }
 
 wait_for_foreground_done_with_pending() {
-  local text=$1 screen status composer busy
+  local text=$1 human=$2 screen status composer busy
   for _ in $(seq 1 60); do
     screen=$(screen_text)
     status=$(agent_status)
     composer=$(composer_state)
     busy=1
     claude_pane_is_busy || busy=0
-    if [ "$composer" = pending ] \
+    if [ "$status" = working ] \
+      && [ "$composer" = pending ] \
       && [ "$busy" -eq 0 ] \
-      && printf '%s\n' "$screen" | grep -Fq "$text"; then
+      && [ "$(token_count "$text")" -ge 2 ] \
+      && printf '%s\n' "$screen" | grep -Fq "$human"; then
       return 0
     fi
     sleep 1
@@ -316,11 +329,11 @@ wait_for_idle_native_working \
 
 ESCALATION_ONE="FM_AFK_CLAUDE_GUARD_ONE_$$"
 printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR/crew-one.status"
-wait_for_single_delivery "$ESCALATION_ONE" \
+wait_for_single_delivery "$ESCALATION_ONE" "$AWAY_ACK_TOKEN" \
   || fail "native Herdr working plus rendered-idle Claude did not submit the first escalation exactly once"
 sleep 3
-if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ]; then
-  echo "first-delivery diagnostics: token-count=$(token_count "$ESCALATION_ONE") agent_status=$(agent_status) composer=$(composer_state)" >&2
+if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ] || [ "$(token_count "$AWAY_ACK_TOKEN")" -ne 1 ]; then
+  echo "first-delivery diagnostics: token-count=$(token_count "$ESCALATION_ONE") ack-count=$(token_count "$AWAY_ACK_TOKEN") agent_status=$(agent_status) composer=$(composer_state)" >&2
   echo "daemon log:" >&2
   sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
   echo "Claude pane:" >&2
@@ -334,7 +347,7 @@ pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: native working with re
 FOREGROUND_TOKEN="FM_AFK_CLAUDE_GUARD_FOREGROUND_$$"
 send_line "Use Bash to run python3 -c 'import time; time.sleep(12)' and then reply exactly $FOREGROUND_TOKEN and nothing else." \
   || fail "could not start a genuine foreground Claude turn"
-wait_for_rendered_busy \
+wait_for_rendered_busy "$FOREGROUND_TOKEN" \
   || fail "the genuine Claude foreground turn never exposed its rendered active-turn signature"
 
 ESCALATION_TWO="FM_AFK_CLAUDE_GUARD_TWO_$$"
@@ -348,7 +361,7 @@ wait_for_log_subcause rendered-busy \
   || fail "the active foreground deferral did not log subcause=rendered-busy"
 wait_for_log_native_state_working \
   || fail "the rendered-busy deferral did not record native-state=working"
-wait_for_foreground_done_with_pending "$HUMAN_TEXT" \
+wait_for_foreground_done_with_pending "$FOREGROUND_TOKEN" "$HUMAN_TEXT" \
   || fail "after the foreground turn, Claude did not remain native-working with pending human text and a rendered-idle pane"
 
 [ "$(token_count "$ESCALATION_TWO")" -eq 0 ] \

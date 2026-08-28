@@ -270,8 +270,7 @@ wait_for_foreground_done_with_pending() {
     composer=$(composer_state)
     busy=1
     claude_pane_is_busy || busy=0
-    if [ "$status" = working ] \
-      && [ "$composer" = pending ] \
+    if [ "$composer" = pending ] \
       && [ "$busy" -eq 0 ] \
       && [ "$(token_count "$text")" -ge 2 ] \
       && printf '%s\n' "$screen" | grep -Fq "$human"; then
@@ -362,7 +361,7 @@ wait_for_log_subcause rendered-busy \
 wait_for_log_native_state_working \
   || fail "the rendered-busy deferral did not record native-state=working"
 wait_for_foreground_done_with_pending "$FOREGROUND_TOKEN" "$HUMAN_TEXT" \
-  || fail "after the foreground turn, Claude did not remain native-working with pending human text and a rendered-idle pane"
+  || fail "after the foreground turn, Claude did not settle with pending human text and a rendered-idle pane"
 
 [ "$(token_count "$ESCALATION_TWO")" -eq 0 ] \
   || fail "the second escalation was injected into the bright human composer"

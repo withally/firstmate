@@ -186,6 +186,41 @@ SH
   pass 'slow local scan is bounded before ten seconds'
 }
 
+test_check_fits_inside_configured_watcher_timeout() {
+  local repo out err fakebin real_git elapsed status=0
+  repo=$(make_fixture_repo configured-timeout)
+  publish_upstream_commit "$repo" configured-timeout 'docs: refresh examples' 'Routine wording cleanup.' >/dev/null
+  fakebin="$TMP_ROOT/configured-timeout/fakebin"
+  mkdir -p "$fakebin"
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+args=( "\$@" )
+case " \$* " in
+  *' remote get-url upstream '*) printf '%s\n' '$CANONICAL_UPSTREAM_URL'; exit 0 ;;
+  *' fetch '*)
+    for i in "\${!args[@]}"; do
+      [ "\${args[\$i]}" = upstream ] && args[\$i]="file://$TMP_ROOT/configured-timeout/upstream.git"
+    done
+    exec '$real_git' "\${args[@]}"
+    ;;
+  *' log '*) sleep 6; exit 1 ;;
+esac
+exec '$real_git' "\$@"
+SH
+  chmod 0755 "$fakebin/git"
+  out="$TMP_ROOT/configured-timeout/report.txt"
+  err="$TMP_ROOT/configured-timeout/error.txt"
+  SECONDS=0
+  env PATH="$fakebin:$PATH" FM_CHECK_TIMEOUT=5 FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    "$CHECK" check >"$out" 2>"$err" || status=$?
+  elapsed=$SECONDS
+  [ "$status" -ne 0 ] || fail 'a stalled scan was reported as a clean check'
+  [ "$elapsed" -lt 5 ] || fail "configured watcher timeout was exceeded: ${elapsed}s"
+  [ ! -s "$out" ] || fail "a timed-out scan woke firstmate: $(cat "$out")"
+  pass 'the check fits inside a configured watcher timeout'
+}
+
 test_noncanonical_upstream_remote_is_rejected() {
   local repo out status=0
   repo=$(make_fixture_repo noncanonical-remote)
@@ -196,6 +231,40 @@ test_noncanonical_upstream_remote_is_rejected() {
   assert_contains "$(cat "$out")" 'upstream remote does not point at kunchenguid/firstmate' \
     'the rejected remote was not identified'
   pass 'the tripwire rejects a noncanonical upstream remote'
+}
+
+test_fatal_merge_base_failure_is_retryable() {
+  local repo out err fakebin real_git status=0
+  repo=$(make_fixture_repo merge-base-fatal)
+  fakebin="$TMP_ROOT/merge-base-fatal/fakebin"
+  mkdir -p "$fakebin"
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+args=( "\$@" )
+case " \$* " in
+  *' remote get-url upstream '*) printf '%s\n' '$CANONICAL_UPSTREAM_URL'; exit 0 ;;
+  *' fetch '*)
+    for i in "\${!args[@]}"; do
+      [ "\${args[\$i]}" = upstream ] && args[\$i]="file://$TMP_ROOT/merge-base-fatal/upstream.git"
+    done
+    exec '$real_git' "\${args[@]}"
+    ;;
+  *' merge-base --is-ancestor '*) printf '%s\n' 'object database unavailable' >&2; exit 128 ;;
+esac
+exec '$real_git' "\$@"
+SH
+  chmod 0755 "$fakebin/git"
+  out="$TMP_ROOT/merge-base-fatal/out.txt"
+  err="$TMP_ROOT/merge-base-fatal/err.txt"
+  env PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    "$CHECK" check >"$out" 2>"$err" || status=$?
+  [ "$status" -ne 0 ] || fail 'a fatal merge-base failure exited zero'
+  [ ! -s "$out" ] || fail "a fatal merge-base failure woke firstmate: $(cat "$out")"
+  assert_contains "$(cat "$err")" 'could not verify recorded base ancestry' \
+    'a fatal merge-base failure was not treated as retryable'
+  [ ! -e "$repo/state/.upstream-urgent" ] || fail 'a retryable merge-base failure wrote a report record'
+  pass 'fatal merge-base failures remain retryable and silent'
 }
 
 test_arm_registers_and_disarm_removes_the_check() {
@@ -229,6 +298,21 @@ test_arm_rejects_a_symlinked_state_parent() {
   [ "$status" -ne 0 ] || fail 'arm followed a symlinked state parent'
   [ ! -e "$target_state" ] || fail 'arm created state through a symlinked parent'
   pass 'arm rejects a symlinked state parent before creation'
+}
+
+test_arm_rejects_a_trailing_slash_state_symlink() {
+  local repo outside out status=0
+  repo=$(make_fixture_repo arm-trailing-state)
+  outside="$TMP_ROOT/arm-trailing-state/outside"
+  mkdir -p "$outside"
+  ln -s "$outside" "$repo/redirect"
+  out="$TMP_ROOT/arm-trailing-state/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    FM_STATE_OVERRIDE="$repo/redirect/" "$CHECK" arm >"$out" 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail 'arm followed a trailing-slash state symlink'
+  [ ! -e "$outside/upstream-urgent.check.sh" ] \
+    || fail 'arm created the check through a trailing-slash state symlink'
+  pass 'arm rejects a trailing-slash state symlink before creation'
 }
 
 test_disarm_reports_cleanup_failure() {
@@ -704,9 +788,12 @@ test_recorded_base_is_excluded_from_the_range
 test_check_uses_one_fetch_and_finishes_quickly
 test_slow_fetch_is_bounded_before_ten_seconds
 test_slow_local_scan_is_bounded_before_ten_seconds
+test_check_fits_inside_configured_watcher_timeout
 test_noncanonical_upstream_remote_is_rejected
+test_fatal_merge_base_failure_is_retryable
 test_arm_registers_and_disarm_removes_the_check
 test_arm_rejects_a_symlinked_state_parent
+test_arm_rejects_a_trailing_slash_state_symlink
 test_disarm_reports_cleanup_failure
 test_disarm_rejects_missing_state
 test_disarm_rejects_symlinked_state

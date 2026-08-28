@@ -72,8 +72,15 @@ MAX_LINE=1000
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
-CHECK_TIMEOUT=8
-FETCH_TIMEOUT=8
+WATCHER_CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
+case "$WATCHER_CHECK_TIMEOUT" in
+  ''|*[!0-9]*|0) WATCHER_CHECK_TIMEOUT=30 ;;
+esac
+CHECK_TIMEOUT=$((WATCHER_CHECK_TIMEOUT - 2))
+[ "$CHECK_TIMEOUT" -ge 1 ] || CHECK_TIMEOUT=1
+[ "$CHECK_TIMEOUT" -le 8 ] || CHECK_TIMEOUT=8
+FETCH_TIMEOUT=$((CHECK_TIMEOUT - 1))
+[ "$FETCH_TIMEOUT" -ge 1 ] || FETCH_TIMEOUT=1
 
 usage() {
   cat <<'EOF'
@@ -149,6 +156,9 @@ RECORD_FAILED=
 
 state_path_components_are_safe() {
   local path=$STATE parent home
+  case "$STATE" in
+    */) return 1 ;;
+  esac
   [ ! -L "$STATE" ] || return 1
   if [ -z "${FM_STATE_OVERRIDE:-}" ]; then
     home=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || return 1
@@ -281,7 +291,7 @@ upstream_remote_is_canonical() {
 }
 
 action_check_inner() {
-  local base base_commit upstream_tip remote_url matches log
+  local base base_commit upstream_tip remote_url matches log ancestor_status
   base=$(latest_sync_base) || {
     check_unusable 'latest sync base is unavailable'
     return 1
@@ -317,10 +327,19 @@ action_check_inner() {
     check_unusable "recorded base $base is not a commit in this clone"
     return 1
   }
-  git -C "$FM_ROOT" merge-base --is-ancestor "$base_commit" "$upstream_tip" || {
-    check_unusable "recorded base $base is not an ancestor of upstream/main"
-    return 1
-  }
+  ancestor_status=0
+  git -C "$FM_ROOT" merge-base --is-ancestor "$base_commit" "$upstream_tip" || ancestor_status=$?
+  case "$ancestor_status" in
+    0) ;;
+    1)
+      check_unusable "recorded base $base is not an ancestor of upstream/main"
+      return 1
+      ;;
+    *)
+      check_retryable 'could not verify recorded base ancestry'
+      return 1
+      ;;
+  esac
   # The log is captured before it is matched, because a pipeline would take its
   # status from awk alone and report a failed inspection as a clean check.
   log=$(git -C "$FM_ROOT" log --reverse --format='%H' \

@@ -207,8 +207,9 @@ WEDGE_ALARM_NOTIFIER_PID=
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
-# Composer-empty detection, submit acknowledgement, and the harness-scoped
-# supervisor-pane busy guard live in bin/fm-tmux-lib.sh.
+# Composer-empty detection and submit acknowledgement dispatch through
+# bin/fm-backend.sh; this file owns the harness-scoped supervisor-pane busy
+# guard.
 # FM_BUSY_REGEX also overrides Grok's isolated task-state fallback.
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
@@ -596,8 +597,8 @@ pane_is_busy() {  # <target> [backend]
   harness=${FM_DAEMON_PRIMARY_HARNESS:-unknown}
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
   FM_PANE_NATIVE_BUSY_STATE="$native"
-  # Herdr's semantic busy value maps only agent_status=working; retain that
-  # raw native label in diagnostics without changing the busy decision.
+  # Herdr's semantic busy value maps only agent_status=working; retain the
+  # corresponding native label in diagnostics without changing the native result.
   if [ "$backend" = herdr ] && [ "$native" = busy ]; then
     FM_PANE_NATIVE_BUSY_STATE=working
   fi
@@ -1153,8 +1154,9 @@ window_for_task() {  # <task-key> [state]
 #     Enter leaves our text in the composer, and retyping would concatenate two
 #     sentinel-prefixed digests into one corrupted turn.
 #   - SUBMIT ACK = the backend submit primitive reports `empty` after Enter.
-#     For tmux that means a cleared composer; for herdr's normal idle-baseline
-#     path it means native agent-state observed a real turn start.
+#     For tmux that means a cleared composer; for non-Claude herdr idle-baseline
+#     paths it can mean native agent-state observed a real turn start, while a
+#     Claude primary requires rendered-transition or cleared-composer proof.
 #     Pending means Enter was swallowed; unknown is treated as undelivered by
 #     this strict daemon path.
 #   - COMPOSER GUARD before typing: if the cursor line already has real content

@@ -3312,9 +3312,9 @@ test_composer_state_codex_non_faint_same_text_is_pending() {
 }
 
 # --- wait_for_working: the native agent-state poll-and-classify primitive ---
-# Direct unit coverage for fm_backend_herdr_wait_for_working, the helper
-# fm_backend_herdr_send_text_submit now uses instead of composer scraping
-# (docs/herdr-backend.md "Native agent-state submit confirmation").
+# Direct unit coverage for fm_backend_herdr_wait_for_working, the native poll
+# that fm_backend_herdr_send_text_submit uses alongside the harness-aware
+# rendered/composer checks (docs/herdr-backend.md "Current transport behavior").
 
 test_wait_for_working_returns_busy_on_first_poll() {
   local dir log resp fb out calls
@@ -3420,11 +3420,13 @@ test_wait_for_working_treats_blocked_as_submit_active() {
   pass "fm_backend_herdr_wait_for_working: treats blocked as submit-active for confirmation without changing watcher busy-state semantics"
 }
 
-# --- send_text_submit: native agent-state (agent get) verify-and-retry ------
-# Rewritten for the 2026-07-07 incident (docs/herdr-backend.md): confirmation
-# no longer reads composer content in the normal idle-baseline path, so a
-# harness whose IDLE composer shows dynamic tip text (real codex) can no
-# longer misread as "pending" and block/mis-confirm a send.
+# --- send_text_submit: harness-aware verify-and-retry ------------------------
+# Rewritten for the 2026-07-07 incident (docs/herdr-backend.md): non-Claude
+# confirmation no longer reads composer content in the normal idle-baseline
+# path, so a harness whose IDLE composer shows dynamic tip text (real codex)
+# can no longer misread as "pending" and block/mis-confirm a send. Claude
+# keeps rendered idle-to-busy and cleared-composer checks because native
+# working can come from the tracked away daemon shell.
 # FM_BACKEND_HERDR_SUBMIT_POLLS=1 pins most tests
 # below to exactly one agent-get sample per Enter attempt for simple,
 # deterministic call-count assertions; the multi-sample behavior itself is
@@ -3745,8 +3747,9 @@ test_send_text_submit_idle_native_empty_composer_confirms_delivery() {
 test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
   local dir log resp fb out
   dir="$TMP_ROOT/submit-idle-native-rendered-busy-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # Idle native baseline (Claude never leaves idle) with proven pending text
-  # and a generating footer after retries is a queued follow-up Enter.
+  # Idle native baseline (Claude can remain idle) with proven pending text and
+  # a rendered active-turn signature immediately after Enter is positive
+  # rendered proof for that Enter; the legacy test name calls this queued.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
   printf 'thinking... esc to interrupt\n' > "$resp/5.out"

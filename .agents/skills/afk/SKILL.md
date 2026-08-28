@@ -94,7 +94,8 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 
 - **Primary-pane busy guard** - `pane_is_busy` keeps the Herdr native-busy fast path except for a Herdr primary detected as Claude, where native `working` is diagnostic only because the tracked away daemon shell can keep it set after the foreground turn ends.
   For that pair, only the rendered Claude active-turn signature proves foreground busy; rendered idle falls through to the affirmative `empty` composer guard, and unreadable capture still defers.
-  Deferrals name `native-busy`, `rendered-busy`, or `composer=<verdict>` in the daemon log; the full contract is in `docs/herdr-backend.md` under “Away-mode supervisor support”.
+  Deferrals name `native-busy`, `rendered-busy`, or `composer=<verdict>` in the daemon log, while an unreadable busy-guard capture is named `unreadable`; Herdr's semantic `busy` diagnostic is recorded as native `working`.
+  The full contract is in `docs/herdr-backend.md` under “Away-mode supervisor support”.
 - **Composer-state guard** - `inject_msg` reads the full `empty`/`pending`/`pending-unproven`/`unknown` verdict from `fm_backend_composer_state` and injects only when it is affirmatively `empty`.
   Every other or future verdict defers, including an unreadable pane, ambiguous geometry, a blank unidentified row, and a bare shell prompt left after the agent exits.
   Each adapter contributes only capture and capability facts to the fleet-wide screen classifier in `bin/fm-composer-lib.sh`, which owns every shape and verdict.
@@ -125,6 +126,7 @@ submit landed.
 For tmux that confirmation is normally a proven cleared composer from the shared classifier; an idle baseline transitioning to busy across this submit's own Enter also confirms that the turn started when a working harness hides its composer.
 Without that baseline, busy state never converts an `unknown` composer into confirmation.
 For herdr, idle-baseline submits first seek native agent-state showing a real turn started, then use the shared classifier when native state remains idle: a cleared composer confirms delivery, while pending text retries Enter and reaches the shared busy-queue verdict only after the retry budget.
+For the away-mode Claude primary, native `working` alone never proves that a queued Enter was submitted; pending text requires the rendered Claude active-turn signature, while a cleared composer remains sufficient.
 A bordered-empty or ghost-only composer is recognized as empty where that backend uses composer confirmation, rather than mistaken for a swallowed Enter.
 `fm-send.sh` uses the same primitive only on its typed plane and exits non-zero when that plane's Enter is positively swallowed; ordinary local text steers use the durable inbox and do not treat doorbell submission as delivery proof.
 

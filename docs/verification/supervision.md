@@ -207,15 +207,15 @@ tests/fm-crew-state.test.sh
 
 ### Herdr+Claude away-mode busy guard, 2026-08-28
 
-The real Herdr-lab regression passed with Herdr 0.8.2 and Claude Code 2.1.248.
-Native `agent_status=working` with a rendered-idle Claude pane and an `empty` composer delivered one queued escalation and cleared the buffer, a genuine foreground turn produced a `rendered-busy` deferral, and bright human composer text remained pending and unchanged with a `composer=pending` deferral.
-The colocated unit suite also preserves the `native-busy` fast path for every non-Herdr+Claude combination.
+The final Herdr-lab regression passed with Herdr 0.8.2 and Claude Code 2.1.248.
+Native `agent_status=working` with a rendered-idle Claude pane and an `empty` composer delivered one queued escalation and cleared the buffer, a genuine foreground turn produced a `rendered-busy` deferral carrying `native-state=working`, and bright human composer text remained pending and unchanged with a `composer=pending` deferral.
+The colocated unit suite also proves that Claude native working plus rendered-idle pending text is not confirmed, accepts rendered active-turn proof, hard-defers unreadable capture, and preserves the `native-busy` fast path for every non-Herdr+Claude combination.
 
 ```sh
 FM_AFK_HERDR_CLAUDE_LIVE=1 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
 # ok - real Herdr 0.8.2 + Claude 2.1.248 (Claude Code): native working with rendered-idle empty composer submits once
 # ok - real Herdr 0.8.2 + Claude 2.1.248 (Claude Code): rendered-busy and pending-composer deferrals preserve human text
-# evidence: native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 composer=pending=1
+# evidence: native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1
 ```
 
 ## Turn-end guard

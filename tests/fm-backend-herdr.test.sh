@@ -3535,6 +3535,46 @@ test_send_text_submit_preexisting_working_pending_is_queued_enter() {
   pass "fm_backend_herdr_send_text_submit: native working + proven pending after retries reports empty (queued Enter)"
 }
 
+test_send_text_submit_claude_working_pending_requires_rendered_busy() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-working-rendered-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: send-text; 2: native pre-Enter status is working (the away daemon
+  # shell); 3: the pre-Enter rendered pane is idle; 4: Enter; 5: the typed
+  # text remains pending; 6: native status is still working; 7: the rendered
+  # pane is still idle, so native working alone must not confirm delivery.
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '  ready\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c 'FM_DAEMON_PRIMARY_HARNESS=claude; export FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] || fail "a Claude pane with native working, pending text, and rendered idle must remain unconfirmed, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "Claude queued-Enter confirmation should use the configured retry count, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: Claude native working alone does not confirm a queued Enter"
+}
+
+test_send_text_submit_claude_working_pending_accepts_rendered_busy() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-working-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # The same native-working background-shell shape is safe only when the
+  # rendered Claude active-turn signature is present as the positive proof.
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '  ready\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c 'FM_DAEMON_PRIMARY_HARNESS=claude; export FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "a Claude pane with native working and a rendered active-turn signature must confirm the queued Enter, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a rendered-busy queued-Enter confirmation should use the configured retry count, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: Claude rendered active-turn proof can confirm a queued Enter"
+}
+
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-preexisting-working-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4569,6 +4609,8 @@ test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_pending_is_queued_enter
+test_send_text_submit_claude_working_pending_requires_rendered_busy
+test_send_text_submit_claude_working_pending_accepts_rendered_busy
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
 test_send_text_submit_idle_baseline_does_not_confirm_failed_enter
 test_send_text_submit_idle_native_empty_composer_confirms_delivery

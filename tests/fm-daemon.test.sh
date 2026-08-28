@@ -1875,6 +1875,8 @@ test_inject_msg_logs_rendered_busy_subcause() {
     fi
     grep -F 'subcause=rendered-busy' "$dir/daemon.log" >/dev/null \
       || fail "rendered-busy deferral did not name its subcause: $(cat "$dir/daemon.log")"
+    grep -F 'native-state=working' "$dir/daemon.log" >/dev/null \
+      || fail "Herdr rendered-busy deferral did not name native working state: $(cat "$dir/daemon.log")"
   ) || fail "rendered-busy logging subshell failed"
   pass "inject_msg: rendered-busy deferrals name the rendered subcause"
 }
@@ -1888,7 +1890,7 @@ test_inject_msg_herdr_claude_unreadable_capture_defers() {
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { printf 'busy'; }
     fm_backend_capture() { return 1; }
-    fm_backend_composer_state() { printf 'unknown'; }
+    fm_backend_composer_state() { fail "composer_state should not run after an unreadable Claude capture"; }
     fm_backend_send_text_submit() { fail "send_text_submit should not run after an unreadable Claude capture"; }
     FM_DAEMON_PRIMARY_HARNESS=claude
     LOG="$dir/daemon.log"
@@ -1897,10 +1899,10 @@ test_inject_msg_herdr_claude_unreadable_capture_defers() {
     if inject_msg "hello" "$state"; then
       fail "inject_msg should defer after an unreadable Herdr+Claude capture"
     fi
-    grep -F 'subcause=composer=unknown' "$dir/daemon.log" >/dev/null \
+    grep -F 'supervisor pane unreadable (subcause=unreadable; native-state=working)' "$dir/daemon.log" >/dev/null \
       || fail "unreadable capture deferral did not name its subcause: $(cat "$dir/daemon.log")"
   ) || fail "unreadable Herdr+Claude capture subshell failed"
-  pass "inject_msg: unreadable Herdr+Claude captures defer through the unknown composer verdict"
+  pass "inject_msg: unreadable Herdr+Claude captures defer before consulting the composer"
 }
 
 test_primary_busy_guard_is_harness_scoped() {

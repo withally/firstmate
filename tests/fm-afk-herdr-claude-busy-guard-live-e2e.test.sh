@@ -11,7 +11,6 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 AFK_LAUNCH="$ROOT/bin/fm-afk-launch.sh"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
@@ -105,10 +104,11 @@ HERDR_VERSION=$(lab status --json 2>/dev/null | jq -r '.client.version // "unkno
 
 PROMPT_FILE="$TMP_ROOT/claude-prompt.txt"
 CLAUDE_LAUNCHER="$TMP_ROOT/launch-claude.sh"
-CLAUDE_TEST_SYSTEM_PROMPT='This is a live away-mode guard test. After the initial prompt, do not execute tools or investigate incoming supervisor messages. Leave supervisor messages in the Claude conversation and remain available for the test. When the test sends the literal /afk command, invoke the afk skill and perform that lifecycle action, then return to the idle composer without taking any other action.'
+CLAUDE_TEST_SYSTEM_PROMPT='This is a live away-mode guard test. Do not execute tools or investigate supervisor messages in response to an injected away-mode message. The explicit foreground-turn test instruction is an exception: when the user message asks you to use Bash for the exact sleep command and then reply with its token, execute that Bash command and wait before replying. When the test sends the literal /afk command, invoke the afk skill and perform that lifecycle action, then return to the idle composer without taking any other action.'
 printf '%s\n' 'Reply with the single word ready and stop.' > "$PROMPT_FILE"
+# shellcheck disable=SC2016 # The generated launcher expands $(cat ...) when it runs.
 printf -v CLAUDE_LAUNCHER_CONTENT \
-  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nexec %q --dangerously-skip-permissions --append-system-prompt %q "$(cat %q)"\n' \
+  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nexec %q --dangerously-skip-permissions --append-system-prompt %q "\$(cat %q)"\n' \
   "$ROOT" "$FAKEBIN:$ORIGINAL_PATH" "$FM_HOME" "$STATE_DIR" "$ROOT" \
   "$HERDR_LAB_SESSION" "$CLAUDE_BIN" "$CLAUDE_TEST_SYSTEM_PROMPT" "$PROMPT_FILE"
 printf '%s' "$CLAUDE_LAUNCHER_CONTENT" > "$CLAUDE_LAUNCHER"
@@ -142,8 +142,8 @@ send_line() {
 }
 
 wait_for_initial_idle() {
-  local attempt status composer stable=0 trust_accepted=0 screen
-  for attempt in $(seq 1 60); do
+  local status composer stable=0 trust_accepted=0 screen
+  for _ in $(seq 1 60); do
     status=$(agent_status)
     composer=$(composer_state)
     if [ "$trust_accepted" -eq 0 ]; then
@@ -175,8 +175,8 @@ wait_for_initial_idle() {
 }
 
 wait_for_afk_daemon() {
-  local attempt pid record
-  for attempt in $(seq 1 60); do
+  local pid record
+  for _ in $(seq 1 60); do
     record=$(cat "$STATE_DIR/.afk-daemon-terminal" 2>/dev/null || true)
     pid=$(cat "$STATE_DIR/.supervise-daemon.pid" 2>/dev/null || true)
     if [ -f "$STATE_DIR/.afk" ] && [ "$record" = $'none\t-\tnative' ] \
@@ -189,8 +189,8 @@ wait_for_afk_daemon() {
 }
 
 wait_for_idle_native_working() {
-  local attempt status composer busy
-  for attempt in $(seq 1 60); do
+  local status composer busy
+  for _ in $(seq 1 60); do
     status=$(agent_status)
     composer=$(composer_state)
     busy=1
@@ -217,8 +217,8 @@ token_count() {
 }
 
 wait_for_single_delivery() {
-  local token=$1 attempt count
-  for attempt in $(seq 1 60); do
+  local token=$1 count
+  for _ in $(seq 1 60); do
     count=$(token_count "$token")
     if [ "$count" -eq 1 ] && [ ! -s "$STATE_DIR/.subsuper-escalations" ]; then
       return 0
@@ -229,8 +229,7 @@ wait_for_single_delivery() {
 }
 
 wait_for_rendered_busy() {
-  local attempt
-  for attempt in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     if [ "$(agent_status)" = working ] && rendered_claude_busy; then
       return 0
     fi
@@ -240,8 +239,8 @@ wait_for_rendered_busy() {
 }
 
 wait_for_human_pending() {
-  local text=$1 attempt screen
-  for attempt in $(seq 1 30); do
+  local text=$1 screen
+  for _ in $(seq 1 30); do
     screen=$(screen_text)
     if printf '%s\n' "$screen" | grep -Fq "$text" \
       && [ "$(composer_state)" = pending ]; then
@@ -253,8 +252,8 @@ wait_for_human_pending() {
 }
 
 wait_for_foreground_done_with_pending() {
-  local text=$1 attempt screen status composer busy
-  for attempt in $(seq 1 60); do
+  local text=$1 screen status composer busy
+  for _ in $(seq 1 60); do
     screen=$(screen_text)
     status=$(agent_status)
     composer=$(composer_state)
@@ -278,9 +277,19 @@ wait_for_foreground_done_with_pending() {
 }
 
 wait_for_log_subcause() {
-  local subcause=$1 attempt
-  for attempt in $(seq 1 30); do
+  local subcause=$1
+  for _ in $(seq 1 30); do
     if grep -Fq "subcause=$subcause" "$STATE_DIR/.supervise-daemon.log" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_log_native_state_working() {
+  for _ in $(seq 1 30); do
+    if grep -Fq 'native-state=working' "$STATE_DIR/.supervise-daemon.log" 2>/dev/null; then
       return 0
     fi
     sleep 1
@@ -310,8 +319,14 @@ printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR
 wait_for_single_delivery "$ESCALATION_ONE" \
   || fail "native Herdr working plus rendered-idle Claude did not submit the first escalation exactly once"
 sleep 3
-[ "$(token_count "$ESCALATION_ONE")" -eq 1 ] \
-  || fail "the first escalation appeared more than once after the delivery settled"
+if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ]; then
+  echo "first-delivery diagnostics: token-count=$(token_count "$ESCALATION_ONE") agent_status=$(agent_status) composer=$(composer_state)" >&2
+  echo "daemon log:" >&2
+  sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
+  echo "Claude pane:" >&2
+  screen_text | tail -n 80 >&2
+  fail "the first escalation appeared more than once after the delivery settled"
+fi
 [ ! -s "$STATE_DIR/.subsuper-escalations" ] \
   || fail "the first escalation buffer did not clear after confirmed submission"
 pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: native working with rendered-idle empty composer submits once"
@@ -331,6 +346,8 @@ wait_for_human_pending "$HUMAN_TEXT" \
   || fail "bright human text did not remain pending in the Claude composer"
 wait_for_log_subcause rendered-busy \
   || fail "the active foreground deferral did not log subcause=rendered-busy"
+wait_for_log_native_state_working \
+  || fail "the rendered-busy deferral did not record native-state=working"
 wait_for_foreground_done_with_pending "$HUMAN_TEXT" \
   || fail "after the foreground turn, Claude did not remain native-working with pending human text and a rendered-idle pane"
 
@@ -352,5 +369,5 @@ printf '%s\n' "$screen" | grep -Fq "$HUMAN_TEXT" \
   || fail "bright human text was modified or disappeared while the daemon deferred"
 pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: rendered-busy and pending-composer deferrals preserve human text"
 
-printf 'evidence: session=%s native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 composer=pending=1\n' \
+printf 'evidence: session=%s native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1\n' \
   "$HERDR_LAB_SESSION"

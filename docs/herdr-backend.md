@@ -215,6 +215,8 @@ Typed-plane text is typed once; only Enter is retried.
 On an idle or done native baseline, submit confirmation first waits for `working` or `blocked` across a bounded polling window.
 If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
 After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter, and keeps an idle pending composer as a genuine swallow.
+For the away-mode Claude primary, Herdr's native `working` signal is not that generating proof because the tracked daemon shell can keep it set after the foreground turn ends.
+In that case, a cleared composer still confirms delivery, while pending text reaches the queued-Enter verdict only when the rendered Claude active-turn signature is present; rendered idle remains pending and preserves the escalation for retry.
 On an already active or unreadable baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A fully unreadable target stops retrying and reports unknown.
 blocked is not treated as a queued-Enter busy signal, so a Cursor pane that reports blocked in every state does not receive that conversion.
@@ -294,7 +296,8 @@ The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-a
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
 `pane_is_busy` therefore requires the rendered Claude active-turn signature, such as `esc to interrupt` or a spinner with elapsed time, before declaring the pane busy.
 When the rendered pane is idle, injection falls through to the affirmative `empty` composer guard, while an unreadable capture or any non-`empty` composer verdict still defers.
-Each deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`.
+Each deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`; an unreadable busy-guard capture is logged as `unreadable` and also defers.
+The Herdr native `busy` diagnostic is rendered as its raw `working` state in these logs, while the semantic busy decision remains unchanged.
 Every other harness/backend combination retains its native-busy fast path.
 
 Harnesses with native tracked background execution can run the daemon in their terminal.

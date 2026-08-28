@@ -2762,14 +2762,24 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # each backend confirms it is an internal decision.
 #
 # fm_backend_herdr_queued_enter_busy: delivery-busy for the shared queued-Enter
-# conversion. Native agent_status=working is generating; blocked is not (a
-# permission prompt, or Cursor's always-blocked native state, is not a queued
-# mid-turn). When <allow-rendered> is 1, an idle native baseline may also take
-# the pane's rendered busy footer, because live Claude keeps agent_status idle
-# through a whole turn.
+# conversion. Native agent_status=working is generating for every harness except
+# the Claude primary in the away daemon, where the tracked background shell can
+# keep it working after the foreground turn ends. For that Claude case, only the
+# rendered Claude active-turn signature is a delivery-busy proof; a cleared
+# composer has already returned empty before this queued-Enter fallback. Native
+# blocked is not generating (a permission prompt, or Cursor's always-blocked
+# native state, is not a queued mid-turn). When <allow-rendered> is 1, an idle
+# native baseline may also take the pane's rendered busy footer, because live
+# Claude keeps agent_status idle through a whole turn.
 fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
   local target=$1 allow_rendered=${2:-0} raw
   raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  if [ "${FM_DAEMON_PRIMARY_HARNESS:-}" = claude ]; then
+    # Herdr native working includes Claude's tracked away daemon shell, so it
+    # cannot by itself prove that this Enter was accepted and queued.
+    fm_backend_herdr_rendered_busy_state "$target" claude
+    return 0
+  fi
   case "$raw" in
     working) printf 'busy'; return 0 ;;
   esac

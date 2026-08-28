@@ -1817,7 +1817,7 @@ test_projection_close_death_escalates_sigkill_after_sighup_survival() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
+  bash -c 'trap "" HUP; exec sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"internal_error","message":"transient failure"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/9.out"
@@ -1853,7 +1853,7 @@ test_projection_close_death_failure_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
+  bash -c 'trap "" HUP; exec sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/9.out"
@@ -1904,6 +1904,7 @@ test_projection_close_death_still_restores_a_stolen_focus() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
+  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
   [ "$status" -eq 0 ] || fail "the pane-death close with a restored backstop should succeed: $out"
   assert_contains "$(cat "$log")" $'tab\x1ffocus\x1fw1:t1' "the backstop did not restore the exact prior tab"
   pass "herdr presentation cleanup: the exact-tab restore remains the backstop behind the pane-death close"
@@ -1922,7 +1923,7 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
   # The original shell survives SIGHUP; by SIGKILL time the pane's process
   # information shows a DIFFERENT shell pid, modeling the original pid having
   # been reused by an unrelated process the pane no longer owns.
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
+  bash -c 'trap "" HUP; exec sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   cp "$resp/3.out" "$resp/8.out"   # SIGHUP poll 1: pane still present
   cp "$resp/3.out" "$resp/9.out"   # SIGHUP poll 2: pane still present
@@ -1966,7 +1967,7 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/8.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
+  bash -c 'trap "" HUP; exec sleep 300' & bgpid=$!
   death_process_info_fixture w1:p1 "$bgpid" > "$resp/10.out"
   if [ "$mode" = pane-gone-workspace-present ]; then
     printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
@@ -2063,6 +2064,7 @@ test_kill_emptying_non_focused_uses_pane_death() {
       fm_backend_herdr_kill fmtest:w2:p2
     ' "$ROOT" 2>&1)
   status=$?
+  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
   [ "$status" -eq 0 ] || fail "an emptying non-focused kill should stay best-effort: $out"
   [ "$(cat "$lock_log")" = "$(printf 'acquire\nrelease')" ] \
     || fail "the generic kill did not hold one presentation lock across its complete mutation: $(cat "$lock_log")"

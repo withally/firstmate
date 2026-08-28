@@ -3539,13 +3539,13 @@ test_send_text_submit_claude_working_pending_requires_rendered_busy() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-working-rendered-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   # 1: send-text; 2: native pre-Enter status is working (the away daemon
-  # shell); 3: the pre-Enter rendered pane is idle; 4: Enter; 5: the typed
-  # text remains pending; 6: the rendered pane is still idle, so native working
+  # shell); 3: the pre-Enter rendered pane is idle; 4: Enter; 5: the rendered
+  # pane is still idle; 6: the typed text remains pending, so native working
   # alone must not confirm delivery.
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
   printf '  ready\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
@@ -3561,11 +3561,10 @@ test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empt
   dir="$TMP_ROOT/submit-claude-idle-native-working-rendered-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
-  printf '  ready\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/8.out"
-  printf '  ready\n' > "$resp/9.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/7.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/8.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -3580,10 +3579,8 @@ test_send_text_submit_claude_idle_baseline_preexisting_rendered_busy_does_not_co
   dir="$TMP_ROOT/submit-claude-idle-preexisting-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf 'thinking... esc to interrupt\n' > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
-  printf 'thinking... esc to interrupt\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
+  printf '  ╭────────────────────────╮\n  │ ❯ hello captain        │\n  ╰──────── Composer ──────╯\n\n  Enter:send\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c 'unset FM_DAEMON_PRIMARY_HARNESS; . "$0/bin/fm-backend.sh"; fm_backend_send_text_submit herdr default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -3598,8 +3595,9 @@ test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof() 
   dir="$TMP_ROOT/submit-claude-idle-native-working-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
-  printf 'thinking... esc to interrupt\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -3614,9 +3612,10 @@ test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer(
   dir="$TMP_ROOT/submit-claude-idle-native-working-empty-composer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
-  printf '  ready\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf\n' > "$resp/7.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/7.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/8.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -3633,15 +3632,44 @@ test_send_text_submit_claude_working_pending_accepts_rendered_busy() {
   # rendered Claude active-turn signature is present as the positive proof.
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
-  printf 'thinking... esc to interrupt\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01 "" claude' "$ROOT" )
   [ "$out" = empty ] || fail "a Claude pane with native working and a rendered active-turn signature must confirm the queued Enter, got '$out'"
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "a rendered-busy queued-Enter confirmation should use the configured retry count, sent $enter_count Enter(s)"
   pass "fm_backend_herdr_send_text_submit: Claude rendered active-turn proof can confirm a queued Enter"
+}
+
+test_send_text_submit_claude_preexisting_busy_does_not_confirm_late_snapshot() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-claude-late-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/3.out"
+  printf '  20\n  21\n\n✻ Worked for 2s\n\n──────\n❯ hello there this is a test message\n──────\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" = pending ] || fail "a pre-existing Claude busy footer must not confirm a still-pending Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: a pre-existing Claude busy footer cannot confirm delivery"
+}
+
+test_send_text_submit_claude_nonclaude_busy_token_does_not_confirm() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-claude-nonclaude-busy-token"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  printf '  ready\n' > "$resp/3.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
+  printf 'thinking... ctrl+c to stop\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" = pending ] || fail "a non-Claude busy token must not confirm a Claude Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: Claude ignores non-Claude rendered busy tokens"
 }
 
 test_send_text_submit_claude_preexisting_rendered_busy_does_not_confirm_queued_enter() {
@@ -3649,9 +3677,8 @@ test_send_text_submit_claude_preexisting_rendered_busy_does_not_confirm_queued_e
   dir="$TMP_ROOT/submit-claude-preexisting-rendered-busy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
   printf 'thinking... esc to interrupt\n' > "$resp/3.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
-  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
+  printf '  ╭────────────────────────╮\n  │ ❯ hello captain        │\n  ╰──────── Composer ──────╯\n\n  Enter:send\n' > "$resp/5.out"
+  printf '  ╭────────────────────────╮\n  │ ❯ hello captain        │\n  ╰──────── Composer ──────╯\n\n  Enter:send\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -3702,8 +3729,10 @@ test_send_text_submit_idle_native_empty_composer_confirms_delivery() {
   # that empty verdict is positive delivery, not a swallow.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
-  printf '  \xe2\x9d\xaf\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  printf '  ready\n' > "$resp/7.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/8.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01 "" claude' "$ROOT" )
@@ -3720,9 +3749,7 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
   # and a generating footer after retries is a queued follow-up Enter.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '  ready\n' > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
-  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -4703,6 +4730,8 @@ test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empt
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer
 test_send_text_submit_claude_working_pending_accepts_rendered_busy
+test_send_text_submit_claude_preexisting_busy_does_not_confirm_late_snapshot
+test_send_text_submit_claude_nonclaude_busy_token_does_not_confirm
 test_send_text_submit_claude_preexisting_rendered_busy_does_not_confirm_queued_enter
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
 test_send_text_submit_idle_baseline_does_not_confirm_failed_enter

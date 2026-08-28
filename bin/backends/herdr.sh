@@ -2766,14 +2766,10 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # non-Claude harness. Claude requires a rendered idle-to-busy transition across
 # this Enter; an unknown target harness never uses native working as proof.
 fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [footer-baseline] [target-harness]
-  local target=$1 allow_rendered=${2:-0} footer_baseline=${3:-} target_harness=${4:-} raw
+  local target=$1 allow_rendered=${2:-0} target_harness=${4:-} raw
   case "$target_harness" in
     claude*)
-      if [ "$footer_baseline" != idle ]; then
-        printf 'idle'
-        return 0
-      fi
-      fm_backend_herdr_rendered_busy_state "$target" claude
+      printf 'idle'
       return 0
       ;;
     ''|unknown)
@@ -2817,6 +2813,15 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     esac
     if fm_backend_herdr_send_key "$target" Enter; then
       enter_sent=1
+      case "$target_harness" in
+        claude*)
+          if [ "$footer_baseline" = idle ] \
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
+            printf 'empty'
+            return 0
+          fi
+          ;;
+      esac
     elif [ "$enter_sent" -eq 0 ]; then
       i=$((i + 1))
       if [ "$i" -ge "$retries" ]; then
@@ -2830,23 +2835,27 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
       case "$verdict" in
-        busy)
-          case "$target_harness" in
-            claude*)
-              if [ "$footer_baseline" = idle ] \
-                && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
+        unknown) printf 'unknown'; return 0 ;;
+      esac
+      case "$target_harness" in
+        claude*)
+          if [ "$footer_baseline" = idle ] \
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
+            printf 'empty'
+            return 0
+          fi
+          ;;
+        *)
+          if [ "$verdict" = busy ]; then
+            case "$target_harness" in
+              ''|unknown) ;;
+              *)
                 printf 'empty'
                 return 0
-              fi
-              ;;
-            ''|unknown) ;;
-            *)
-              printf 'empty'
-              return 0
-              ;;
-          esac
+                ;;
+            esac
+          fi
           ;;
-        unknown) printf 'unknown'; return 0 ;;
       esac
       # Native did not provide sufficient Claude proof. Composer empty is
       # positive delivery (a landed Claude turn that never flipped
@@ -2860,11 +2869,22 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
-      if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
-        && [ "$footer_baseline" = idle ] \
-        && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
-        verdict=busy
-      fi
+      case "$target_harness" in
+        claude*)
+          if [ "$footer_baseline" = idle ] \
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
+            printf 'empty'
+            return 0
+          fi
+          ;;
+        *)
+          if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
+            && [ "$footer_baseline" = idle ] \
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
+            verdict=busy
+          fi
+          ;;
+      esac
       case "$verdict" in
         busy) printf 'empty'; return 0 ;;
         empty) printf 'empty'; return 0 ;;

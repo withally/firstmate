@@ -142,10 +142,22 @@ send_line() {
 }
 
 wait_for_initial_idle() {
-  local attempt status composer stable=0
+  local attempt status composer stable=0 trust_accepted=0 screen
   for attempt in $(seq 1 60); do
     status=$(agent_status)
     composer=$(composer_state)
+    if [ "$trust_accepted" -eq 0 ]; then
+      screen=$(screen_text)
+      if printf '%s\n' "$screen" | grep -Fq 'Yes, I trust this folder'; then
+        lab pane send-keys "$PANE" down >/dev/null \
+          && lab pane send-keys "$PANE" enter >/dev/null \
+          || return 1
+        trust_accepted=1
+        stable=0
+        sleep 1
+        continue
+      fi
+    fi
     case "$status" in
       idle|done|blocked)
         if [ "$composer" = empty ]; then

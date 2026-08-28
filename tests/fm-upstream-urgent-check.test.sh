@@ -18,9 +18,10 @@ set -u
 
 CHECK="$ROOT/bin/fm-upstream-urgent-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-upstream-urgent-check)
+CANONICAL_UPSTREAM_URL='git@github.com:kunchenguid/firstmate.git'
 
 make_fixture_repo() {
-  local name=$1 initial_subject=${2:-initial} repo remote base
+  local name=$1 initial_subject=${2:-initial} repo remote base real_git
   repo="$TMP_ROOT/$name/repo"
   remote="$TMP_ROOT/$name/upstream.git"
   fm_git_init_commit "$repo"
@@ -39,14 +40,36 @@ make_fixture_repo() {
   git -C "$repo" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -qm 'docs: record fixture catch-up'
   git clone --quiet --bare "$repo" "$remote"
-  git -C "$repo" remote add upstream "file://$remote"
+  git -C "$repo" remote add upstream "$CANONICAL_UPSTREAM_URL"
+  real_git=$(command -v git)
+  mkdir -p "$TMP_ROOT/$name/fakebin"
+  cat > "$TMP_ROOT/$name/fakebin/git" <<SH
+#!/usr/bin/env bash
+set -u
+args=( "\$@" )
+case " \$* " in
+  *' remote get-url upstream '*)
+    printf '%s\n' '$CANONICAL_UPSTREAM_URL'
+    exit 0
+    ;;
+  *' fetch '*)
+    for i in "\${!args[@]}"; do
+      [ "\${args[\$i]}" = upstream ] && args[\$i]="file://$remote"
+    done
+    exec '$real_git' "\${args[@]}"
+    ;;
+esac
+exec '$real_git' "\$@"
+SH
+  chmod 0755 "$TMP_ROOT/$name/fakebin/git"
   printf '%s\n' "$repo"
 }
 
 publish_upstream_commit() {
-  local repo=$1 name=$2 subject=$3 body=$4 work commit
+  local repo=$1 name=$2 subject=$3 body=$4 remote work commit
+  remote="${repo%/repo}/upstream.git"
   work="$TMP_ROOT/$name/work"
-  git clone --quiet "$(git -C "$repo" remote get-url upstream)" "$work"
+  git clone --quiet "$remote" "$work"
   git -C "$work" config user.name 'Firstmate Tests'
   git -C "$work" config user.email 'tests@example.invalid'
   printf '%s\n%s\n' "$subject" "$body" > "$work/change.txt"
@@ -57,9 +80,13 @@ publish_upstream_commit() {
   printf '%s\n' "$commit"
 }
 
+fixture_fakebin() {
+  printf '%s\n' "${1%/repo}/fakebin"
+}
+
 run_check() {
   local repo=$1 out=$2 status=0
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+  env PATH="$(fixture_fakebin "$repo"):$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
     "$CHECK" check >"$out" 2>&1 || status=$?
   expect_code 0 "$status" "upstream urgent check exit"
 }
@@ -73,8 +100,16 @@ test_check_uses_one_fetch_and_finishes_quickly() {
   real_git=$(command -v git)
   cat > "$fakebin/git" <<SH
 #!/usr/bin/env bash
+args=( "\$@" )
 case " \$* " in
-  *' fetch '*) printf '%s\n' fetch >> '$TMP_ROOT/fetch-budget/fetches.log' ;;
+  *' remote get-url upstream '*) printf '%s\n' '$CANONICAL_UPSTREAM_URL'; exit 0 ;;
+  *' fetch '*)
+    printf '%s\n' fetch >> '$TMP_ROOT/fetch-budget/fetches.log'
+    for i in "\${!args[@]}"; do
+      [ "\${args[\$i]}" = upstream ] && args[\$i]="file://$TMP_ROOT/fetch-budget/upstream.git"
+    done
+    exec '$real_git' "\${args[@]}"
+    ;;
 esac
 exec '$real_git' "\$@"
 SH
@@ -99,6 +134,7 @@ test_slow_fetch_is_bounded_before_ten_seconds() {
   cat > "$fakebin/git" <<SH
 #!/usr/bin/env bash
 case " \$* " in
+  *' remote get-url upstream '*) printf '%s\n' '$CANONICAL_UPSTREAM_URL'; exit 0 ;;
   *' fetch '*) sleep 11; exit 1 ;;
 esac
 exec '$real_git' "\$@"
@@ -124,10 +160,18 @@ test_slow_local_scan_is_bounded_before_ten_seconds() {
   real_git=$(command -v git)
   cat > "$fakebin/git" <<SH
 #!/usr/bin/env bash
+args=( "\$@" )
 case " \$* " in
+  *' remote get-url upstream '*) printf '%s\n' '$CANONICAL_UPSTREAM_URL'; exit 0 ;;
+  *' fetch '*)
+    for i in "\${!args[@]}"; do
+      [ "\${args[\$i]}" = upstream ] && args[\$i]="file://$TMP_ROOT/slow-log/upstream.git"
+    done
+    exec '$real_git' "\${args[@]}"
+    ;;
   *' log '*) sleep 11; exit 1 ;;
 esac
-exec '$real_git' "\$@"
+exec '$real_git' "\${args[@]}"
 SH
   chmod 0755 "$fakebin/git"
   out="$TMP_ROOT/slow-log/report.txt"
@@ -140,6 +184,18 @@ SH
   [ "$elapsed" -lt 10 ] || fail "slow local scan took ${elapsed}s, expected a sub-ten-second bound"
   [ ! -s "$out" ] || fail "a timed-out local scan woke firstmate: $(cat "$out")"
   pass 'slow local scan is bounded before ten seconds'
+}
+
+test_noncanonical_upstream_remote_is_rejected() {
+  local repo out status=0
+  repo=$(make_fixture_repo noncanonical-remote)
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/noncanonical-remote/upstream.git"
+  out="$TMP_ROOT/noncanonical-remote/report.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail 'a noncanonical upstream remote was accepted'
+  assert_contains "$(cat "$out")" 'upstream remote does not point at kunchenguid/firstmate' \
+    'the rejected remote was not identified'
+  pass 'the tripwire rejects a noncanonical upstream remote'
 }
 
 test_arm_registers_and_disarm_removes_the_check() {
@@ -178,6 +234,40 @@ test_disarm_reports_cleanup_failure() {
   pass 'disarm reports incomplete cleanup as a failure'
 }
 
+test_disarm_rejects_missing_state() {
+  local repo out status=0
+  repo=$(make_fixture_repo disarm-missing)
+  out="$TMP_ROOT/disarm-missing/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" disarm >"$out" 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail 'disarm reported success without a state directory'
+  assert_not_contains "$(cat "$out")" 'disarmed: state/upstream-urgent.check.sh' \
+    'disarm claimed success without a state directory'
+  pass 'disarm rejects a missing state directory'
+}
+
+test_disarm_rejects_symlinked_state() {
+  local repo outside out status=0
+  repo=$(make_fixture_repo disarm-symlink)
+  outside="$TMP_ROOT/disarm-symlink/outside"
+  mkdir -p "$outside"
+  printf 'shim sentinel\n' > "$outside/upstream-urgent.check.sh"
+  printf 'trust sentinel\n' > "$outside/upstream-urgent.check-trust"
+  printf 'record sentinel\n' > "$outside/.upstream-urgent"
+  ln -s "$outside" "$repo/state"
+  out="$TMP_ROOT/disarm-symlink/out.txt"
+  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" disarm >"$out" 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail 'disarm reported success through a symlinked state directory'
+  [ "$(cat "$outside/upstream-urgent.check.sh")" = 'shim sentinel' ] \
+    || fail 'disarm removed a file through the state symlink'
+  [ "$(cat "$outside/upstream-urgent.check-trust")" = 'trust sentinel' ] \
+    || fail 'disarm removed trust through the state symlink'
+  [ "$(cat "$outside/.upstream-urgent")" = 'record sentinel' ] \
+    || fail 'disarm removed the record through the state symlink'
+  assert_not_contains "$(cat "$out")" 'disarmed: state/upstream-urgent.check.sh' \
+    'disarm claimed success through a state symlink'
+  pass 'disarm rejects a symlinked state directory'
+}
+
 # A pending urgent commit stays pending for days, until a sync advances the
 # base. A report of the other kind between two successful polls must not make
 # the same unchanged commit set news again.
@@ -196,7 +286,7 @@ test_an_interrupting_report_does_not_reannounce_an_unchanged_hit() {
   [ "$status" -ne 0 ] || fail 'a check with no upstream remote exited zero'
   assert_contains "$(cat "$out")" 'upstream urgent check failed:' 'the interruption produced no report'
 
-  git -C "$repo" remote add upstream "file://$TMP_ROOT/failure-between-hits/upstream.git"
+  git -C "$repo" remote add upstream "$CANONICAL_UPSTREAM_URL"
   run_check "$repo" "$out"
   [ ! -s "$out" ] \
     || fail "a transient failure re-announced an unchanged hit: $(cat "$out")"
@@ -214,7 +304,7 @@ test_a_reintroduced_unusable_tripwire_is_news_again() {
   [ "$status" -ne 0 ] || fail 'a check with no upstream remote exited zero'
   [ -s "$out" ] || fail 'the first unusable-tripwire report was silent'
 
-  git -C "$repo" remote add upstream "file://$TMP_ROOT/failure-after-clean/upstream.git"
+  git -C "$repo" remote add upstream "$CANONICAL_UPSTREAM_URL"
   run_check "$repo" "$out"
   [ ! -s "$out" ] || fail "a clean sweep reported something: $(cat "$out")"
 
@@ -252,6 +342,19 @@ test_matching_upstream_body_is_reported() {
   assert_contains "$report" "$(printf '%s' "$commit" | cut -c1-12)" 'report did not name a body-only match'
   assert_contains "$report" 'chore: refresh dependency notes' 'report did not include the body-only match subject'
   pass 'matching upstream body is reported'
+}
+
+test_control_bytes_are_removed_from_subjects() {
+  local repo out report clean
+  repo=$(make_fixture_repo control-bytes)
+  publish_upstream_commit "$repo" control-bytes $'security: rotate\033 the\007 signing\010 key\177' 'Body.' >/dev/null
+  out="$TMP_ROOT/control-bytes/report.txt"
+  run_check "$repo" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" 'security: rotate' 'the control-byte hit was not reported'
+  clean=$(printf '%s' "$report" | LC_ALL=C tr -d '[:cntrl:]')
+  [ "$clean" = "$report" ] || fail 'the report contains a control byte'
+  pass 'urgent subjects are emitted without control bytes'
 }
 
 test_nonmatching_upstream_commit_is_silent() {
@@ -340,6 +443,19 @@ test_disarm_removes_the_report_record() {
   pass 'disarm drops the report record so the next run reports again'
 }
 
+test_record_directory_is_not_used_as_record_target() {
+  local repo out record
+  repo=$(make_fixture_repo record-directory)
+  publish_upstream_commit "$repo" record-directory 'security: rotate the signing key' 'Body.' >/dev/null
+  record="$repo/state/.upstream-urgent"
+  mkdir -p "$record"
+  out="$TMP_ROOT/record-directory/report.txt"
+  run_check "$repo" "$out"
+  [ -z "$(find "$record" -mindepth 1 -maxdepth 1 -print -quit)" ] \
+    || fail 'record writing placed a temporary file inside the record directory'
+  pass 'record writing rejects a directory record destination'
+}
+
 # The watcher redirects a check's stderr to /dev/null and ignores its exit
 # status (bin/fm-watch.sh), so only stdout can tell it the tripwire stopped
 # working. An inspection failure that never reaches stdout is indistinguishable
@@ -361,7 +477,8 @@ test_inspection_failure_is_reported_on_stdout_once() {
     > "$repo/docs/upstream-sync.md"
   out="$TMP_ROOT/unreachable-base/out.txt"
   err="$TMP_ROOT/unreachable-base/err.txt"
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
+  env PATH="$(fixture_fakebin "$repo"):$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    "$CHECK" check >"$out" 2>"$err" || status=$?
   [ "$status" -ne 0 ] || fail 'a failed inspection exited zero'
   assert_contains "$(cat "$out")" 'upstream urgent check failed:' \
     'a failed inspection produced no stdout line, so the watcher would read it as all-clear'
@@ -372,7 +489,8 @@ test_inspection_failure_is_reported_on_stdout_once() {
 
   second_out="$TMP_ROOT/unreachable-base/out2.txt"
   status=0
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$second_out" 2>/dev/null || status=$?
+  env PATH="$(fixture_fakebin "$repo"):$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+    "$CHECK" check >"$second_out" 2>/dev/null || status=$?
   [ "$status" -ne 0 ] || fail 'the second failed inspection exited zero'
   [ ! -s "$second_out" ] \
     || fail "an unchanged failure was reported again: $(cat "$second_out")"
@@ -383,14 +501,26 @@ test_inspection_failure_is_reported_on_stdout_once() {
 # line and nothing else. The watcher turns any stdout line into a wake, and a
 # flapping link would otherwise wake firstmate once per poll, indefinitely.
 test_a_retryable_failure_never_reaches_stdout() {
-  local repo out err status=0 i
+  local repo out err fakebin real_git status=0 i
   repo=$(make_fixture_repo retryable-silent)
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/retryable-silent/absent.git"
+  fakebin="$TMP_ROOT/retryable-silent/fakebin"
+  mkdir -p "$fakebin"
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+case " \$* " in
+  *' remote get-url upstream '*) printf '%s\n' '$CANONICAL_UPSTREAM_URL'; exit 0 ;;
+  *' fetch '*) exit 1 ;;
+esac
+exec '$real_git' "\$@"
+SH
+  chmod 0755 "$fakebin/git"
   out="$TMP_ROOT/retryable-silent/out.txt"
   err="$TMP_ROOT/retryable-silent/err.txt"
   for i in 1 2 3; do
     status=0
-    env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
+    env PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
+      "$CHECK" check >"$out" 2>"$err" || status=$?
     [ "$status" -ne 0 ] || fail "sweep $i against an absent remote exited zero"
     [ ! -s "$out" ] \
       || fail "a retryable failure woke firstmate on sweep $i: $(cat "$out")"
@@ -399,7 +529,6 @@ test_a_retryable_failure_never_reaches_stdout() {
     'a retryable failure left no stderr trace for a hand run'
 
   # Staying silent must not cost the hit that follows once the link is back.
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/retryable-silent/upstream.git"
   publish_upstream_commit "$repo" retryable-silent 'security: rotate the signing key' 'Body.' >/dev/null
   run_check "$repo" "$out"
   assert_contains "$(cat "$out")" 'urgent upstream commits:' \
@@ -480,16 +609,21 @@ test_a_failed_rearm_restores_the_armed_shim() {
 
 test_matching_upstream_commit_is_reported
 test_matching_upstream_body_is_reported
+test_control_bytes_are_removed_from_subjects
 test_nonmatching_upstream_commit_is_silent
 test_recorded_base_is_excluded_from_the_range
 test_check_uses_one_fetch_and_finishes_quickly
 test_slow_fetch_is_bounded_before_ten_seconds
 test_slow_local_scan_is_bounded_before_ten_seconds
+test_noncanonical_upstream_remote_is_rejected
 test_arm_registers_and_disarm_removes_the_check
 test_disarm_reports_cleanup_failure
+test_disarm_rejects_missing_state
+test_disarm_rejects_symlinked_state
 test_base_is_read_from_a_row_that_also_names_a_landing_hash
 test_unchanged_match_set_is_reported_once
 test_disarm_removes_the_report_record
+test_record_directory_is_not_used_as_record_target
 test_inspection_failure_is_reported_on_stdout_once
 test_a_retryable_failure_never_reaches_stdout
 test_a_failed_registration_leaves_no_unregistered_shim

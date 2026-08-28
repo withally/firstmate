@@ -122,6 +122,7 @@ urgent_commits() {
       sub(/^[[:space:]]+/, "", $0)
       split($0, fields, "\t")
       subject=fields[2]
+      gsub(/[[:cntrl:]]+/, " ", subject)
       gsub(/[[:space:]]+/, " ", subject)
       if (subject == "") subject="(no subject)"
       if (found++) printf "; "
@@ -152,10 +153,16 @@ record_read() {
   return 0
 }
 
+state_directory_is_safe() {
+  [ -d "$STATE" ] && [ ! -L "$STATE" ]
+}
+
 record_write() {
-  local reported=$1 failed=$2 tmp
+  local reported=$1 failed=$2 tmp device
   [ -e "$STATE" ] || mkdir -p "$STATE" 2>/dev/null || return 1
-  [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
+  state_directory_is_safe || return 1
+  device=$(fm_pr_file_device "$STATE") || return 1
+  fm_pr_regular_destination_on_device_or_absent "$RECORD" "$device" || return 1
   tmp=$(mktemp "$RECORD.XXXXXX" 2>/dev/null) || return 1
   chmod 0600 "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
   {
@@ -163,6 +170,10 @@ record_write() {
     printf 'reported=%s\n' "$reported"
     printf 'failed=%s\n' "$failed"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  fm_pr_regular_destination_on_device_or_absent "$RECORD" "$device" || {
+    rm -f -- "$tmp"
+    return 1
+  }
   mv -f -- "$tmp" "$RECORD" || { rm -f -- "$tmp"; return 1; }
   return 0
 }
@@ -208,6 +219,19 @@ check_unusable() {
   return 1
 }
 
+upstream_remote_is_canonical() {
+  case "$1" in
+    git@github.com:kunchenguid/firstmate|git@github.com:kunchenguid/firstmate.git|\
+    ssh://git@github.com/kunchenguid/firstmate|ssh://git@github.com/kunchenguid/firstmate.git|\
+    https://github.com/kunchenguid/firstmate|https://github.com/kunchenguid/firstmate.git)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 action_check_inner() {
   local base base_commit upstream_tip remote_url matches log
   base=$(latest_sync_base) || {
@@ -224,6 +248,10 @@ action_check_inner() {
   }
   [ -n "$remote_url" ] || {
     check_unusable 'upstream remote is unavailable'
+    return 1
+  }
+  upstream_remote_is_canonical "$remote_url" || {
+    check_unusable 'upstream remote does not point at kunchenguid/firstmate'
     return 1
   }
   # This is the only network operation in the tripwire.
@@ -398,6 +426,10 @@ action_arm() {
 }
 
 action_disarm() {
+  if ! state_directory_is_safe; then
+    printf 'fm-upstream-urgent-check: state directory is unavailable or symlinked\n' >&2
+    return 1
+  fi
   if ! rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD"; then
     printf 'fm-upstream-urgent-check: could not fully disarm state/%s.check.sh\n' "$CHECK_ID" >&2
     return 1

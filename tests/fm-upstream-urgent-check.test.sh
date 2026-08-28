@@ -344,6 +344,20 @@ test_matching_upstream_body_is_reported() {
   pass 'matching upstream body is reported'
 }
 
+test_record_separator_in_body_keeps_commit_identity() {
+  local repo out report commit
+  repo=$(make_fixture_repo separator-body)
+  commit=$(publish_upstream_commit "$repo" separator-body 'chore: refresh dependency notes' $'Routine notes.\036The credential rotation procedure is documented here.')
+  out="$TMP_ROOT/separator-body/report.txt"
+  run_check "$repo" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "$(printf '%s' "$commit" | cut -c1-12)" \
+    'a record separator in the body changed the reported commit identity'
+  assert_contains "$report" 'chore: refresh dependency notes' \
+    'the commit with a record separator in its body was not reported'
+  pass 'commit bodies do not corrupt urgent report framing'
+}
+
 test_control_bytes_are_removed_from_subjects() {
   local repo out report clean
   repo=$(make_fixture_repo control-bytes)
@@ -443,6 +457,52 @@ test_disarm_removes_the_report_record() {
   pass 'disarm drops the report record so the next run reports again'
 }
 
+test_symlinked_record_does_not_suppress_a_hit() {
+  local repo out outside
+  repo=$(make_fixture_repo symlinked-record)
+  publish_upstream_commit "$repo" symlinked-record 'security: rotate the signing key' 'Body.' >/dev/null
+  out="$TMP_ROOT/symlinked-record/report.txt"
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'the initial hit was not reported'
+  outside="$TMP_ROOT/symlinked-record/outside"
+  mkdir -p "$outside"
+  mv "$repo/state/.upstream-urgent" "$outside/record"
+  ln -s "$outside/record" "$repo/state/.upstream-urgent"
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'a symlinked record suppressed the urgent hit'
+  pass 'a symlinked record cannot suppress an urgent hit'
+}
+
+test_hardlinked_record_does_not_suppress_a_hit() {
+  local repo out outside
+  repo=$(make_fixture_repo hardlinked-record)
+  publish_upstream_commit "$repo" hardlinked-record 'security: rotate the signing key' 'Body.' >/dev/null
+  out="$TMP_ROOT/hardlinked-record/report.txt"
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'the initial hit was not reported'
+  outside="$TMP_ROOT/hardlinked-record/outside"
+  mkdir -p "$outside"
+  mv "$repo/state/.upstream-urgent" "$outside/record"
+  ln "$outside/record" "$repo/state/.upstream-urgent"
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'a hardlinked record suppressed the urgent hit'
+  pass 'a hardlinked record cannot suppress an urgent hit'
+}
+
+test_nonprivate_record_does_not_suppress_a_hit() {
+  local repo out record
+  repo=$(make_fixture_repo nonprivate-record)
+  publish_upstream_commit "$repo" nonprivate-record 'security: rotate the signing key' 'Body.' >/dev/null
+  out="$TMP_ROOT/nonprivate-record/report.txt"
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'the initial hit was not reported'
+  record="$repo/state/.upstream-urgent"
+  chmod 0644 "$record"
+  run_check "$repo" "$out"
+  [ -s "$out" ] || fail 'a non-private record suppressed the urgent hit'
+  pass 'a non-private record cannot suppress an urgent hit'
+}
+
 test_record_directory_is_not_used_as_record_target() {
   local repo out record
   repo=$(make_fixture_repo record-directory)
@@ -454,6 +514,19 @@ test_record_directory_is_not_used_as_record_target() {
   [ -z "$(find "$record" -mindepth 1 -maxdepth 1 -print -quit)" ] \
     || fail 'record writing placed a temporary file inside the record directory'
   pass 'record writing rejects a directory record destination'
+}
+
+test_dangling_state_symlink_is_not_created() {
+  local repo target out
+  repo=$(make_fixture_repo dangling-state)
+  publish_upstream_commit "$repo" dangling-state 'security: rotate the signing key' 'Body.' >/dev/null
+  target="$TMP_ROOT/dangling-state/missing-target"
+  ln -s "$target" "$repo/state"
+  out="$TMP_ROOT/dangling-state/report.txt"
+  run_check "$repo" "$out"
+  [ -L "$repo/state" ] || fail 'the dangling state symlink was replaced'
+  [ ! -e "$target" ] || fail 'record writing created the dangling state target'
+  pass 'record writing rejects a dangling state symlink before creation'
 }
 
 # The watcher redirects a check's stderr to /dev/null and ignores its exit
@@ -503,7 +576,7 @@ test_inspection_failure_is_reported_on_stdout_once() {
 test_a_retryable_failure_never_reaches_stdout() {
   local repo out err fakebin real_git status=0 i
   repo=$(make_fixture_repo retryable-silent)
-  fakebin="$TMP_ROOT/retryable-silent/fakebin"
+  fakebin="$TMP_ROOT/retryable-silent/failbin"
   mkdir -p "$fakebin"
   real_git=$(command -v git)
   cat > "$fakebin/git" <<SH
@@ -521,7 +594,7 @@ SH
     status=0
     env PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" \
       "$CHECK" check >"$out" 2>"$err" || status=$?
-    [ "$status" -ne 0 ] || fail "sweep $i against an absent remote exited zero"
+    [ "$status" -ne 0 ] || fail "sweep $i with a forced fetch failure exited zero"
     [ ! -s "$out" ] \
       || fail "a retryable failure woke firstmate on sweep $i: $(cat "$out")"
   done
@@ -609,6 +682,7 @@ test_a_failed_rearm_restores_the_armed_shim() {
 
 test_matching_upstream_commit_is_reported
 test_matching_upstream_body_is_reported
+test_record_separator_in_body_keeps_commit_identity
 test_control_bytes_are_removed_from_subjects
 test_nonmatching_upstream_commit_is_silent
 test_recorded_base_is_excluded_from_the_range
@@ -623,7 +697,11 @@ test_disarm_rejects_symlinked_state
 test_base_is_read_from_a_row_that_also_names_a_landing_hash
 test_unchanged_match_set_is_reported_once
 test_disarm_removes_the_report_record
+test_symlinked_record_does_not_suppress_a_hit
+test_hardlinked_record_does_not_suppress_a_hit
+test_nonprivate_record_does_not_suppress_a_hit
 test_record_directory_is_not_used_as_record_target
+test_dangling_state_symlink_is_not_created
 test_inspection_failure_is_reported_on_stdout_once
 test_a_retryable_failure_never_reaches_stdout
 test_a_failed_registration_leaves_no_unregistered_shim

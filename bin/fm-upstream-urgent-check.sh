@@ -115,30 +115,50 @@ latest_sync_base() {
 }
 
 urgent_commits() {
-  awk -v RS='\036' '
-    {
-      text=tolower($0)
-      if (text !~ /(^|[^[:alnum:]])(security|cve|breaking|revert|data[[:space:]-]+loss|credential(s)?)([^[:alnum:]]|$)/) next
-      sub(/^[[:space:]]+/, "", $0)
-      split($0, fields, "\t")
-      subject=fields[2]
-      gsub(/[[:cntrl:]]+/, " ", subject)
-      gsub(/[[:space:]]+/, " ", subject)
-      if (subject == "") subject="(no subject)"
-      if (found++) printf "; "
-      printf "%s \"%s\"", substr(fields[1], 1, 12), subject
-    }
-  '
+  local commit subject body clean found=0
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    subject=$(git -C "$FM_ROOT" show -s --format='%s' "$commit") || return 1
+    body=$(git -C "$FM_ROOT" show -s --format='%b' "$commit") || return 1
+    if clean=$(printf '%s\n%s' "$subject" "$body" | awk '
+      {
+        if (NR == 1) subject = $0
+        text = text "\n" $0
+      }
+      END {
+        text=tolower(text)
+        if (text !~ /(^|[^[:alnum:]])(security|cve|breaking|revert|data[[:space:]-]+loss|credential(s)?)([^[:alnum:]]|$)/) exit 1
+        gsub(/[[:cntrl:]]+/, " ", subject)
+        gsub(/[[:space:]]+/, " ", subject)
+        if (subject == "") subject="(no subject)"
+        printf "%s", subject
+      }
+    '); then
+      if [ "$found" -gt 0 ]; then
+        printf '; '
+      fi
+      printf '%s "%s"' "${commit:0:12}" "$clean"
+      found=1
+    fi
+  done
+  return 0
 }
 
 RECORD_REPORTED=
 RECORD_FAILED=
 
+state_directory_is_safe() {
+  [ -d "$STATE" ] && [ ! -L "$STATE" ]
+}
+
 record_read() {
-  local line first=1
+  local line first=1 device
   RECORD_REPORTED=
   RECORD_FAILED=
   [ -f "$RECORD" ] || return 0
+  state_directory_is_safe || return 0
+  device=$(fm_pr_file_device "$STATE") || return 0
+  fm_pr_private_file_valid "$RECORD" 600 "$device" || return 0
   while IFS= read -r line; do
     if [ "$first" = 1 ]; then
       first=0
@@ -153,12 +173,9 @@ record_read() {
   return 0
 }
 
-state_directory_is_safe() {
-  [ -d "$STATE" ] && [ ! -L "$STATE" ]
-}
-
 record_write() {
   local reported=$1 failed=$2 tmp device
+  [ ! -L "$STATE" ] || return 1
   [ -e "$STATE" ] || mkdir -p "$STATE" 2>/dev/null || return 1
   state_directory_is_safe || return 1
   device=$(fm_pr_file_device "$STATE") || return 1
@@ -275,12 +292,12 @@ action_check_inner() {
   }
   # The log is captured before it is matched, because a pipeline would take its
   # status from awk alone and report a failed inspection as a clean check.
-  log=$(git -C "$FM_ROOT" log --reverse \
-    --format='%H%x09%s%x09%b%x1e' "$base_commit..$upstream_tip") || {
+  log=$(git -C "$FM_ROOT" log --reverse --format='%H' \
+    "$base_commit..$upstream_tip") || {
     check_retryable 'could not inspect upstream commits'
     return 1
   }
-  matches=$(printf '%s' "$log" | urgent_commits) || {
+  matches=$(printf '%s\n' "$log" | urgent_commits) || {
     check_retryable 'could not inspect upstream commits'
     return 1
   }

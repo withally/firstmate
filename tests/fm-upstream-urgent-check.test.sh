@@ -134,9 +134,9 @@ test_arm_registers_and_disarm_removes_the_check() {
 }
 
 # A pending urgent commit stays pending for days, until a sync advances the
-# base, while a fetch failure comes and goes with the network. A blip between
-# two successful polls must not make the same unchanged commit set news again.
-test_a_transient_failure_does_not_reannounce_an_unchanged_hit() {
+# base. A report of the other kind between two successful polls must not make
+# the same unchanged commit set news again.
+test_an_interrupting_report_does_not_reannounce_an_unchanged_hit() {
   local repo out status=0
   repo=$(make_fixture_repo failure-between-hits)
   publish_upstream_commit "$repo" failure-between-hits 'security: rotate the signing key' 'Body.' >/dev/null
@@ -144,38 +144,42 @@ test_a_transient_failure_does_not_reannounce_an_unchanged_hit() {
   run_check "$repo" "$out"
   assert_contains "$(cat "$out")" 'urgent upstream commits:' 'the first sweep did not report the hit'
 
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-between-hits/absent.git"
+  # An unusable-tripwire report is the one non-hit condition that does reach
+  # stdout, so it is what can evict the hit's suppression state.
+  git -C "$repo" remote remove upstream
   env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
-  [ "$status" -ne 0 ] || fail 'a fetch against an absent remote exited zero'
-  assert_contains "$(cat "$out")" 'upstream urgent check failed:' 'the blip produced no failure report'
+  [ "$status" -ne 0 ] || fail 'a check with no upstream remote exited zero'
+  assert_contains "$(cat "$out")" 'upstream urgent check failed:' 'the interruption produced no report'
 
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-between-hits/upstream.git"
+  git -C "$repo" remote add upstream "file://$TMP_ROOT/failure-between-hits/upstream.git"
   run_check "$repo" "$out"
   [ ! -s "$out" ] \
     || fail "a transient failure re-announced an unchanged hit: $(cat "$out")"
-  pass 'a transient failure never re-announces an unchanged commit set'
+  pass 'an interrupting report never re-announces an unchanged commit set'
 }
 
-test_a_repeated_failure_after_a_clean_sweep_is_news_again() {
+# Only a condition a human had to clear can reach this path, so re-reporting it
+# after it genuinely came back is one wake per reintroduction, not per poll.
+test_a_reintroduced_unusable_tripwire_is_news_again() {
   local repo out status=0
   repo=$(make_fixture_repo failure-after-clean)
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-after-clean/absent.git"
   out="$TMP_ROOT/failure-after-clean/out.txt"
+  git -C "$repo" remote remove upstream
   env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
-  [ "$status" -ne 0 ] || fail 'a fetch against an absent remote exited zero'
-  [ -s "$out" ] || fail 'the first failure produced no report'
+  [ "$status" -ne 0 ] || fail 'a check with no upstream remote exited zero'
+  [ -s "$out" ] || fail 'the first unusable-tripwire report was silent'
 
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-after-clean/upstream.git"
+  git -C "$repo" remote add upstream "file://$TMP_ROOT/failure-after-clean/upstream.git"
   run_check "$repo" "$out"
   [ ! -s "$out" ] || fail "a clean sweep reported something: $(cat "$out")"
 
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-after-clean/absent.git"
+  git -C "$repo" remote remove upstream
   status=0
   env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
-  [ "$status" -ne 0 ] || fail 'the returning failure exited zero'
+  [ "$status" -ne 0 ] || fail 'the reintroduced condition exited zero'
   assert_contains "$(cat "$out")" 'upstream urgent check failed:' \
-    'a failure that returned after a clean sweep was suppressed'
-  pass 'a failure that returns after a clean sweep is news again'
+    'a condition reintroduced after a repair was suppressed'
+  pass 'a reintroduced unusable tripwire is news again'
 }
 
 test_matching_upstream_commit_is_reported() {
@@ -330,22 +334,32 @@ test_inspection_failure_is_reported_on_stdout_once() {
   pass 'an inspection failure reaches stdout, exits non-zero, and wakes once'
 }
 
-test_a_recovered_inspection_reports_a_later_hit() {
-  local repo out status=0
-  repo=$(make_fixture_repo failure-recovery)
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-recovery/absent.git"
-  out="$TMP_ROOT/failure-recovery/out.txt"
-  env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>/dev/null || status=$?
-  [ "$status" -ne 0 ] || fail 'a fetch against an absent remote exited zero'
-  [ -s "$out" ] || fail 'a fetch failure produced no stdout report'
+# A fetch failure is retryable, so it must cost a non-zero exit and a stderr
+# line and nothing else. The watcher turns any stdout line into a wake, and a
+# flapping link would otherwise wake firstmate once per poll, indefinitely.
+test_a_retryable_failure_never_reaches_stdout() {
+  local repo out err status=0 i
+  repo=$(make_fixture_repo retryable-silent)
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/retryable-silent/absent.git"
+  out="$TMP_ROOT/retryable-silent/out.txt"
+  err="$TMP_ROOT/retryable-silent/err.txt"
+  for i in 1 2 3; do
+    status=0
+    env FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" "$CHECK" check >"$out" 2>"$err" || status=$?
+    [ "$status" -ne 0 ] || fail "sweep $i against an absent remote exited zero"
+    [ ! -s "$out" ] \
+      || fail "a retryable failure woke firstmate on sweep $i: $(cat "$out")"
+  done
+  assert_contains "$(cat "$err")" 'fetch failed' \
+    'a retryable failure left no stderr trace for a hand run'
 
-  # A failure must not latch the record against a real hit that follows.
-  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/failure-recovery/upstream.git"
-  publish_upstream_commit "$repo" failure-recovery 'security: rotate the signing key' 'Body.' >/dev/null
+  # Staying silent must not cost the hit that follows once the link is back.
+  git -C "$repo" remote set-url upstream "file://$TMP_ROOT/retryable-silent/upstream.git"
+  publish_upstream_commit "$repo" retryable-silent 'security: rotate the signing key' 'Body.' >/dev/null
   run_check "$repo" "$out"
   assert_contains "$(cat "$out")" 'urgent upstream commits:' \
-    'a hit after a reported failure was suppressed'
-  pass 'a recovered inspection still reports the hit that follows'
+    'a hit after a retryable failure was suppressed'
+  pass 'a retryable failure stays off stdout and never costs a later hit'
 }
 
 # An unregistered shim is not inert: bin/fm-watch.sh rejects it on every sweep
@@ -430,8 +444,8 @@ test_base_is_read_from_a_row_that_also_names_a_landing_hash
 test_unchanged_match_set_is_reported_once
 test_disarm_removes_the_report_record
 test_inspection_failure_is_reported_on_stdout_once
-test_a_recovered_inspection_reports_a_later_hit
+test_a_retryable_failure_never_reaches_stdout
 test_a_failed_registration_leaves_no_unregistered_shim
 test_a_failed_rearm_restores_the_armed_shim
-test_a_transient_failure_does_not_reannounce_an_unchanged_hit
-test_a_repeated_failure_after_a_clean_sweep_is_news_again
+test_an_interrupting_report_does_not_reannounce_an_unchanged_hit
+test_a_reintroduced_unusable_tripwire_is_news_again

@@ -17,18 +17,31 @@
 # were made from, uncut, so one urgent commit is reported once rather than on
 # every watcher poll while the recorded sync base still trails it.
 #
-# Every condition that stops the inspection is reported on stdout through that
-# same record, never on stderr alone. The watcher discards a check's stderr and
-# its exit status, so a tripwire that can no longer read its base, reach its
-# remote, or fetch would otherwise be indistinguishable from a clean all-clear
-# for as long as it stays armed. It still exits non-zero, so a hand run and the
-# test suite can tell a failed inspection from a silent one.
+# A condition that stops the inspection is split by whether retrying can clear
+# it, because the watcher turns any stdout line into a firstmate wake and only
+# one of the two kinds is worth waking anyone about.
 #
-# A hit and an inspection failure keep SEPARATE keys, because they interleave on
-# their own schedules: a pending urgent commit stays pending for days, until a
-# sync advances the base, while a fetch failure comes and goes with the network.
-# One shared slot would let a single blip evict the hit's suppression state and
-# re-announce the same commit set on the next poll that succeeds, once per blip.
+#   Retryable   a failed fetch, an upstream/main missing right after one, a log
+#               that could not be read. Network, sleep/wake, a concurrent gc.
+#               These go to stderr and a non-zero exit ONLY, so a flapping link
+#               cannot wake firstmate once per poll about a condition that the
+#               next poll may well clear on its own.
+#   Unusable    no readable sync base, no upstream remote, a recorded base that
+#               is not a commit here or not an ancestor of upstream/main. No
+#               amount of retrying fixes these; the tripwire is armed and dead
+#               until a human edits the catch-up log or the remote. The watcher
+#               discards stderr and the exit status, so staying silent would
+#               leave a dead tripwire indistinguishable from a clean all-clear.
+#               These report on stdout, once, through the record.
+#
+# Every failure still exits non-zero, so a hand run and the test suite can tell
+# a failed inspection from a silent one either way.
+#
+# A hit and an unusable-tripwire report keep SEPARATE keys, because they
+# interleave on their own schedules: a pending urgent commit stays pending for
+# days, until a sync advances the base. One shared slot would let a report of
+# the other kind evict the hit's suppression state and re-announce the same
+# commit set on the next poll that succeeds.
 set -u
 export LC_ALL=C
 # The upstream probe must never stop to ask for credentials; an unauthenticated
@@ -71,8 +84,10 @@ Usage:
 
 The check reads the latest adopted upstream base from docs/upstream-sync.md.
 It is silent unless a commit since that base matches security, CVE, breaking,
-revert, data loss, or credential, or the inspection itself could not run.
-Either report is printed once per distinct report, on stdout.
+revert, data loss, or credential, or the tripwire is armed but unusable until
+someone repairs its base or its remote. Either report is printed once per
+distinct report, on stdout. A retryable failure - a fetch, a missing ref, an
+unreadable log - only goes to stderr and a non-zero exit.
 EOF
 }
 
@@ -177,12 +192,17 @@ report_clear() {
   fi
 }
 
-check_failed() {
+check_retryable() {
+  printf 'upstream urgent check: %s\n' "$1" >&2
+  return 1
+}
+
+check_unusable() {
   local payload="upstream urgent check failed: $1"
   record_read
   report_emit "$payload" "$RECORD_FAILED"
   # The match set the record already holds is carried through untouched, so a
-  # transient failure cannot make an unchanged pending commit set news again.
+  # report of this kind cannot make an unchanged pending commit set news again.
   record_write "$RECORD_REPORTED" "$payload" || true
   return 1
 }
@@ -190,54 +210,56 @@ check_failed() {
 action_check() {
   local base base_commit upstream_tip remote_url matches log
   base=$(latest_sync_base) || {
-    check_failed 'latest sync base is unavailable'
+    check_unusable 'latest sync base is unavailable'
     return 1
   }
   [ -n "$base" ] || {
-    check_failed 'latest sync base is unavailable'
+    check_unusable 'latest sync base is unavailable'
     return 1
   }
   remote_url=$(git -C "$FM_ROOT" remote get-url upstream 2>/dev/null) || {
-    check_failed 'upstream remote is unavailable'
+    check_unusable 'upstream remote is unavailable'
     return 1
   }
   [ -n "$remote_url" ] || {
-    check_failed 'upstream remote is unavailable'
+    check_unusable 'upstream remote is unavailable'
     return 1
   }
   # This is the only network operation in the tripwire.
   fm_run_timed "$FETCH_TIMEOUT" git -C "$FM_ROOT" fetch --quiet --no-tags upstream \
     +main:refs/remotes/upstream/main >/dev/null 2>&1 || {
-    check_failed 'fetch failed'
+    check_retryable 'fetch failed'
     return 1
   }
   upstream_tip=$(git -C "$FM_ROOT" rev-parse --verify --quiet \
     'refs/remotes/upstream/main^{commit}') || {
-    check_failed 'upstream/main is unavailable after fetch'
+    check_retryable 'upstream/main is unavailable after fetch'
     return 1
   }
   base_commit=$(git -C "$FM_ROOT" rev-parse --verify --quiet "$base^{commit}") || {
-    check_failed "recorded base $base is not a commit in this clone"
+    check_unusable "recorded base $base is not a commit in this clone"
     return 1
   }
   git -C "$FM_ROOT" merge-base --is-ancestor "$base_commit" "$upstream_tip" || {
-    check_failed "recorded base $base is not an ancestor of upstream/main"
+    check_unusable "recorded base $base is not an ancestor of upstream/main"
     return 1
   }
   # The log is captured before it is matched, because a pipeline would take its
   # status from awk alone and report a failed inspection as a clean check.
   log=$(git -C "$FM_ROOT" log --reverse \
     --format='%H%x09%s%x09%b%x1e' "$base_commit..$upstream_tip") || {
-    check_failed 'could not inspect upstream commits'
+    check_retryable 'could not inspect upstream commits'
     return 1
   }
   matches=$(printf '%s' "$log" | urgent_commits) || {
-    check_failed 'could not inspect upstream commits'
+    check_retryable 'could not inspect upstream commits'
     return 1
   }
   [ -n "$matches" ] || {
     # A clean window clears the record, so the same commit set or the same
-    # failure is news again if either comes back.
+    # unusable-tripwire condition is news again if either comes back. Only a
+    # condition that needed a human to clear can be in that slot, so this cannot
+    # turn a flapping link into a wake per poll.
     report_clear
     return 0
   }

@@ -84,7 +84,8 @@ Roles:
 This is the current setting as the captain set it on 2026-08-29; the captain's preference file (`data/captain.md`, or the governing secondmate's copy) wins whenever it differs from this section.
 
 - Round 1 synthesis and plan writing: Claude Fable 5 at HIGH effort, never xhigh or max; this is the only Fable seat, and the parent firstmate confirms Fable quota before each Round 1 dispatch.
-- If the Fable seat is unavailable, Round 1 waits or runs on Codex gpt-5.6-sol HIGH with the captain informed, never silently.
+- If the Fable seat is unavailable, Round 1 waits; the parent firstmate reports the seat unavailable and the captain decides whether that round runs on Codex gpt-5.6-sol HIGH instead.
+- Round 1 never downgrades on a worker or secondmate authority.
 - Plan-check and every later patch: Codex gpt-5.6-sol HIGH; Fable does not re-enter to rewrite.
 - Researchers: Codex gpt-5.6-sol HIGH.
 - Execution workers: Codex gpt-5.6-sol medium by default, high when the task is genuinely hard, and every task names the slice element it unblocks.
@@ -95,7 +96,7 @@ This is the current setting as the captain set it on 2026-08-29; the captain's p
 - Slash commands (`/gsd-new-project`, `/gsd-onboard`, and the phase commands): the governing firstmate dispatches each phase step as a scout or ship task from the backlog.
 - Milestone and phase file bookkeeping (`STATE.md`, phase archives): `data/backlog.md` and the dated rulings files under `data/` are the durable state, and this document's log is the method's own record.
 - Hook-driven user prompts: keyed `needs-decision` check-ins and captain-held tasks carry every question to the parent firstmate and, only when genuinely his, to the captain.
-- Executor framework: `bin/fm-spawn.sh` launches each execution task in its own isolated worktree with a fresh context, and the selected delivery path plus `bin/fm-pr-merge.sh` own landing.
+- Executor framework: `bin/fm-spawn.sh` launches each execution task in its own isolated worktree with a fresh context; `bin/fm-pr-merge.sh` owns PR merges, and `bin/fm-merge-local.sh` owns approved local-only landing.
 
 ## 7. Success signals
 

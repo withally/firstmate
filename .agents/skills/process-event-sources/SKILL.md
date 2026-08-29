@@ -106,10 +106,11 @@ Supported by tests:
 
 The `when` adapter's guarantees are part of the operating contract in [`docs/configuration.md`](../../../docs/configuration.md#process-to-event-sources-stateprocevent).
 
-**Not true, and never to be claimed:** at-least-once, no-loss, or lossless delivery, and no generic exactly-once effect either - the handled acknowledgement only stops re-announcement, it says nothing about whether a paired external effect performed before the acknowledgement call actually completed, so a crash between that effect and the call can still repeat the effect on the next replay.
+**Generic boundary:** the runner's handled acknowledgement is not a source-delivery guarantee and never proves a generic exactly-once effect, because a crash between a paired external effect and that acknowledgement can repeat the effect on replay.
 
-The currently published `lavish-axi poll` destructively clears feedback before returning it.
-A result lost after that clearing and before the runner reads the process output is unrecoverable, and no firstmate wrapper can close that source-side window.
+For Lavish, a response carrying a `delivery_id` is durably captured before its adapter ACK, and capture failure, truncation, or ACK failure leaves the source armed for redelivery.
+That path is at-least-once and duplicate-tolerant, but not exclusive because deliveries have no owner or TTL; Lavish state uses plain `writeFile` rather than `fsync` plus atomic rename, so torn writes and power loss remain outside the guarantee.
+A response without a `delivery_id` retains the destructive legacy source-side loss window and must not be described as at-least-once, no-loss, or lossless.
 The remote-reply adapter removes that particular pre-capture window by never consuming its source, but it cannot recover bytes truly lost from the remote log itself.
 Say these boundaries plainly wherever the behavior is described.
 

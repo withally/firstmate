@@ -576,7 +576,7 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 ## Process-to-event sources (state/procevent)
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
-`bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
+`bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps the published `lavish-axi poll` interface plus its optional delivery acknowledgement.
 That adapter, and only that adapter, retries the one exact transient response a cut-short listener returns while its marks remain available (`error: Lavish Editor poll response was interrupted` with `code: SERVER_ERROR`), up to 12 times at 5 second intervals, so an internal retry never reaches the runner as a captured result.
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 0 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so re-arm a live board once to adopt this retry policy.
@@ -651,8 +651,11 @@ The runner proves exactly one durability boundary: output that reached the runne
 `bin/fm-procevent.sh handled <source-id> <sequence>` is the only thing that stops re-announcement: a generation-keyed, private, path-safe, durable, and idempotent acknowledgement that atomically checks and deduplicates by the exact source and sequence, so a paired effect gated on its first-time-vs-repeat report is never authorized twice.
 Default and fallback `check` publication is still best-effort, so the same source and sequence can repeat even before any restart; handlers deduplicate that identity rather than assuming a wake is unique.
 The runner proves nothing about the source side, and the handled acknowledgement proves nothing about a paired external effect performed before it: a crash between that effect and the acknowledgement call can still repeat the effect on replay, so this is never a generic exactly-once guarantee.
-The published `lavish-axi poll` clears feedback destructively before returning it, so a result lost between that clearing and the runner reading process output is unrecoverable.
-Never describe this path as at-least-once, no-loss, or lossless.
+For a patched Lavish response carrying a `delivery_id`, the runner stores the complete result before the adapter ACKs that id, and capture failure, truncation, or ACK-command failure leaves the source armed for redelivery.
+That path is at-least-once and duplicate-tolerant, but not exclusive: deliveries have no owner or TTL, so simultaneous or replacement consumers may process the same delivery.
+Lavish persists its state with plain `writeFile` rather than `fsync` plus atomic rename, so torn writes and power loss remain outside this guarantee.
+A response without a `delivery_id` retains the legacy poll behavior: feedback is cleared destructively before the response returns, so loss between source clearing and runner capture is unrecoverable.
+Never describe that no-`delivery_id` compatibility path as at-least-once, no-loss, or lossless.
 `docs/verification/process-event-sources.md` holds the measurements and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
 
 ## Spoken interface and captain inbox (config/voice-*, config/inbox-*)

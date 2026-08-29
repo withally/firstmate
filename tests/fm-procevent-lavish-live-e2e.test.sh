@@ -16,7 +16,7 @@ export NODE_NO_WARNINGS=1
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 LAVISH_SOURCE=${FM_LAVISH_PATCH_SOURCE:-/Users/ivan/Projects/firstmate/projects/lavish-axi}
-LAVISH_COMMIT=${FM_LAVISH_PATCH_COMMIT:-8ba3f32}
+EXPECTED_COMMIT=8ba3f32
 TMP_ROOT=$(fm_test_tmproot fm-procevent-lavish-live)
 BUILD="$TMP_ROOT/lavish-build"
 HOME_DIR="$TMP_ROOT/home"
@@ -39,13 +39,17 @@ cleanup_live() {
 trap cleanup_live EXIT
 
 [ -d "$LAVISH_SOURCE/.git" ] || fail "patched Lavish source is absent: $LAVISH_SOURCE"
-git -C "$LAVISH_SOURCE" cat-file -e "$LAVISH_COMMIT^{commit}" 2>/dev/null \
-  || fail "patched Lavish commit is absent: $LAVISH_COMMIT"
+EXPECTED_COMMIT_FULL=$(git -C "$LAVISH_SOURCE" rev-parse --verify "${EXPECTED_COMMIT}^{commit}" 2>/dev/null) \
+  || fail "patched Lavish commit is absent: $EXPECTED_COMMIT"
+CHECKED_OUT_COMMIT=$(git -C "$LAVISH_SOURCE" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
+  || fail "patched Lavish checkout has no checked-out commit"
+[ "$CHECKED_OUT_COMMIT" = "$EXPECTED_COMMIT_FULL" ] \
+  || fail "patched Lavish checkout is not exact commit $EXPECTED_COMMIT: $CHECKED_OUT_COMMIT"
 [ -d "$LAVISH_SOURCE/node_modules" ] \
   || fail "patched Lavish dependencies are absent; this guard never installs them"
 
 mkdir -p "$BUILD" "$HOME_DIR/state" "$STATE_DIR"
-git -C "$LAVISH_SOURCE" archive "$LAVISH_COMMIT" | tar -x -C "$BUILD" \
+git -C "$LAVISH_SOURCE" archive "$EXPECTED_COMMIT_FULL" | tar -x -C "$BUILD" \
   || fail "could not archive patched Lavish into the scratch build"
 ln -s "$LAVISH_SOURCE/node_modules" "$BUILD/node_modules"
 (cd "$BUILD" && npm run build --silent) \

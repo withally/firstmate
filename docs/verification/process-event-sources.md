@@ -66,9 +66,9 @@ A `waiting` session, a `missing` one, an `unknown` or unreadable result, and eve
 The content check anchors on column zero for the same reason the terminal check reads the leading `session:` block: content headers are top-level and their rows are indented, so captain-supplied payload text can neither forge a content block nor hide behind a fake empty one.
 Any recognized block counts as present even when its declared count is zero, and a malformed top-level `prompts` or `feedback` header is indeterminate and therefore announced.
 
-## The loss limitation this runner cannot close
+## Conditional Lavish delivery durability
 
-The published poll clears feedback destructively before returning it.
+The legacy published poll clears feedback destructively before returning it when its response has no `delivery_id`.
 Measured at the protocol layer by consuming and discarding the response:
 
 ```text
@@ -77,11 +77,15 @@ listing after: ...,open,"...",0
 state.json: status= open pending= 0 prompts= []  chat entries= []
 ```
 
-Nothing remains on the source side to re-read, and there is no acknowledgement, cursor, or replay surface to reserve against.
+Nothing remains on the source side to re-read, and there is no acknowledgement, cursor, or replay surface to reserve against on that legacy path.
 A result lost after that clearing and before the runner reads the child's output is therefore unrecoverable.
 
-**Consequence for wording:** the runner may describe only its own durability boundary.
-Never at-least-once, no-loss, or lossless.
+For a patched response carrying a `delivery_id`, the adapter captures the complete result before issuing its ACK, and capture failure, truncation, or ACK failure keeps the source armed for redelivery.
+That path is at-least-once and duplicate-tolerant, but not exclusive: deliveries have no owner or TTL, so simultaneous or replacement consumers may process the same delivery.
+Lavish state is written with plain `writeFile` rather than `fsync` plus atomic rename, so torn writes and power loss remain outside the guarantee.
+
+**Consequence for wording:** at-least-once describes only the delivery_id path after capture-before-ACK.
+The no-`delivery_id` compatibility path retains the destructive source-side loss window and must never be described as at-least-once, no-loss, or lossless.
 
 ## What the runner does prove
 

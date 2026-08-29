@@ -311,7 +311,8 @@ It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
+A fresh entry with no existing `state/.afk` clears stale transient escalation caches, while durable queue and task records remain authoritative.
+An away restart or recovery with `state/.afk` already present preserves the session's escalation buffer, delivery sidecars, and check ledger.
 
 ## Destructive lab safety
 

@@ -1754,6 +1754,9 @@ fm_wake_print_deduped() {
   awk -F '\t' '
     NF >= 5 {
       dedupe = $3 SUBSEP $4
+      if ($3 == "check") {
+        dedupe = $3 SUBSEP $4 SUBSEP $5
+      }
       if ($3 == "heartbeat") {
         dedupe = "heartbeat"
       }

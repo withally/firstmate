@@ -495,10 +495,13 @@ unit_native_lifecycle() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
+  printf 'buffered\t70\t/state/fresh.check.sh\tcheck: fresh\t\n' \
+    > "$st/state/.subsuper-check-ledger"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
-    && [ ! -e "$st/state/.subsuper-escalations" ]; then
+    && [ ! -e "$st/state/.subsuper-escalations" ] \
+    && [ ! -e "$st/state/.subsuper-check-ledger" ]; then
     pass "native lifecycle: launcher owns state with no terminal"
   else
     fail "native lifecycle: state preparation or no-terminal record failed"
@@ -508,6 +511,29 @@ unit_native_lifecycle() {
     pass "native lifecycle: uniform stop clears state without closing a terminal"
   else
     fail "native lifecycle: uniform stop retained state"
+  fi
+  rm -rf "$st"
+}
+
+unit_restart_preserves_session_ledger() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-restart-ledger.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.afk"
+  printf 'buffered\t71\t/state/restart.check.sh\tcheck: restart\t\n' \
+    > "$st/state/.subsuper-check-ledger"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
+    FM_SUPERVISOR_TARGET=fakepane FM_SUPERVISOR_BACKEND=tmux \
+    bash -c '
+      . "$1"
+      fm_afk_launch_reconcile() { :; }
+      fm_afk_launch_create_tmux() { :; }
+      fm_afk_launch_start
+    ' _ "$LAUNCH" >/dev/null 2>&1 \
+    && [ -s "$st/state/.subsuper-check-ledger" ]; then
+    pass "restart recovery: an existing away flag preserves the check ledger"
+  else
+    fail "restart recovery: the existing away session lost its check ledger"
   fi
   rm -rf "$st"
 }
@@ -947,6 +973,7 @@ unit_readiness_failure_rolls_back_terminal
 unit_readiness_failure_preserves_unconfirmed_record
 unit_tmux_absence_distinguishes_probe_failure
 unit_native_lifecycle
+unit_restart_preserves_session_ledger
 unit_native_entry_preserves_prepared_state
 unit_close_failure_preserves_record
 unit_record_publication_atomic

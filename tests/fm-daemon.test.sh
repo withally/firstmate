@@ -933,16 +933,16 @@ test_check_wakes_dedupe_by_source_and_payload_within_one_session() {
     'check: mutated replay bytes for the same durable identity' \
     "$state" /state/weekly.check.sh 41
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/weekly.check.sh 42
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
-    || fail "an exact identity replay or new sequence for the same check source/payload duplicated the buffer"
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 2 ] \
+    || fail "an exact identity replay or changed payload was not distinguished in the buffer"
 
   FM_STATE_OVERRIDE="$state" handle_wake \
     'check: /state/weekly.check.sh: weekly maintenance due with changed detail' \
     "$state" /state/weekly.check.sh 43
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/other.check.sh 44
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 3 ] \
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 4 ] \
     || fail "a changed payload or changed source was incorrectly deduplicated"
-  pass "check wakes dedupe exact and re-sequenced repeats without merging changed sources or payloads"
+  pass "check wakes dedupe exact source-sequence-payload repeats while preserving changed observations"
 }
 
 test_check_wake_replay_recovers_after_buffer_append_before_seen_record() {
@@ -958,6 +958,32 @@ test_check_wake_replay_recovers_after_buffer_append_before_seen_record() {
   [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
     || fail "replay after buffer append but before seen recording appended a duplicate"
   pass "check replay recovers the buffered original after an interrupted routing transaction"
+}
+
+test_check_wake_flush_reconciles_reserved_append_before_clearing() {
+  local dir state reason
+  dir=$(make_supercase check-crash-before-ack-flush)
+  state="$dir/state"
+  reason='check: /state/flush.check.sh: still due'
+  afk_enter "$state"
+
+  check_ledger_reserve "$state" 52 /state/flush.check.sh "$reason" \
+    || fail "could not stage the reserved check transaction"
+  escalate_add "$state" "$reason"
+  escalate_add "$state" "an unrelated buffered event"
+  (
+    inject_msg() { return 0; }
+    escalate_flush "$state" || fail "flush could not reconcile the reserved appended check"
+  ) || fail "reserved-append flush reconciliation subshell failed"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "flush retained the original buffer after reconciling its reservation"
+  [ "$(check_ledger_state "$state" 52 /state/flush.check.sh "$reason")" = delivered ] \
+    || fail "flush did not mark the reconciled check delivered"
+
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/flush.check.sh 52
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "replay appended a duplicate after the crash-before-ack window"
+  pass "check flush reconciles an appended reservation before clearing and replaying"
 }
 
 test_check_wake_reservation_does_not_borrow_another_sources_buffer_line() {
@@ -1032,6 +1058,24 @@ test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk() {
   [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
     || fail "a fresh away session did not clear the prior session's check ledger"
   pass "check ledger survives daemon restart and resets only on fresh away entry"
+}
+
+test_afk_start_recovery_preserves_session_ledger() {
+  local dir state
+  dir=$(make_supercase afk-start-recovery-ledger)
+  state="$dir/state"
+  : > "$state/.afk"
+  printf 'buffered\t73\t/state/restart.check.sh\tcheck: restart\t\n' \
+    > "$state/.subsuper-check-ledger"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_AFK_STATE_PREPARED=0 bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    fm_afk_start_main
+  ' _ "$AFK_START" >/dev/null 2>&1 \
+    || fail "direct away restart path failed"
+  [ -s "$state/.subsuper-check-ledger" ] \
+    || fail "direct away restart path cleared the active session ledger"
+  pass "direct away restart preserves the session check ledger"
 }
 
 test_check_wake_routing_failure_retains_the_durable_wake() {
@@ -2079,7 +2123,7 @@ test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   (
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected busy_state args: $1 $2"; printf 'busy'; }
-    fm_backend_capture() { printf 'idle Claude prompt\n'; }
+    fm_backend_capture() { printf '❯\n'; }
     fm_backend_composer_state() { printf 'empty'; }
     fm_backend_send_text_submit() { printf 'empty'; }
     FM_DAEMON_PRIMARY_HARNESS=claude
@@ -2105,7 +2149,7 @@ test_inject_msg_detects_claude_harness_before_submit() {
     FM_DAEMON_DIR="$dir/fakebin"
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { printf 'busy'; }
-    fm_backend_capture() { printf 'idle Claude prompt\n'; }
+    fm_backend_capture() { printf '❯\n'; }
     fm_busy_lines_match() { return 1; }
     fm_backend_composer_state() { printf 'empty'; }
     fm_backend_send_text_submit() {
@@ -2147,7 +2191,7 @@ test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard() {
   ) || fail "Herdr+Claude native-idle rendered-busy pane_is_busy subshell failed"
   (
     fm_backend_busy_state() { printf 'idle'; }
-    fm_backend_capture() { printf 'idle Claude prompt\n'; }
+    fm_backend_capture() { printf '❯\n'; }
     if FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr; then
       fail "native idle with an idle rendered pane should remain injectable"
     fi
@@ -2475,9 +2519,11 @@ test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate
 test_check_wakes_dedupe_by_source_and_payload_within_one_session
 test_check_wake_replay_recovers_after_buffer_append_before_seen_record
+test_check_wake_flush_reconciles_reserved_append_before_clearing
 test_check_wake_reservation_does_not_borrow_another_sources_buffer_line
 test_check_wake_failed_and_successful_flush_preserve_session_dedup
 test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk
+test_afk_start_recovery_preserves_session_ledger
 test_check_wake_routing_failure_retains_the_durable_wake
 test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout

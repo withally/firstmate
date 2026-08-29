@@ -231,6 +231,29 @@ test_drain_dedupes_obvious_duplicates() {
   pass "drain collapses obvious duplicate heartbeat and signal records"
 }
 
+test_drain_preserves_changed_check_payloads() {
+  local dir state out rows expected
+  dir=$(make_case check-payload-dedup)
+  state="$dir/state"
+  out="$dir/drain.out"
+  append_wake "$state" check /state/weekly.check.sh 'check: /state/weekly.check.sh: first' \
+    || fail "first check append failed"
+  append_wake "$state" check /state/weekly.check.sh 'check: /state/weekly.check.sh: first' \
+    || fail "duplicate check append failed"
+  append_wake "$state" check /state/weekly.check.sh 'check: /state/weekly.check.sh: second' \
+    || fail "changed check append failed"
+  append_wake "$state" check /state/weekly.check.sh 'check: /state/weekly.check.sh: second' \
+    || fail "second duplicate check append failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "check payload drain failed"
+  rows=$(awk -F '\t' '$3 == "check" { print $5 }' "$out")
+  expected=$(printf '%s\n%s' \
+    'check: /state/weekly.check.sh: first' \
+    'check: /state/weekly.check.sh: second')
+  [ "$rows" = "$expected" ] \
+    || fail "drain merged or dropped changed check payloads: $(printf '%s' "$rows" | tr '\n' '|')"
+  pass "drain collapses exact check observations while preserving changed payloads"
+}
+
 # The drain runs at the top of every wake-handling turn, so it also asserts
 # watcher liveness via fm-guard.sh: a lapsed re-arm chain then surfaces even on a
 # plain drain-and-handle turn that runs no other supervision script. It must warn
@@ -1214,6 +1237,7 @@ test_not_working_stale_enqueue_before_suppressor
 test_check_output_is_queued
 test_atomic_double_drain
 test_drain_dedupes_obvious_duplicates
+test_drain_preserves_changed_check_payloads
 test_drain_asserts_watcher_liveness
 test_structural_signal_enrichment_preserves_raw_rows
 test_enrichment_preserves_all_unread_lines_and_status_file_failures

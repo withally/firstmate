@@ -17,12 +17,12 @@
 #            directly, so there is no shell surface and no argument splitting.
 #            Adapters register sources; nothing here parses user text.
 # start      Claim the source, run its child to completion, durably capture the
-#            output, publish normalized wakes for pending results, then release
-#            the claim. It blocks for as long as the source blocks and is meant
-#            to run as a supervised background process, never in a conversational
-#            turn. After publishing, it asks the source's own adapter whether the
-#            captured result ends the source and retires the registration when it
-#            says so, so a source that has ended stops being restarted.
+#            output, satisfy any adapter-owned source-delivery acknowledgement,
+#            follow the adapter's publication ordering, and then release the
+#            claim. It blocks for as long as the source blocks and is meant to run
+#            as a supervised background process, never in a conversational turn.
+#            The adapter's terminal verdict is checked at that ordering boundary,
+#            and a required source acknowledgement must succeed before retirement.
 # reconcile  Idempotent liveness entry the watcher calls on its ordinary cycle:
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
@@ -69,13 +69,13 @@
 # Applying a result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
 # home's own durable state - and leaving that to an agent that has to remember
-# means it silently does not happen. So after publishing, `start` calls
-# `bin/fm-procevent-<adapter>.sh autohandle <source-id> <sequence> <result-file>`
+# means it silently does not happen. At its adapter-declared publication boundary,
+# `start` calls `bin/fm-procevent-<adapter>.sh autohandle <source-id> <sequence> <result-file>`
 # and lets the adapter apply and acknowledge its own result. Exit 0 means the
 # adapter fully handled it. A missing command, an error, or any other exit is not
-# a failure of capture: the result stays unacknowledged and therefore eligible
-# for re-announcement, so the handler still receives it exactly as before. This
-# runner still inspects nothing and still names no adapter-specific condition.
+# a failure of capture: the result stays unacknowledged and therefore eligible for
+# re-announcement, so the handler still receives it exactly as before. This runner
+# still inspects nothing and still names no adapter-specific condition.
 #
 # Announcement is adapter-owned through one more seam of the same kind. An
 # adapter that answers exit 0 to `bin/fm-procevent-<adapter>.sh self-announcing`

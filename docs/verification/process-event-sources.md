@@ -5,7 +5,7 @@ Audience: maintainer verification.
 This record holds reusable version-scoped evidence for the runner's active guarantees.
 `docs/configuration.md` owns the operating contract, each script's header and `--help` own its mechanics, and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
 
-Verified on 2026-07-31 on macOS (Darwin 25.5.0) with `lavish-axi` 0.1.45 installed.
+Legacy published-poll behavior was verified on 2026-07-31 on macOS (Darwin 25.5.0) with `lavish-axi` 0.1.45 installed.
 Generic keyed-answer feed verified on 2026-08-16 on the same platform, against the same published poll response shape.
 Cross-origin keyed-answer feed verified on 2026-08-19 through the real runner and Lavish adapter interface.
 
@@ -89,11 +89,13 @@ The no-`delivery_id` compatibility path retains the destructive source-side loss
 
 ## What the runner does prove
 
-Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose completion is a process event, not a timer; for the two supervision-delivery rows below, by `tests/fm-watch-triage.test.sh` driving a real `bin/fm-watch.sh` over a real capture; and for adapter-owned application, by `tests/fm-remote-reply.test.sh` driving the real remote-reply relay end to end in an isolated home:
+Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose completion is a process event, not a timer; for the Lavish delivery-acknowledgement rows below, by `tests/fm-procevent-lavish-ack.test.sh` against a protocol-faithful fake `lavish-axi`; for the opt-in patched-Lavish row, by `tests/fm-procevent-lavish-live-e2e.test.sh`; for the two supervision-delivery rows below, by `tests/fm-watch-triage.test.sh` driving a real `bin/fm-watch.sh` over a real capture; and for adapter-owned application, by `tests/fm-remote-reply.test.sh` driving the real remote-reply relay end to end in an isolated home:
 
 | Guarantee | How it is proven |
 | --- | --- |
 | capture before publication | the captured result exists at `0600` and its event names its committed sequence only afterward |
+| conditional Lavish delivery acknowledgement | `tests/fm-procevent-lavish-ack.test.sh` drives the real runner and Lavish adapter against a protocol-faithful fake, proving capture-before-ACK ordering, bound-feed ordering, ACK failure, final `session_ended` ACK-before-retirement, incomplete or truncated capture retention, and no-`delivery_id` compatibility |
+| patched Lavish capture, ACK, and redelivery | the opt-in `FM_LAVISH_LIVE_E2E=1 bash tests/fm-procevent-lavish-live-e2e.test.sh` archives and builds exact commit `8ba3f32` in scratch, uses an ephemeral port without installing or invoking the shared/global Lavish service, and proves unacknowledged redelivery followed by one successful Firstmate capture and ACK |
 | proactive delivery of a captured result | a real capture into an isolated home queues its `check` record, and a healthy watcher with a fresh beacon then exits reporting that queued result as an actionable check, before any manual drain |
 | single delivery per source and sequence | after that first proactive wake, a still-unhandled result keeps being re-announced onto the durable queue but never wakes the watcher again; once existing records receive the drain's post-handling acknowledgement and the source result is acknowledged, it is neither re-announced nor reported |
 | proactive-delivery crash and drain boundaries | dotted and underscored source ids at the same sequence receive distinct markers; a concurrent drain cannot consume between queue revalidation and marker commit; failed output, failed marker commit, and a crash before marker commit leave replay available, while successful output still ends the actionable cycle and a crash after marker commit suppresses a duplicate |
@@ -104,7 +106,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | silence fails closed | the adapter's published `silent` command suppresses only an `ended` session with no queued content block, and announces a real answer, freeform prose, any recognized content block regardless of its declared count, a malformed top-level content header, a `waiting` or `missing` session, a server error, an unreadable result, and indented payload text imitating an empty content block; the `remote-reply` and `when` adapters, which implement no `silent` command, announce every result |
 | terminal retirement preserves the result | the retired source's captured output, its announced event, its handled acknowledgement, and later explicit `retire` all still behave normally |
 | registration-generation retirement | an old terminal runner preserves a concurrently replaced registration and releases ownership so the replacement runs independently; injected registration-removal failure retains a terminal claim, performs no second poll, and completes idempotently once removal recovers |
-| one `Send & End`, one result | an armed Lavish source driven against a stand-in for the published poll, which delivers the final `session_ended` feedback once and empty ended sessions afterward, polls exactly once, captures exactly one result, publishes one distinct event, and retires itself |
+| one legacy `Send & End`, one result | an armed Lavish source driven against a stand-in for the published no-`delivery_id` poll, which delivers the final `session_ended` feedback once and empty ended sessions afterward, polls exactly once, captures exactly one result, publishes one distinct event, and retires itself |
 | bounded re-announcement until handled | a durably captured result with no handled acknowledgement is re-announced by `reconcile` with the same source and sequence on every call - not only the first restart after a crash - and a presented-but-unacknowledged wake resurfaces identically after a simulated replacement session |
 | handled acknowledgement | `fm-procevent.sh handled <source-id> <sequence>` atomically and idempotently records handling at mode `0600`, fails without leaving a marker when private-mode enforcement fails, reports the first call distinctly from every repeat, stops further re-announcement once recorded, and never authorizes a paired effect twice across repeat calls |
 | publication-and-acknowledgement serialization | a concurrent `reconcile` cannot append a wake after `handled` wins the shared per-source boundary, so an acknowledged result is not re-announced by a publication race |
@@ -167,6 +169,7 @@ Adapters extend the runner through `bin/fm-procevent-<adapter>.sh`; the `when` a
 An adapter's `terminal` command is optional and defaults to keeping the source armed.
 Its `silent` command is optional in the same way and defaults to announcing every result, so an adapter with no notion of a routine no-op is unchanged.
 Its `autohandle` command is optional in the same way and defaults to leaving the captured result unacknowledged, so it keeps being announced to a handler exactly as before.
+Its `source-acknowledgements` declaration is optional in the same way and defaults to no source acknowledgement, so an adapter without that protocol keeps its existing behavior.
 The optional `self-announcing` declaration changes ordering only for an adapter with its own durable downstream announcement; the operating contract in `docs/configuration.md` owns that boundary.
 
 Proactive delivery is inside that same boundary.

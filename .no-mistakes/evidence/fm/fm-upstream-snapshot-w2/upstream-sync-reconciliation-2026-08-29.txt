@@ -1,0 +1,17 @@
+Target commit: 54438b67dd2061971a88e3ab4b1c9c740762c6f1
+First parent (fork-main tree): c918928975d8a59dec3c619d8d93cb40fa17847e
+Second parent (curated snapshot base): d0e9ffb133121948abbd59a69fbd7cab8cb6b77c
+Target tree: f50bc46abdde9b9cb19af486d29dee3f6444139b
+First-parent tree: f50bc46abdde9b9cb19af486d29dee3f6444139b
+Tree unchanged by reconciliation merge: true
+Hypothetical merge tree with snapshot base: f50bc46abdde9b9cb19af486d29dee3f6444139b
+Hypothetical merge resolves to target tree: true
+Configured origin fetch/push remote: git@github.com:withally/firstmate.git
+Configured upstream fetch remote: absent
+Configured upstream push remote: absent
+Committed catch-up row:
+| 2026-08-29 | `1fd7ea2` (`upstream/main`) | `ca6ca85238435974d00034f9f4a064aa0f5fa677` | weekly | Re-cut the fork at upstream #3210. Re-applied #67, #70, #71, #72, #73, #75, #79, #80, and #81; restored #77's sync spine and companion edits. #67 remains fork-only because upstream #3155 carries declared waits and enriched wedge reasons but not the cadence guarantee across pane churn, status appends, and watcher restarts. Downgraded #68 and #69 for this cutover because preserving their old pending-reply implementation and fixture would require a lane-architecture reimplementation beyond conflict resolution. The shortlisted verified-merge-outcome and duplicate-Pi-outcome behaviors had no matching audited fork PR and were already present upstream via #3064 and #3184, respectively. |
+Catch-up row is present in target commit and unchanged in worktree: true
+Recorded base matches requested 1fd7ea289b7a: true
+Recorded verdict inputs accounted for: cadence guarantee; verified-merge-outcome; duplicate-Pi-outcome
+Worktree status: clean

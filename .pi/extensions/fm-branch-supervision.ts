@@ -134,7 +134,7 @@ const modelPinFile = join(config, "supervision-branch-model");
 const effortPinFile = join(config, "supervision-branch-effort");
 const wakeCoalesceMs = positiveIntegerEnv("FM_TEST_BRANCH_WAKE_COALESCE_MS", 250);
 const BRANCH_WAKE_STATUS_TAIL_BYTES = 4096;
-const BRANCH_STATUS_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.status$/;
+const BRANCH_STATUS_FILE_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}\.status$/;
 
 // Same tool set in the same order on every request (part of the cached
 // prefix). "bash" resolves to the customTools override below, which injects
@@ -198,7 +198,7 @@ function validatedSignalStatusPath(token: string): string | null {
 function readValidatedStatusTail(path: string): string {
   let descriptor: number | null = null;
   try {
-    descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     const stats = fstatSync(descriptor);
     if (!stats.isFile() || !Number.isSafeInteger(stats.size) || stats.size < 0) return "";
     const length = Math.min(stats.size, BRANCH_WAKE_STATUS_TAIL_BYTES);
@@ -980,7 +980,8 @@ ${context.command}
     }
   }
 
-  async function fallbackToMain(message: string, detail: string): Promise<void> {
+  async function fallbackToMain(message: string, detail: string, expectedGeneration: number): Promise<void> {
+    if (shuttingDown || expectedGeneration !== generation) return;
     const body = `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. (Supervision branch unavailable, falling back to main: ${detail})`;
     let content = body;
     try {
@@ -990,6 +991,7 @@ ${context.command}
     } catch {
       // An encoding failure must not lose the wake; deliver it unmarked.
     }
+    if (shuttingDown || expectedGeneration !== generation) return;
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
   }
 
@@ -1041,7 +1043,7 @@ ${context.command}
       .catch(async (error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
         try {
-          await fallbackToMain(message, error instanceof Error ? error.message : String(error));
+          await fallbackToMain(message, error instanceof Error ? error.message : String(error), acceptedGeneration);
         } catch {}
       });
   }
@@ -1156,16 +1158,6 @@ ${context.command}
     const index = mirrorCollection.collectAnchor?.index ?? currentMainSession.getEntries().length;
     pendingMirror.push({ tag: "captain", text: prompt });
     mirrorCollection.stagedCaptain = { file, index, text: prompt };
-  });
-
-  pi.on?.("agent_start", () => {
-    mainStreaming = true;
-  });
-  pi.on?.("agent_end", () => {
-    mainStreaming = false;
-  });
-  pi.on?.("agent_settled", () => {
-    mainStreaming = false;
   });
 
   // before_agent_start stages Pi's authoritative in-flight prompt before

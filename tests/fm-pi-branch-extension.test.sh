@@ -798,7 +798,8 @@ test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire, mainUserMessages, home }; })()`);
 const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 const idleRepeated = "signal: routine idle pulse";
 for (let index = 0; index < 3; index += 1) {
@@ -852,11 +853,49 @@ for (const [index, line] of urgentStatusLines.entries()) {
   }
 }
 
-const pending = dispatch("signal: pending replacement wake");
+for (const [index, fileName] of ["_branch-driver.status", "-branch-driver.status"].entries()) {
+  const statusPath = `${home}/state/${fileName}`;
+  writeFileSync(statusPath, `${index === 0 ? "blocked" : "failed"}: captain attention required\n`);
+  const started = Date.now();
+  const urgent = dispatch(`signal: ${statusPath}`);
+  if (!urgent.accepted) throw new Error(`leading-character status wake ${index + 1} was not accepted`);
+  await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 3 + index, `leading-character status prompt ${index + 1}`);
+  if (Date.now() - started >= 300) {
+    throw new Error(`leading-character status wake waited for the coalescing window (${Date.now() - started}ms)`);
+  }
+}
+
+const fifoHome = `${home}/fifo-probe-home`;
+const fifoState = `${fifoHome}/state`;
+mkdirSync(fifoState, { recursive: true });
+const fifoPath = `${fifoState}/fifo.status`;
+const fifoCreated = spawnSync("mkfifo", [fifoPath], { encoding: "utf8" });
+if (fifoCreated.status !== 0) throw new Error(`could not create FIFO probe: ${fifoCreated.stderr}`);
+const fifoProbe = spawnSync(
+  process.execPath,
+  ["--input-type=module"],
+  {
+    input: `const prelude = process.env.DRIVER_PRELUDE;\nawait eval(\`(async () => { \${prelude}; globalThis.__t = { dispatch }; })()\`);\nconst { dispatch } = globalThis.__t;\nconst started = Date.now();\nconst offer = dispatch(\`signal: \${process.env.FM_FIFO_PATH}\`);\nif (!offer.accepted) throw new Error("FIFO probe wake was not accepted");\nif (Date.now() - started >= 150) throw new Error(\`FIFO probe dispatch blocked for \${Date.now() - started}ms\`);\nprocess.exit(0);\n`,
+    encoding: "utf8",
+    env: { ...process.env, FM_HOME: fifoHome, FM_FIFO_PATH: fifoPath },
+    timeout: 800,
+  },
+);
+unlinkSync(fifoPath);
+if (fifoProbe.status !== 0) {
+  throw new Error(`FIFO status-tail dispatch was not nonblocking: ${fifoProbe.stderr || fifoProbe.error || fifoProbe.stdout}`);
+}
+
+let releasePrompt;
+globalThis.__fmPromptGate = new Promise((resolve) => { releasePrompt = resolve; });
+const pending = dispatch("stale: pending replacement wake");
 if (!pending.accepted) throw new Error("pending wake was not accepted");
+await settle(() => globalThis.__fmPromptStarted === true, "in-flight stale wake prompt");
+const promptCountBeforeShutdown = (globalThis.__fmPrompts ?? []).length;
 fire("session_shutdown", {});
 fire("session_start", {});
-await new Promise((resolve) => setTimeout(resolve, 450));
+releasePrompt();
+await settle(() => (globalThis.__fmPrompts ?? []).length === promptCountBeforeShutdown + 1, "stale wake settlement");
 if (mainUserMessages.length !== 0) throw new Error("a shutdown-cleared wake fell back into the replacement main session");
 if (!readFileSync(`${home}/state/.wake-queue`, "utf8").includes("branch-driver.status")) {
   throw new Error("shutdown cleared the durable wake instead of leaving it queued");
@@ -990,12 +1029,8 @@ fire("agent_start", {}, mainCtx);
 const unsolicited = dispatch("signal: healthy resource result");
 if (!unsolicited.accepted) throw new Error("branch did not accept the unsolicited result");
 await settle(() => fleetOperations.length === 2, "unsolicited result acknowledgement");
-if (sentToMain.length !== 1 || sentToMain[0].options.triggerTurn) {
+if (sentToMain.length !== 0) {
   throw new Error(`unsolicited healthy result opened a main turn: ${JSON.stringify(sentToMain)}`);
-}
-const sailboat = sentToMain[0];
-if (sailboat.message.display !== true || !sailboat.message.content.startsWith("⛵ task-resource:")) {
-  throw new Error(`unsolicited healthy result was not a rendered sailboat note: ${JSON.stringify(sailboat)}`);
 }
 
 const outcomes = mainTools.find((tool) => tool.name === "fm_branch_outcomes");
@@ -1003,7 +1038,7 @@ if (!outcomes) throw new Error("main did not receive its outcome-reading permiss
 const visibleToMain = await outcomes.execute("main-reads-sailboat", { recent: 1 }, undefined, undefined, {});
 const mainOutcomeText = visibleToMain.content.map((item) => item.text ?? "").join("\n");
 if (visibleToMain.isError || !mainOutcomeText.includes("healthy resource report: CPU 12%, memory 41%")) {
-  throw new Error(`main could not use the sailboat content through its existing permission path: ${JSON.stringify(visibleToMain)}`);
+  throw new Error(`main could not use the stored routine outcome through its existing permission path: ${JSON.stringify(visibleToMain)}`);
 }
 if (fleetOperations.length !== 2) throw new Error("main's outcome read reprocessed the fleet event");
 
@@ -1043,7 +1078,7 @@ if (mirroredCaptainText.some((text) =>
   throw new Error("canonical current or legacy operational input entered captain mirror context");
 }
 if ((globalThis.__fmPrompts ?? []).length !== 5) throw new Error("a handled fleet wake was rerun");
-if (sentToMain.length !== 5) throw new Error(`one result was reprocessed into ${sentToMain.length} main messages`);
+if (sentToMain.length !== 4) throw new Error(`one result was reprocessed into ${sentToMain.length} main messages`);
 if (fleetOperations.length !== 10 || fleetOperations.some((operation) => operation.status !== 0)) {
   throw new Error(`fleet event ownership repeated or failed work: ${JSON.stringify(fleetOperations)}`);
 }

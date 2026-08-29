@@ -93,8 +93,8 @@ injection, dispatched through `bin/fm-backend.sh` for the supervisor's own
 backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 
 - **Primary-pane busy guard** - `pane_is_busy` keeps the Herdr native-busy fast path except for a Herdr primary detected as Claude, where native `working` is diagnostic only because the tracked away daemon shell can keep it set after the foreground turn ends.
-  For that pair, only the rendered Claude active-turn signature proves foreground busy; rendered idle falls through to the affirmative `empty` composer guard, and unreadable capture still defers.
-  Submit confirmation for the same pair requires that rendered signature to transition from idle across the queued Enter or requires the composer to clear; native `working` alone never proves delivery.
+  For that pair, the shared position- and shape-aware current-footer predicate is the rendered busy proof used before injection and around submit confirmation; rendered idle falls through to the affirmative `empty` composer guard, and unreadable or structurally ambiguous capture still defers.
+  Submit confirmation for the same pair requires that predicate to transition from idle across the queued Enter or requires the composer to clear; native `working` alone never proves delivery.
   Busy or composer deferrals name `native-busy`, `rendered-busy`, or `composer=<verdict>` in the daemon log, while an unreadable busy-guard capture is named `unreadable`; Herdr's semantic `busy` diagnostic is recorded as native `working`.
   The full contract is in `docs/herdr-backend.md` under “Away-mode supervisor support”.
 - **Composer-state guard** - `inject_msg` reads the full `empty`/`pending`/`pending-unproven`/`unknown` verdict from `fm_backend_composer_state` and injects only when it is affirmatively `empty`.
@@ -152,8 +152,8 @@ Classify each wake this way:
   If it is still declared past `FM_PAUSE_RESURFACE_SECS` (default 3600s), housekeeping sends one recheck and resets the pause window.
   The window ages against the crew's own latest status line, so only a status append that stops declaring the wait ends this routing and restores wedge detection.
   That recheck names which human the wait is on: the external dependency for `paused:`, and the captain themself for a `captain-held` transfer, who can answer the held decision or release the hold.
-- `check` -> escalate the first occurrence of each source-and-payload pair in an away session.
-  An exact durable replay or a new sequence re-announcing the same source and payload self-handles after the original is safely buffered or verified delivered.
+- `check` -> carry the durable key and sequence into routing, then escalate the first logical source-and-payload observation in an away session.
+  An exact source/sequence/payload replay or a new sequence re-announcing the same source and payload self-handles only after the original is safely buffered or verified delivered.
   A changed source or payload remains a new event and escalates.
 - `stale` with a terminal status or bare legacy captain-relevant line -> escalate.
   Nonterminal progress remains transient even when its prose contains a legacy free-text token or its seen-status marker already matches, so record a marker and self-handle.
@@ -208,7 +208,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 - **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
   The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
 - **Session dedupe for checks** - the daemon records durable check routing as reserved, buffered, and delivered in `state/.subsuper-check-ledger`.
-  It appends to the escalation buffer before marking a check buffered, preserves the original across failed flushes and daemon restarts, and marks it delivered only after verified submit.
+  It appends the first event to the escalation buffer before recording it buffered, preserves the original across failed flushes and daemon restarts, and marks it delivered only after verified submit.
+  A routing failure returns before durable queue acknowledgement so the original wake remains available for replay, while a delivery-state failure likewise retains the original buffer and wake without duplicate escalation.
   The ledger survives daemon replacement inside one away session and is cleared on fresh away entry or return.
 - **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
   (tmux vs herdr) and TARGET independently, mirroring
@@ -229,6 +230,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 Treat `state/.subsuper-escalations`, its `.since` sidecar, `state/.subsuper-inject-wedged`, and `state/.subsuper-check-ledger` as session-scoped delivery artifacts, not as the durable work record.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry with no existing `state/.afk`, and preserves the current session's buffer on restart or refresh.
+Fresh entry clears prior delivery artifacts before publishing the new away flag, and a cleanup or flag-write failure stops before daemon startup.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.
 

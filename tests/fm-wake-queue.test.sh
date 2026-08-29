@@ -236,6 +236,80 @@ test_drain_dedupes_obvious_duplicates() {
 # plain drain-and-handle turn that runs no other supervision script. It must warn
 # when work is in flight with no live watcher, and stay silent right after a
 # normal fire from a live watcher with a fresh beacon, so it never false-alarms.
+test_secondmate_default_stall_threshold_allows_normal_latency() {
+  local dir state sub fakebin out
+  dir=$(make_case secondmate-default-stall-threshold)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 220 ))" > "$sub/state/.wake-queue"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err" || true
+  ! grep -F 'secondmate wake-loop stalled' "$out" >/dev/null \
+    || fail "the default stall threshold rejected a normal 220-second secondmate latency"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "the default stall threshold durably published a false-positive parent wake"
+  pass "the default secondmate stall threshold allows normal queue latency"
+}
+
+test_secondmate_fresh_beat_suppresses_ordinary_aged_row() {
+  local dir state sub fakebin out
+  dir=$(make_case secondmate-fresh-beat)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 7 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=5 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err" || true
+  ! grep -F 'secondmate wake-loop stalled' "$out" >/dev/null \
+    || fail "a fresh secondmate watcher beat did not suppress an ordinarily aged row"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "a fresh secondmate watcher beat still published a parent stall wake"
+  pass "a fresh secondmate watcher beat suppresses an ordinarily aged row"
+}
+
+test_secondmate_stale_beat_exposes_ordinary_aged_row() {
+  local dir state sub fakebin out
+  dir=$(make_case secondmate-stale-beat)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 7 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
+  touch -t 202001010000 "$sub/state/.last-watcher-beat"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=5 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err" || true
+  grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$out" >/dev/null \
+    || fail "a stale secondmate watcher beat hid an ordinarily aged row"
+  [ -s "$state/.wake-queue" ] \
+    || fail "a stale secondmate watcher beat did not publish a durable parent wake"
+  pass "a stale secondmate watcher beat exposes an ordinarily aged row"
+}
+
 test_secondmate_foreign_queue_stall_is_one_shot_and_read_only() {
   local dir state sub fakebin out row_before row_after stall_count
   dir=$(make_case secondmate-foreign-stall)
@@ -247,6 +321,7 @@ test_secondmate_foreign_queue_stall_is_one_shot_and_read_only() {
   printf 'window=firstmate:fm-mate\nkind=secondmate\nharness=claude\nbackend=tmux\nhome=%s\n' \
     "$sub" > "$state/mate.meta"
   printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 10 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
   row_before="$dir/foreign-before"
   row_after="$dir/foreign-after"
   cp "$sub/state/.wake-queue" "$row_before"
@@ -315,7 +390,7 @@ SH
     "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$dir/watch-healthy.out" 2> "$dir/watch-healthy.err" || true
   ! grep -F 'secondmate wake-loop stalled' "$dir/watch-healthy.out" >/dev/null \
     || fail "a healthy foreign queue produced a stall notification"
-  pass "foreign secondmate queue stalls notify once, remain byte-stable, and stay quiet when empty or healthy"
+  pass "very old foreign rows notify once despite a fresh beat and remain byte-stable"
 }
 
 test_secondmate_stall_marker_rejects_symlink() {
@@ -1199,6 +1274,9 @@ test_historical_annotation_skips_announced_status() {
 }
 
 test_self_held_lock_reclaims_instead_of_deadlocking
+test_secondmate_default_stall_threshold_allows_normal_latency
+test_secondmate_fresh_beat_suppresses_ordinary_aged_row
+test_secondmate_stale_beat_exposes_ordinary_aged_row
 test_secondmate_foreign_queue_stall_is_one_shot_and_read_only
 test_secondmate_stall_marker_rejects_symlink
 test_acknowledged_stall_publication_survives_pre_marker_crash

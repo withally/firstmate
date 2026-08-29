@@ -44,6 +44,7 @@ test_afk_start_fails_when_fresh_cleanup_fails() {
   local dir state out rc
   dir=$(make_supercase afk-start-cleanup-failure)
   state="$dir/state"
+  : > "$state/.subsuper-check-ledger"
   out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
     FM_AFK_DAEMON=/usr/bin/true
@@ -55,6 +56,20 @@ test_afk_start_fails_when_fresh_cleanup_fails() {
 
   [ "$rc" -ne 0 ] || fail "fm-afk-start.sh continued after fresh artifact cleanup failed"
   assert_not_contains "$out" "starting supervise daemon" "fm-afk-start.sh started the daemon after cleanup failed"
+  [ ! -e "$state/.afk" ] || fail "fm-afk-start.sh left a fresh away flag after cleanup failed"
+
+  if FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    set +e
+    fm_afk_start_main
+  ' _ "$AFK_START" >/dev/null 2>&1; then
+    :
+  else
+    fail "fm-afk-start.sh could not recover after a failed fresh cleanup"
+  fi
+  [ ! -e "$state/.subsuper-check-ledger" ] \
+    || fail "fm-afk-start.sh resumed with the stale ledger after a failed fresh cleanup"
   pass "fm-afk-start.sh fails closed when fresh artifact cleanup fails"
 }
 
@@ -1110,6 +1125,29 @@ test_check_wake_routing_failure_retains_the_durable_wake() {
   grep -F "$reason" "$state/.wake-queue" >/dev/null 2>&1 \
     || fail "ledger failure acknowledged and removed the durable check wake"
   pass "check routing failure retains the durable wake until ledger publication can succeed"
+}
+
+test_check_wake_flush_failure_retains_the_durable_wake() {
+  local dir state reason
+  dir=$(make_supercase check-flush-failure-retains-wake)
+  state="$dir/state"
+  reason='check: /state/flush-failure.check.sh: still due'
+  : > "$state/.afk"
+  append_wake "$state" check /state/flush-failure.check.sh "$reason" \
+    || fail "could not append the durable check wake"
+
+  if (
+    inject_msg() { return 0; }
+    check_ledger_mark_delivered() { return 1; }
+    FM_ESCALATE_BATCH_SECS=0 handle_durable_wakes "$reason" "$state"
+  ); then
+    fail "durable check routing acknowledged a wake after delivery-state persistence failed"
+  fi
+  grep -Fq "$reason" "$state/.wake-queue" \
+    || fail "delivery-state persistence failure acknowledged the durable check wake"
+  [ -s "$state/.subsuper-escalations" ] \
+    || fail "delivery-state persistence failure discarded the escalation buffer"
+  pass "delivery-state persistence failure retains both the durable wake and buffer"
 }
 
 test_inject_skip_forces_self() {
@@ -2544,6 +2582,7 @@ test_check_wake_failed_and_successful_flush_preserve_session_dedup
 test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk
 test_afk_start_recovery_preserves_session_ledger
 test_check_wake_routing_failure_retains_the_durable_wake
+test_check_wake_flush_failure_retains_the_durable_wake
 test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout
 test_terminal_stale_escalate_leaves_no_marker

@@ -143,12 +143,15 @@ fm_afk_start_main() {
   [ -e "$FM_AFK_STATE/.afk" ] && had_afk=1
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
     [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
-  else
+  elif [ "$had_afk" -eq 1 ]; then
     fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
   fi
 
   pid=$(daemon_lock_pid 2>/dev/null || true)
   if daemon_lock_held_by_live_daemon; then
+    if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ] && [ "$had_afk" -eq 0 ]; then
+      fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
+    fi
     echo "afk: daemon already running pid=$pid"
     return 0
   fi
@@ -164,6 +167,7 @@ fm_afk_start_main() {
       echo "afk: failed to clear stale away-mode artifacts" >&2
       return 1
     }
+    fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
   fi
 
   echo "afk: starting supervise daemon in foreground; keep this command as a tracked background session"

@@ -1511,7 +1511,9 @@ handle_wake() {  # <reason> <state> [durable-key] [durable-sequence]
       # housekeeping re-escalates the same pane as a false wedge later.
       [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
       mark_escalated_seen "$kind" "$arg" "$state"
-      [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ] && { escalate_flush "$state" || true; }
+      if [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ]; then
+        escalate_flush "$state" || return 1
+      fi
       ;;
     pause)
       # Declared wait, an external-wait pause or a verified captain-held transfer:

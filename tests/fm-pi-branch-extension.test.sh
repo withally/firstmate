@@ -875,7 +875,7 @@ const fifoProbe = spawnSync(
   process.execPath,
   ["--input-type=module"],
   {
-    input: `const prelude = process.env.DRIVER_PRELUDE;\nawait eval(\`(async () => { \${prelude}; globalThis.__t = { dispatch }; })()\`);\nconst { dispatch } = globalThis.__t;\nconst started = Date.now();\nconst offer = dispatch(\`signal: \${process.env.FM_FIFO_PATH}\`);\nif (!offer.accepted) throw new Error("FIFO probe wake was not accepted");\nif (Date.now() - started >= 150) throw new Error(\`FIFO probe dispatch blocked for \${Date.now() - started}ms\`);\nprocess.exit(0);\n`,
+    input: `const prelude = process.env.DRIVER_PRELUDE;\nawait eval(\`(async () => { \${prelude}; globalThis.__t = { dispatch, fire }; })()\`);\nconst { dispatch, fire } = globalThis.__t;\nfire("session_start", {});\nconst started = Date.now();\nconst offer = dispatch(\`signal: \${process.env.FM_FIFO_PATH}\`);\nif (!offer.accepted) throw new Error("FIFO probe wake was not accepted");\nif (Date.now() - started >= 150) throw new Error(\`FIFO probe dispatch blocked for \${Date.now() - started}ms\`);\nprocess.exit(0);\n`,
     encoding: "utf8",
     env: { ...process.env, FM_HOME: fifoHome, FM_FIFO_PATH: fifoPath },
     timeout: 800,

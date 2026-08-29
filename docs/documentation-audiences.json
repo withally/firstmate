@@ -297,6 +297,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/gsd-method.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },

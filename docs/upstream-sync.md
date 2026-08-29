@@ -66,14 +66,17 @@ The fork contributes changes upstream and stays close to the parent by adopting 
     After a monthly sync, advance the `Next monthly full run` line to the first day of the following month.
     Stage the file before committing it, since appending the row is a plain edit to a tracked file and `git commit -m` alone would stage nothing.
     Both the append and its commit come before the ship in step 13, because the gate validates committed history only; a row left in the working tree or added after the PR is open never reaches `origin/main`.
-13. Ship through no-mistakes to the fork's PR path.
+13. After the tier-specific local validation, push the branch and open the PR directly with `gh-axi pr create -R withally/firstmate`.
+    Label the PR `upstream-sync` and include the skill's machine-readable upstream-base marker so the required check can verify that the branch is cut from canonical upstream history and carries the catch-up log change.
+    Do not run the no-mistakes pipeline for this path, because whole-diff review of the adopted upstream-authored tree is noise; ordinary CI and the captain's PR review are the gates.
     Match the marker on the subject line, not with `git log --grep`, which matches any line of the message and so would find the title inside a merge commit's body.
     Squash-merge the approved sync PR under its `chore: snapshot upstream main for <DATE>` title, because a merge commit or a rebase merge leaves that marker off `origin/main`'s first-parent subject and the next sync's step 3 search would then reuse the previous snapshot and widen its audit window.
     Never push to the canonical upstream remote and never merge without explicit captain approval.
 
 ## Upstream follow-up (PR-body draft)
 
-Ask the `kunchenguid/no-mistakes` CI step to ignore its own `PR must be raised via no-mistakes` attestation check while the no-mistakes pipeline converges after its own auto-fix pushes, without weakening final failure for a PR that lacks a valid matching attestation.
+The required check bypasses its ordinary no-mistakes attestation only for a same-repository PR carrying the repository-controlled `upstream-sync` label and the skill's unique machine-readable upstream-base marker.
+It verifies that base against canonical upstream history, the PR head's merge base, and a changed `docs/upstream-sync.md`; a matching PR title alone grants no exception.
 
 Next monthly full run: 2026-10-01 (set by the captain on 2026-08-27; September is deliberately skipped).
 

@@ -28,8 +28,77 @@ jobs:
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      - name: Classify the upstream-sync contract
+        id: upstream-sync
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pullRequest = context.payload.pull_request;
+            const requested = pullRequest.labels.some((label) => label.name === 'upstream-sync');
+            core.setOutput('requested', String(requested));
+            if (!requested) return;
+
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`;
+            if (pullRequest.base.ref !== 'main' || pullRequest.base.repo.full_name !== expectedRepository) {
+              core.setFailed('The upstream-sync contract must target this repository\'s main branch.');
+              return;
+            }
+            if (pullRequest.head.repo.full_name !== expectedRepository) {
+              core.setFailed('The upstream-sync contract requires a same-repository head branch.');
+              return;
+            }
+
+            const prefix = '<!-- firstmate-upstream-sync:v1 ';
+            const closing = ' -->';
+            const body = pullRequest.body || '';
+            const start = body.indexOf(prefix);
+            if (start < 0 || start !== body.lastIndexOf(prefix)) {
+              core.setFailed('The upstream-sync PR body must carry exactly one v1 contract marker.');
+              return;
+            }
+            const payloadStart = start + prefix.length;
+            const end = body.indexOf(closing, payloadStart);
+            if (end < 0) {
+              core.setFailed('The upstream-sync contract marker is unterminated.');
+              return;
+            }
+            let payload;
+            try {
+              payload = JSON.parse(body.slice(payloadStart, end));
+            } catch {
+              core.setFailed('The upstream-sync contract marker is not valid JSON.');
+              return;
+            }
+            if (!payload || !/^[0-9a-f]{40}$/.test(payload.upstream_base || '')) {
+              core.setFailed('The upstream-sync contract must name one full lowercase upstream_base SHA.');
+              return;
+            }
+            core.setOutput('upstream-base', payload.upstream_base);
+      - name: Check out the labeled upstream-sync head
+        if: steps.upstream-sync.outputs.requested == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify the labeled upstream-sync Git contract
+        if: steps.upstream-sync.outputs.requested == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          UPSTREAM_BASE: ${{ steps.upstream-sync.outputs.upstream-base }}
+        run: |
+          set -eu
+          git fetch --no-tags https://github.com/kunchenguid/firstmate.git main:refs/remotes/firstmate-upstream/main
+          git cat-file -e "$UPSTREAM_BASE^{commit}"
+          git merge-base --is-ancestor "$UPSTREAM_BASE" refs/remotes/firstmate-upstream/main
+          git merge-base --is-ancestor "$UPSTREAM_BASE" "$HEAD_SHA"
+          test "$(git merge-base "$HEAD_SHA" refs/remotes/firstmate-upstream/main)" = "$UPSTREAM_BASE"
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" -- docs/upstream-sync.md | grep -Fx docs/upstream-sync.md
       - name: Wait for the PR body attestation to catch up
         id: current-pr
+        if: steps.upstream-sync.outputs.requested != 'true'
         uses: actions/github-script@v8
         with:
           github-token: ${{ github.token }}
@@ -116,6 +185,7 @@ jobs:
             core.setOutput('author', pullRequest.user.login);
             core.setOutput('number', String(pullRequest.number));
       - name: Verify no-mistakes signature and pipeline attestation
+        if: steps.upstream-sync.outputs.requested != 'true'
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
         with:
           pr-body: ${{ steps.current-pr.outputs.body }}

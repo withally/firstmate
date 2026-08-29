@@ -2806,11 +2806,11 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [footer-base
 # body while preserving Herdr's small-read workaround. The shared classifier
 # still decides the separator and queue shapes.
 fm_backend_herdr_pi_submit_capture_lines() {  # <text> -> line bound
-  local text=$1 bytes=0 lines=${FM_BACKEND_HERDR_PI_SUBMIT_CAPTURE_LINES:-200} needed
+  local text=$1 rows=0 lines=${FM_BACKEND_HERDR_PI_SUBMIT_CAPTURE_LINES:-200} needed
   case "$lines" in ''|*[!0-9]*|0) lines=200 ;; esac
-  bytes=$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d '[:space:]') || bytes=0
-  case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
-  needed=$((bytes / 80 + 40))
+  rows=$(printf '%s\n' "$text" | awk 'END { print NR }') || rows=0
+  case "$rows" in ''|*[!0-9]*) rows=0 ;; esac
+  needed=$((rows + 40))
   [ "$needed" -gt "$lines" ] && lines=$needed
   printf '%s' "$lines"
 }
@@ -2869,12 +2869,39 @@ fm_backend_herdr_wait_pi_submit() {  # <target> <text> <pre-echo-count> <budget>
   printf '%s' "$last"
 }
 
+fm_backend_herdr_wait_pi_preflight() {  # <target> <text> <budget> <polls> -> observation
+  local target=$1 text=$2 budget=$3 polls=${4:-1}
+  local i interval obs count state proof obs_rest last_count=0 last_state=unknown last_proof=none
+  case "$polls" in ''|*[!0-9]*|0) polls=1 ;; esac
+  interval=$(awk -v b="$budget" -v p="$polls" 'BEGIN { d = p - 1; if (d < 1) d = 1; v = b / d; if (v < 0) v = 0; printf "%.4f", v }' 2>/dev/null)
+  case "$interval" in ''|*[!0-9.]*) interval=0 ;; esac
+  for ((i = 0; i < polls; i++)); do
+    if [ "$polls" -eq 1 ] || [ "$i" -gt 0 ]; then
+      sleep "$interval"
+    fi
+    obs=$(fm_backend_herdr_pi_submit_observation "$target" "$text")
+    count=${obs%%$'\t'*}
+    obs_rest=${obs#*$'\t'}
+    state=${obs_rest%%$'\t'*}
+    proof=${obs_rest#*$'\t'}
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    last_count=$count
+    last_state=$state
+    last_proof=$proof
+    if [ "$state" = pending ] && [ "$proof" = full ]; then
+      printf '%s\t%s\t%s' "$count" "$state" "$proof"
+      return 0
+    fi
+  done
+  printf '%s\t%s\t%s' "$last_count" "$last_state" "$last_proof"
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [target-harness]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local target_harness=${7:-} raw_status footer_baseline='' allow_rendered=0 enter_sent=0
   local pi_submit=0 pi_obs pi_obs_rest pi_echo_before=0 pi_echo_current=0
   local pi_pre_state=unknown pi_pre_proof=none pi_post=unknown pi_requires_full=0
-  local pi_transport_proof=0 pi_text_bytes
+  local pi_transport_proof=0 pi_text_length pi_preflight pi_preflight_rest
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
@@ -2886,35 +2913,25 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   fi
   case "$target_harness" in pi|pi-signed) pi_submit=1 ;; esac
   if [ "$pi_submit" = 1 ]; then
-    pi_text_bytes=$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d '[:space:]') || pi_text_bytes=0
-    case "$pi_text_bytes" in ''|*[!0-9]*) pi_text_bytes=0 ;; esac
-    [ "$pi_text_bytes" -gt 48 ] && pi_requires_full=1
+    pi_text_length=${#text}
+    [ "$pi_text_length" -gt 48 ] && pi_requires_full=1
     pi_obs=$(fm_backend_herdr_pi_submit_observation "$target" "$text")
     pi_echo_before=${pi_obs%%$'\t'*}
-    pi_obs_rest=${pi_obs#*$'\t'}
-    pi_pre_state=${pi_obs_rest%%$'\t'*}
-    pi_pre_proof=${pi_obs_rest#*$'\t'}
     case "$pi_echo_before" in ''|*[!0-9]*) pi_echo_before=0 ;; esac
-    if [ "$pi_pre_state" = pending ] && [ "$pi_requires_full" = 1 ]; then
-      if [ "$pi_pre_proof" != full ]; then
-        printf 'text-truncated'
-        return 0
-      fi
-      pi_transport_proof=1
+    pi_preflight=$(fm_backend_herdr_wait_pi_preflight "$target" "$text" \
+      "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+    pi_echo_current=${pi_preflight%%$'\t'*}
+    pi_preflight_rest=${pi_preflight#*$'\t'}
+    pi_pre_state=${pi_preflight_rest%%$'\t'*}
+    pi_pre_proof=${pi_preflight_rest#*$'\t'}
+    if [ "$pi_pre_state" = empty ]; then
+      printf 'text-not-typed'
+      return 0
     fi
-    if [ "$pi_pre_state" != pending ]; then
-      pi_post=$(fm_backend_herdr_wait_pi_submit "$target" "$text" "$pi_echo_before" \
-        "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
-      case "$pi_post" in
-        echoed)
-          if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
-            printf 'text-truncated'
-          else
-            printf 'empty'
-          fi
-          return 0
-          ;;
-        cleared) printf 'text-not-typed'; return 0 ;;
+    if [ "$pi_requires_full" = 1 ]; then
+      case "$pi_pre_proof" in
+        full) pi_transport_proof=1 ;;
+        shorter) printf 'text-truncated'; return 0 ;;
       esac
     fi
   fi
@@ -2928,15 +2945,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       pi_pre_state=${pi_obs_rest%%$'\t'*}
       pi_pre_proof=${pi_obs_rest#*$'\t'}
       case "$pi_echo_current" in ''|*[!0-9]*) pi_echo_current=0 ;; esac
-      if [ "$pi_pre_state" = pending ] && [ "$pi_requires_full" = 1 ]; then
-        if [ "$pi_pre_proof" != full ]; then
-          printf 'text-truncated'
-          return 0
-        fi
-        pi_transport_proof=1
-      elif [ "$pi_pre_state" = empty ] && [ "$pi_echo_current" -gt "$pi_echo_before" ]; then
+      if [ "$pi_pre_state" = empty ] && [ "$pi_echo_current" -gt "$pi_echo_before" ] \
+        && [ "$enter_sent" -eq 1 ]; then
         if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
-          printf 'text-truncated'
+          printf 'pending-unproven'
         else
           printf 'empty'
         fi
@@ -2948,7 +2960,44 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
           printf 'text-not-typed'
         fi
         return 0
-      elif [ "$pi_pre_state" = unknown ] && [ "$enter_sent" -eq 1 ]; then
+      fi
+      if [ "$pi_requires_full" = 1 ] && [ "$pi_pre_proof" != full ]; then
+        pi_preflight=$(fm_backend_herdr_wait_pi_preflight "$target" "$text" \
+          "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+        pi_echo_current=${pi_preflight%%$'\t'*}
+        pi_preflight_rest=${pi_preflight#*$'\t'}
+        pi_pre_state=${pi_preflight_rest%%$'\t'*}
+        pi_pre_proof=${pi_preflight_rest#*$'\t'}
+        case "$pi_echo_current" in ''|*[!0-9]*) pi_echo_current=0 ;; esac
+        if [ "$pi_pre_state" = empty ]; then
+          if [ "$enter_sent" -eq 1 ]; then
+            printf 'pending-unproven'
+          else
+            printf 'text-not-typed'
+          fi
+          return 0
+        fi
+      fi
+      if [ "$pi_requires_full" = 1 ]; then
+        case "$pi_pre_proof" in
+          full) pi_transport_proof=1 ;;
+          shorter)
+            if [ "$enter_sent" -eq 1 ]; then
+              printf 'pending-unproven'
+            else
+              printf 'text-truncated'
+            fi
+            return 0
+            ;;
+          *)
+            if [ "$enter_sent" -eq 1 ]; then
+              printf 'pending-unproven'
+              return 0
+            fi
+            ;;
+        esac
+      fi
+      if [ "$pi_pre_state" = unknown ] && [ "$enter_sent" -eq 1 ]; then
         printf 'unknown'
         return 0
       fi
@@ -2995,23 +3044,30 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         case "$pi_post" in
           echoed)
             if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
-              printf 'text-truncated'
+              verdict=pending-unproven
             else
               printf 'empty'
+              return 0
             fi
-            return 0
             ;;
-          pending) verdict=pending ;;
+          pending)
+            if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
+              verdict=pending-unproven
+            else
+              verdict=pending
+            fi
+            ;;
           cleared)
             if [ "$verdict" = busy ]; then
               if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
-                printf 'text-truncated'
+                verdict=pending-unproven
               else
                 printf 'empty'
+                return 0
               fi
-              return 0
+            else
+              verdict=pending-unproven
             fi
-            verdict=pending-unproven
             ;;
           unknown) verdict=unknown ;;
         esac
@@ -3054,13 +3110,19 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         case "$pi_post" in
           echoed)
             if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
-              printf 'text-truncated'
+              verdict=pending-unproven
             else
               printf 'empty'
+              return 0
             fi
-            return 0
             ;;
-          pending) verdict=pending ;;
+          pending)
+            if [ "$pi_requires_full" = 1 ] && [ "$pi_transport_proof" != 1 ]; then
+              verdict=pending-unproven
+            else
+              verdict=pending
+            fi
+            ;;
           cleared) verdict=pending-unproven ;;
           unknown) verdict=unknown ;;
         esac
@@ -3097,7 +3159,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       elif [ "$pi_submit" = 1 ]; then
         case "$verdict" in
           pending)
-            if [ "$pi_pre_state" = pending ]; then
+            if [ "$pi_pre_state" = pending ] \
+              && { [ "$pi_requires_full" != 1 ] || [ "$pi_transport_proof" = 1 ]; }; then
               printf 'not-submitted'
             else
               printf 'pending-unproven'

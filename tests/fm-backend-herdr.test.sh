@@ -79,6 +79,7 @@ LOG="${FM_HERDR_LOG:?}"
 STATE="${FM_FAKE_HERDR_STATE:?}"
 MODE="${FM_FAKE_HERDR_MODE:-queued}"
 DELAY="${FM_FAKE_HERDR_DELAY_READS:-0}"
+BODY_DELAY="${FM_FAKE_HERDR_BODY_DELAY_READS:-0}"
 mkdir -p "$STATE"
 {
   printf 'HERDR_SESSION=%s' "${HERDR_SESSION:-}"
@@ -95,7 +96,7 @@ case "${1:-} ${2:-}" in
     else
       printf '%s' "${4:-}" > "$STATE/text"
     fi
-    rm -f "$STATE/entered" "$STATE/read-count"
+    rm -f "$STATE/entered" "$STATE/read-count" "$STATE/body-read-count"
     ;;
   "pane send-keys")
     [ "${4:-}" = enter ] && : > "$STATE/entered"
@@ -106,8 +107,37 @@ case "${1:-} ${2:-}" in
   "pane read")
     text=$(cat "$STATE/text" 2>/dev/null || true)
     first=$(printf '%s\n' "$text" | sed -n '1p')
-    if [ "$MODE" = unknown-pending ] && [ ! -f "$STATE/entered" ]; then
-      exit 1
+    if [ "$MODE" = pre-echo ] && [ ! -f "$STATE/entered" ]; then
+      printf 'Steering: %s\n' "$first"
+      printf '↳ Option+Up to edit all queued messages\n'
+      printf 'Working...\n'
+      printf '─────────────────────────────────────────────────────\n'
+      printf '\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
+    fi
+    if [ "$MODE" = unknown-pending ] || [ "$MODE" = unknown-queued ]; then
+      [ -f "$STATE/entered" ] || exit 1
+    fi
+    if [ "$MODE" = delayed-full ] && [ ! -f "$STATE/entered" ]; then
+      reads=$(cat "$STATE/body-read-count" 2>/dev/null || echo 0)
+      reads=$((reads + 1))
+      printf '%s\n' "$reads" > "$STATE/body-read-count"
+      if [ "$reads" -le "$BODY_DELAY" ]; then
+        printf '─────────────────────────────────────────────────────\n'
+        printf '%s\n' "$text" | sed -n '1,3p'
+        printf '─────────────────────────────────────────────────────\n'
+        exit 0
+      fi
+    fi
+    if [ -f "$STATE/entered" ] && [ "$MODE" = unknown-queued ]; then
+      printf 'Steering: %s\n' "$first"
+      printf '↳ Option+Up to edit all queued messages\n'
+      printf 'Working...\n'
+      printf '─────────────────────────────────────────────────────\n'
+      printf '\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
     fi
     if [ -f "$STATE/entered" ] && [ "$MODE" = landed ]; then
       printf '%s\n' "$text"
@@ -3677,6 +3707,20 @@ test_send_text_submit_pi_retry_preflight_accepts_late_queue_echo() {
   pass "fm_backend_herdr_send_text_submit: retry preflight accepts a late Pi queue landing against one send-wide echo baseline"
 }
 
+test_send_text_submit_pi_pre_enter_echo_never_confirms() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-pre-echo"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=pre-echo \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "stale echo token" 2 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = text-not-typed ] \
+    || fail "a pre-Enter queue echo must not confirm a send that has not pressed Enter, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log" || true)
+  [ "$enter_count" -eq 0 ] || fail "a pre-Enter echo must not cause an Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a pre-Enter Pi echo cannot confirm the current send"
+}
+
 test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion() {
   local dir log state fb out enter_count
   dir="$TMP_ROOT/submit-pi-unknown-pre"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
@@ -3753,6 +3797,46 @@ test_send_text_submit_pi_long_prefix_is_rejected_before_enter() {
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log" || true)
   [ "$enter_count" -eq 0 ] || fail "a truncated long literal must be rejected before Enter, sent $enter_count"
   pass "fm_backend_herdr_send_text_submit: prefix-only long Pi evidence is rejected before submission"
+}
+
+test_send_text_submit_pi_delayed_long_body_settles_before_truncation() {
+  local dir log state fb out long_text i
+  dir="$TMP_ROOT/submit-pi-delayed-long-body"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  long_text=''
+  i=1
+  while [ "$i" -le 40 ]; do
+    long_text="${long_text}DELAYED_LONG_LINE_${i} abcdefghijklmnopqrstuvwxyz 0123456789\n"
+    i=$((i + 1))
+  done
+  long_text=$(printf '%b' "$long_text")
+  [ "${#long_text}" -ge 1500 ] || fail "delayed long-text fixture is shorter than 1500 characters"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=delayed-full \
+    FM_FAKE_HERDR_BODY_DELAY_READS=2 FM_BACKEND_HERDR_SUBMIT_POLLS=3 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 1 0.03 0.01 "" pi' "$ROOT" "$long_text" )
+  [ "$out" = not-submitted ] \
+    || fail "a delayed but complete long Pi body should settle before truncation, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: delayed long Pi body is settled before transport failure"
+}
+
+test_send_text_submit_pi_post_enter_long_integrity_gap_is_unproven() {
+  local dir log state fb out long_text i
+  dir="$TMP_ROOT/submit-pi-post-enter-unproven"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  long_text=''
+  i=1
+  while [ "$i" -le 40 ]; do
+    long_text="${long_text}UNPROVEN_LONG_LINE_${i} abcdefghijklmnopqrstuvwxyz 0123456789\n"
+    i=$((i + 1))
+  done
+  long_text=$(printf '%b' "$long_text")
+  [ "${#long_text}" -ge 1500 ] || fail "post-enter long-text fixture is shorter than 1500 characters"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=unknown-queued \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 1 0.03 0.01 "" pi' "$ROOT" "$long_text" )
+  [ "$out" = pending-unproven ] \
+    || fail "a long Pi send without preflight integrity proof must remain unproven after Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: post-Enter long Pi integrity gaps remain unproven"
 }
 
 test_send_text_submit_claude_working_pending_requires_rendered_busy() {
@@ -5045,10 +5129,13 @@ test_send_text_submit_pi_busy_queue_echo_confirms
 test_send_text_submit_pi_fast_idle_transcript_echo_confirms
 test_send_text_submit_pi_delayed_queue_flush_settles_before_verdict
 test_send_text_submit_pi_retry_preflight_accepts_late_queue_echo
+test_send_text_submit_pi_pre_enter_echo_never_confirms
 test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion
 test_send_text_submit_pi_long_text_still_pending_is_true_failure
 test_send_text_submit_pi_long_literal_drop_is_detected_before_enter
 test_send_text_submit_pi_long_prefix_is_rejected_before_enter
+test_send_text_submit_pi_delayed_long_body_settles_before_truncation
+test_send_text_submit_pi_post_enter_long_integrity_gap_is_unproven
 test_send_text_submit_claude_working_pending_requires_rendered_busy
 test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empty_proof
 test_send_text_submit_claude_idle_baseline_preexisting_rendered_busy_does_not_confirm

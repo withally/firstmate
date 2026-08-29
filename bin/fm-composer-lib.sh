@@ -1383,18 +1383,29 @@ _fm_composer_classify_pi_rows() {  # <screen> <styled>
   printf 'empty'
 }
 
-_fm_composer_pi_submit_body() {  # <screen> <styled> -> selected composer body
-  local screen=$1 styled=$2 row raw content body='' first=1
+_fm_composer_pi_submit_normalize() {  # <text> -> normalized text
+  local text=$1 line compact normalized=''
+  while IFS= read -r line; do
+    fm_composer_normalize_spaces_var line
+    compact=$(printf '%s' "$line" | LC_ALL=C awk '{$1=$1; printf "%s", $0}')
+    [ -n "$compact" ] || continue
+    normalized="${normalized}${normalized:+ }${compact}"
+  done <<EOF
+$text
+EOF
+  printf '%s' "$normalized"
+}
+
+_fm_composer_pi_submit_normalized_body() {  # <screen> <styled> -> normalized body
+  local screen=$1 styled=$2 row raw content body=''
   row=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
   while [ "$row" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; do
     raw=$(_fm_composer_screen_row "$row" "$screen")
     content=$(_fm_composer_row_content "$raw" "$styled")
-    if [ "$first" = 0 ]; then body="${body}"$'\n'; fi
-    body="${body}${content}"
-    first=0
+    body="${body}${body:+ }${content}"
     row=$((row + 1))
   done
-  printf '%s' "$body"
+  _fm_composer_pi_submit_normalize "$body"
 }
 
 _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <identity> <bare-row>
@@ -1468,16 +1479,17 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
 # Output is `<echo-count><TAB><empty|pending|unknown><TAB><body-proof>`.
 # The count lets the backend require a post-Enter increase over its immediately
 # pre-Enter capture, so an older identical queue row cannot confirm a new send.
-# The body proof is `full` only when the selected composer body exactly matches
-# the literal passed to the submit path, and is `partial`, `mismatch`, or `none`
-# otherwise. The queue echo remains prefix-matched because Pi intentionally
-# renders only a preview of busy queued input.
+# The body proof is `full` only when the selected composer body matches the
+# literal after whitespace normalization, and is `shorter`, `mismatch`, or
+# `none` otherwise. The queue echo remains prefix-matched because Pi
+# intentionally renders only a preview of busy queued input.
 # Matching rows are counted only above the selected composer pair, so the
 # pre-Enter draft itself is never mistaken for a transcript echo.
 # This function does not decide delivery; the Herdr adapter owns that verdict.
 fm_composer_pi_submit_observation() {  # <caps> <screen> <text> <identity>
   local caps=$1 screen=$2 text=$3 identity=$4 styled=0 has_identity=0 kv
-  local plain agent first prefix line count=0 state row=0 body body_proof=none
+  local plain agent first prefix line count=0 state row=0 body_proof=none
+  local normalized_text normalized_body
   while IFS= read -r kv; do
     case "$kv" in
       styled=1) styled=1 ;;
@@ -1505,12 +1517,13 @@ EOF
   fi
   state=$(_fm_composer_classify_pi_rows "$screen" "$styled")
   if [ "$state" = pending ]; then
-    body=$(_fm_composer_pi_submit_body "$screen" "$styled")
-    if [ "$body" = "$text" ]; then
+    normalized_text=$(_fm_composer_pi_submit_normalize "$text")
+    normalized_body=$(_fm_composer_pi_submit_normalized_body "$screen" "$styled")
+    if [ "$normalized_body" = "$normalized_text" ]; then
       body_proof=full
-    elif [ -n "$body" ]; then
-      case "$text" in
-        "$body"*) body_proof=partial ;;
+    elif [ -n "$normalized_body" ]; then
+      case "$normalized_text" in
+        "$normalized_body"*) body_proof=shorter ;;
         *) body_proof=mismatch ;;
       esac
     fi
@@ -1530,6 +1543,10 @@ EOF
     done <<EOF
 $plain
 EOF
+  fi
+  if [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ] && [ "$body_proof" != full ]; then
+    printf '%s\tunknown\t%s' "$count" "$body_proof"
+    return 0
   fi
   case "$state" in
     empty|pending) printf '%s\t%s\t%s' "$count" "$state" "$body_proof" ;;

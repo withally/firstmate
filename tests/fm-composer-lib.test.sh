@@ -603,6 +603,23 @@ test_selected_content_is_composer_scoped_and_wrap_normalized() {
   pass "fm_composer_extract_selected_content: scopes user content and excludes furniture"
 }
 
+test_pi_submit_observation_honors_pair_bound_and_normalized_body() {
+  local separator blank screen out
+  separator='─────────────────────────────────────────────────────'
+  blank=$(printf ' \n%.0s' {1..12})
+  screen=$'Steering: hello\n'"$separator"$'\n'"$blank$separator"
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" "hello" $'pi\tworking')
+  [ "$out" = $'1\tunknown\tnone' ] \
+    || fail "an over-tall empty Pi pair must stay unknown despite a matching echo, got '$out'"
+
+  blank=$(printf ' \n%.0s' {1..9})
+  screen=$'Steering: first line\n'"$separator"$'\n first   line \n second\tline\n'"$blank$separator"
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" $'first line\nsecond line' $'pi\tworking')
+  [ "$out" = $'1\tpending\tfull' ] \
+    || fail "an over-tall Pi pair with a normalized full body should retain its proof, got '$out'"
+  pass "fm_composer_pi_submit_observation: over-tall pairs require normalized full-body proof"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
@@ -633,6 +650,7 @@ test_incomplete_lower_box_invalidates_stale_candidate
 test_titled_bottom_requires_matching_width
 test_cursor_on_proven_box_bottom_classifies_content
 test_selected_content_is_composer_scoped_and_wrap_normalized
+test_pi_submit_observation_honors_pair_bound_and_normalized_body
 
 test_queued_enter_verdict_busy_pending_is_empty() {
   local out

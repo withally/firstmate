@@ -65,10 +65,11 @@
 #   3 = text was typed and Enter was sent, but bounded read-back proved neither
 #       submission nor visible retention; check the pane transcript/queue and
 #       composer before acting, and never retype blindly.
-#   1 = a verified failure: the literal/key transport failed, Pi's literal
-#       never appeared intact after the bounded pre-Enter settle, the Pi
-#       composer visibly contained only a prefix, or the bounded post-Enter
-#       read-back still visibly showed the current text.
+#   1 = a verified failure: the literal/key transport failed, Pi's current
+#       composer did not remain visibly pending after the bounded pre-Enter
+#       settle, the normalized Pi composer body was provably shorter than the
+#       literal, or the bounded post-Enter read-back still visibly showed the
+#       current text.
 #       A visibly retained message must be retried with Enter only, never by
 #       retyping it.
 # A marked request's pending-reply expectation stays armed for exits 3 and for
@@ -1016,13 +1017,13 @@ else
     text-not-typed)
       fm_send_known_undelivered_cleanup || \
         echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
-      echo "error: text not sent to $T: Herdr accepted pane send-text, but the current message never appeared in the Pi composer during the bounded pre-Enter settle (tried $RESOLUTION_TRIED); the literal was dropped before submission and Enter was not sent" >&2
+      echo "error: text not sent to $T: Herdr accepted pane send-text, but the current message did not remain visibly pending in the Pi composer during the bounded pre-Enter settle (tried $RESOLUTION_TRIED); Enter was not sent" >&2
       exit 1
       ;;
     text-truncated)
       fm_send_known_undelivered_cleanup || \
         echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
-      echo "error: text not sent to $T: Herdr showed only a truncated or mismatched prefix of the current Pi literal in the bounded pre-Enter composer read-back; Enter was not sent and the partial draft must be cleared before retrying (tried $RESOLUTION_TRIED)" >&2
+      echo "error: text not sent to $T: Herdr proved the normalized Pi composer body was shorter than the current literal after the bounded pre-Enter settle; Enter was not sent and the partial draft must be cleared before retrying (tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
     not-submitted|pending)

@@ -57,7 +57,9 @@ elif [ "$LAVISH_SCENARIO" = partial ]; then
   exit 73
 else
   printf 'session:\n  file: %s\n  status: feedback\n' "$artifact"
-  [ "$LAVISH_SCENARIO" = final ] && printf '  session_ended: true\n  ended_by: user\n'
+  if [ "$LAVISH_SCENARIO" = final ] || [ "$LAVISH_SCENARIO" = ack-failure ]; then
+    printf '  session_ended: true\n  ended_by: user\n'
+  fi
   printf 'delivery_id: 0123456789abcdef\nfeedback[1]{text}:\n  ship it\n'
   if [ "$LAVISH_SCENARIO" = truncated ]; then
     printf 'x%.0s' {1..512}

@@ -5,6 +5,8 @@
 #   fm-procevent-lavish.sh arm <artifact.html>
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
+#   fm-procevent-lavish.sh source-acknowledgements
+#   fm-procevent-lavish.sh acknowledge <result-file>
 #   fm-procevent-lavish.sh silent <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
@@ -25,6 +27,12 @@
 #            record and never announce; any other exit publishes the wake. This
 #            is the generic no-op contract bin/fm-procevent.sh calls, and the
 #            only place Lavish's notion of "nothing was said" is decided.
+# source-acknowledgements
+#            Declare the post-capture acknowledgement seam this adapter uses.
+# acknowledge
+#            After the runner durably captures a result, acknowledge its
+#            delivery_id through Lavish. A result without delivery_id needs no
+#            ACK and returns success for compatibility with older Lavish builds.
 #
 # AN EMPTY BOARD CLOSE IS NOT NEWS, and that is what `silent` exists to say.
 # Closing a review surface that carried nothing is the single most common Lavish
@@ -46,8 +54,9 @@
 #
 # This adapter is deliberately thin. It owns only what is specific to Lavish:
 # canonical source identity, the argv for the currently published poll command,
-# and how to read a completed result. Ownership, durable capture, publication,
-# and restart recovery all belong to bin/fm-procevent.sh.
+# how to read a completed result, and acknowledgement of a durably captured
+# delivery. Ownership, durable capture, publication, and restart recovery all
+# belong to bin/fm-procevent.sh.
 #
 # `answers` is this adapter's half of the generic keyed-answer contract in
 # bin/fm-procevent.sh. It reports what the captain actually chose, as
@@ -60,12 +69,15 @@
 # Only rows tagged `choice` are read. A freeform captain message is prose that may
 # contain anything, and must never be able to forge a decision key.
 #
-# It wraps ONLY the currently published interface, verified against 0.1.45:
-#   Usage: lavish-axi poll <html-file> [--agent-reply "..."]
+# It wraps the additive poll interface verified against the patched 0.1.50:
+#   Usage: lavish-axi poll <html-file> [--ack <delivery-id>] [--agent-reply "..."]
 # and that command "long-polls indefinitely" server-side. The adapter therefore
 # runs the plain blocking form with no timeout flag, so results arrive as real
-# server-side events. It adds no periodic discovery, no timer fallback, and no
-# dependency on any unreleased capability.
+# server-side events. After durable capture, its ACK call uses the same command
+# with `--ack <delivery-id> --timeout-ms 1`: Lavish completes the ACK before it
+# begins that bounded follow-on poll, so command success confirms the ACK while
+# any immediately returned newer delivery stays unacknowledged for redelivery.
+# It adds no periodic discovery or timer fallback.
 #
 # BOUNDED QUIET RETRY, owned here and nowhere else. A live listener can be cut
 # short by the server with exactly this two-line response while the session's
@@ -84,12 +96,19 @@
 # Lavish fact, so the generic runner in bin/fm-procevent.sh stays
 # adapter-agnostic and learns nothing about it.
 #
-# LOSS LIMITATION, stated plainly. The published poll destructively clears
-# feedback before returning it. A result lost after that clearing and before the
-# runner reads the process output is unrecoverable, and no Firstmate wrapper can
-# close that source-side handoff window. Never describe this path as
-# at-least-once, no-loss, or lossless. The only durability this proves is the
-# runner's own: output that reached the runner is stored before it is announced.
+# DELIVERY GUARANTEE AND LIMITS, stated plainly. When a response carries a
+# delivery_id, the runner stores the complete result before this adapter ACKs it,
+# and capture failure or truncation sends no ACK. An ACK-command failure keeps
+# the source armed for retry; because ACK is idempotent, this is safe even when
+# Lavish applied an ACK whose response was lost. That closes the source-side
+# handoff window with at-least-once,
+# duplicate-tolerant delivery. Deliveries have no owner or TTL, so simultaneous
+# or replacement consumers can process the same delivery; this is not exclusive
+# delivery. Lavish persists state with plain writeFile rather than fsync plus
+# atomic rename, so the guarantee does not cover torn writes or power loss.
+# An older Lavish response with no delivery_id triggers no ACK and keeps the old
+# behavior, including its destructive source-side loss window; never describe
+# that compatibility path as at-least-once, no-loss, or lossless.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,7 +123,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,92p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,111p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -267,6 +286,38 @@ cmd_poll() {
   return "$rc"
 }
 
+# Read a top-level scalar emitted by Lavish's TOON output. Captain-controlled
+# prompt rows are indented, so anchoring at column zero prevents prompt text
+# from forging delivery metadata. <field> is fixed by this adapter.
+top_level_field() {  # <result-file> <field>
+  awk -v field="$2" '
+    $0 ~ "^" field ":[[:space:]]*" {
+      sub("^" field ":[[:space:]]*", ""); sub(/[[:space:]]*$/, ""); print; exit
+    }
+  ' "$1"
+}
+
+# Acknowledgement happens only through the runner's post-capture seam. The
+# one-millisecond follow-on poll is not used for discovery: its output is
+# discarded, and any delivery it observes remains unacknowledged so the normal
+# registered listener receives it again.
+cmd_acknowledge() {
+  local file=${1-} delivery_id artifact
+  [ -n "$file" ] || usage
+  [ "$#" -eq 1 ] || usage
+  [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  delivery_id=$(top_level_field "$file" delivery_id)
+  [ -n "$delivery_id" ] || return 0
+  [ "${#delivery_id}" -eq 16 ] || die "captured delivery_id is invalid"
+  case "$delivery_id" in
+    *[!0-9a-f]*) die "captured delivery_id is invalid" ;;
+  esac
+  artifact=$(session_file "$file")
+  [ -n "$artifact" ] || die "captured delivery has no session file"
+  command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
+  lavish-axi poll "$artifact" --ack "$delivery_id" --timeout-ms 1 >/dev/null
+}
+
 # Read one field of the response's leading `session:` block. Those fields are
 # INDENTED, so each is read as the first indented match inside that block rather
 # than an anchored whole-line match; anchoring on "^status:" silently never
@@ -279,6 +330,19 @@ session_field() {  # <result-file> <field>
     in_s && $0 !~ /^[[:space:]]/ { exit }
     in_s && $0 ~ "^[[:space:]]+" field ":[[:space:]]*[A-Za-z_]+[[:space:]]*$" {
       sub("^[[:space:]]+" field ":[[:space:]]*", ""); sub(/[[:space:]]*$/, ""); print; exit }
+  ' "$1"
+}
+
+# The session file is an arbitrary path rather than the enum-like values read by
+# session_field. Artifact paths cannot contain newlines, and Lavish emits this
+# scalar verbatim after the indented `file:` key.
+session_file() {  # <result-file>
+  awk '
+    $0 == "session:" { in_s=1; next }
+    in_s && $0 !~ /^[[:space:]]/ { exit }
+    in_s && $0 ~ /^[[:space:]]+file:[[:space:]]*/ {
+      sub(/^[[:space:]]+file:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit
+    }
   ' "$1"
 }
 
@@ -459,6 +523,8 @@ case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
   poll)      shift; cmd_poll "$@" ;;
+  source-acknowledgements) [ "$#" -eq 1 ] || usage ;;
+  acknowledge) shift; cmd_acknowledge "$@" ;;
   source-id) shift; cmd_source_id "$@" ;;
   classify)  shift; cmd_classify "$@" ;;
   terminal)  shift; cmd_terminal "$@" ;;

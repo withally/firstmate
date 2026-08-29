@@ -198,7 +198,7 @@ family_for_basename() {
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-afk-herdr-claude-busy-guard-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
-    fm-pi-clear-on-shrink-live-e2e.test.sh|\
+    fm-pi-clear-on-shrink-live-e2e.test.sh|fm-procevent-lavish-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -448,8 +448,10 @@ tests/fm-pending-reply.test.sh 19488
 tests/fm-pi-primary-live-e2e.test.sh 41
 tests/fm-pi-watch-extension.test.sh 17979
 tests/fm-pr-check-security.test.sh 250417
-tests/fm-procevent-when.test.sh 15249
+tests/fm-procevent-lavish-ack.test.sh 4000
+tests/fm-procevent-lavish-live-e2e.test.sh 20
 tests/fm-procevent.test.sh 53142
+tests/fm-procevent-when.test.sh 15249
 tests/fm-project-origin.test.sh 105
 tests/fm-public-followup.test.sh 36301
 tests/fm-quota-array-dispatch-live-e2e.test.sh 18

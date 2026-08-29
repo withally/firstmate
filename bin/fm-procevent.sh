@@ -35,12 +35,12 @@
 #            script command; extension results must still match the exact bound
 #            package identity captured with them.
 # start      Claim the source, run its child to completion, durably capture the
-#            output, publish normalized wakes for pending results, then release
-#            the claim. It blocks for as long as the source blocks and is meant
-#            to run as a supervised background process, never in a conversational
-#            turn. After publishing, it asks the source's own adapter whether the
-#            captured result ends the source and retires the registration when it
-#            says so, so a source that has ended stops being restarted.
+#            output, satisfy any adapter-owned source-delivery acknowledgement,
+#            follow the adapter's publication ordering, and then release the
+#            claim. It blocks for as long as the source blocks and is meant to run
+#            as a supervised background process, never in a conversational turn.
+#            The adapter's terminal verdict is checked at that ordering boundary,
+#            and a required source acknowledgement must succeed before retirement.
 # reconcile  Idempotent liveness entry the watcher calls on its ordinary cycle:
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
@@ -104,8 +104,8 @@
 # Applying a built-in result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
 # home's own durable state - and leaving that to an agent that has to remember
-# means it silently does not happen. So after publishing, `start` calls
-# `bin/fm-procevent-<adapter>.sh autohandle <source-id> <sequence> <result-file>`
+# means it silently does not happen. At its adapter-declared publication boundary,
+# `start` calls `bin/fm-procevent-<adapter>.sh autohandle <source-id> <sequence> <result-file>`
 # and lets the adapter apply and acknowledge its own result. Exit 0 means the
 # adapter fully handled it. A missing command, an error, or any other exit is not
 # a failure of capture: the result stays unacknowledged and therefore eligible
@@ -139,10 +139,24 @@
 # built-in source needs nothing here beyond an `answers` command and a binding.
 # External binding responses never enter this authority-bearing intake.
 #
-# Feeding is deliberately independent of handling: it never acknowledges a result
-# and never suppresses a wake. Recording the captain's answer is transcription,
-# while ACTING on it is firstmate's judgement, so the capture stays unacknowledged
-# and its `check` wake reaches the handler exactly as it would have anyway.
+# Feeding remains independent of publication and adapter-owned handling: it never
+# suppresses a wake. For an adapter that declares source acknowledgements, a bound
+# feed must succeed before acknowledgement or terminal retirement; an unbound source
+# has no feed to await. Recording the captain's answer is transcription, while
+# ACTING on it is firstmate's judgement, so the capture stays unacknowledged and its
+# `check` wake reaches the handler exactly as it would have anyway.
+#
+# Source delivery acknowledgement is adapter-owned through one final seam.
+# An adapter that answers exit 0 to
+# `bin/fm-procevent-<adapter>.sh source-acknowledgements` declares that every
+# captured result must pass through its `acknowledge <result-file>` command after
+# durable capture and any bound keyed-answer feed, before terminal retirement. Exit 0 from
+# `acknowledge` means the source delivery is confirmed or the captured result
+# carries no acknowledgement identity; any other exit keeps the registration
+# armed. Adapters that do not declare the seam keep their existing behavior.
+# A result truncated by the runner's output bound or produced by a nonzero source
+# exit is never passed to the ACK command and also keeps the registration armed.
+# The runner still parses no source-specific result field.
 #
 # Ownership is machine-wide per canonical source, because separate Firstmate
 # homes can share one underlying source store. A live owner is never displaced;
@@ -151,9 +165,10 @@
 # stale: reconcile stops that surviving group and releases its generation before
 # any replacement starts, and keeps the claim for a later retry when it cannot.
 #
-# Durability boundary: see bin/fm-procevent-lib.sh. This runner proves capture
-# before publication and bounded re-announcement until handled, and nothing
-# about the source side of the handoff.
+# Durability boundary: see bin/fm-procevent-lib.sh. On its own, this runner
+# proves capture before publication and bounded re-announcement until handled.
+# A declared acknowledgement seam extends that boundary only as its adapter's
+# source protocol and limits state.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -306,6 +321,23 @@ adapter_result_is_silent() {  # <adapter> <result-file>
   "$script" silent "$2" >/dev/null 2>&1
 }
 
+# Run an adapter's optional source-delivery acknowledgement after the result is
+# durable. A declaration is separate from the action so adapters without this
+# protocol retain their exact behavior rather than looking like failed ACKs.
+adapter_uses_source_acknowledgements() {  # <adapter>
+  local script
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  "$script" source-acknowledgements >/dev/null 2>&1
+}
+
+adapter_acknowledge_capture() {  # <adapter> <result-file>
+  local script
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  "$script" acknowledge "$2" >/dev/null 2>&1
+}
+
 # Ask the adapter whether its autohandled results announce themselves through a
 # durable downstream channel of their own (see the announcement-ownership note
 # in the header). Exit 0 is the only declaration; everything else - including a
@@ -344,20 +376,28 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
 
 # Pass a bound source's captured result to the one keyed-answer intake. The
 # adapter turns its own format into keyed lines; the intake owns everything those
-# lines mean. Silenced and best-effort exactly like the seams above: an unbound
-# source, an adapter with no `answers` command, and a failure on either side all
-# leave the capture untouched and still announced, because this never
-# acknowledges anything (see the keyed-answer note in the header).
+# lines mean. Return 2 for an intentionally unbound source and 1 for any feed
+# failure, so source acknowledgement can wait for a bound feed without changing
+# unbound behavior.
 feed_keyed_answers() {  # <adapter> <source-id> <result-file>
-  local adapter=$1 id=$2 result=$3 script origin seq
+  local adapter=$1 id=$2 result=$3 script origin seq binding_rc
+  local pipeline_status
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
+  origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null)
+  binding_rc=$?
+  case "$binding_rc" in
+    0) ;;
+    3) return 2 ;;
+    *) return 1 ;;
+  esac
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
   "$script" answers "$result" 2>/dev/null \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
+  pipeline_status=("${PIPESTATUS[@]}")
+  [ "${pipeline_status[0]}" -eq 0 ] && [ "${pipeline_status[1]}" -eq 0 ]
 }
 
 read_adapter() {  # <source-id>
@@ -612,6 +652,7 @@ cmd_start_public() {
 cmd_start() {
   local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0
   local extension_owner=0 extension_load_state extension_sequence='' extension_request_id=''
+  local source_acknowledged=1 source_ack_required=0 feed_rc=2
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -812,13 +853,44 @@ EOF
   fi
   [ "$extension_owner" -eq 1 ] || rm -f -- "$out"
   STAGED_OUTPUT=
-  [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2
 
   # Independent of publication and acknowledgement, so it runs once per capture
-  # for every adapter and cannot change what the handler receives.
-  if [ "$extension_owner" -eq 0 ] \
-    && feed_keyed_answers "$adapter" "$id" "$durable"; then
+  # for every built-in adapter and cannot change what the handler receives.
+  if [ "$extension_owner" -eq 0 ] && adapter_uses_source_acknowledgements "$adapter"; then
+    source_ack_required=1
+  fi
+
+  if [ "$extension_owner" -eq 0 ]; then
+    feed_keyed_answers "$adapter" "$id" "$durable"
+    feed_rc=$?
+  fi
+  if [ "$feed_rc" -eq 0 ]; then
     printf 'answers-fed: %s\n' "$id"
+  elif [ "$feed_rc" -ne 2 ] && [ "$source_ack_required" -eq 1 ]; then
+    source_acknowledged=0
+    if [ "$truncated" -eq 0 ] && [ "$rc" -eq 0 ]; then
+      printf 'source acknowledgement skipped because keyed-answer feed failed; source remains registered: %s\n' "$id" >&2
+    fi
+  fi
+
+  if [ "$source_ack_required" -eq 1 ]; then
+    if [ "$truncated" -eq 1 ] && [ "$rc" -ne 0 ]; then
+      source_acknowledged=0
+      printf 'source acknowledgement skipped for truncated incomplete poll; source remains registered: %s (poll exit %s; output limit %s bytes)\n' "$id" "$rc" "$MAX_OUTPUT_BYTES" >&2
+    elif [ "$truncated" -eq 1 ]; then
+      source_acknowledged=0
+      printf 'source acknowledgement skipped for truncated capture; source remains registered: %s\n' "$id" >&2
+    elif [ "$rc" -ne 0 ]; then
+      source_acknowledged=0
+      printf 'source acknowledgement skipped for incomplete poll; source remains registered: %s (poll exit %s)\n' "$id" "$rc" >&2
+    elif [ "$source_acknowledged" -eq 1 ] && adapter_acknowledge_capture "$adapter" "$durable"; then
+      printf 'source-acknowledged: %s\n' "$id"
+    elif [ "$source_acknowledged" -eq 1 ]; then
+      source_acknowledged=0
+      printf 'source acknowledgement failed; source remains registered: %s\n' "$id" >&2
+    fi
+  elif [ "$truncated" -eq 1 ]; then
+    printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2
   fi
 
   # A self-announcing adapter's autohandle announces through its own durable
@@ -858,7 +930,7 @@ EOF
   else
     printf 'not-autohandled: %s (left for the handler; still unacknowledged)\n' "$id" >&2
   fi
-  if adapter_result_is_terminal "$adapter" "$durable"; then
+  if [ "$source_acknowledged" -eq 1 ] && adapter_result_is_terminal "$adapter" "$durable"; then
     if retire_owned_terminal_source "$id"; then
       printf 'retired: %s (adapter classified the captured result terminal)\n' "$id"
     else

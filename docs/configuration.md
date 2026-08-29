@@ -684,7 +684,7 @@ Never run the registered blocking source command directly in a conversational tu
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
 `bin/fm-procevent.sh` owns the generic contract; built-in adapters retain their tracked `bin/fm-procevent-<adapter>.sh` commands, while an explicitly bound external adapter routes through the trusted host contract above.
-`bin/fm-procevent-lavish.sh` is the first built-in adapter and wraps only the currently published `lavish-axi poll` interface.
+`bin/fm-procevent-lavish.sh` is the first built-in adapter and wraps the published `lavish-axi poll` interface plus its optional delivery acknowledgement.
 That adapter, and only that adapter, retries the one exact transient response a cut-short listener returns while its marks remain available (`error: Lavish Editor poll response was interrupted` with `code: SERVER_ERROR`), up to 12 times at 5 second intervals, so an internal retry never reaches the runner as a captured result.
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 0 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so re-arm a live board once to adopt this retry policy.
@@ -703,6 +703,11 @@ The watcher delivers a queued result on its ordinary cycle by reporting it as an
 A queued `check` delivery is reported at most once per captured source and sequence while any records for that key remain queued.
 A durable handled acknowledgement stops future source re-announcement, while a record already queued remains under the durable queue's authority until the ordinary drain's sequence-bound post-handling acknowledgement consumes it.
 
+Source-delivery acknowledgement is a separate adapter-owned seam from the local `handled` acknowledgement.
+An adapter that declares `source-acknowledgements` receives an `acknowledge <result-file>` call after durable capture and any bound keyed-answer feed, before terminal retirement and before normal `check` publication.
+Exit 0 confirms the source delivery or confirms that the result has no delivery identity; any other exit leaves the registration armed.
+Durable-capture failure, a failed bound feed, truncation, or a nonzero source exit prevents that call, so no incomplete result can retire its source.
+
 Discovery is never a timer.
 Each registered source has its own child process blocking on that source, and the watcher's per-cycle `reconcile` republishes every captured result with no durable handled acknowledgement yet - regardless of any earlier publication - restarts a source whose owner is gone, and stops this home's runner when reconciliation runs after its registration disappeared unexpectedly.
 In supported steady state, a home with no registered source runs nothing, generates no state, and keeps its ordinary cadence.
@@ -716,10 +721,11 @@ Any recognized top-level `prompts` or `feedback` block counts as content regardl
 A `Send & End` close carrying the captain's answer arrives as `status: feedback` with `session_ended`, so it classifies `feedback` and is announced unchanged, as is any `ended` result that still carries content, and every `waiting`, `missing`, `unknown`, or unreadable result.
 
 Whether a captured result ends its source is adapter knowledge, never the runner's.
-After capture - and after initial `check` publication for the default ordering - the runner asks the immutable captured owner through the built-in `terminal` command or external `result.terminal` operation and retires the registration on exit 0 alone, dropping only the exact registration generation captured by its claim and releasing that claim only after removal succeeds under one source boundary; a missing command, an error, or any other exit keeps the source armed, so an adapter with no notion of ending needs no change.
+After capture, the runner's adapter-declared ordering puts the terminal check after any required source-delivery acknowledgement; for the default ordering it also follows initial `check` publication.
+It retires the registration only when the adapter returns terminal exit 0 and every required source-delivery acknowledgement has succeeded, dropping only the exact registration generation captured by its claim and releasing that claim only after removal succeeds under one source boundary; a missing command, an error, or any other exit keeps the source armed, so an adapter with no notion of ending needs no change.
 A failed terminal removal stays durably terminal and is completed by ordinary reconciliation without restarting its poll, while a concurrently replaced registration survives and becomes independently runnable after the old claim releases.
 Any registration refuses to replace an external registration while its prior runner claim is live, uncertain, orphaned, or terminal-pending; replacement becomes eligible only after that generation is proved gone or its terminal retirement completes.
-A source that has ended therefore captures at most one terminal result, is never restarted, and leaves no recurring poll work, while explicit `retire` stays the supported and idempotent path afterwards.
+A source whose terminal result has been successfully acknowledged therefore captures at most one terminal result, is never restarted, and leaves no recurring poll work; while a required source acknowledgement is failing, the source remains armed for redelivery until a later capture is acknowledged.
 For Lavish that verdict covers an ended session, a missing session, and the final feedback of a `Send & End` review, which the published poll marks with `session_ended` before it returns only empty ended sessions.
 
 Applying a captured result through code is a built-in adapter seam, and some built-in results carry no judgement at all: they must simply be applied idempotently to this home's own durable state.
@@ -734,8 +740,9 @@ Some built-in sources carry the captain's answer to a captain-held task, and wha
 A built-in source bound with `bin/fm-captain-hold.sh bind` therefore has each captured result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints is piped straight into that intake.
 A binding can select one decision origin or the script's cross-origin mode; the command header owns the exact forms and key interpretation.
 The built-in adapter reports only what the captain chose; the intake owns every rule about what happens next, so the runner names no adapter, parses no result, and carries no decision rule, and a future built-in source needs nothing here beyond an `answers` command and a binding.
-Feeding is independent of handling: it never acknowledges a result and never suppresses a wake, because recording the answer is transcription while acting on it is firstmate's judgement.
-An unbound built-in source, a built-in adapter with no `answers` command, and a failure on either side all leave the capture untouched and still announced.
+Feeding is independent of handling: it never acknowledges a result or suppresses a wake, because recording the answer is transcription while acting on it is firstmate's judgement.
+For an adapter with source acknowledgements, the feed is also a precondition for source acknowledgement and terminal retirement; a feed failure leaves the capture unacknowledged for source delivery and lets its normal silence or announcement verdict apply.
+An unbound built-in source has no feed to await, and a built-in adapter with no `answers` command retains its existing behavior.
 External binding responses never enter this authority-bearing intake.
 
 Ownership is machine-wide per canonical source, because separate homes can share one underlying source store.
@@ -762,8 +769,11 @@ The runner proves exactly one durability boundary: output that reached the runne
 `bin/fm-procevent.sh handled <source-id> <sequence>` is the only thing that stops re-announcement: a generation-keyed, private, path-safe, durable, and idempotent acknowledgement that atomically checks and deduplicates by the exact source and sequence, so a paired effect gated on its first-time-vs-repeat report is never authorized twice.
 Default and fallback `check` publication is still best-effort, so the same source and sequence can repeat even before any restart; handlers deduplicate that identity rather than assuming a wake is unique.
 The runner proves nothing about the source side, and the handled acknowledgement proves nothing about a paired external effect performed before it: a crash between that effect and the acknowledgement call can still repeat the effect on replay, so this is never a generic exactly-once guarantee.
-The published `lavish-axi poll` clears feedback destructively before returning it, so a result lost between that clearing and the runner reading process output is unrecoverable.
-Never describe this path as at-least-once, no-loss, or lossless.
+For a patched Lavish response carrying a `delivery_id`, the runner stores the complete result before the adapter ACKs that id, and capture failure, pre-ACK ordering failure including a bound keyed-answer feed failure, truncation, a nonzero poll exit, or ACK-command failure leaves the source armed for redelivery.
+That path is at-least-once and duplicate-tolerant, but not exclusive: deliveries have no owner or TTL, so simultaneous or replacement consumers may process the same delivery.
+Lavish persists its state with plain `writeFile` rather than `fsync` plus atomic rename, so torn writes and power loss remain outside this guarantee.
+A response without a `delivery_id` retains the legacy poll behavior: feedback is cleared destructively before the response returns, so loss between source clearing and runner capture is unrecoverable.
+Never describe that no-`delivery_id` compatibility path as at-least-once, no-loss, or lossless.
 `docs/verification/process-event-sources.md` holds the measurements and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
 
 ## Spoken interface and captain inbox (config/voice-*, config/inbox-*)

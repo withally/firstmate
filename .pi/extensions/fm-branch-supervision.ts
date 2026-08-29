@@ -4,12 +4,12 @@
 // pi process as the captain's MAIN session. The watcher extension offers each
 // actionable wake here (lib/fm-branch-dispatch.ts); the branch handles it with
 // real tools and reports through the fm_branch_report custom tool, which
-// writes the durable outcome store FIRST (bin/fm-branch-outcome.sh) and then
-// merges an append-only note to main's tail. Main's captain/assistant dialog
+// writes every outcome to the durable store FIRST (bin/fm-branch-outcome.sh)
+// and sends only captain outcomes to main. Main's captain/assistant dialog
 // is mirrored into the branch as read-only fm-main-mirror context from Pi's
-// before_agent_start prompt and at main's turn_end. Pi-only by construction: this
-// file lives in .pi/extensions, so no
-// other harness ever loads it. Supervision is default-on for every task once
+// before_agent_start prompt and at main's turn_end. Pi-only by construction:
+// this file lives in .pi/extensions, so no other harness ever loads it.
+// Supervision is default-on for every task once
 // this Pi session owns the fleet lock: no captain grant file is required.
 // Away mode (or a broken branch) keeps today's wake-to-main behavior
 // untouched regardless.
@@ -119,6 +119,7 @@ const wakeGrantScript = join(fmRoot, "bin", "fm-wake-grant.sh");
 const loadedMarker = join(state, ".pi-branch-extension-loaded");
 const modelPinFile = join(config, "supervision-branch-model");
 const effortPinFile = join(config, "supervision-branch-effort");
+const wakeCoalesceMs = positiveIntegerEnv("FM_TEST_BRANCH_WAKE_COALESCE_MS", 250);
 
 // Same tool set in the same order on every request (part of the cached
 // prefix). "bash" resolves to the customTools override below, which injects
@@ -130,6 +131,8 @@ const BRANCH_TOOL_NAMES = ["read", "bash", "fm_branch_report"] as const;
 const branchCacheKey = `fm-branch-${createHash("sha256").update(fmHome).digest("hex").slice(0, 24)}`;
 
 const MIRROR_MESSAGE_CAP = 4000;
+// Historical persisted routine notes can still appear in an existing main
+// transcript even though new routine outcomes are store-only.
 const MERGE_NOTE_BOAT = "⛵";
 // Carried inside the captain note's own text because that text is the only
 // part of a custom message Pi gives the model (see mergeIntoMain).
@@ -160,6 +163,22 @@ const scriptEnv = {
 
 function offerEligible(offer: BranchDispatchOffer): boolean {
   return offer.eligible === true;
+}
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw || !/^[1-9][0-9]*$/.test(raw)) return fallback;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function urgentWake(message: string): boolean {
+  return /(?:^|\s)(?:done|needs-decision|blocked|failed)\s*(?:\[[^\]]+\])?\s*:|\b(?:PR[- ]ready|ready for review|checks green|credential|login|destructive|irreversible|security-sensitive)\b/i.test(message);
+}
+
+function wakeBatchMessage(messages: readonly string[]): string {
+  if (messages.length === 1) return messages[0];
+  return `COALESCED WATCHER WAKES (${messages.length} unique):\n\n${messages.join("\n\n---\n\n")}`;
 }
 
 function afkActive(): boolean {
@@ -404,7 +423,6 @@ function collectMainDialog(sessionManager: ReadonlyEntries, collection: MirrorCo
 export default function (pi: ExtensionAPI) {
   let branch: AgentSession | null = null;
   let branchBroken = "";
-  let mainStreaming = false;
   let shuttingDown = false;
   // Bumps at every session replacement so a stale chain continuation from the
   // prior generation cannot act into the new one.
@@ -416,6 +434,9 @@ export default function (pi: ExtensionAPI) {
   // dispatch order, one at a time (the branch runs drain -> handle -> ack
   // serially by design).
   let branchChain: Promise<void> = Promise.resolve();
+  let wakeCoalesceTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingWakeGeneration = -1;
+  const pendingWakeMessages: string[] = [];
   const pendingMirror: MirrorItem[] = [];
   const mirrorCollection: MirrorCollectionState = {
     collectAnchor: null,
@@ -591,18 +612,12 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Append-only merge into main. The store row is already durable when this
-  // runs; the note is a cache of it at main's tail. Delivery modes per the
-  // design: routine+idle appends now with no turn, routine+busy appends after
-  // the captain's next prompt, captain-relevant triggers exactly one turn
-  // (queued as a follow-up while main is busy) - that follow-up turn is
-  // itself the captain-visible outcome, so the captain-facing note is
-  // delivered silently (display: false) rather than printed or rendered a
-  // second time; routine notes stay rendered except an explicitly silent
-  // no-change heartbeat. The read cursor advances once the note is handed to
-  // Pi; a crash inside Pi's
-  // own delivery window leaves the outcome durable in the store, where
-  // main's fm_branch_outcomes tool still reads it on demand.
+  // Outcome delivery after the store row is durable. Routine outcomes stay in
+  // the store and advance its read cursor without entering main. A captain
+  // outcome triggers exactly one follow-up turn; that turn is itself the
+  // captain-visible outcome, so the note is delivered with display: false.
+  // A crash inside Pi's delivery window leaves the outcome durable for main's
+  // fm_branch_outcomes tool to read on demand.
   //
   // Pi keeps only `content` when it converts a custom message for the model:
   // customType, display, and details never reach the provider. A captain note
@@ -635,7 +650,6 @@ export default function (pi: ExtensionAPI) {
     task: string,
     verdict: Verdict,
     summary: string,
-    silent: boolean,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
     if (verdict === "captain") {
@@ -645,13 +659,6 @@ export default function (pi: ExtensionAPI) {
         display: false,
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
-    } else {
-      const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display: !(task === "fleet" && silent) };
-      if (mainStreaming) {
-        pi.sendMessage(message, { deliverAs: "nextTurn" });
-      } else {
-        pi.sendMessage(message, {});
-      }
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;
@@ -665,7 +672,7 @@ export default function (pi: ExtensionAPI) {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; routine notes render unless silent marks a no-change heartbeat.",
+        "Record the outcome of one handled fleet event: write every outcome durably to the store, keep routine outcomes out of main, and surface verdict captain to the captain in one turn.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
@@ -712,7 +719,7 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, silent)) {
+        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary)) {
           return {
             content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
             details: undefined,
@@ -720,7 +727,9 @@ export default function (pi: ExtensionAPI) {
           };
         }
         return {
-          content: [{ type: "text", text: `recorded seq ${appended.stdout} and merged [${verdict}] into main` }],
+          content: [{ type: "text", text: verdict === "captain"
+            ? `recorded seq ${appended.stdout} and merged [captain] into main`
+            : `recorded seq ${appended.stdout} [routine] store-only` }],
           details: undefined,
         };
       },
@@ -906,7 +915,8 @@ ${context.command}
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
   }
 
-  function enqueueWake(message: string, acceptedGeneration: number): void {
+  function enqueueWake(messages: readonly string[], acceptedGeneration: number): void {
+    const message = wakeBatchMessage(messages);
     branchChain = branchChain
       .then(async () => {
         if (shuttingDown || acceptedGeneration !== generation) {
@@ -916,7 +926,7 @@ ${context.command}
         const session = await ensureBranch(acceptedGeneration);
         await flushMirror(session, acceptedGeneration);
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
-        const heartbeat = /^heartbeat($|:)/.test(message);
+        const heartbeat = messages.some((candidate) => /^heartbeat($|:)/.test(candidate));
         const scope = scopeForUnreadWake(state, heartbeat);
         // A newly-arrived main-owned (check-kind) row never bounces this
         // whole recheck back to main - scopeForUnreadWake excludes it from
@@ -956,6 +966,33 @@ ${context.command}
           await fallbackToMain(message, error instanceof Error ? error.message : String(error));
         } catch {}
       });
+  }
+
+  function flushPendingWakes(): void {
+    if (wakeCoalesceTimer) {
+      clearTimeout(wakeCoalesceTimer);
+      wakeCoalesceTimer = null;
+    }
+    if (pendingWakeMessages.length === 0) return;
+    const messages = pendingWakeMessages.splice(0);
+    const acceptedGeneration = pendingWakeGeneration;
+    pendingWakeGeneration = -1;
+    enqueueWake(messages, acceptedGeneration);
+  }
+
+  function queueWake(message: string, acceptedGeneration: number): void {
+    if (pendingWakeMessages.length > 0 && pendingWakeGeneration !== acceptedGeneration) {
+      flushPendingWakes();
+    }
+    pendingWakeGeneration = acceptedGeneration;
+    if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
+    if (urgentWake(message)) {
+      flushPendingWakes();
+      return;
+    }
+    if (!wakeCoalesceTimer) {
+      wakeCoalesceTimer = setTimeout(flushPendingWakes, wakeCoalesceMs);
+    }
   }
 
   // A model or effort change applies to the next branch turn without waiting
@@ -1016,7 +1053,7 @@ ${context.command}
     if (branchBroken) return; // fail back to today's wake-to-main path
     if (!collectCurrentMainDialog()) return;
     offer.accept();
-    enqueueWake(offer.message, generation);
+    queueWake(offer.message, generation);
   });
 
   pi.on?.("before_agent_start", (event, ctx) => {
@@ -1469,9 +1506,9 @@ ${context.command}
     },
   });
 
-  // Pi only calls this renderer for a message with display: true, which
-  // mergeIntoMain sets for every routine note except an explicitly silent
-  // fleet heartbeat; captain-facing notes are never printed or rendered here.
+  // Existing transcripts can contain rendered routine notes written by older
+  // versions. New routine outcomes are store-only, and captain-facing notes
+  // are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
     const note = textOfContent(message.content);
     const hasGlyph = note.startsWith(MERGE_NOTE_BOAT);

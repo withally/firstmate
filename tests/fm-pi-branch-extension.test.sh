@@ -604,52 +604,38 @@ const untouched = cacheHandler({ type: "before_provider_request", payload: { mod
 if (untouched !== undefined) throw new Error("cache-key hook rewrote a provider payload with no prompt_cache_key");
 console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 
-// 4. Two-stage filter, stage 2: routine while main is idle appends with no
-// turn; routine while main is busy defers to after the captain's next prompt;
-// captain-relevant appends and triggers exactly one turn. Store rows are
-// written BEFORE the merge note and marked read after it.
+// 4. Two-stage filter, stage 2: unsolicited routine outcomes stay durable but
+// never enter main, while captain-relevant outcomes trigger exactly one turn.
+// Store rows are written BEFORE delivery and marked read after it.
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
 const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
-if (sentToMain.length !== 1) throw new Error("routine report did not merge exactly one note");
-if (sentToMain[0].message.customType !== "fm-branch-merge") throw new Error("merge note has the wrong custom type");
-if (sentToMain[0].options.triggerTurn) throw new Error("routine idle merge must not trigger a turn");
-if (sentToMain[0].options.deliverAs) throw new Error("routine idle merge must append immediately");
+if (sentToMain.length !== 0) throw new Error("routine report entered main instead of remaining store-only");
 fire("agent_start", {});
 await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy" }, undefined, undefined, {});
-if (sentToMain[1].options.deliverAs !== "nextTurn" || sentToMain[1].options.triggerTurn) {
-  throw new Error(`routine busy merge must defer to nextTurn without a turn: ${JSON.stringify(sentToMain[1].options)}`);
-}
+if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
 await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
-if (sentToMain[2].options.triggerTurn !== true || sentToMain[2].options.deliverAs !== "followUp") {
-  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[2].options)}`);
+if (sentToMain.length !== 1) throw new Error(`captain report did not merge exactly one note: ${sentToMain.length}`);
+if (sentToMain[0].options.triggerTurn !== true || sentToMain[0].options.deliverAs !== "followUp") {
+  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
 }
-if (typeof sentToMain[0].message.content !== "string" || !sentToMain[0].message.content.startsWith("⛵ ")) {
-  throw new Error(`routine note missing sailboat prefix: ${sentToMain[0].message.content}`);
-}
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
-  throw new Error(`routine note still has boilerplate: ${sentToMain[0].message.content}`);
-}
-// A routine note is rendered (display: true); a captain-facing note must
-// never be printed or rendered at all - the follow-up turn triggered above
-// is itself the captain-visible outcome. display: false is the exact flag
+// A captain-facing note must never be printed or rendered at all - the
+// follow-up turn triggered above is itself the captain-visible outcome.
+// display: false is the exact flag
 // Pi's own chat renderer and HTML export both gate on before ever calling a
 // customType renderer, so this is the authoritative "never printed" proof.
-if (sentToMain[0].message.display !== true) {
-  throw new Error(`routine note must render: display=${sentToMain[0].message.display}`);
+if (sentToMain[0].message.display !== false) {
+  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[0].message.display}`);
 }
-if (sentToMain[2].message.display !== false) {
-  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[2].message.display}`);
+if (typeof sentToMain[0].message.content !== "string" || sentToMain[0].message.content.includes("⚓")) {
+  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[0].message.content}`);
 }
-if (typeof sentToMain[2].message.content !== "string" || sentToMain[2].message.content.includes("⚓")) {
-  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[2].message.content}`);
+if (!sentToMain[0].message.content.includes("task-9: PR https://example.com/pr/9")) {
+  throw new Error(`captain note lost its outcome: ${sentToMain[0].message.content}`);
 }
-if (!sentToMain[2].message.content.includes("task-9: PR https://example.com/pr/9")) {
-  throw new Error(`captain note lost its outcome: ${sentToMain[2].message.content}`);
-}
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[2].message.content)) {
-  throw new Error(`captain note still has boilerplate: ${sentToMain[2].message.content}`);
+if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
+  throw new Error(`captain note still has boilerplate: ${sentToMain[0].message.content}`);
 }
 // What main's model actually receives. Pi keeps only `content` when it turns a
 // custom message into a provider message - customType, display, and details are
@@ -658,8 +644,7 @@ if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[2].message.content))
 // the REAL bin/fm-operational-input.sh so the protocol's own executable, not a
 // pattern in this test, decides what was delivered. Pi's half of that contract
 // is proven separately against the real SDK in fm-pi-branch-live-e2e.test.sh.
-writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[2].message.content);
-writeFileSync(`${home}/state/delivered-routine-note`, sentToMain[0].message.content);
+writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[0].message.content);
 if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
   throw new Error("one captain outcome must open exactly one turn on main");
 }
@@ -754,7 +739,7 @@ const assertRenderedNote = (note, glyph) => {
     throw new Error(`note remainder must be dim: ${JSON.stringify(fgCalls)}`);
   }
 };
-assertRenderedNote(sentToMain[0].message.content, "⛵");
+assertRenderedNote("⛵ historical routine outcome", "⛵");
 process.exit(0);
 EOF
   status=$?
@@ -798,12 +783,49 @@ EOF
     *"An outcome that directly answers an explicit captain request is captain-facing"*"regardless of whether it is healthy, routine, measured, actionable, or requires a decision."*) ;;
     *) fail "captain outcome body lost the unconditional explicit-request rule: $body" ;;
   esac
-  # The routine note is rendered in the TUI, and its renderer reads the glyph off
-  # the front of this same string, so it must stay plain text.
-  if ./bin/fm-operational-input.sh kind < "$home/state/delivered-routine-note" >/dev/null 2>&1; then
-    fail "routine note must stay plain rendered text, not typed operational input"
-  fi
-  pass "a captain outcome reaches main's model as typed, self-describing input while routine notes stay plain"
+  pass "a captain outcome reaches main's model as typed, self-describing input while routine outcomes stay store-only"
+}
+
+test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
+  local repo home out status
+  repo="$TMP_ROOT/coalesced-dispatch-root"
+  home="$TMP_ROOT/coalesced-dispatch-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  out=$(PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_TEST_BRANCH_WAKE_COALESCE_MS=400 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle }; })()`);
+const { dispatch, settle } = globalThis.__t;
+
+const repeated = "stale: assets waiting-for-merge";
+for (let index = 0; index < 3; index += 1) {
+  const offer = dispatch(repeated);
+  if (!offer.accepted) throw new Error(`repeat ${index + 1} was not accepted`);
+}
+await new Promise((resolve) => setTimeout(resolve, 80));
+if ((globalThis.__fmPrompts ?? []).length !== 0) {
+  throw new Error("a routine repeat prompted before the bounded coalescing window closed");
+}
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "one coalesced repeat prompt");
+await new Promise((resolve) => setTimeout(resolve, 450));
+if ((globalThis.__fmPrompts ?? []).length !== 1) {
+  throw new Error(`same-text repeats opened ${globalThis.__fmPrompts.length} branch turns`);
+}
+
+const started = Date.now();
+const urgent = dispatch("signal: task-9 blocked: credential required");
+if (!urgent.accepted) throw new Error("urgent wake was not accepted");
+await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "urgent bypass prompt");
+if (Date.now() - started >= 300) {
+  throw new Error(`urgent wake waited for the coalescing window (${Date.now() - started}ms)`);
+}
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi branch must coalesce same-text routine floods and bypass the delay for urgent work: $out"
+  [ -z "$out" ] || fail "Pi branch wake-coalescing test printed output: $out"
+  pass "Pi branch coalesces same-text routine floods and bypasses the delay for urgent work"
 }
 
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
@@ -1133,10 +1155,11 @@ if (dispatch("heartbeat", [], true, false).accepted) {
 }
 await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "heartbeat wake prompt");
 
-// The branch can downgrade its deeper review to a silent routine outcome or
-// escalate a captain-worthy finding into one main turn.
+// The branch keeps every routine disposition store-only and escalates a
+// captain-worthy finding into one main turn.
 const heartbeatSession = globalThis.__fmSessions[globalThis.__fmSessions.length - 1];
 const heartbeatReport = heartbeatSession.options.customTools.find((tool) => tool.name === "fm_branch_report");
+const mainMessagesBeforeRoutineReports = sentToMain.length;
 await heartbeatReport.execute(
   "heartbeat-noop",
   { task: "fleet", verdict: "routine", summary: "fleet reviewed, nothing changed", silent: true },
@@ -1144,9 +1167,9 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const noopMerge = sentToMain[sentToMain.length - 1];
-if (noopMerge.options.triggerTurn) throw new Error("a no-op heartbeat pass must not open a main turn");
-if (noopMerge.message.display !== false) throw new Error("a no-op heartbeat pass must not render a merge note");
+if (sentToMain.length !== mainMessagesBeforeRoutineReports) {
+  throw new Error("a no-op heartbeat pass entered main");
+}
 const storedNoop = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8")
   .trim()
   .split("\n")
@@ -1162,10 +1185,8 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const fleetRoutineMerge = sentToMain[sentToMain.length - 1];
-if (fleetRoutineMerge.message.display !== true) throw new Error("a fleet routine action must render");
-if (!fleetRoutineMerge.message.content.startsWith("⛵ fleet: reconciled the backlog after completed work")) {
-  throw new Error(`fleet routine action note changed: ${fleetRoutineMerge.message.content}`);
+if (sentToMain.length !== mainMessagesBeforeRoutineReports) {
+  throw new Error("a fleet routine action entered main");
 }
 await heartbeatReport.execute(
   "task-routine",
@@ -1174,10 +1195,8 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const taskRoutineMerge = sentToMain[sentToMain.length - 1];
-if (taskRoutineMerge.message.display !== true) throw new Error("a task-scoped routine outcome must render");
-if (!taskRoutineMerge.message.content.startsWith("⛵ task-9: worker healthy, no action needed")) {
-  throw new Error(`task-scoped routine note changed: ${taskRoutineMerge.message.content}`);
+if (sentToMain.length !== mainMessagesBeforeRoutineReports) {
+  throw new Error("a task-scoped routine outcome entered main");
 }
 await heartbeatReport.execute(
   "heartbeat-finding",
@@ -1187,6 +1206,9 @@ await heartbeatReport.execute(
   {},
 );
 const captainMerge = sentToMain[sentToMain.length - 1];
+if (sentToMain.length !== mainMessagesBeforeRoutineReports + 1) {
+  throw new Error("a captain-worthy heartbeat finding did not enter main exactly once");
+}
 if (captainMerge.options.triggerTurn !== true) throw new Error("a captain-worthy heartbeat finding must open a main turn");
 if (captainMerge.message.display !== false) throw new Error("the heartbeat captain-facing note must not be printed");
 
@@ -3090,6 +3112,7 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
+test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work
 test_captain_outcome_encoding_failure_delivers_plain_instruction
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot
 test_branch_cache_key_is_per_home_stable

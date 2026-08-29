@@ -6,7 +6,7 @@ The poster is the visual of the idea.
 This document stays the owner and the contract.
 
 Fleet supervision on the Pi primary harness runs on a second, persistent conversation - the supervision branch - inside the same `pi` process as the captain's chat.
-Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch handles eligible task-local rows from ordinary actionable wakes plus heartbeat scans that the cheap bash-level scan flags as possibly captain-relevant, then merges each outcome back by appending a short note to the captain conversation's tail.
+Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch handles eligible task-local rows from ordinary actionable wakes plus heartbeat scans that the cheap bash-level scan flags as possibly captain-relevant, records every outcome durably, and sends only captain outcomes to the captain conversation.
 Ordinary main-only rows remain on main even when eligible task-local rows share their queue.
 An unresolvable row makes the scan unsafe and returns the whole wake to main, and every watcher-failure alarm also stays on main.
 Only captain-relevant branch outcomes open a turn on main; the generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to produce the captain-visible response in that turn, while Pi never separately prints or renders a captain-facing merge note.
@@ -24,13 +24,13 @@ This feature is Pi-only by construction and changes nothing anywhere else:
   A successful row grant transfers ownership of exactly the currently branch-eligible rows to the branch; a check-kind triggering close (merge-confirmation polls, Relay mentions, credential/auth failures, and every other legitimately main-only class) is never offered even when other rows are eligible, no acceptor (extension absent, away mode, branch broken) keeps today's wake-to-main path for that close, and watcher-failure alarms always go to main because only main can repair the watcher cycle.
   A fleet-wide heartbeat keeps its own all-or-nothing rule (see "Heartbeat routing" below): it takes every branch-ownable unread row or none of them.
   A co-present main-owned check row no longer defers that review to main, because it is not fleet context the branch is missing and main is woken for it on its own triggering close.
-- The branch itself: `.pi/extensions/fm-branch-supervision.ts` creates and reopens the persistent branch session, serializes wakes, mirrors dialog, and merges outcomes.
+- The branch itself: `.pi/extensions/fm-branch-supervision.ts` creates and reopens the persistent branch session, coalesces wakes, mirrors dialog, and delivers outcomes.
   It checks the current extension generation and `state/.lock` ownership before each guarded branch side effect so replacement or lock loss cannot let an old continuation mutate the new session.
   Every path that cannot reach a working branch falls back to delivering the wake to main - a broken branch degrades to today's behavior, never to a lost wake.
 - Branch model and effort selection: the same extension registers `/supervision-model`, which picks the branch's model and then its reasoning effort, and applies both at the branch-session creation boundary; [configuration.md](configuration.md#pi-supervision-branch-model-and-effort-configsupervision-branch-model-configsupervision-branch-effort) owns the operator-facing schema and behavior.
 - Branch system prompt: `bin/fm-branch-prompt.sh`; its header owns the byte-stable-prefix contract (no timestamps, no fleet snapshot, no per-wake content).
 - Outcome store: `bin/fm-branch-outcome.sh`; its header owns the append-only format and the read cursor.
-  Outcomes are written to the store before any note is handed to Pi, and rows that never reach that handoff replay once through the next locked session-start digest.
+  Outcomes are written to the store before any captain note is handed to Pi, and rows that never reach that handoff replay once through the next locked session-start digest.
 - Consistency: `bin/fm-lease-lib.sh` owns the per-task lease contract, the main-only role partition, and the deliberate CONFUSED-AGENT-GRADE threat model these guards target (captain-decided; adversarial-grade separation is out of scope and tracked as follow-up design work); `bin/fm-lease.sh` is the command surface.
   The guards are wired into `fm-send.sh`, `fm-control.sh`, and `fm-teardown.sh` (overlap, lease-checked, with claim serialization retained through the mutation) and `fm-pr-merge.sh`, `fm-merge-local.sh`, and `fm-spawn.sh` (main-owned, branch refused; a relaunch through `fm-control` stays branch-legal recovery).
 - Autonomy: supervision is default-on for every task once a Pi primary session owns the fleet lock (docs/configuration.md "Pi supervision branch"); no captain grant file is required.
@@ -53,15 +53,19 @@ The branch prompt frames mirrored text as context for judgment, never as instruc
 ## Two-stage noise filter
 
 Stage one is unchanged: the bash watcher absorbs everything provably fine at zero token cost.
-Stage two is the branch's verdict on each handled event, reported through its `fm_branch_report` tool: `routine` merges without a follow-up turn, while `captain` merges with exactly one follow-up turn.
+Stage two is the branch's verdict on each handled event, reported through its `fm_branch_report` tool: unsolicited `routine` outcomes remain only in the durable outcome store, while `captain` outcomes merge with exactly one follow-up turn.
 The generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to produce the captain-visible response in the one follow-up turn a `captain` verdict opens, so its merge note is delivered silently and never printed or rendered in Pi.
 Because Pi gives the model only a custom message's `content`, that silent note normally carries both a relay instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
 This self-description lets main distinguish a new supervision outcome from its own earlier captain-facing answer; without it, main can mistake the outcome for that answer and lose the outcome while deciding how to handle it.
 The generated [Pi supervision protocol](supervision-protocols/pi.md) owns main's event-ownership and conversational-treatment instructions for merged outcomes.
 If envelope encoding fails, the captain-facing note degrades to the same runtime instruction as plain text rather than losing the outcome or opening another turn.
-A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is also delivered silently with no rendered note, while every other `routine` outcome stays rendered with its sailboat prefix.
-The branch prompt owns the verdict criteria, including its unconditional explicit-request rule; unsolicited routine outcomes remain routine sailboat notes, unchanged fleet reviews remain silent, and doubt escalates.
+Routine outcomes never render in MAIN and never start a captain-facing turn.
+The branch prompt owns the verdict criteria, including its unconditional explicit-request rule; unsolicited routine outcomes remain store-only, unchanged fleet reviews remain silent, and doubt escalates.
 Main can read the durable outcome store on demand through its `fm_branch_outcomes` tool.
+
+Before starting a branch prompt, the extension holds non-urgent offers for a bounded 250 millisecond window and combines their unique wake text into one turn.
+Same-text idle or stale repeats inside that window therefore open at most one branch turn.
+Terminal status verbs, PR-ready or review-ready work, green checks, credentials or login needs, and destructive, irreversible, or security-sensitive messages bypass the delay.
 
 ## Heartbeat routing
 
@@ -73,7 +77,7 @@ A check row is permanently main-owned in every mode: it is excluded from what th
 Deferring the fleet review to main merely because some unrelated merge poll or Relay mention happened to be sitting unread put a routine review in the captain's chat for a reason that had nothing to do with the fleet, and that coupling is gone.
 What all-or-nothing still guarantees is unchanged: the branch takes every branch-ownable unread row or none of them, and an unresolvable task-local row, an unknown row kind, or an unreadable queue still defers the whole review to main.
 The branch runs its normal operating procedure for the wake (`bin/fm-branch-prompt.sh` "Handling a wake") and performs the deeper fleet review that main previously performed.
-A review that found literally nothing worth reporting uses verdict `routine`, `task=fleet`, and `silent=true` so it has no rendered note, while a fleet-wide routine action omits `silent` and keeps its rendered sailboat note.
+A review that found nothing captain-worthy reports verdict `routine` and remains store-only, including after a successful fleet-wide routine action.
 Only a captain-worthy finding reports verdict `captain` and opens a main turn.
 Every other fleet-wide or unresolvable wake - including watcher-failure alarms, which are never offered to the branch - keeps today's wake-to-main path.
 

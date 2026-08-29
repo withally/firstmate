@@ -26,9 +26,9 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 
 ### 3.1 Research before planning
 
-- Rule: every phase starts with research in fresh-context researchers, one per stream, and one synthesizer that reads only their reports.
+- Rule: every phase starts with research in fresh-context researchers, one per stream, and one synthesizer that reads the researcher reports plus the authoritative CONTEXT/rulings document, nothing else.
 - Mechanism: each researcher and the synthesizer is a scout spawned from a `bin/fm-brief.sh --scout` brief in its own worktree, so no researcher inherits another's context or the planner's sunk cost.
-- Artifact and owner: one `data/<task>/report.md` per researcher, and the synthesizer's `RESEARCH-<phase>.md` beside its report; the governing firstmate or secondmate owns the phase plan that names the streams.
+- Artifact and owner: each researcher leaves one `data/<task>/report.md`, and the synthesizer scout's single `data/<task>/report.md` is the durable synthesis artifact; the Blockvalley `RESEARCH-0.md` was a verbatim copy of that report, and the governing firstmate or secondmate owns the phase plan that names the streams.
 
 ### 3.2 Claim provenance
 
@@ -51,9 +51,9 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 
 ### 3.5 Prescriptive research output
 
-- Rule: the synthesis says "use X", never "consider X or Y", and a survey without a recommendation is an incomplete deliverable.
+- Rule: the synthesizer's report says "use X", never "consider X or Y", and a survey without a recommendation is an incomplete deliverable.
 - Mechanism: the synthesizer's scout brief fixes the output sections in order, with a single-stack recommendation and a scorecard with provenance, so a report without them fails its definition of done.
-- Artifact and owner: the synthesis document's Recommendation section, owned by the synthesizer; the captain rules on it as one decision with the ASSUMED list attached.
+- Artifact and owner: the synthesizer scout's single `data/<task>/report.md` carries the Recommendation section, owned by the synthesizer; the captain rules on it as one decision with the ASSUMED list attached.
 
 ### 3.6 Plan-check before any code
 
@@ -66,7 +66,7 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 - The cycle is WRITE once, CHECK once, PATCH once.
 - WRITE: the synthesizer produces the phase plan from the research and the CONTEXT document.
 - CHECK: one adversarial plan-check returns BLOCKER and WARNING findings with a concrete fix per finding.
-- PATCH: one scoped patch applies exactly the named fixes and nothing else, and the checker re-verifies only the changed lines plus the new claims.
+- PATCH: one scoped patch applies exactly the named fixes and nothing else, and the checker re-verifies the changed lines, the new claims, and every untouched section that consumes a changed contract.
 - If blockers remain after the patch, the governing secondmate stops and posts one keyed check-in to the parent firstmate with the remaining blockers and two options.
 - No second rewrite happens on the worker's or the secondmate's own authority; the parent firstmate decides between the options or escalates to the captain.
 - A gate that depends only on already-closed findings may be dispatched while an unrelated blocker is escalated, when the checker's dispatch judgment says so explicitly.
@@ -102,7 +102,7 @@ This is the current setting as the captain set it on 2026-08-29; the captain's p
 
 - The plan survives one check with a bounded blocker count and reaches dispatch after the single patch.
 - The build hits the phase's named proof, for example "the slice on the captain's phone", without a re-plan.
-- Fable spend per phase is one HIGH-effort Round 1 seat and nothing else.
+- Fable spend per phase is at most one HIGH-effort Round 1 seat; zero is valid only under the captain-approved fallback in section 5.
 
 ## 8. How we review our use of it
 

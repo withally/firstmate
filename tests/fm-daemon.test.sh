@@ -1137,7 +1137,9 @@ test_check_wake_flush_failure_retains_the_durable_wake() {
     || fail "could not append the durable check wake"
 
   if (
+    # shellcheck disable=SC2329 # Invoked indirectly by escalate_flush.
     inject_msg() { return 0; }
+    # shellcheck disable=SC2329 # Invoked indirectly by escalate_flush.
     check_ledger_mark_delivered() { return 1; }
     FM_ESCALATE_BATCH_SECS=0 handle_durable_wakes "$reason" "$state"
   ); then

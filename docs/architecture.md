@@ -73,7 +73,7 @@ The script header owns the exact JSON schema.
 
 On a Pi primary, supervision is default-on: the watcher extension can hand eligible task-local rows from an ordinary actionable wake, plus selected fleet-wide heartbeat reviews, to a persistent in-process supervision conversation while main-only rows remain on the captain-facing path.
 The branch handles those rows and stores every outcome durably; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, dispatch architecture, and whether an outcome reaches the captain-facing path.
-[docs/supervision-protocols/pi.md](supervision-protocols/pi.md) owns MAIN's captain-visible response and merged-event handling; every other harness keeps the wake-to-main path unchanged.
+[docs/supervision-protocols/pi.md](supervision-protocols/pi.md) owns MAIN's captain-visible response and captain-outcome event handling; every other harness keeps the wake-to-main path unchanged.
 
 ### Registered secondmate current state
 

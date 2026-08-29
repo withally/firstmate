@@ -57,7 +57,7 @@ Stage two is the branch's verdict on each handled event, reported through its `f
 The generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to produce the captain-visible response in the one follow-up turn a `captain` verdict opens, so the hidden delivery message is never printed or rendered in Pi.
 Because Pi gives the model only a custom message's `content`, that hidden delivery message normally carries both a relay instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
 This self-description lets main distinguish a new supervision outcome from its own earlier captain-facing answer; without it, main can re-emit the earlier answer instead of relaying the outcome and lose the outcome while deciding how to handle it.
-The generated [Pi supervision protocol](supervision-protocols/pi.md) owns main's event-ownership and conversational-treatment instructions for merged outcomes.
+The generated [Pi supervision protocol](supervision-protocols/pi.md) owns MAIN's event-ownership and conversational-treatment instructions for captain outcomes.
 If envelope encoding fails, the hidden delivery message degrades to the same runtime instruction as plain text rather than losing the outcome or opening another turn.
 Routine outcomes never render in MAIN and never start a captain-facing turn.
 The branch prompt owns the verdict criteria, including its unconditional explicit-request rule; unsolicited routine outcomes remain store-only, unchanged fleet reviews remain silent, and doubt escalates.
@@ -67,7 +67,10 @@ Before starting a branch prompt, the extension holds non-urgent offers for a bou
 For a given window, the first `stale:` delivery is urgent and bypasses that delay.
 An identical same-text `stale:` repeat for that window is store-only while that text remains the last-delivered stale, so it opens no branch turn and causes no re-prompt.
 Same-text idle repeats inside the bounded window therefore open at most one branch turn.
-Terminal status verbs, PR-ready or review-ready work, green checks, credentials or login needs, and destructive, irreversible, or security-sensitive messages bypass the delay.
+Urgent status-tail bypass applies when the final nonblank line starts with `done:`, `needs-decision:`, `blocked:`, or `failed:`, or contains `login`, `credential`, `credentials`, `PR ready`, `ready for review`, or `checks green`.
+The status-tail check reads only a validated direct child of the home `state/` directory whose filename follows the shared task-id grammar, reads at most 4 KiB through a no-follow, nonblocking descriptor, and treats an unreadable or non-regular target as non-urgent.
+Direct wake text for destructive, irreversible, or security-sensitive work also bypasses the delay, and no watcher-boundary urgency metadata is used.
+An accepted wake remains in the durable wake queue until its drain acknowledgement; shutdown clears only in-memory coalescing state, and a stale generation never falls back into replacement MAIN.
 
 ## Heartbeat routing
 

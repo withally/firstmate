@@ -204,6 +204,22 @@ test_unmatched_single_colon_target_must_exist() {
   pass "fm-send strict: unmatched single-colon explicit targets must verify live before sending"
 }
 
+test_malformed_herdr_metadata_target_fails_before_enter() {
+  local dir fb home err log rc target
+  dir="$TMP_ROOT/herdr-malformed-meta"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home herdr-malformed-meta); err="$dir/send.err"; log="$dir/herdr.log"; target=malformed-herdr-target; : > "$log"
+  fm_write_meta "$home/state/lab.meta" "window=$target" "backend=herdr" "kind=ship"
+
+  rc=0
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_HERDR_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" "$target" "must not type" >/dev/null 2>"$err" || rc=$?
+  expect_code 1 "$rc" "a malformed Herdr metadata target should fail before any typed-plane operation"
+  assert_contains "$(cat "$err")" "text not sent" "a malformed Herdr metadata target should use the pre-Enter failure diagnostic"
+  assert_not_contains "$(cat "$err")" "submission is unconfirmed" "a pre-Enter parse failure must not claim Enter was sent"
+  [ ! -s "$log" ] || fail "a malformed Herdr metadata target attempted a Herdr operation: $(cat "$log")"
+  pass "fm-send strict: malformed Herdr metadata targets fail before typing or Enter"
+}
+
 test_fm_prefixed_herdr_session_is_an_explicit_target() {
   local dir fb home err log herdr_log rc
   dir="$TMP_ROOT/fm-remote-explicit"; mkdir -p "$dir"
@@ -352,5 +368,6 @@ test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
+test_malformed_herdr_metadata_target_fails_before_enter
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works

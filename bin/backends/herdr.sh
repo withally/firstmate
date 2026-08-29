@@ -2902,7 +2902,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   local pi_submit=0 pi_obs pi_obs_rest pi_echo_before=0 pi_echo_current=0
   local pi_pre_state=unknown pi_pre_proof=none pi_post=unknown pi_requires_full=0
   local pi_transport_proof=0 pi_text_length pi_preflight pi_preflight_rest
-  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  fm_backend_herdr_parse_target "$target" || { printf 'send-failed'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
@@ -2996,10 +2996,6 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
             fi
             ;;
         esac
-      fi
-      if [ "$pi_pre_state" = unknown ] && [ "$enter_sent" -eq 1 ]; then
-        printf 'unknown'
-        return 0
       fi
     fi
     case "$target_harness" in

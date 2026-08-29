@@ -96,13 +96,22 @@ case "${1:-} ${2:-}" in
     else
       printf '%s' "${4:-}" > "$STATE/text"
     fi
-    rm -f "$STATE/entered" "$STATE/read-count" "$STATE/body-read-count"
+    rm -f "$STATE/entered" "$STATE/read-count" "$STATE/body-read-count" "$STATE/enter-count"
     ;;
   "pane send-keys")
-    [ "${4:-}" = enter ] && : > "$STATE/entered"
+    if [ "${4:-}" = enter ]; then
+      : > "$STATE/entered"
+      enter_count=$(cat "$STATE/enter-count" 2>/dev/null || echo 0)
+      printf '%s\n' "$((enter_count + 1))" > "$STATE/enter-count"
+    fi
     ;;
   "agent get")
-    printf '{"result":{"agent":{"agent":"pi","agent_status":"%s"}}}\n' "${FM_FAKE_HERDR_AGENT_STATUS:-working}"
+    agent_status=${FM_FAKE_HERDR_AGENT_STATUS:-working}
+    if [ "$MODE" = unknown-late-landing ]; then
+      enter_count=$(cat "$STATE/enter-count" 2>/dev/null || echo 0)
+      [ "$enter_count" -ge 2 ] && agent_status=working
+    fi
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"%s"}}}\n' "$agent_status"
     ;;
   "pane read")
     text=$(cat "$STATE/text" 2>/dev/null || true)
@@ -118,6 +127,14 @@ case "${1:-} ${2:-}" in
     fi
     if [ "$MODE" = unknown-pending ] || [ "$MODE" = unknown-queued ]; then
       [ -f "$STATE/entered" ] || exit 1
+    fi
+    if [ "$MODE" = unknown-late-landing ]; then
+      enter_count=$(cat "$STATE/enter-count" 2>/dev/null || echo 0)
+      [ "$enter_count" -ge 2 ] || exit 1
+      printf '─────────────────────────────────────────────────────\n'
+      printf '\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
     fi
     if [ "$MODE" = delayed-full ] && [ ! -f "$STATE/entered" ]; then
       reads=$(cat "$STATE/body-read-count" 2>/dev/null || echo 0)
@@ -3735,6 +3752,21 @@ test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion() 
   pass "fm_backend_herdr_send_text_submit: unknown Pi pre-state cannot borrow native working as delivery proof"
 }
 
+test_send_text_submit_pi_unknown_pre_state_can_reach_native_proof() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-unknown-native"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=unknown-late-landing \
+    FM_FAKE_HERDR_AGENT_STATUS=idle FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "late native proof" 2 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "an unknown Pi pre-state must still allow a later native idle-to-busy proof, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 2 ] \
+    || fail "the native proof arriving on the retry must receive the second bounded Enter attempt, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: unknown Pi pre-state falls through to a later native idle-to-busy proof"
+}
+
 test_send_text_submit_pi_long_text_still_pending_is_true_failure() {
   local dir log state fb out long_text i
   dir="$TMP_ROOT/submit-pi-long-pending"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
@@ -5131,6 +5163,7 @@ test_send_text_submit_pi_delayed_queue_flush_settles_before_verdict
 test_send_text_submit_pi_retry_preflight_accepts_late_queue_echo
 test_send_text_submit_pi_pre_enter_echo_never_confirms
 test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion
+test_send_text_submit_pi_unknown_pre_state_can_reach_native_proof
 test_send_text_submit_pi_long_text_still_pending_is_true_failure
 test_send_text_submit_pi_long_literal_drop_is_detected_before_enter
 test_send_text_submit_pi_long_prefix_is_rejected_before_enter

@@ -1444,3 +1444,69 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
     *) printf 'unknown' ;;
   esac
 }
+
+# fm_composer_pi_submit_observation is the submission-only Pi surface reader.
+# It keeps Pi shape knowledge in this fleet-wide owner while allowing a backend
+# to combine two positive facts without weakening the ordinary composer verdict:
+# the separator composer is structurally empty, and Pi rendered a transcript
+# or `Steering:` queue echo for the current message.
+#
+# Output is `<echo-count><TAB><empty|pending|unknown>`.
+# The count lets the backend require a post-Enter increase over its immediately
+# pre-Enter capture, so an older identical queue row cannot confirm a new send.
+# The message fingerprint is the first nonempty line, capped to 48 bytes because
+# Pi's busy queue preview renders only the first line and terminal width may
+# truncate the rest.
+# Matching rows are counted only above the selected composer pair, so the
+# pre-Enter draft itself is never mistaken for a transcript echo.
+# This function does not decide delivery; the Herdr adapter owns that verdict.
+fm_composer_pi_submit_observation() {  # <caps> <screen> <text> <identity>
+  local caps=$1 screen=$2 text=$3 identity=$4 styled=0 has_identity=0 kv
+  local plain agent first prefix line count=0 state row=0
+  while IFS= read -r kv; do
+    case "$kv" in
+      styled=1) styled=1 ;;
+      identity=1) has_identity=1 ;;
+    esac
+  done <<EOF
+$caps
+EOF
+  [ "$has_identity" = 1 ] || { printf '0\tunknown'; return 0; }
+  case "$identity" in
+    *$'\t'*) agent=${identity%%$'\t'*} ;;
+    *) printf '0\tunknown'; return 0 ;;
+  esac
+  [ "$agent" = pi ] || { printf '0\tunknown'; return 0; }
+  plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
+  _fm_composer_scan_screen "$plain" ''
+  # Pi's status footer can begin with a dollar-denominated cost (`$0.003`).
+  # The generic cursorless selector correctly treats a lower shell-looking row
+  # as staleness evidence when identity is unknown, but native Pi identity plus
+  # the bottom-most valid separator pair is the stronger submit-only proof.
+  if [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ] \
+    || [ "$FM_COMPOSER_SCAN_PI_CLOSE" != "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" ]; then
+    printf '0\tunknown'
+    return 0
+  fi
+  state=$(_fm_composer_classify_pi_rows "$screen" "$styled")
+  first=$(printf '%s\n' "$text" | sed -n '/[^[:space:]]/ { p; q; }')
+  fm_composer_normalize_trim_var first
+  prefix=$(printf '%s' "$first" | LC_ALL=C awk '{ printf "%s", substr($0, 1, 48) }')
+  if [ -n "$prefix" ]; then
+    while IFS= read -r line; do
+      fm_composer_normalize_trim_var line
+      if [ "$row" -lt "$FM_COMPOSER_SCAN_PI_OPEN" ]; then
+        case "$line" in
+          "$prefix"*|"Steering: $prefix"*) count=$((count + 1)) ;;
+        esac
+      fi
+      row=$((row + 1))
+    done <<EOF
+$plain
+EOF
+  fi
+  case "$state" in
+    empty|pending) printf '%s\t%s' "$count" "$state" ;;
+    *) printf '%s\tunknown' "$count" ;;
+  esac
+}

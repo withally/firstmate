@@ -273,22 +273,27 @@ No ambient `herdr server stop` command is a supported test operation.
 
 ### Submit confirmation
 
-Measured 2026-08-19 against Herdr 0.8.0 and Claude Code 2.1.236 in an isolated `fm-lab-` session.
+Measured 2026-08-29 against Herdr 0.8.2, Claude Code 2.1.251, and Pi 0.84.2 using `openai-codex/gpt-5.6-sol` in one isolated `fm-lab-` session.
 
-`herdr agent get` reported `agent_status=idle` on every sample across a landed one-word turn and an 8-second `sleep` tool call, while the pane rendered `Pontificating…` then `Sock-hopping… (11s · ↓ 234 tokens)`.
-`fm_backend_herdr_send_text_submit` therefore cannot treat native idle alone as either delivery proof or proof of a swallow.
-The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-composer-lib.test.sh` pin the non-Claude verdicts: native idle plus a cleared composer is delivery, proven pending plus idle is a swallow, and proven pending plus a generating busy signal is a queued Enter.
+The earlier Claude observation still holds the safety boundary: `herdr agent get` can stay `idle` across a landed turn, so native idle alone proves neither delivery nor a swallow.
+The Pi run exercised short and 1500+ character multiline messages while idle and while already working.
+Busy Pi rendered the current message as a `Steering:` queue echo, cleared the separator composer, and later rendered the full long-message tail.
+`fm_backend_herdr_send_text_submit` now requires a cleared Pi composer plus either a new matching transcript/queue echo or an observed idle-to-busy transition.
+The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-send-strict.test.sh` pin busy queueing, a delayed composer flush, a dropped long literal before Enter, long text retained after Enter, and the distinct confirmed/unconfirmed/not-submitted exits.
 The known-Claude submit cases exercise the rendered-transition-or-cleared-composer rule owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), so native `working` alone is never delivery proof.
-Refresh the live Claude proof with:
+Refresh both live harness proofs with:
 
 ```sh
-FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh
+HERDR_LAB_HELPER=/Users/ivan/Projects/firstmate/bin/fm-herdr-lab.sh \
+  FM_HERDR_SUBMIT_CONFIRM_LIVE=1 \
+  tests/fm-herdr-submit-confirm-live-e2e.test.sh
 ```
 
-Observed 2026-08-19:
+Observed 2026-08-29:
 
 ```text
-ok - live Herdr submit confirm: Claude Code (2.1.236 (Claude Code)) on herdr 0.8.0 reports empty for a landed idle steer
+ok - live Herdr submit confirm: Claude Code (2.1.251 (Claude Code)) on herdr 0.8.2 reports empty and renders the requested reply in isolated session fm-lab-herdr-submit-con-24634-28848
+ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms short/long idle/busy sends in isolated session fm-lab-herdr-submit-con-24634-28848
 ```
 
 ### Prune and respawn

@@ -2802,9 +2802,65 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [footer-base
   fi
 }
 
+# Capture the Pi submission surface through the shared fleet-wide classifier.
+# The adapter owns how this observation participates in Herdr confirmation;
+# bin/fm-composer-lib.sh remains the one owner of Pi separator and queue shapes.
+fm_backend_herdr_pi_submit_observation() {  # <target> <text> -> <echo-count><TAB><empty|pending|unknown>
+  local target=$1 text=$2 cap caps identity
+  fm_backend_herdr_parse_target "$target" || { printf '0\tunknown'; return 0; }
+  if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
+    caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
+  elif cap=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES"); then
+    caps=$(printf 'styled=0\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
+  else
+    printf '0\tunknown'
+    return 0
+  fi
+  if ! identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null) || [ -z "$identity" ]; then
+    printf '0\tunknown'
+    return 0
+  fi
+  fm_composer_pi_submit_observation "$caps" "$cap" "$text" "$identity"
+}
+
+# Poll the Pi post-Enter surface across the same bounded confirmation window as
+# native agent state.
+# `echoed` is the strong transcript postcondition: the current message gained a
+# new ordinary or busy-queue echo and the separator composer is empty.
+# `cleared` means the composer is empty without a matching new echo, so delivery
+# remains unconfirmed unless the caller independently saw idle-to-busy.
+fm_backend_herdr_wait_pi_submit() {  # <target> <text> <pre-echo-count> <budget> <polls>
+  local target=$1 text=$2 before=$3 budget=$4 polls=${5:-1}
+  local i interval obs count state last=unknown
+  case "$before" in ''|*[!0-9]*) before=0 ;; esac
+  case "$polls" in ''|*[!0-9]*|0) polls=1 ;; esac
+  interval=$(awk -v b="$budget" -v p="$polls" 'BEGIN { d = p - 1; if (d < 1) d = 1; v = b / d; if (v < 0) v = 0; printf "%.4f", v }' 2>/dev/null)
+  case "$interval" in ''|*[!0-9.]*) interval=0 ;; esac
+  for ((i = 0; i < polls; i++)); do
+    if [ "$polls" -eq 1 ] || [ "$i" -gt 0 ]; then
+      sleep "$interval"
+    fi
+    obs=$(fm_backend_herdr_pi_submit_observation "$target" "$text")
+    count=${obs%%$'\t'*}
+    state=${obs#*$'\t'}
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    if [ "$state" = empty ] && [ "$count" -gt "$before" ]; then
+      printf 'echoed'
+      return 0
+    fi
+    case "$state" in
+      empty) last=cleared ;;
+      pending) last=pending ;;
+      *) last=unknown ;;
+    esac
+  done
+  printf '%s' "$last"
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [target-harness]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local target_harness=${7:-} raw_status footer_baseline='' allow_rendered=0 enter_sent=0
+  local pi_submit=0 pi_obs pi_echo_before=0 pi_pre_state=unknown pi_post=unknown
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
@@ -2814,7 +2870,30 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   if [ "$baseline" = idle ]; then
     allow_rendered=1
   fi
+  case "$target_harness" in pi|pi-signed) pi_submit=1 ;; esac
+  if [ "$pi_submit" = 1 ]; then
+    pi_obs=$(fm_backend_herdr_pi_submit_observation "$target" "$text")
+    pi_echo_before=${pi_obs%%$'\t'*}
+    pi_pre_state=${pi_obs#*$'\t'}
+    case "$pi_echo_before" in ''|*[!0-9]*) pi_echo_before=0 ;; esac
+    if [ "$pi_pre_state" != pending ]; then
+      pi_post=$(fm_backend_herdr_wait_pi_submit "$target" "$text" "$pi_echo_before" \
+        "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+      case "$pi_post" in
+        echoed) printf 'empty'; return 0 ;;
+        cleared) printf 'text-not-typed'; return 0 ;;
+      esac
+    fi
+  fi
   while :; do
+    pi_echo_before=0
+    pi_pre_state=unknown
+    if [ "$pi_submit" = 1 ]; then
+      pi_obs=$(fm_backend_herdr_pi_submit_observation "$target" "$text")
+      pi_echo_before=${pi_obs%%$'\t'*}
+      pi_pre_state=${pi_obs#*$'\t'}
+      case "$pi_echo_before" in ''|*[!0-9]*) pi_echo_before=0 ;; esac
+    fi
     case "$target_harness" in
       claude*) footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target" claude) ;;
       *)
@@ -2849,40 +2928,65 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
       case "$verdict" in
-        unknown) printf 'unknown'; return 0 ;;
+        unknown) [ "$pi_submit" = 1 ] || { printf 'unknown'; return 0; } ;;
       esac
-      case "$target_harness" in
-        claude*)
-          if [ "$footer_baseline" = idle ] \
-            && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
-            printf 'empty'
-            return 0
-          fi
-          ;;
-        *)
-          if [ "$verdict" = busy ]; then
-            case "$target_harness" in
-              ''|unknown) ;;
-              *)
-                printf 'empty'
-                return 0
-                ;;
-            esac
-          fi
-          ;;
-      esac
-      # Native did not provide sufficient Claude proof. Composer empty is
-      # positive delivery (a landed Claude turn that never flipped
-      # agent_status), while proven pending retries.
-      verdict=$(fm_backend_herdr_composer_state "$target")
-      case "$verdict" in
-        empty) printf 'empty'; return 0 ;;
-        pending|pending-unproven) ;;
-        *) printf '%s' "$verdict"; return 0 ;;
-      esac
+      if [ "$pi_submit" = 1 ]; then
+        pi_post=$(fm_backend_herdr_wait_pi_submit "$target" "$text" "$pi_echo_before" \
+          "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+        if [ "$pi_post" = echoed ] \
+          || { [ "$verdict" = busy ] && [ "$pi_post" = cleared ]; }; then
+          printf 'empty'
+          return 0
+        fi
+        case "$pi_post" in
+          pending) verdict=pending ;;
+          cleared|unknown) printf 'pending'; return 0 ;;
+        esac
+      fi
+      if [ "$pi_submit" != 1 ]; then
+        case "$target_harness" in
+          claude*)
+            if [ "$footer_baseline" = idle ] \
+              && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude)" = busy ]; then
+              printf 'empty'
+              return 0
+            fi
+            ;;
+          *)
+            if [ "$verdict" = busy ]; then
+              case "$target_harness" in
+                ''|unknown) ;;
+                *)
+                  printf 'empty'
+                  return 0
+                  ;;
+              esac
+            fi
+            ;;
+        esac
+        # Native did not provide sufficient Claude proof. Composer empty is
+        # positive delivery (a landed Claude turn that never flipped
+        # agent_status), while proven pending retries.
+        verdict=$(fm_backend_herdr_composer_state "$target")
+        case "$verdict" in
+          empty) printf 'empty'; return 0 ;;
+          pending|pending-unproven) ;;
+          *) printf '%s' "$verdict"; return 0 ;;
+        esac
+      fi
     else
-      sleep "$sleep_s"
-      verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$pi_submit" = 1 ]; then
+        pi_post=$(fm_backend_herdr_wait_pi_submit "$target" "$text" "$pi_echo_before" \
+          "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+        case "$pi_post" in
+          echoed) printf 'empty'; return 0 ;;
+          pending) verdict=pending ;;
+          cleared|unknown) printf 'pending'; return 0 ;;
+        esac
+      else
+        sleep "$sleep_s"
+        verdict=$(fm_backend_herdr_composer_state "$target")
+      fi
       case "$target_harness" in
         claude*)
           if [ "$footer_baseline" = idle ] \
@@ -2909,6 +3013,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     if [ "$i" -ge "$retries" ]; then
       if [ "$enter_sent" -eq 0 ]; then
         printf 'send-failed'
+      elif [ "$pi_submit" = 1 ] && [ "$verdict" = pending ] && [ "$pi_pre_state" = pending ]; then
+        printf 'not-submitted'
       else
         fm_composer_queued_enter_verdict "$verdict" \
           "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered" "$footer_baseline" "$target_harness")"

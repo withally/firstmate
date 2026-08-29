@@ -73,7 +73,39 @@ printf '%s\n' "$*" >> "$FM_HERDR_LOG"
 case "${1:-} ${2:-}" in
   "status --json") printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
   "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
-  "pane send-keys") : ;;
+  "pane send-text")
+    [ -z "${FM_FAKE_HERDR_STATE:-}" ] || {
+      mkdir -p "$FM_FAKE_HERDR_STATE"
+      if [ "${FM_FAKE_HERDR_MODE:-}" = dropped ]; then
+        : > "$FM_FAKE_HERDR_STATE/text"
+      else
+        printf '%s' "${4:-}" > "$FM_FAKE_HERDR_STATE/text"
+      fi
+      rm -f "$FM_FAKE_HERDR_STATE/entered"
+    }
+    ;;
+  "pane send-keys")
+    [ -z "${FM_FAKE_HERDR_STATE:-}" ] || [ "${4:-}" != enter ] || : > "$FM_FAKE_HERDR_STATE/entered"
+    ;;
+  "agent get")
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n'
+    ;;
+  "pane read")
+    text=$(cat "${FM_FAKE_HERDR_STATE:-/nonexistent}/text" 2>/dev/null || true)
+    first=$(printf '%s\n' "$text" | sed -n '1p')
+    if [ "${FM_FAKE_HERDR_MODE:-}" = queued ] && [ -f "${FM_FAKE_HERDR_STATE:-/nonexistent}/entered" ]; then
+      printf 'Steering: %s\n' "$first"
+      printf '↳ Option+Up to edit all queued messages\nWorking...\n'
+      printf '─────────────────────────────────────────────────────\n\n'
+      printf '─────────────────────────────────────────────────────\n'
+    elif [ "${FM_FAKE_HERDR_MODE:-}" = pending ] || [ "${FM_FAKE_HERDR_MODE:-}" = dropped ]; then
+      printf '─────────────────────────────────────────────────────\n'
+      printf '%s\n' "$text" | sed -n '1,3p'
+      printf '─────────────────────────────────────────────────────\n'
+    else
+      printf 'Working...\n'
+    fi
+    ;;
 esac
 SH
   chmod +x "$fb/herdr"
@@ -231,8 +263,73 @@ test_key_send_exit_status_follows_delivery() {
   pass "fm-send --key: exit status follows delivery, and an undelivered key never reports success"
 }
 
+test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted() {
+  local dir fb home err log state target rc long_text i
+  dir="$TMP_ROOT/herdr-verdicts"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home herdr-verdicts); err="$dir/send.err"; log="$dir/herdr.log"
+  state="$dir/herdr-state"; target='fm-lab-fake:w1:p2'; : > "$log"
+  fm_write_meta "$home/state/lab.meta" \
+    "window=$target" "backend=herdr" "herdr_session=fm-lab-fake" \
+    "herdr_pane_id=w1:p2" "harness=pi" "kind=ship"
+
+  rc=0
+  env PATH="$fb:$PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=queued \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_SETTLE=0 \
+    "$SEND" "$target" "busy queue token" >/dev/null 2>"$err" || rc=$?
+  expect_code 0 "$rc" "a fake-Herdr Pi queue echo with a cleared composer must exit confirmed"
+
+  long_text=''
+  i=1
+  while [ "$i" -le 40 ]; do
+    long_text="${long_text}LONG_SEND_LINE_${i} abcdefghijklmnopqrstuvwxyz 0123456789\n"
+    i=$((i + 1))
+  done
+  long_text=$(printf '%b' "$long_text")
+  [ "${#long_text}" -ge 1500 ] || fail "fm-send long fixture is shorter than 1500 characters"
+  rm -rf "$state"
+  rc=0
+  env PATH="$fb:$PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=pending \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_RETRIES=1 FM_SEND_SETTLE=0 \
+    "$SEND" "$target" "$long_text" >/dev/null 2>"$err" || rc=$?
+  expect_code 1 "$rc" "a long fake-Herdr Pi message still visibly pending must be a true failure"
+  assert_contains "$(cat "$err")" "still visibly pending" \
+    "the true-failure diagnostic must name the visible composer postcondition"
+  assert_not_contains "$(cat "$err")" "delivery unconfirmed" \
+    "a visibly pending message must not use the ambiguous-delivery wording"
+
+  rm -rf "$state"
+  rc=0
+  env PATH="$fb:$PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=dropped \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_RETRIES=1 FM_SEND_SETTLE=0 \
+    "$SEND" "$target" "$long_text" >/dev/null 2>"$err" || rc=$?
+  expect_code 1 "$rc" "a dropped long fake-Herdr Pi literal must be a true failure"
+  assert_contains "$(cat "$err")" "never appeared in the Pi composer" \
+    "a dropped long literal must report its specific pre-Enter cause"
+
+  rm -rf "$state"
+  rc=0
+  env PATH="$fb:$PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=unknown \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_RETRIES=1 FM_SEND_SETTLE=0 \
+    "$SEND" "$target" "unreadable confirmation" >/dev/null 2>"$err" || rc=$?
+  expect_code 3 "$rc" "an unreadable fake-Herdr postcondition must use the honest unconfirmed status"
+  assert_contains "$(cat "$err")" "submission is unconfirmed" \
+    "the exit-3 diagnostic must describe uncertainty rather than delivery"
+  assert_contains "$(cat "$err")" "check the pane transcript and composer" \
+    "the exit-3 diagnostic must tell firstmate exactly what to inspect"
+  assert_not_contains "$(cat "$err")" "text delivered" \
+    "an unconfirmed send must not claim delivery"
+  assert_not_contains "$(cat "$err")" "not submitted" \
+    "an unreadable send must not claim non-delivery"
+  pass "fm-send Herdr typed plane: confirmed, unconfirmed, and visibly pending verdicts have truthful distinct exits"
+}
+
 test_exact_lane_id_send_still_works
 test_key_send_exit_status_follows_delivery
+test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails

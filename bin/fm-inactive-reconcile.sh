@@ -201,11 +201,15 @@ queue_key_exists() { # <key>
   printf '%s\n' "$queued" | grep -Fx -- "$key" >/dev/null 2>&1
 }
 
+queue_check_exists() { # <key> <payload>
+  fm_wake_check_queued "$1" "$2"
+}
+
 queue_notice_once() { # <record> <key> <payload>
   local record=$1 key=$2 payload=$3 notified
   notified=$(record_value "$record" notice_emitted)
   [ "$notified" = 1 ] && return 1
-  if queue_key_exists "$key"; then
+  if queue_check_exists "$key" "$payload"; then
     record_field_set "$record" notice_emitted 1 || return 2
     return 1
   fi

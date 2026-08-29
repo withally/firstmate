@@ -454,6 +454,27 @@ test_notice_recovery_does_not_duplicate_wake() {
   pass "notice recovery remains idempotent across queue acknowledgement"
 }
 
+test_notice_recovery_preserves_changed_payload() {
+  local record
+  make_world notice-payload-recovery; bind_secondmate local
+  write_child "$MATE" child 'failed: terminal'
+  mkdir "$MAIN/state/mate.status"
+  FM_FAKE_CREW_STATE='failed' run_reconcile "$MATE" --startup
+  [ "$(wake_count "$MATE" 'inactive-reconcile:')" = 1 ] \
+    || fail "parent-report failure did not queue the initial notice"
+
+  record=$(find "$MATE/state/terminal-outcomes" -type f -name '*.pending' | head -1)
+  awk '{ sub(/^notice_emitted=1$/, "notice_emitted=0"); print }' "$record" > "$record.tmp"
+  mv "$record.tmp" "$record"
+  printf 'schema=fm-secondmate-parent.v1\nroute=invalid\n' > "$MATE/.fm-secondmate-parent"
+  FM_FAKE_CREW_STATE='failed' run_reconcile "$MATE" --startup
+  [ "$(wake_count "$MATE" 'inactive-reconcile:')" = 2 ] \
+    || fail "a changed notice payload was suppressed by its existing queue key"
+  grep -Fq 'missing or unreadable parent binding .fm-secondmate-parent' "$MATE/state/.wake-queue" \
+    || fail "the changed notice payload did not reach the durable queue"
+  pass "notice recovery preserves changed payloads for the same queue key"
+}
+
 # Forge command shims fail loudly. A successful scan proves this path never uses
 # them while reconciling a local terminal outcome.
 test_reconciliation_never_calls_forge() {
@@ -478,6 +499,7 @@ test_watcher_hook_and_idle_secondmate_exemption
 test_stalled_state_read_is_bounded_and_scan_progresses
 test_full_scan_budget_includes_wake_lock_wait
 test_notice_recovery_does_not_duplicate_wake
+test_notice_recovery_preserves_changed_payload
 test_missing_parent_binding_names_itself
 test_reconciliation_never_calls_forge
 

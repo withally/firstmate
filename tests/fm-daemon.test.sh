@@ -40,6 +40,24 @@ test_afk_start_refuses_when_flag_cannot_be_written() {
   pass "fm-afk-start.sh fails before daemon startup when the afk flag cannot be written"
 }
 
+test_afk_start_fails_when_fresh_cleanup_fails() {
+  local dir state out rc
+  dir=$(make_supercase afk-start-cleanup-failure)
+  state="$dir/state"
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    fm_afk_clear_stale_artifacts() { return 1; }
+    set +e
+    fm_afk_start_main
+  ' _ "$AFK_START" 2>&1)
+  rc=$?
+
+  [ "$rc" -ne 0 ] || fail "fm-afk-start.sh continued after fresh artifact cleanup failed"
+  assert_not_contains "$out" "starting supervise daemon" "fm-afk-start.sh started the daemon after cleanup failed"
+  pass "fm-afk-start.sh fails closed when fresh artifact cleanup fails"
+}
+
 test_afk_start_ignores_stale_pidfile_without_lock() {
   local dir state out status
   dir=$(make_supercase afk-start-stale-pidfile)
@@ -2480,6 +2498,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 }
 
 test_afk_start_refuses_when_flag_cannot_be_written
+test_afk_start_fails_when_fresh_cleanup_fails
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_daemon_state_root_uses_fm_home

@@ -356,24 +356,29 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local lines plain footer caps verdict
+  local lines plain footer composer caps verdict
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
   footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
   fm_composer_normalize_trim_var footer
   [ -n "$footer" ] || return 2
-  if printf '%s\n' "$footer" | grep -qE "$FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX"; then
+  composer=$(printf '%s\n' "$plain" | awk '
+    { rows[NR]=$0 }
+    NF { last=NR }
+    END { for (row=1; row < last; row++) print rows[row] }
+  ')
+  caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
+  verdict=$(fm_composer_classify_screen "$caps" "$composer")
+  [ "$verdict" = empty ] || return 2
+  if [ -n "${FM_BUSY_REGEX:-}" ]; then
+    if printf '%s\n' "$footer" | fm_busy_lines_match claude; then
+      return 0
+    fi
+  elif printf '%s\n' "$footer" | grep -qE "$FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX"; then
     return 0
   fi
-  case "$plain" in
-    *❯*) ;;
-    *) return 2 ;;
-  esac
-  caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
-  verdict=$(fm_composer_classify_screen "$caps" "$plain")
-  [ "$verdict" = empty ] && return 1
-  return 2
+  return 1
 }
 
 # The prompt glyphs, each declared exactly once (see THE SAFETY RULE above).

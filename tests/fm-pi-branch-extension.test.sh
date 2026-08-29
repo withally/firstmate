@@ -654,6 +654,7 @@ if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
 const rows = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 if (rows.length !== 3) throw new Error(`expected 3 store rows, got ${rows.length}`);
 if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain") throw new Error("store verdicts out of order");
+if (rows.some((row) => row.verdict === "routine" && row.silent !== true)) throw new Error("routine outcomes were not forced silent in the durable store");
 if (rows[0].wake !== "signal: working") throw new Error("store lost the wake reason");
 if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not marked read");
 
@@ -795,8 +796,9 @@ test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
   out=$(PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_TEST_BRANCH_WAKE_COALESCE_MS=400 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
-await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle }; })()`);
-const { dispatch, settle } = globalThis.__t;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire, mainUserMessages, home }; })()`);
+const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
+import { readFileSync, writeFileSync } from "node:fs";
 
 const repeated = "stale: assets waiting-for-merge";
 for (let index = 0; index < 3; index += 1) {
@@ -813,12 +815,33 @@ if ((globalThis.__fmPrompts ?? []).length !== 1) {
   throw new Error(`same-text repeats opened ${globalThis.__fmPrompts.length} branch turns`);
 }
 
-const started = Date.now();
-const urgent = dispatch("signal: task-9 blocked: credential required");
-if (!urgent.accepted) throw new Error("urgent wake was not accepted");
-await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "urgent bypass prompt");
-if (Date.now() - started >= 300) {
-  throw new Error(`urgent wake waited for the coalescing window (${Date.now() - started}ms)`);
+const statusPath = `${home}/state/branch-driver.status`;
+const urgentStatusLines = [
+  "blocked: waiting for the captain",
+  "failed: provider unavailable",
+  "done: checks green",
+  "needs-decision: captain input required",
+  "working: credentials required",
+];
+for (const [index, line] of urgentStatusLines.entries()) {
+  writeFileSync(statusPath, `${line}\n`);
+  const started = Date.now();
+  const urgent = dispatch(`signal: ${statusPath}`);
+  if (!urgent.accepted) throw new Error(`urgent status wake ${index + 1} was not accepted`);
+  await settle(() => (globalThis.__fmPrompts ?? []).length === index + 2, `urgent status bypass prompt ${index + 1}`);
+  if (Date.now() - started >= 300) {
+    throw new Error(`urgent status wake waited for the coalescing window (${Date.now() - started}ms)`);
+  }
+}
+
+const pending = dispatch("stale: pending replacement wake");
+if (!pending.accepted) throw new Error("pending wake was not accepted");
+fire("session_shutdown", {});
+fire("session_start", {});
+await new Promise((resolve) => setTimeout(resolve, 450));
+if (mainUserMessages.length !== 0) throw new Error("a shutdown-cleared wake fell back into the replacement main session");
+if (!readFileSync(`${home}/state/.wake-queue`, "utf8").includes("branch-driver.status")) {
+  throw new Error("shutdown cleared the durable wake instead of leaving it queued");
 }
 EOF
   )

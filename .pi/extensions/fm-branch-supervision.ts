@@ -53,7 +53,19 @@
 // its deliberate limits.
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // Pi exposes pi-ai to extensions as a first-class module in both its Node
@@ -120,6 +132,8 @@ const loadedMarker = join(state, ".pi-branch-extension-loaded");
 const modelPinFile = join(config, "supervision-branch-model");
 const effortPinFile = join(config, "supervision-branch-effort");
 const wakeCoalesceMs = positiveIntegerEnv("FM_TEST_BRANCH_WAKE_COALESCE_MS", 250);
+const BRANCH_WAKE_STATUS_TAIL_BYTES = 4096;
+const BRANCH_STATUS_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.status$/;
 
 // Same tool set in the same order on every request (part of the cached
 // prefix). "bash" resolves to the customTools override below, which injects
@@ -172,8 +186,60 @@ function positiveIntegerEnv(name: string, fallback: number): number {
   return Number.isSafeInteger(parsed) ? parsed : fallback;
 }
 
+function validatedSignalStatusPath(token: string): string | null {
+  const stateRoot = resolve(state);
+  const candidate = resolve(token);
+  if (dirname(candidate) !== stateRoot) return null;
+  const name = candidate.slice(stateRoot.length + 1);
+  return BRANCH_STATUS_FILE_RE.test(name) ? candidate : null;
+}
+
+function readValidatedStatusTail(path: string): string {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile() || !Number.isSafeInteger(stats.size) || stats.size < 0) return "";
+    const length = Math.min(stats.size, BRANCH_WAKE_STATUS_TAIL_BYTES);
+    if (length === 0) return "";
+    const buffer = Buffer.alloc(length);
+    let bytesRead = 0;
+    while (bytesRead < length) {
+      const count = readSync(descriptor, buffer, bytesRead, length - bytesRead, stats.size - length + bytesRead);
+      if (count <= 0) break;
+      bytesRead += count;
+    }
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {}
+    }
+  }
+}
+
+function statusTailIsUrgent(path: string): boolean {
+  const tail = readValidatedStatusTail(path);
+  let last = "";
+  for (const line of tail.split(/\r?\n/)) {
+    if (line.trim()) last = line;
+  }
+  return /^\s*(?:done|needs-decision|blocked|failed)\b(?:\s+\[[^\]]+\])?\s*:|\bcredentials?\b/i.test(last);
+}
+
 function urgentWake(message: string): boolean {
-  return /(?:^|\s)(?:done|needs-decision|blocked|failed)\s*(?:\[[^\]]+\])?\s*:|\b(?:PR[- ]ready|ready for review|checks green|credential|login|destructive|irreversible|security-sensitive)\b/i.test(message);
+  if (/(?:^|\s)(?:done|needs-decision|blocked|failed)\s*(?:\[[^\]]+\])?\s*:|\b(?:PR[- ]ready|ready for review|checks green|credentials?|login|destructive|irreversible|security-sensitive)\b/i.test(message)) {
+    return true;
+  }
+  const signal = /^signal:\s*(.*)$/i.exec(message);
+  if (!signal) return false;
+  return signal[1].split(/\s+/).some((token) => {
+    const path = validatedSignalStatusPath(token);
+    return path !== null && statusTailIsUrgent(path);
+  });
 }
 
 function wakeBatchMessage(messages: readonly string[]): string {
@@ -685,7 +751,7 @@ export default function (pi: ExtensionAPI) {
         }),
         wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
         silent: Type.Optional(Type.Boolean({
-          description: "True only when a fleet-wide heartbeat review found literally nothing worth reporting; omit or use false whenever any action was taken or any routine result is worth a note",
+          description: "Accepted for compatibility; routine outcomes are always stored silently, and captain outcomes are never silent",
         })),
       }),
       execute: async (_toolCallId, params) => {
@@ -702,7 +768,7 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const verdict = verdictRaw as Verdict;
-        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(silent)];
+        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
         if (wake) appendArgs.push("--wake", wake);
         if (!actingAsOwner(toolGeneration)) {
           return {
@@ -1143,6 +1209,12 @@ ${context.command}
     deactivateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(generation));
     shuttingDown = true;
     generation += 1;
+    if (wakeCoalesceTimer) {
+      clearTimeout(wakeCoalesceTimer);
+      wakeCoalesceTimer = null;
+    }
+    pendingWakeMessages.length = 0;
+    pendingWakeGeneration = -1;
     pendingMirror.length = 0;
     currentMainSession = null;
     mirrorCollection.collectAnchor = null;

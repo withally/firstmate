@@ -352,6 +352,20 @@ fm_busy_lines_match() {  # [harness]
   [ -n "$regex" ] && printf '%s' "$lines" | grep -qiE "$regex"
 }
 
+# fm_claude_current_footer_busy: delivery-busy proof from the current rendered
+# Claude footer only.
+# Claude tool output can quote another harness's `esc to interrupt` row, so a
+# transcript-wide match is not foreground-turn evidence.
+# The active Claude spinner replaces the bottom live footer row while a turn is
+# running; matching only the final non-blank row keeps quoted history inert.
+fm_claude_current_footer_busy() {
+  local lines footer
+  IFS= read -r -d '' lines || true
+  footer=$(printf '%s' "$lines" | awk 'NF { row=$0 } END { print row }')
+  [ -n "$footer" ] || return 1
+  printf '%s' "$footer" | fm_busy_lines_match claude
+}
+
 # The prompt glyphs, each declared exactly once (see THE SAFETY RULE above).
 # AGENT glyphs are a genuine empty agent composer on any row, bordered or bare.
 # SHELL glyphs are one only INSIDE a composer container; on a bare row they are

@@ -3826,6 +3826,34 @@ test_rendered_busy_state_reads_the_cursor_busy_token() {
   pass "fm_backend_herdr_rendered_busy_state: busy/idle/unknown from the rendered footer, with an unreadable pane never reading idle"
 }
 
+test_rendered_busy_state_scopes_claude_to_the_current_footer() {
+  local dir log resp fb nested_out active_out fail_out
+  dir="$TMP_ROOT/rendered-busy-claude-current-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' \
+    'tool output:' \
+    '• Working (4s • esc to interrupt)' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    'Claude 4.1' > "$resp/1.out"
+  printf '✢ Pollinating… (16s · ↓ 1.1k tokens)\n' > "$resp/2.out"
+  printf '1\n' > "$resp/3.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  nested_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  active_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  fail_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  [ "$nested_out" = idle ] \
+    || fail "nested Claude worker output must not classify the current idle footer busy, got '$nested_out'"
+  [ "$active_out" = busy ] \
+    || fail "a genuine current Claude spinner footer must remain busy, got '$active_out'"
+  [ "$fail_out" = unknown ] \
+    || fail "an unreadable Claude footer must remain unknown, got '$fail_out'"
+  pass "fm_backend_herdr_rendered_busy_state: Claude busy proof is scoped to the current footer"
+}
+
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-cursor-footer-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4745,6 +4773,7 @@ test_send_text_submit_idle_native_empty_composer_confirms_delivery
 test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
+test_rendered_busy_state_scopes_claude_to_the_current_footer
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition
 test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
 test_send_text_submit_confirms_despite_codex_idle_tip_composer

@@ -1,0 +1,49 @@
+Secondmate wake-stall threshold end-to-end evidence
+Target: c0c7dfbe232f3451bce7f3d60e60c8a34eb09d33
+
+The focused behavior suite exercised the real checkpoint and drain executables:
+
+$ bash tests/fm-wake-queue.test.sh
+ok - the default secondmate stall threshold allows normal queue latency
+ok - secondmate threshold overrides use decimal parsing and reject zero
+ok - a fresh secondmate watcher beat suppresses an ordinarily aged row
+ok - a stale secondmate watcher beat exposes an ordinarily aged row
+ok - very old foreign rows notify once despite a fresh beat and remain byte-stable
+ok - stall publication acknowledgement closes the pre-marker crash window
+ok - empty prefix mate cleanup preserves another mate's stall receipt
+exit=0
+
+The base implementation reproduced the reported regression:
+
+$ bash .fm-test-base.w6wMvn/tests/fm-wake-queue.test.sh
+not ok - the default stall threshold: expected quiet checkpoint status 124, got 0
+BASE_STATUS=1
+
+Direct checkpoint/drain transcript from isolated local secondmate fixtures:
+
+## default-300s-bound-220s-row
+checkpoint_exit=124
+stdout: checkpoint: no actionable wake within 2s
+
+## fresh-beat-35s-row
+checkpoint_exit=124
+stdout: checkpoint: no actionable wake within 2s
+
+## fresh-beat-very-old-first
+checkpoint_exit=0
+stdout: check: secondmate wake-loop stalled: mate=mate row=7 age=100s
+parent_queue_after_first:
+1787967917	1	check	secondmate-wake-loop-mate-1787967817-7	check: secondmate wake-loop stalled: mate=mate row=7 age=100s
+drain_row:
+1787967917	1	check	secondmate-wake-loop-mate-1787967817-7	check: secondmate wake-loop stalled: mate=mate row=7 age=100s
+
+## fresh-beat-very-old-second
+checkpoint_exit=124
+stdout: checkpoint: no actionable wake within 2s
+foreign_queue_sha256_before=21fb726b77441d7cb35764c05e1bd680e4c8985d76d255ba090f00430f1c2b29
+foreign_queue_sha256_after=21fb726b77441d7cb35764c05e1bd680e4c8985d76d255ba090f00430f1c2b29
+parent_queue_after_ack_bytes=0
+
+## stale-beat-35s-row
+checkpoint_exit=0
+stdout: check: secondmate wake-loop stalled: mate=mate row=7 age=35s

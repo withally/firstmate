@@ -230,6 +230,14 @@ function statusTailIsUrgent(path: string): boolean {
   return /^\s*(?:done|needs-decision|blocked|failed)\b(?:\s+\[[^\]]+\])?\s*:|\b(?:login|credentials?|PR[- ]ready|ready for review|checks green)\b/i.test(last);
 }
 
+function staleWakeWindow(message: string): string | null {
+  const match = /^stale:\s*(.*?)\s*$/i.exec(message);
+  if (!match || !match[1]) return null;
+  const reasonStart = match[1].indexOf(" (");
+  const window = (reasonStart === -1 ? match[1] : match[1].slice(0, reasonStart)).trim();
+  return window || null;
+}
+
 function urgentWake(message: string): boolean {
   if (/^stale:/i.test(message)) return true;
   if (/(?:^|\s)(?:done|needs-decision|blocked|failed)\s*(?:\[[^\]]+\])?\s*:|\b(?:PR[- ]ready|ready for review|checks green|credentials?|login|destructive|irreversible|security-sensitive)\b/i.test(message)) {
@@ -504,6 +512,7 @@ export default function (pi: ExtensionAPI) {
   let wakeCoalesceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingWakeGeneration = -1;
   const pendingWakeMessages: string[] = [];
+  const lastDeliveredStaleByWindow = new Map<string, string>();
   const pendingMirror: MirrorItem[] = [];
   const mirrorCollection: MirrorCollectionState = {
     collectAnchor: null,
@@ -1044,6 +1053,10 @@ ${context.command}
     const messages = pendingWakeMessages.splice(0);
     const acceptedGeneration = pendingWakeGeneration;
     pendingWakeGeneration = -1;
+    for (const candidate of messages) {
+      const window = staleWakeWindow(candidate);
+      if (window) lastDeliveredStaleByWindow.set(window, candidate);
+    }
     enqueueWake(messages, acceptedGeneration);
   }
 
@@ -1051,6 +1064,8 @@ ${context.command}
     if (pendingWakeMessages.length > 0 && pendingWakeGeneration !== acceptedGeneration) {
       flushPendingWakes();
     }
+    const staleWindow = staleWakeWindow(message);
+    if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) return;
     pendingWakeGeneration = acceptedGeneration;
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
     if (urgentWake(message)) {
@@ -1177,6 +1192,7 @@ ${context.command}
     shuttingDown = false;
     branchBroken = "";
     generation += 1;
+    lastDeliveredStaleByWindow.clear();
     actingAsOwner(generation);
   });
 
@@ -1216,6 +1232,7 @@ ${context.command}
     }
     pendingWakeMessages.length = 0;
     pendingWakeGeneration = -1;
+    lastDeliveredStaleByWindow.clear();
     pendingMirror.length = 0;
     currentMainSession = null;
     mirrorCollection.collectAnchor = null;

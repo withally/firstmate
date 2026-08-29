@@ -64,7 +64,9 @@ The branch prompt owns the verdict criteria, including its unconditional explici
 Main can read the durable outcome store on demand through its `fm_branch_outcomes` tool.
 
 Before starting a branch prompt, the extension holds non-urgent offers for a bounded 250 millisecond window and combines their unique wake text into one turn.
-Same-text idle or stale repeats inside that window therefore open at most one branch turn.
+For a given window, the first `stale:` delivery is urgent and bypasses that delay.
+An identical same-text `stale:` repeat for that window is store-only while that text remains the last-delivered stale, so it opens no branch turn and causes no re-prompt.
+Same-text idle repeats inside the bounded window therefore open at most one branch turn.
 Terminal status verbs, PR-ready or review-ready work, green checks, credentials or login needs, and destructive, irreversible, or security-sensitive messages bypass the delay.
 
 ## Heartbeat routing

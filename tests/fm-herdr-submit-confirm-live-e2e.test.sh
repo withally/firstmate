@@ -40,7 +40,10 @@ ORIGINAL_PATH=$PATH
 SESSION=$("$LAB_HELPER" name herdr-submit-confirm-live)
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-submit-confirm-live.XXXXXX")
 FAKEBIN="$TMP_ROOT/fakebin"
+CAPTURE_ROOT=/Users/ivan/Projects/firstmate/data/fm-send-verify-fn-k8/captures
+CAPTURE_SEQ=0
 mkdir -p "$FAKEBIN"
+mkdir -p "$CAPTURE_ROOT" || fail "could not create the required live capture directory $CAPTURE_ROOT"
 CHECKED=0
 
 cleanup() {
@@ -66,6 +69,13 @@ else
   echo "wrapper requires trailing --session $SESSION" >&2
   exit 98
 fi
+if [ "\${args[0]:-}" = pane ] && [ "\${args[1]:-}" = read ]; then
+  capture="$CAPTURE_ROOT/\$(date +%Y%m%dT%H%M%S)-adapter-pane-read-\$\$-\$RANDOM.txt"
+  rc=0
+  env PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" "\${args[@]}" >"\$capture" 2>/dev/null || rc=\$?
+  cat "\$capture"
+  exit "\$rc"
+fi
 exec env PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" "\${args[@]}"
 EOF
 chmod +x "$FAKEBIN/herdr"
@@ -77,6 +87,14 @@ export PATH="$FAKEBIN:$ORIGINAL_PATH"
 . "$ROOT/bin/backends/herdr.sh"
 
 lab() { env PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" "$@"; }
+read_live_pane() {  # <pane> <label> -> exact pane output, preserved on disk
+  local pane=$1 label=$2 capture rc=0
+  CAPTURE_SEQ=$((CAPTURE_SEQ + 1))
+  capture="$CAPTURE_ROOT/$(date +%Y%m%dT%H%M%S)-${CAPTURE_SEQ}-${label}.txt"
+  lab pane read "$pane" --source recent --lines 400 >"$capture" 2>/dev/null || rc=$?
+  cat "$capture"
+  return "$rc"
+}
 WS_JSON=$(lab workspace create --cwd "$ROOT" --label fm-submitlive --no-focus) \
   || fail "could not create the isolated submit-confirm workspace"
 PANE=$(printf '%s' "$WS_JSON" | jq -er '.result.root_pane.pane_id') \
@@ -111,7 +129,7 @@ landed=0
 i=0
 screen=''
 while [ "$i" -lt 45 ]; do
-  screen=$(lab pane read "$PANE" --source recent --lines 200 2>/dev/null || true)
+  screen=$(read_live_pane "$PANE" claude || true)
   occurrences=$(printf '%s\n' "$screen" | grep -F -c "$TOKEN" || true)
   if [ "$occurrences" -ge 2 ]; then
     landed=1
@@ -169,7 +187,7 @@ wait_pi_busy() {
 wait_pi_text() {  # <needle>
   local needle=$1 i=0 screen
   while [ "$i" -lt 240 ]; do
-    screen=$(lab pane read "$PI_PANE" --source recent --lines 400 2>/dev/null || true)
+    screen=$(read_live_pane "$PI_PANE" pi || true)
     printf '%s\n' "$screen" | grep -Fq "$needle" && return 0
     i=$((i + 1))
     sleep 0.25

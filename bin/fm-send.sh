@@ -66,8 +66,9 @@
 #       submission nor visible retention; check the pane transcript/queue and
 #       composer before acting, and never retype blindly.
 #   1 = a verified failure: the literal/key transport failed, Pi's literal
-#       never appeared after the bounded pre-Enter settle, or the bounded
-#       post-Enter read-back still visibly showed the current text.
+#       never appeared intact after the bounded pre-Enter settle, the Pi
+#       composer visibly contained only a prefix, or the bounded post-Enter
+#       read-back still visibly showed the current text.
 #       A visibly retained message must be retried with Enter only, never by
 #       retyping it.
 # A marked request's pending-reply expectation stays armed for exits 3 and for
@@ -1018,14 +1019,20 @@ else
       echo "error: text not sent to $T: Herdr accepted pane send-text, but the current message never appeared in the Pi composer during the bounded pre-Enter settle (tried $RESOLUTION_TRIED); the literal was dropped before submission and Enter was not sent" >&2
       exit 1
       ;;
-    not-submitted)
+    text-truncated)
+      fm_send_known_undelivered_cleanup || \
+        echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
+      echo "error: text not sent to $T: Herdr showed only a truncated or mismatched prefix of the current Pi literal in the bounded pre-Enter composer read-back; Enter was not sent and the partial draft must be cleared before retrying (tried $RESOLUTION_TRIED)" >&2
+      exit 1
+      ;;
+    not-submitted|pending)
       # The bounded harness-specific read-back still sees the current text in
       # the composer. This is a proven non-submit, not the ambiguous exit-3
       # state, but retyping would duplicate the pending bytes.
       echo "error: text not submitted to $T: the current message is still visibly pending in the composer after the bounded confirmation wait (tried $RESOLUTION_TRIED); do not retype it - inspect with fm-peek.sh, then send '--key Enter' once" >&2
       exit 1
       ;;
-    pending|pending-unproven|unknown)
+    pending-unproven|unknown)
       # The text was typed into the live target and Enter was sent; only the
       # submit read-back stayed unconfirmed. That proves neither delivery nor
       # non-delivery, so never retype the message: verify the pane instead.

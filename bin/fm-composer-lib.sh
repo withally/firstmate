@@ -1383,6 +1383,20 @@ _fm_composer_classify_pi_rows() {  # <screen> <styled>
   printf 'empty'
 }
 
+_fm_composer_pi_submit_body() {  # <screen> <styled> -> selected composer body
+  local screen=$1 styled=$2 row raw content body='' first=1
+  row=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
+  while [ "$row" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; do
+    raw=$(_fm_composer_screen_row "$row" "$screen")
+    content=$(_fm_composer_row_content "$raw" "$styled")
+    if [ "$first" = 0 ]; then body="${body}"$'\n'; fi
+    body="${body}${content}"
+    first=0
+    row=$((row + 1))
+  done
+  printf '%s' "$body"
+}
+
 _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <identity> <bare-row>
   local screen=$1 styled=$2 has_identity=$3 identity=$4 row=$5 agent
   if [ "$has_identity" != 1 ]; then
@@ -1451,18 +1465,19 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
 # the separator composer is structurally empty, and Pi rendered a transcript
 # or `Steering:` queue echo for the current message.
 #
-# Output is `<echo-count><TAB><empty|pending|unknown>`.
+# Output is `<echo-count><TAB><empty|pending|unknown><TAB><body-proof>`.
 # The count lets the backend require a post-Enter increase over its immediately
 # pre-Enter capture, so an older identical queue row cannot confirm a new send.
-# The message fingerprint is the first nonempty line, capped to 48 bytes because
-# Pi's busy queue preview renders only the first line and terminal width may
-# truncate the rest.
+# The body proof is `full` only when the selected composer body exactly matches
+# the literal passed to the submit path, and is `partial`, `mismatch`, or `none`
+# otherwise. The queue echo remains prefix-matched because Pi intentionally
+# renders only a preview of busy queued input.
 # Matching rows are counted only above the selected composer pair, so the
 # pre-Enter draft itself is never mistaken for a transcript echo.
 # This function does not decide delivery; the Herdr adapter owns that verdict.
 fm_composer_pi_submit_observation() {  # <caps> <screen> <text> <identity>
   local caps=$1 screen=$2 text=$3 identity=$4 styled=0 has_identity=0 kv
-  local plain agent first prefix line count=0 state row=0
+  local plain agent first prefix line count=0 state row=0 body body_proof=none
   while IFS= read -r kv; do
     case "$kv" in
       styled=1) styled=1 ;;
@@ -1471,24 +1486,35 @@ fm_composer_pi_submit_observation() {  # <caps> <screen> <text> <identity>
   done <<EOF
 $caps
 EOF
-  [ "$has_identity" = 1 ] || { printf '0\tunknown'; return 0; }
+  [ "$has_identity" = 1 ] || { printf '0\tunknown\tnone'; return 0; }
   case "$identity" in
     *$'\t'*) agent=${identity%%$'\t'*} ;;
-    *) printf '0\tunknown'; return 0 ;;
+    *) printf '0\tunknown\tnone'; return 0 ;;
   esac
-  [ "$agent" = pi ] || { printf '0\tunknown'; return 0; }
+  [ "$agent" = pi ] || { printf '0\tunknown\tnone'; return 0; }
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
   _fm_composer_scan_screen "$plain" ''
   # Pi's status footer can begin with a dollar-denominated cost (`$0.003`).
   # The generic cursorless selector correctly treats a lower shell-looking row
   # as staleness evidence when identity is unknown, but native Pi identity plus
   # the bottom-most valid separator pair is the stronger submit-only proof.
-  if [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ] \
+  if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" != 1 ] \
     || [ "$FM_COMPOSER_SCAN_PI_CLOSE" != "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" ]; then
-    printf '0\tunknown'
+    printf '0\tunknown\tnone'
     return 0
   fi
   state=$(_fm_composer_classify_pi_rows "$screen" "$styled")
+  if [ "$state" = pending ]; then
+    body=$(_fm_composer_pi_submit_body "$screen" "$styled")
+    if [ "$body" = "$text" ]; then
+      body_proof=full
+    elif [ -n "$body" ]; then
+      case "$text" in
+        "$body"*) body_proof=partial ;;
+        *) body_proof=mismatch ;;
+      esac
+    fi
+  fi
   first=$(printf '%s\n' "$text" | sed -n '/[^[:space:]]/ { p; q; }')
   fm_composer_normalize_trim_var first
   prefix=$(printf '%s' "$first" | LC_ALL=C awk '{ printf "%s", substr($0, 1, 48) }')
@@ -1506,7 +1532,7 @@ $plain
 EOF
   fi
   case "$state" in
-    empty|pending) printf '%s\t%s' "$count" "$state" ;;
-    *) printf '%s\tunknown' "$count" ;;
+    empty|pending) printf '%s\t%s\t%s' "$count" "$state" "$body_proof" ;;
+    *) printf '%s\tunknown\tnone' "$count" ;;
   esac
 }

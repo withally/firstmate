@@ -88,7 +88,7 @@ case "${1:-} ${2:-}" in
     [ -z "${FM_FAKE_HERDR_STATE:-}" ] || [ "${4:-}" != enter ] || : > "$FM_FAKE_HERDR_STATE/entered"
     ;;
   "agent get")
-    printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n'
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"%s"}}}\n' "${FM_FAKE_HERDR_AGENT_STATUS:-working}"
     ;;
   "pane read")
     text=$(cat "${FM_FAKE_HERDR_STATE:-/nonexistent}/text" 2>/dev/null || true)
@@ -98,9 +98,13 @@ case "${1:-} ${2:-}" in
       printf '↳ Option+Up to edit all queued messages\nWorking...\n'
       printf '─────────────────────────────────────────────────────\n\n'
       printf '─────────────────────────────────────────────────────\n'
-    elif [ "${FM_FAKE_HERDR_MODE:-}" = pending ] || [ "${FM_FAKE_HERDR_MODE:-}" = dropped ]; then
+    elif [ "${FM_FAKE_HERDR_MODE:-}" = pending ] || [ "${FM_FAKE_HERDR_MODE:-}" = dropped ] || [ "${FM_FAKE_HERDR_MODE:-}" = truncated ]; then
       printf '─────────────────────────────────────────────────────\n'
-      printf '%s\n' "$text" | sed -n '1,3p'
+      if [ "${FM_FAKE_HERDR_MODE:-}" = truncated ]; then
+        printf '%s\n' "$text" | sed -n '1,3p'
+      else
+        printf '%s\n' "$text"
+      fi
       printf '─────────────────────────────────────────────────────\n'
     else
       printf 'Working...\n'
@@ -264,7 +268,7 @@ test_key_send_exit_status_follows_delivery() {
 }
 
 test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted() {
-  local dir fb home err log state target rc long_text i
+  local dir fb home err log state target target_opencode rc long_text i
   dir="$TMP_ROOT/herdr-verdicts"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); home=$(setup_home herdr-verdicts); err="$dir/send.err"; log="$dir/herdr.log"
   state="$dir/herdr-state"; target='fm-lab-fake:w1:p2'; : > "$log"
@@ -324,6 +328,20 @@ test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted() 
     "an unconfirmed send must not claim delivery"
   assert_not_contains "$(cat "$err")" "not submitted" \
     "an unreadable send must not claim non-delivery"
+
+  fm_write_meta "$home/state/lab-opencode.meta" \
+    "window=fm-lab-fake:w1:p3" "backend=herdr" "herdr_session=fm-lab-fake" \
+    "herdr_pane_id=w1:p3" "harness=opencode" "kind=ship"
+  target_opencode='fm-lab-fake:w1:p3'
+  rm -rf "$state"
+  rc=0
+  env PATH="$fb:$PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=pending \
+    FM_FAKE_HERDR_AGENT_STATUS=idle FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_SEND_RETRIES=1 FM_SEND_SETTLE=0 \
+    "$SEND" "$target_opencode" "visible retained non-pi" >/dev/null 2>"$err" || rc=$?
+  expect_code 1 "$rc" "a proven retained non-Pi composer message must use exit 1 rather than exit 3"
+  assert_contains "$(cat "$err")" "still visibly pending" \
+    "a proven retained non-Pi message must use the not-submitted diagnostic"
   pass "fm-send Herdr typed plane: confirmed, unconfirmed, and visibly pending verdicts have truthful distinct exits"
 }
 

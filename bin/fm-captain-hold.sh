@@ -91,8 +91,9 @@
 # exists only for legacy pre-collapse records and callers: a concrete origin is
 # stored verbatim and used as the composition fallback above, and
 # `--any-origin` stores the same `(any)` marker a plain `bind <source-id>`
-# stores. `binding` prints the stored value verbatim and `answers` accepts it,
-# so the process-event runner's feed seam is unchanged.
+# stores. `binding` prints the stored value verbatim, exits 3 when the source is
+# unbound, and `answers` accepts it, so the process-event runner can distinguish
+# an opt-out from a failed feed.
 #
 # `complete` is the shared investigation and visual-review completion gate.
 # It attests, in the origin task's metadata, the reviewed inventory of
@@ -630,7 +631,7 @@ command_binding() {
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_source_id "$source"
   origin=$(read_binding "$source") || exit 1
-  [ -n "$origin" ] || return 1
+  [ -n "$origin" ] || return 3
   printf '%s\n' "$origin"
 }
 

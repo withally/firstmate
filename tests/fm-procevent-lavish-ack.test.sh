@@ -52,6 +52,9 @@ fi
 printf 'poll\n' >> "$LAVISH_LOG"
 if [ "$LAVISH_SCENARIO" = legacy ]; then
   printf 'session:\n  file: %s\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n' "$artifact"
+elif [ "$LAVISH_SCENARIO" = partial ]; then
+  printf 'session:\n  file: %s\n  status: feedback\n  session_ended: true\n  ended_by: user\ndelivery_id: 0123456789abcdef\n' "$artifact"
+  exit 73
 else
   printf 'session:\n  file: %s\n  status: feedback\n' "$artifact"
   [ "$LAVISH_SCENARIO" = final ] && printf '  session_ended: true\n  ended_by: user\n'
@@ -105,6 +108,23 @@ id=$(printf '%s\n' "$result" | sed -n '2p')
 assert_present "$home/state/procevent/$id.source" \
   "a truncated capture leaves the source registered for full redelivery"
 pass "an incomplete capture is never acknowledged"
+
+result=$(run_scenario partial)
+home=$(printf '%s\n' "$result" | sed -n '1p')
+id=$(printf '%s\n' "$result" | sed -n '2p')
+partial_result="$home/state/procevent-inbox/$id.1.result"
+assert_present "$partial_result" \
+  "a nonzero poll's partial result is durably captured"
+assert_grep "delivery_id: 0123456789abcdef" "$partial_result" \
+  "the partial delivery identity is retained for redelivery"
+[ "$(wc -l < "$TMP_ROOT/partial.log" | tr -d ' ')" = 1 ] \
+  || fail "a nonzero partial poll was acknowledged"
+assert_present "$home/state/procevent/$id.source" \
+  "a nonzero partial poll keeps the source registered"
+assert_contains "$result" \
+  "source acknowledgement skipped for incomplete poll; source remains registered: $id (poll exit 73)" \
+  "a nonzero partial poll reports its exit code"
+pass "a nonzero partial capture is retained and not acknowledged"
 
 result=$(run_scenario final)
 home=$(printf '%s\n' "$result" | sed -n '1p')

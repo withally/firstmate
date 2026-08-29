@@ -115,9 +115,9 @@
 # `acknowledge` means the source delivery is confirmed or the captured result
 # carries no acknowledgement identity; any other exit keeps the registration
 # armed. Adapters that do not declare the seam keep their existing behavior.
-# A result truncated by the runner's output bound is never passed to the ACK
-# command and also keeps the registration armed. The runner still parses no
-# source-specific result field.
+# A result truncated by the runner's output bound or produced by a nonzero source
+# exit is never passed to the ACK command and also keeps the registration armed.
+# The runner still parses no source-specific result field.
 #
 # Ownership is machine-wide per canonical source, because separate Firstmate
 # homes can share one underlying source store. A live owner is never displaced;
@@ -490,6 +490,9 @@ cmd_start() {
     if [ "$truncated" -eq 1 ]; then
       source_acknowledged=0
       printf 'source acknowledgement skipped for truncated capture; source remains registered: %s\n' "$id" >&2
+    elif [ "$rc" -ne 0 ]; then
+      source_acknowledged=0
+      printf 'source acknowledgement skipped for incomplete poll; source remains registered: %s (poll exit %s)\n' "$id" "$rc" >&2
     elif adapter_acknowledge_capture "$adapter" "$durable"; then
       printf 'source-acknowledged: %s\n' "$id"
     else

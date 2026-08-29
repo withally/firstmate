@@ -1,0 +1,20 @@
+Firstmate process-event Lavish delivery-ACK validation
+
+Target commit: 183d1f15dbe869afec21a8c5c2e34f856be184e7
+Patched Lavish source used by live guard: 8ba3f325d36c3755375569e7170fe06cadce19ab
+
+$ bash tests/fm-procevent-lavish-ack.test.sh
+ok - feedback is captured before ACK
+ok - a bound keyed-answer feed completes before ACK
+ok - ACK failure leaves the delivery unacknowledged and source unretired
+ok - an incomplete capture is never acknowledged
+ok - a nonzero partial capture is retained and not acknowledged
+ok - a truncated nonzero capture reports one complete status
+ok - session-ended feedback ACKs before retirement
+ok - responses without delivery_id preserve legacy behavior
+
+all Lavish ACK adapter tests passed
+
+$ FM_LAVISH_LIVE_E2E=1 FM_LAVISH_PATCH_SOURCE=<disposable exact-commit scratch clone> bash tests/fm-procevent-lavish-live-e2e.test.sh
+scratch-commit: 8ba3f325d36c3755375569e7170fe06cadce19ab
+ok - patched Lavish redelivers until Firstmate captures and acknowledges the delivery

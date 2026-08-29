@@ -67,8 +67,7 @@
 #       composer before acting, and never retype blindly.
 #   1 = a verified failure: the literal/key transport failed, Pi's current
 #       composer did not remain visibly pending after the bounded pre-Enter
-#       settle, the normalized Pi composer body was provably shorter than the
-#       literal, or the bounded post-Enter read-back still visibly showed the
+#       settle, or the bounded post-Enter read-back still visibly showed the
 #       current text.
 #       A visibly retained message must be retried with Enter only, never by
 #       retyping it.
@@ -1018,12 +1017,6 @@ else
       fm_send_known_undelivered_cleanup || \
         echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
       echo "error: text not sent to $T: Herdr accepted pane send-text, but the current message did not remain visibly pending in the Pi composer during the bounded pre-Enter settle (tried $RESOLUTION_TRIED); Enter was not sent" >&2
-      exit 1
-      ;;
-    text-truncated)
-      fm_send_known_undelivered_cleanup || \
-        echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
-      echo "error: text not sent to $T: Herdr proved the normalized Pi composer body was shorter than the current literal after the bounded pre-Enter settle; Enter was not sent and the partial draft must be cleared before retrying (tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
     not-submitted|pending)

@@ -278,8 +278,8 @@ Measured 2026-08-29 against Herdr 0.8.2, Claude Code 2.1.251, and Pi 0.84.2 usin
 The earlier Claude observation still holds the safety boundary: `herdr agent get` can stay `idle` across a landed turn, so native idle alone proves neither delivery nor a swallow.
 The Pi run exercised short and 1500+ character multiline messages while idle and while already working.
 Busy Pi rendered the current message as a `Steering:` queue echo, cleared the separator composer, and later rendered the full long-message tail.
-`fm_backend_herdr_send_text_submit` now requires a cleared Pi composer plus either a new matching transcript/queue echo or an observed idle-to-busy transition, and long literals use bounded whitespace-normalized composer proof rather than prefix-only evidence.
-The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-send-strict.test.sh` pin busy queueing, delayed composer and long-body flushes, a dropped or provably shorter long literal before Enter, long text retained after Enter, and the distinct confirmed/unconfirmed/not-submitted exits.
+`fm_backend_herdr_send_text_submit` now requires a cleared Pi composer plus either a new matching transcript/queue echo or an observed idle-to-busy transition.
+The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-send-strict.test.sh` pin busy queueing, delayed composer flushes, long text retained after Enter, and the distinct confirmed/unconfirmed/not-submitted exits.
 The known-Claude submit cases exercise the rendered-transition-or-cleared-composer rule owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), so native `working` alone is never delivery proof.
 Refresh both live harness proofs with:
 

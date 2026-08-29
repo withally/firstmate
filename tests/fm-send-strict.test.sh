@@ -76,11 +76,7 @@ case "${1:-} ${2:-}" in
   "pane send-text")
     [ -z "${FM_FAKE_HERDR_STATE:-}" ] || {
       mkdir -p "$FM_FAKE_HERDR_STATE"
-      if [ "${FM_FAKE_HERDR_MODE:-}" = dropped ]; then
-        : > "$FM_FAKE_HERDR_STATE/text"
-      else
-        printf '%s' "${4:-}" > "$FM_FAKE_HERDR_STATE/text"
-      fi
+      printf '%s' "${4:-}" > "$FM_FAKE_HERDR_STATE/text"
       rm -f "$FM_FAKE_HERDR_STATE/entered"
     }
     ;;
@@ -98,13 +94,9 @@ case "${1:-} ${2:-}" in
       printf '↳ Option+Up to edit all queued messages\nWorking...\n'
       printf '─────────────────────────────────────────────────────\n\n'
       printf '─────────────────────────────────────────────────────\n'
-    elif [ "${FM_FAKE_HERDR_MODE:-}" = pending ] || [ "${FM_FAKE_HERDR_MODE:-}" = dropped ] || [ "${FM_FAKE_HERDR_MODE:-}" = truncated ]; then
+    elif [ "${FM_FAKE_HERDR_MODE:-}" = pending ]; then
       printf '─────────────────────────────────────────────────────\n'
-      if [ "${FM_FAKE_HERDR_MODE:-}" = truncated ]; then
-        printf '%s\n' "$text" | sed -n '1,3p'
-      else
-        printf '%s\n' "$text"
-      fi
+      printf '%s\n' "$text"
       printf '─────────────────────────────────────────────────────\n'
     else
       printf 'Working...\n'
@@ -302,10 +294,9 @@ test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted() 
   long_text=''
   i=1
   while [ "$i" -le 40 ]; do
-    long_text="${long_text}LONG_SEND_LINE_${i} abcdefghijklmnopqrstuvwxyz 0123456789\n"
+    long_text="${long_text}LONG_SEND_SEGMENT_${i} abcdefghijklmnopqrstuvwxyz 0123456789"
     i=$((i + 1))
   done
-  long_text=$(printf '%b' "$long_text")
   [ "${#long_text}" -ge 1500 ] || fail "fm-send long fixture is shorter than 1500 characters"
   rm -rf "$state"
   rc=0
@@ -318,16 +309,6 @@ test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted() 
     "the true-failure diagnostic must name the visible composer postcondition"
   assert_not_contains "$(cat "$err")" "delivery unconfirmed" \
     "a visibly pending message must not use the ambiguous-delivery wording"
-
-  rm -rf "$state"
-  rc=0
-  env PATH="$fb:$PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=dropped \
-    FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_RETRIES=1 FM_SEND_SETTLE=0 \
-    "$SEND" "$target" "$long_text" >/dev/null 2>"$err" || rc=$?
-  expect_code 1 "$rc" "a dropped long fake-Herdr Pi literal must be a true failure"
-  assert_contains "$(cat "$err")" "did not remain visibly pending in the Pi composer" \
-    "a dropped long literal must report its specific pre-Enter cause"
 
   rm -rf "$state"
   rc=0

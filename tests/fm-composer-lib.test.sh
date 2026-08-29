@@ -652,6 +652,18 @@ test_cursor_on_proven_box_bottom_classifies_content
 test_selected_content_is_composer_scoped_and_wrap_normalized
 test_pi_submit_observation_honors_pair_bound_and_normalized_body
 
+test_submit_retry_reports_send_failed_before_any_enter() {
+  local out
+  submit_key_always_fails() { return 1; }
+  submit_state_is_unknown() { printf 'unknown'; }
+  out=$(fm_composer_submit_retry_core submit_key_always_fails submit_state_is_unknown target 3 0)
+  [ "$out" = send-failed ] \
+    || fail "failed Enter transport must report send-failed, got '$out'"
+  pass "fm_composer_submit_retry_core: failed Enter transport never claims an unconfirmed submit"
+}
+
+test_submit_retry_reports_send_failed_before_any_enter
+
 test_queued_enter_verdict_busy_pending_is_empty() {
   local out
   out=$(fm_composer_queued_enter_verdict pending busy)

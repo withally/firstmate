@@ -310,7 +310,7 @@ test_herdr_typed_verdicts_distinguish_confirmed_unconfirmed_and_not_submitted() 
     FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_RETRIES=1 FM_SEND_SETTLE=0 \
     "$SEND" "$target" "$long_text" >/dev/null 2>"$err" || rc=$?
   expect_code 1 "$rc" "a dropped long fake-Herdr Pi literal must be a true failure"
-  assert_contains "$(cat "$err")" "never appeared in the Pi composer" \
+  assert_contains "$(cat "$err")" "did not remain visibly pending in the Pi composer" \
     "a dropped long literal must report its specific pre-Enter cause"
 
   rm -rf "$state"

@@ -612,7 +612,7 @@ const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", 
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
 if (sentToMain.length !== 0) throw new Error("routine report entered main instead of remaining store-only");
 fire("agent_start", {});
-await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy" }, undefined, undefined, {});
+await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy", silent: true }, undefined, undefined, {});
 if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
 await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
@@ -800,7 +800,7 @@ await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire
 const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
 import { readFileSync, writeFileSync } from "node:fs";
 
-const repeated = "stale: assets waiting-for-merge";
+const repeated = "signal: routine idle pulse";
 for (let index = 0; index < 3; index += 1) {
   const offer = dispatch(repeated);
   if (!offer.accepted) throw new Error(`repeat ${index + 1} was not accepted`);
@@ -822,6 +822,9 @@ const urgentStatusLines = [
   "done: checks green",
   "needs-decision: captain input required",
   "working: credentials required",
+  "working: login required",
+  "working: PR ready for review",
+  "working: checks green",
 ];
 for (const [index, line] of urgentStatusLines.entries()) {
   writeFileSync(statusPath, `${line}\n`);
@@ -834,7 +837,15 @@ for (const [index, line] of urgentStatusLines.entries()) {
   }
 }
 
-const pending = dispatch("stale: pending replacement wake");
+const staleStarted = Date.now();
+const stale = dispatch("stale: terminal worker");
+if (!stale.accepted) throw new Error("stale wake was not accepted");
+await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 2, "stale bypass prompt");
+if (Date.now() - staleStarted >= 300) {
+  throw new Error(`stale wake waited for the coalescing window (${Date.now() - staleStarted}ms)`);
+}
+
+const pending = dispatch("signal: pending replacement wake");
 if (!pending.accepted) throw new Error("pending wake was not accepted");
 fire("session_shutdown", {});
 fire("session_start", {});

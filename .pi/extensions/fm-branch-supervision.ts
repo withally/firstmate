@@ -227,10 +227,11 @@ function statusTailIsUrgent(path: string): boolean {
   for (const line of tail.split(/\r?\n/)) {
     if (line.trim()) last = line;
   }
-  return /^\s*(?:done|needs-decision|blocked|failed)\b(?:\s+\[[^\]]+\])?\s*:|\bcredentials?\b/i.test(last);
+  return /^\s*(?:done|needs-decision|blocked|failed)\b(?:\s+\[[^\]]+\])?\s*:|\b(?:login|credentials?|PR[- ]ready|ready for review|checks green)\b/i.test(last);
 }
 
 function urgentWake(message: string): boolean {
+  if (/^stale:/i.test(message)) return true;
   if (/(?:^|\s)(?:done|needs-decision|blocked|failed)\s*(?:\[[^\]]+\])?\s*:|\b(?:PR[- ]ready|ready for review|checks green|credentials?|login|destructive|irreversible|security-sensitive)\b/i.test(message)) {
     return true;
   }
@@ -760,7 +761,7 @@ export default function (pi: ExtensionAPI) {
         const summary = String((params as { summary: unknown }).summary || "").trim();
         const wake = String((params as { wake?: unknown }).wake ?? "").trim();
         const silent = (params as { silent?: unknown }).silent === true;
-        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain") || (silent && (task !== "fleet" || verdictRaw !== "routine"))) {
+        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain") || (silent && verdictRaw !== "routine")) {
           return {
             content: [{ type: "text", text: "invalid report: task, verdict (routine|captain), and summary are required" }],
             details: undefined,

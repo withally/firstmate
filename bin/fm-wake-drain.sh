@@ -568,7 +568,10 @@ ACK_THROUGH=$(printf '%s\n' "$RAW_ROWS" | awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > m
 case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   0) ;;
   ''|*[!0-9]*) ;;
-  *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
+  *)
+    [ -z "${FM_WAKE_DRAIN_TEST_READY_FILE:-}" ] || : > "$FM_WAKE_DRAIN_TEST_READY_FILE"
+    sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT"
+    ;;
 esac
 if [ -n "$RAW_ROWS" ]; then
   printf '%s\n' "$RAW_ROWS" || exit "$?"

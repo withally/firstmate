@@ -800,18 +800,33 @@ await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire
 const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
 import { readFileSync, writeFileSync } from "node:fs";
 
+const idleRepeated = "signal: routine idle pulse";
+for (let index = 0; index < 3; index += 1) {
+  const offer = dispatch(idleRepeated);
+  if (!offer.accepted) throw new Error(`idle repeat ${index + 1} was not accepted`);
+}
+await new Promise((resolve) => setTimeout(resolve, 80));
+if ((globalThis.__fmPrompts ?? []).length !== 0) {
+  throw new Error("a routine idle repeat prompted before the bounded coalescing window closed");
+}
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "one coalesced idle repeat prompt");
+await new Promise((resolve) => setTimeout(resolve, 450));
+if ((globalThis.__fmPrompts ?? []).length !== 1) {
+  throw new Error(`idle repeats opened ${globalThis.__fmPrompts.length} branch turns`);
+}
+
 const repeated = "stale: assets waiting-for-merge";
 const staleStarted = Date.now();
 for (let index = 0; index < 3; index += 1) {
   const offer = dispatch(repeated);
   if (!offer.accepted) throw new Error(`repeat ${index + 1} was not accepted`);
 }
-await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "one urgent stale repeat prompt");
+await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "one urgent stale repeat prompt");
 if (Date.now() - staleStarted >= 300) {
   throw new Error(`first stale wake waited for the coalescing window (${Date.now() - staleStarted}ms)`);
 }
 await new Promise((resolve) => setTimeout(resolve, 450));
-if ((globalThis.__fmPrompts ?? []).length !== 1) {
+if ((globalThis.__fmPrompts ?? []).length !== 2) {
   throw new Error(`same-text repeats opened ${globalThis.__fmPrompts.length} branch turns`);
 }
 
@@ -831,7 +846,7 @@ for (const [index, line] of urgentStatusLines.entries()) {
   const started = Date.now();
   const urgent = dispatch(`signal: ${statusPath}`);
   if (!urgent.accepted) throw new Error(`urgent status wake ${index + 1} was not accepted`);
-  await settle(() => (globalThis.__fmPrompts ?? []).length === index + 2, `urgent status bypass prompt ${index + 1}`);
+  await settle(() => (globalThis.__fmPrompts ?? []).length === index + 3, `urgent status bypass prompt ${index + 1}`);
   if (Date.now() - started >= 300) {
     throw new Error(`urgent status wake waited for the coalescing window (${Date.now() - started}ms)`);
   }

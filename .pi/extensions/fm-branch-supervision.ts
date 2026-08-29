@@ -19,7 +19,8 @@
 // the tool set is BRANCH_TOOL_NAMES in that fixed order on every spawn, and
 // one shared per-home prompt_cache_key is set for branch requests in a
 // before_provider_request hook - main keeps Pi's default per-session key.
-// Wakes, mirrored dialog, and merge notes are all appends at a tail.
+// Wakes, mirrored dialog, and captain outcome messages are all appends at a
+// tail.
 //
 // Session-lock ownership: every branch side-effect boundary re-evaluates the
 // current extension generation and lock ownership LAZILY, the same way the
@@ -148,7 +149,7 @@ const MIRROR_MESSAGE_CAP = 4000;
 // Historical persisted routine notes can still appear in an existing main
 // transcript even though new routine outcomes are store-only.
 const MERGE_NOTE_BOAT = "⛵";
-// Carried inside the captain note's own text because that text is the only
+// Carried inside the captain outcome message's own text because that text is the only
 // part of a custom message Pi gives the model (see mergeIntoMain).
 //
 // The note still needs to identify itself so main cannot mistake an incoming
@@ -691,20 +692,21 @@ export default function (pi: ExtensionAPI) {
   // Outcome delivery after the store row is durable. Routine outcomes stay in
   // the store and advance its read cursor without entering main. A captain
   // outcome triggers exactly one follow-up turn; that turn is itself the
-  // captain-visible outcome, so the note is delivered with display: false.
+  // captain-visible outcome, so the delivery message uses display: false.
   // A crash inside Pi's delivery window leaves the outcome durable for main's
   // fm_branch_outcomes tool to read on demand.
   //
   // Pi keeps only `content` when it converts a custom message for the model:
-  // customType, display, and details never reach the provider. A captain note
+  // customType, display, and details never reach the provider. A captain outcome
   // therefore has to carry its own identity inside `content`, or main receives
   // an unattributed user message written in main's own captain-facing voice
   // and cannot tell an incoming outcome from its own earlier answer. When that
-  // happens main can lose the outcome while deciding how to handle it. The
-  // typed operational envelope is what makes the note self-describing; it stays
-  // invisible to the captain because the note is never rendered. The
-  // instruction preserves the event-ownership boundary while requiring the
-  // captain-facing response and leaving its wording to main.
+  // happens main can re-emit its previous answer instead of relaying the outcome,
+  // and lose the outcome while deciding how to handle it. The typed operational
+  // envelope makes the delivery message self-describing; it stays invisible to
+  // the captain because the message is never rendered. The instruction
+  // preserves the event-ownership boundary while requiring the captain-facing
+  // response and leaving its wording to main.
   //
   // Encoding shells out, so it can fail on a broken checkout. This file's
   // failure direction applies: an outcome that cannot be typed is still
@@ -1597,7 +1599,7 @@ ${context.command}
   });
 
   // Existing transcripts can contain rendered routine notes written by older
-  // versions. New routine outcomes are store-only, and captain-facing notes
+  // versions. New routine outcomes are store-only, and captain-facing outcome messages
   // are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
     const note = textOfContent(message.content);

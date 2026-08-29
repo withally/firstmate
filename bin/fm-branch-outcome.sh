@@ -12,18 +12,17 @@
 #     entirely in the cursor sidecar so marking outcomes read cannot disturb
 #     the log. Retention: the log is small (one line per handled fleet event)
 #     and truncation, if ever needed, is a captain-approved manual act.
-#   - Cursor: $STATE/.branch-outcomes-cursor holds the highest seq handed to
-#     Pi as an append-only merge note, emitted by the locked session-start
-#     replay, or silently consumed there because `silent` is true. Records
-#     above the cursor are "unread": the branch stored them but
-#     did not reach either handoff. A crash inside Pi's delivery window after
-#     cursor advancement does not auto-replay the row; it remains durable and
-#     available through the main session's fm_branch_outcomes tool.
+#   - Cursor: $STATE/.branch-outcomes-cursor holds the highest seq consumed
+#     after branch delivery, routine store-only handling, or locked session-start
+#     replay. Records above the cursor are "unread": the branch stored them but
+#     did not complete its delivery or replay path. A crash inside Pi's delivery
+#     window after cursor advancement does not auto-replay the row; it remains
+#     durable and available through the main session's fm_branch_outcomes tool.
 #   - Every mutation runs under $STATE/.branch-outcomes.lock so the branch
 #     extension and a concurrent session-start replay cannot interleave.
-#   - The store is written BEFORE the merge note is appended to main
-#     (store-first durability): nothing about a handled event depends on
-#     conversation memory.
+#   - The store is written BEFORE any captain outcome is delivered to main
+#     (store-first durability): routine outcomes have no main handoff, and
+#     nothing about a handled event depends on conversation memory.
 #
 # Usage:
 #   fm-branch-outcome.sh append --task <id> --verdict routine|captain \
@@ -36,11 +35,12 @@
 #   fm-branch-outcome.sh list [--recent <n>]
 #     Print the last n records (default 20), read or not.
 #   fm-branch-outcome.sh startup-replay
-#     Session-start recovery: print visible unread records under a labeled
-#     header into the locked startup digest, skip rows whose `silent` field is
-#     true, and mark every unread row read. Prints nothing when nothing visible
-#     is unread, so a home that never ran the branch stays silent. Run it only
-#     when the session holds the lock (fm-session-start.sh owns the call site).
+#     Session-start recovery: print unread records whose `silent` field is not
+#     true under a labeled header into the locked startup digest, skip routine
+#     store-only rows, and mark every unread row read. Prints nothing when
+#     nothing visible is unread, so a home that never ran the branch stays
+#     silent. Run it only when the session holds the lock (fm-session-start.sh
+#     owns the call site).
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

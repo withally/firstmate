@@ -1,6 +1,6 @@
 # Worker brief template
 
-Firstmate scaffolds with `bin/fm-brief.sh <task-id> firstmate --mode no-mistakes`, adding `--herdr-lab` when the tier is `monthly` or the sync is already known to touch Herdr backend or lab code, and replaces `{TASK}` with the block below.
+Firstmate scaffolds with `bin/fm-brief.sh <task-id> firstmate --mode direct-PR`, adding `--herdr-lab` when the tier is `monthly` or the sync is already known to touch Herdr backend or lab code, and replaces `{TASK}` with the block below.
 Fill exactly eight values; every other line is fixed text.
 
 | Placeholder | Value |
@@ -48,7 +48,7 @@ Fixed rules:
 - Cherry-pick kept PRs with `-x`; upstream wins every conflict.
 - Run only the TIER's validation from the skill; CI's portable shards and its required Herdr lane on the PR are the weekly full gate.
 - Append the catch-up log row before shipping, recording that pinned WINDOW_END as the row's `Window end commit`, and commit it with `git add docs/upstream-sync.md && git commit -m 'docs: record the {DATE} catch-up'`, advancing the `Next monthly full run` line on a monthly tier; a row that is uncommitted or added after the PR is open is never validated and never reaches `origin/main`.
-- Ship the PR with `no-mistakes axi run --skip rebase --intent "{TIER} upstream sync of withally/firstmate onto kunchenguid/firstmate at {UPSTREAM_BASE}"`; `--intent` is required to start a run, and a cutover branch is cut from `upstream/main`, so rebasing it onto the fork's `origin/main` would replay the divergent fork history back onto the new base and undo the adoption.
+- After the tier-specific local validation and committed catch-up row, follow the skill's direct-PR ship step exactly: append its machine-readable upstream-base marker to the PR body, push with `git push origin HEAD`, and open the labeled PR with `gh-axi pr create -R withally/firstmate`; never invoke the no-mistakes pipeline and never target `kunchenguid/firstmate`.
 - Unrelated breakage is a `Follow-ups` entry in the PR, never a fix on this branch.
 - If the kept diff selects the `real-herdr-gated` family per the skill's `comm -12` check against `bin/fm-test-run.sh --list`, and this brief was not scaffolded with `--herdr-lab`, stop with `blocked: sync touches Herdr, brief needs --herdr-lab` and wait.
 - If that check selects the family and this brief does carry the lab contract, run the family locally per the skill's step 10; do not block a second time.

@@ -79,12 +79,12 @@ Firstmate resolves eight values and nothing else: `UPSTREAM_BASE`, `SNAPSHOT`, `
    The captain set the next monthly full run to 2026-10-01 and deliberately skipped September, so a September Saturday is `weekly` even though it falls after the 1st.
    Do not ask; the line plus the log answer the question.
 3. Scaffold the brief with the tier-matched flags.
-   The delivery mode is `no-mistakes`, the doc's standing PR path; its Test step is intent-targeted, so it does not re-run the full suite and stays inside the weekly tier.
+   The delivery mode is `direct-PR`, the doc's standing PR path, because CI and the captain's PR review are the gates for a snapshot whose upstream-authored tree must not enter pipeline review.
 
    ```sh
-   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes                # weekly, no Herdr expected
-   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes --herdr-lab   # weekly known to touch Herdr, or after a blocked: regeneration
-   bin/fm-brief.sh <task-id> firstmate --mode no-mistakes --herdr-lab   # monthly, always
+   bin/fm-brief.sh <task-id> firstmate --mode direct-PR               # weekly, no Herdr expected
+   bin/fm-brief.sh <task-id> firstmate --mode direct-PR --herdr-lab   # weekly known to touch Herdr, or after a blocked: regeneration
+   bin/fm-brief.sh <task-id> firstmate --mode direct-PR --herdr-lab   # monthly, always
    ```
 
    A monthly tier always needs `--herdr-lab` because the full suite drives Herdr lifecycle behavior through the lab.
@@ -292,14 +292,23 @@ Each numbered step maps onto the same-numbered step of the doc's weekly procedur
     Defining it by position rather than by adjudication is what keeps it always present: step 5 forbids adjudicating a snapshot squash, so a window containing only one would otherwise leave this column empty.
     It is not optional: intake's window override reads it, an empty column drops the next sync back to the marker, and from there the accumulated fork delta is lost with no conflict and no warning.
     "Every verdict" means the full accumulated keep-list per step 5 — the window's own PRs plus every PR recovered from an excluded squash's row — because the next sync rebuilds the fork delta from this row alone.
-    Commit it before step 13 ships, with `git add docs/upstream-sync.md && git commit -m 'docs: record the <DATE> catch-up'`, so the pipeline validates the row and the merged PR carries it.
+    Commit it before step 13 ships, with `git add docs/upstream-sync.md && git commit -m 'docs: record the <DATE> catch-up'`, so CI validates the row and the merged PR carries it.
     Appending the row is a plain edit to a tracked file, so `git commit -m` without the `git add` stages nothing and exits non-zero, leaving the row in the working tree.
-    An uncommitted row is the silent failure: `axi run` validates committed history and ignores the working tree, so CI goes green and the merged commit carries no row at all.
+    An uncommitted row is the silent failure: the pushed PR and CI contain committed history only, so CI can go green while the merged commit carries no row at all.
     A row added after the PR is open is either never pushed or lands unvalidated, and intake's window override plus the monthly-tier check both read it from the merged commit.
 
-13. Ship through no-mistakes to the fork's PR path, with `no-mistakes axi run --skip rebase --intent "<TIER> upstream sync of withally/firstmate onto kunchenguid/firstmate at <UPSTREAM_BASE>"`.
-    `--intent` is required to start a run, so the bare command fails before the first pipeline step, and the tier belongs in it because the gate treats the intent as the run's authoritative goal rather than inferring one.
-    The rebase step is skipped because a cutover branch is cut from `upstream/main` and rebasing it onto the fork's `origin/main` would replay the whole divergent fork history back onto the new base, undoing the adoption the sync exists to perform.
+13. Push the validated branch and open the fork PR directly with `gh-axi`.
+    Do not invoke the no-mistakes pipeline for an upstream sync, because its whole-diff review treats the adopted upstream tree as fork-authored work.
+    Resolve `UPSTREAM_BASE_FULL` from the pinned base and include the exact machine-readable marker below in the PR body so CI can verify that the labeled exception is a real cutover from canonical upstream history.
+    The repository-controlled `upstream-sync` label requests that verification; a PR title alone never does.
+
+    ```sh
+    UPSTREAM_BASE_FULL=$(git rev-parse "$UPSTREAM_BASE^{commit}")
+    printf '<!-- firstmate-upstream-sync:v1 {"upstream_base":"%s"} -->\n' "$UPSTREAM_BASE_FULL" >> <PR_BODY_FILE>
+    git push origin HEAD
+    gh-axi pr create -R withally/firstmate --base main --head "$(git branch --show-current)" --title "chore: snapshot upstream main for <DATE>" --body-file <PR_BODY_FILE> --label upstream-sync
+    ```
+
     Title the PR `chore: snapshot upstream main for <DATE>` so the next sync's snapshot-commit search (step 3) finds this merge.
     The PR must be squash-merged with that title, because the fork allows merge and rebase merges too and neither puts the marker on `origin/main`'s first-parent subject; intake step 7 verifies this after the merge.
     The verdict table carries the same full accumulated keep-list step 5 and step 12 require, not just the window's own PRs, because it is the captain's single review surface for everything the branch re-applies.

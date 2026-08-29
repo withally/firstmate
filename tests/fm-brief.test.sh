@@ -217,6 +217,43 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_upstream_sync_template_renders_direct_pr_delivery() {
+  local home brief task rendered
+  home="$TMP_ROOT/upstream-sync-home"
+  brief="$home/data/upstream-sync/brief.md"
+  task="$home/upstream-sync-task.md"
+  rendered="$home/upstream-sync-rendered.md"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" upstream-sync firstmate --mode direct-PR >/dev/null 2>&1 \
+    || fail "fm-brief.sh could not scaffold the upstream-sync direct-PR brief"
+  sed \
+    -e 's/{UPSTREAM_BASE}/0123456789ab/g' \
+    -e 's/{SNAPSHOT}/abcdef012345/g' \
+    -e 's/{SETTLED}/abcdef012345/g' \
+    -e 's/{VERDICT_INPUT_1}/first behavior/g' \
+    -e 's/{VERDICT_INPUT_2}/second behavior/g' \
+    -e 's/{VERDICT_INPUT_3}/third behavior/g' \
+    -e 's/{TIER}/weekly/g' \
+    -e 's/{DATE}/2026-08-29/g' \
+    "$ROOT/.agents/skills/upstream-sync/references/worker-brief.md" > "$task"
+  awk '
+    FNR == NR { task = task $0 ORS; next }
+    $0 == "{TASK}" { printf "%s", task; next }
+    { print }
+  ' "$task" "$brief" > "$rendered"
+
+  assert_grep 'Delivery contract: mode=direct-PR' "$rendered" \
+    "rendered upstream-sync brief lost its direct-PR delivery contract"
+  assert_no_grep 'no-mistakes axi run' "$rendered" \
+    "rendered upstream-sync brief still sends the snapshot through no-mistakes"
+  assert_grep 'gh-axi pr create' "$rendered" \
+    "rendered upstream-sync brief does not open the direct PR with gh-axi"
+  assert_grep '-R withally/firstmate' "$rendered" \
+    "rendered upstream-sync brief does not pin PR creation to withally/firstmate"
+  pass "fm-brief.sh: upstream-sync template renders the direct-PR delivery contract"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -755,6 +792,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_upstream_sync_template_renders_direct_pr_delivery
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply

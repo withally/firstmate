@@ -427,7 +427,11 @@ secondmate_wake_stall_tick() {
   local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
   local meta task kind remote_host home queue row epoch seq row_key marker receipt receipt_dir notify_key queued age reason
   local beat beat_mtime beat_age very_old_age
-  case "$threshold" in ''|*[!0-9]*|0) threshold=300 ;; esac
+  case "$threshold" in
+    ''|*[!0-9]*) threshold=300 ;;
+    *) threshold=$((10#$threshold)) ;;
+  esac
+  [ "$threshold" -gt 0 ] || threshold=300
   # Endpoint metadata admits this queue-loop check; secondmate-liveness owns registered mates whose endpoint is missing or dead.
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue

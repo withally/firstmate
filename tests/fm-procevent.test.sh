@@ -7,10 +7,9 @@
 # public commands against the currently published poll shape; no live Lavish
 # server is started.
 #
-# Delivery is deliberately NOT asserted as at-least-once or lossless: the
-# published Lavish poll clears feedback destructively before returning it, so
-# the only durability under test is the runner's own - output that reached the
-# runner is stored before it is announced.
+# Delivery from a patched Lavish is acknowledged only after durable capture.
+# Legacy responses without delivery_id keep the older source-side loss window,
+# while the runner's own capture-before-announcement guarantee applies to both.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1487,20 +1486,24 @@ for adapter in remote-reply when; do
 done
 pass "an adapter with no silence verdict keeps announcing every result"
 
-# --- the loss limitation is stated on the public interface ------------------
+# --- the delivery guarantee and limits are stated on the public interface ---
 # Checked through --help, the operator-facing surface, rather than by reading
 # implementation bytes.
 adapter_help=$("$ROOT/bin/fm-procevent-lavish.sh" --help 2>&1 || true)
-assert_contains "$adapter_help" "destructively clears" \
-  "the adapter's help states the destructive-source loss limitation"
-assert_contains "$adapter_help" "Never describe" \
-  "the adapter's help forbids an at-least-once or lossless description"
+assert_contains "$adapter_help" "stores the complete result before this adapter ACKs" \
+  "the adapter's help states capture-before-ACK ordering"
+assert_contains "$adapter_help" "no owner or TTL" \
+  "the adapter's help states that acknowledged delivery is not exclusive"
+assert_contains "$adapter_help" "plain writeFile" \
+  "the adapter's help states Lavish's weaker persistence primitive"
+assert_contains "$adapter_help" "no delivery_id" \
+  "the adapter's help preserves the legacy source-side loss limitation"
 
 runner_help=$("$ROOT/bin/fm-procevent.sh" --help 2>&1 || true)
 assert_contains "$runner_help" "Durability boundary" \
   "the runner's help scopes what it actually proves"
 assert_not_contains "$runner_help" "exactly-once" \
   "the runner's help claims no exactly-once delivery"
-pass "the published interfaces state the loss limitation and claim no lossless delivery"
+pass "the published interfaces state the delivery guarantee and its limits"
 
 printf '\nall procevent tests passed\n'

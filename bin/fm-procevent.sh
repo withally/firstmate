@@ -107,6 +107,18 @@
 # while ACTING on it is firstmate's judgement, so the capture stays unacknowledged
 # and its `check` wake reaches the handler exactly as it would have anyway.
 #
+# Source delivery acknowledgement is adapter-owned through one final seam.
+# An adapter that answers exit 0 to
+# `bin/fm-procevent-<adapter>.sh source-acknowledgements` declares that every
+# captured result must pass through its `acknowledge <result-file>` command
+# after durable capture and before terminal retirement. Exit 0 from
+# `acknowledge` means the source delivery is confirmed or the captured result
+# carries no acknowledgement identity; any other exit keeps the registration
+# armed. Adapters that do not declare the seam keep their existing behavior.
+# A result truncated by the runner's output bound is never passed to the ACK
+# command and also keeps the registration armed. The runner still parses no
+# source-specific result field.
+#
 # Ownership is machine-wide per canonical source, because separate Firstmate
 # homes can share one underlying source store. A live owner is never displaced;
 # only a claim whose whole generation is gone is reclaimed. A runner leads its
@@ -114,9 +126,10 @@
 # stale: reconcile stops that surviving group and releases its generation before
 # any replacement starts, and keeps the claim for a later retry when it cannot.
 #
-# Durability boundary: see bin/fm-procevent-lib.sh. This runner proves capture
-# before publication and bounded re-announcement until handled, and nothing
-# about the source side of the handoff.
+# Durability boundary: see bin/fm-procevent-lib.sh. On its own, this runner
+# proves capture before publication and bounded re-announcement until handled.
+# A declared acknowledgement seam extends that boundary only as its adapter's
+# source protocol and limits state.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -135,7 +148,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,119p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,133p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -160,6 +173,23 @@ adapter_result_is_silent() {  # <adapter> <result-file>
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   "$script" silent "$2" >/dev/null 2>&1
+}
+
+# Run an adapter's optional source-delivery acknowledgement after the result is
+# durable. A declaration is separate from the action so adapters without this
+# protocol retain their exact behavior rather than looking like failed ACKs.
+adapter_uses_source_acknowledgements() {  # <adapter>
+  local script
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  "$script" source-acknowledgements >/dev/null 2>&1
+}
+
+adapter_acknowledge_capture() {  # <adapter> <result-file>
+  local script
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  "$script" acknowledge "$2" >/dev/null 2>&1
 }
 
 # Ask the adapter whether its autohandled results announce themselves through a
@@ -352,6 +382,7 @@ cmd_start_public() {
 
 cmd_start() {
   local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0
+  local source_acknowledged=1
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -455,6 +486,18 @@ cmd_start() {
   STAGED_OUTPUT=
   [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2
 
+  if adapter_uses_source_acknowledgements "$adapter"; then
+    if [ "$truncated" -eq 1 ]; then
+      source_acknowledged=0
+      printf 'source acknowledgement skipped for truncated capture; source remains registered: %s\n' "$id" >&2
+    elif adapter_acknowledge_capture "$adapter" "$durable"; then
+      printf 'source-acknowledged: %s\n' "$id"
+    else
+      source_acknowledged=0
+      printf 'source acknowledgement failed; source remains registered: %s\n' "$id" >&2
+    fi
+  fi
+
   # Independent of publication and acknowledgement, so it runs once per capture
   # for every adapter and cannot change what the handler receives.
   if feed_keyed_answers "$adapter" "$id" "$durable"; then
@@ -481,7 +524,7 @@ cmd_start() {
   # announce that inbox result without a registration. Leaving the source armed
   # would instead let every reconcile restart a source that only returns empty
   # ended results.
-  if adapter_result_is_terminal "$adapter" "$durable"; then
+  if [ "$source_acknowledged" -eq 1 ] && adapter_result_is_terminal "$adapter" "$durable"; then
     if retire_owned_terminal_source "$id"; then
       printf 'retired: %s (adapter classified the captured result terminal)\n' "$id"
     else

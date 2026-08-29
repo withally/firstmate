@@ -108,8 +108,8 @@
 #     crew's worktree, so they are not orphaned by removing the worktree.
 #     conclude_task_no_mistakes_run attributes the active-or-most-recent run to
 #     THIS task only when its branch AND code identity (bin/fm-nm-run-lib.sh's
-#     fm_nm_head_matches_worktree, the same rule bin/fm-crew-state.sh uses) both
-#     match this worktree, then runs `no-mistakes axi abort --run <id>` for
+#     strict fm_nm_head_matches_worktree rule) both match this worktree, then
+#     runs `no-mistakes axi abort --run <id>` for
 #     that verified run instance. A run already terminal
 #     (an outcome is set) or not parked at a gate is left untouched. Idempotent:
 #     an already-aborted run reads back terminal and is skipped on retry.
@@ -545,12 +545,7 @@ remote_pending_replies_cleanup() {
     for rec in ./*; do
       [ -e "$rec" ] || [ -L "$rec" ] || continue
       [ -f "$rec" ] && [ ! -L "$rec" ] || exit 1
-      # Another task's record is a successful no-op, never a refusal: under
-      # set -eu an `&& rm` AND-list would make the last non-matching record
-      # the subshell's status and abort retirement (tests/fm-teardown-remote-pending-replies.test.sh).
-      if [ "$(fm_meta_get "$rec" task_id)" = "$ID" ]; then
-        rm -f -- "$rec" || exit 1
-      fi
+      [ "$(fm_meta_get "$rec" task_id)" = "$ID" ] && rm -f -- "$rec"
     done
   )
 }

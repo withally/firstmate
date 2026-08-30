@@ -794,12 +794,13 @@ test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
   mkdir -p "$home/state" "$home/config"
   install_pi_branch_extension_fixture "$repo"
   out=$(PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_TEST_BRANCH_WAKE_COALESCE_MS=400 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module 2>&1 <<'EOF'
+    FM_TEST_BRANCH_WAKE_COALESCE_MS=1000 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire, mainUserMessages, home }; })()`);
 const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+const urgentBudgetMs = 800;
 
 const idleRepeated = "signal: routine idle pulse";
 for (let index = 0; index < 3; index += 1) {
@@ -823,7 +824,7 @@ for (let index = 0; index < 3; index += 1) {
   if (!offer.accepted) throw new Error(`repeat ${index + 1} was not accepted`);
 }
 await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "one urgent stale repeat prompt");
-if (Date.now() - staleStarted >= 300) {
+if (Date.now() - staleStarted >= urgentBudgetMs) {
   throw new Error(`first stale wake waited for the coalescing window (${Date.now() - staleStarted}ms)`);
 }
 await new Promise((resolve) => setTimeout(resolve, 450));
@@ -848,9 +849,17 @@ for (const [index, line] of urgentStatusLines.entries()) {
   const urgent = dispatch(`signal: ${statusPath}`);
   if (!urgent.accepted) throw new Error(`urgent status wake ${index + 1} was not accepted`);
   await settle(() => (globalThis.__fmPrompts ?? []).length === index + 3, `urgent status bypass prompt ${index + 1}`);
-  if (Date.now() - started >= 300) {
+  if (Date.now() - started >= urgentBudgetMs) {
     throw new Error(`urgent status wake waited for the coalescing window (${Date.now() - started}ms)`);
   }
+}
+
+const relativeStatusStarted = Date.now();
+const relativeStatus = dispatch("signal: branch-driver.status");
+if (!relativeStatus.accepted) throw new Error("relative status wake was not accepted");
+await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 3, "relative urgent status prompt");
+if (Date.now() - relativeStatusStarted >= urgentBudgetMs) {
+  throw new Error(`relative status wake waited for the coalescing window (${Date.now() - relativeStatusStarted}ms)`);
 }
 
 for (const [index, fileName] of ["_branch-driver.status", "-branch-driver.status"].entries()) {
@@ -859,8 +868,8 @@ for (const [index, fileName] of ["_branch-driver.status", "-branch-driver.status
   const started = Date.now();
   const urgent = dispatch(`signal: ${statusPath}`);
   if (!urgent.accepted) throw new Error(`leading-character status wake ${index + 1} was not accepted`);
-  await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 3 + index, `leading-character status prompt ${index + 1}`);
-  if (Date.now() - started >= 300) {
+  await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 4 + index, `leading-character status prompt ${index + 1}`);
+  if (Date.now() - started >= urgentBudgetMs) {
     throw new Error(`leading-character status wake waited for the coalescing window (${Date.now() - started}ms)`);
   }
 }

@@ -67,7 +67,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // Pi exposes pi-ai to extensions as a first-class module in both its Node
 // and compiled-binary loaders, the same standing as pi-tui and typebox
@@ -189,7 +189,8 @@ function positiveIntegerEnv(name: string, fallback: number): number {
 
 function validatedSignalStatusPath(token: string): string | null {
   const stateRoot = resolve(state);
-  const candidate = resolve(token);
+  if (!isAbsolute(token) && token !== basename(token)) return null;
+  const candidate = isAbsolute(token) ? resolve(token) : resolve(stateRoot, token);
   if (dirname(candidate) !== stateRoot) return null;
   const name = candidate.slice(stateRoot.length + 1);
   return BRANCH_STATUS_FILE_RE.test(name) ? candidate : null;

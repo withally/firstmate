@@ -232,6 +232,25 @@ test_an_inventory_mismatch_asks_the_mate_once_per_window() {
   pass "a home in mismatch is asked once, and later recaps stay silent"
 }
 
+test_notify_passes_its_resolved_home_to_fm_send() {
+  local home mate fakebin snap out
+  { read -r home; read -r mate; read -r fakebin; } < <(make_main_home resolved-home mate)
+  snap="$home/snapshot.json"
+  write_snapshot "$snap" mate '{"kind":"orphan_in_flight","ids":["ghost"]}'
+
+  out=$(env -u FM_HOME PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_FAKE_TMUX_WINDOW="firstmate:fm-mate" \
+    FM_FAKE_TMUX_LOG="$TMP_ROOT/resolved-home-tmux.log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/resolved-home-fake/pane.txt" \
+    "$RECONCILE" notify --snapshot - < "$snap") \
+    || fail "notify with FM_HOME unset failed: $out"
+  assert_contains "$out" "sent: mate orphan_in_flight" \
+    "notify with FM_HOME unset did not report a sent reconcile request: $out"
+  [ "$(inbox_records "$home/state" mate)" -eq 1 ] \
+    || fail "notify with FM_HOME unset did not record the reconcile request"
+  pass "notify gives fm-send its resolved home when FM_HOME was unset"
+}
+
 test_a_mismatch_still_there_after_the_window_earns_one_more_nudge() {
   local home mate fakebin snap out
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home window mate)
@@ -406,13 +425,17 @@ test_a_failed_send_is_retried_on_the_next_run() {
   local home mate fakebin snap out rc
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home retry mate)
   snap="$home/snapshot.json"
-  write_snapshot "$snap" absent-mate '{"kind":"orphan_in_flight","ids":["ghost"]}'
+  write_snapshot "$snap" mate '{"kind":"orphan_in_flight","ids":["ghost"]}'
+  sed 's/^backend=.*/backend=unsupported/' "$home/state/mate.meta" > "$home/state/mate.meta.tmp"
+  mv "$home/state/mate.meta.tmp" "$home/state/mate.meta"
   set +e
   out=$(run_notify "$home" "$fakebin" retry "$snap"); rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "an unroutable ask reported success: $out"
-  assert_contains "$out" "failed: absent-mate" "the failure was not reported: $out"
-  assert_absent "$home/state/absent-mate.reconcile-nudged" \
+  assert_contains "$out" "failed: mate" "the failure was not reported: $out"
+  assert_contains "$out" "unknown backend 'unsupported'" \
+    "the failure did not surface fm-send's cause: $out"
+  assert_absent "$home/state/mate.reconcile-nudged" \
     "a failed ask started a cooldown and would never be retried"
   pass "a failed ask starts no cooldown, so the next run retries it"
 }
@@ -984,6 +1007,7 @@ test_reconcile_request_requires_one_snapshot_document
 test_reconcile_requests_coalesce_per_target_until_delivery
 test_bearings_request_returns_before_remote_delivery_and_supervision_sends_later
 test_an_inventory_mismatch_asks_the_mate_once_per_window
+test_notify_passes_its_resolved_home_to_fm_send
 test_a_mismatch_still_there_after_the_window_earns_one_more_nudge
 test_the_cooldown_starts_when_delivery_finishes
 test_the_window_is_four_hours

@@ -3674,6 +3674,14 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
 # typed steer reported delivery unconfirmed on a message that had actually landed.
 # The bytes below are the real captures from that pane.
 
+herdr_claude_idle_plain() {
+  printf '%b' '────────────────────────\n❯\n────────────────────────\nClaude 4.1\n'
+}
+
+herdr_claude_busy_plain() {
+  printf '%b' '────────────────────────\n❯\n────────────────────────\n✢ Pollinating… (16s · ↓ 1.1k tokens)\n'
+}
+
 # The idle capture: no busy token anywhere, which is the pre-Enter baseline.
 herdr_cursor_idle_plain() {
   printf '%b' ' ▄▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 7%%           Run Everything\n  ~/.treehouse/curhd-ae68cd/1/curhd · 39418af\n'
@@ -3726,6 +3734,93 @@ test_rendered_busy_state_reads_the_cursor_busy_token() {
   [ "$busy_out" = busy ] || fail "a mid-turn cursor pane renders 'ctrl+c to stop' and must read busy, got '$busy_out'"
   [ "$fail_out" = unknown ] || fail "an unreadable pane must read unknown, never idle, got '$fail_out'"
   pass "fm_backend_herdr_rendered_busy_state: busy/idle/unknown from the rendered footer, with an unreadable pane never reading idle"
+}
+
+test_rendered_busy_state_scopes_claude_to_the_current_footer() {
+  local dir log resp fb ambiguous_out bare_legacy_out current_legacy_out nested_out active_out fail_out
+  dir="$TMP_ROOT/rendered-busy-claude-current-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' \
+    'foo bar… (4s)' > "$resp/1.out"
+  printf '%s\n' \
+    'esc to interrupt' > "$resp/2.out"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    'esc to interrupt' > "$resp/3.out"
+  printf '%s\n' \
+    'tool output:' \
+    '• Working (4s • esc to interrupt)' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    'Claude 4.1' > "$resp/4.out"
+  herdr_claude_busy_plain > "$resp/5.out"
+  printf '1\n' > "$resp/6.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  ambiguous_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  bare_legacy_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  current_legacy_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  nested_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  active_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  fail_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  [ "$ambiguous_out" = unknown ] \
+    || fail "a Claude-looking busy token without a footer or composer must be unknown, got '$ambiguous_out'"
+  [ "$bare_legacy_out" = unknown ] \
+    || fail "a bare Claude legacy footer without a composer must be unknown, got '$bare_legacy_out'"
+  [ "$current_legacy_out" = busy ] \
+    || fail "a current Claude legacy footer in a proven composer must be busy, got '$current_legacy_out'"
+  [ "$nested_out" = idle ] \
+    || fail "nested Claude worker output must not classify the current idle footer busy, got '$nested_out'"
+  [ "$active_out" = busy ] \
+    || fail "a genuine current Claude spinner footer must remain busy, got '$active_out'"
+  [ "$fail_out" = unknown ] \
+    || fail "an unreadable Claude footer must remain unknown, got '$fail_out'"
+  pass "fm_backend_herdr_rendered_busy_state: Claude busy proof is scoped to the current footer"
+}
+
+test_rendered_busy_state_honors_claude_busy_override_inside_current_composer() {
+  local dir log resp fb bare_out structured_out
+  dir="$TMP_ROOT/rendered-busy-claude-override"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf 'MY_CUSTOM_CLAUDE_BUSY\n' > "$resp/1.out"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    'MY_CUSTOM_CLAUDE_BUSY' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  bare_out=$( PATH="$fb:$PATH" FM_BUSY_REGEX=MY_CUSTOM_CLAUDE_BUSY FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  structured_out=$( PATH="$fb:$PATH" FM_BUSY_REGEX=MY_CUSTOM_CLAUDE_BUSY FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  [ "$bare_out" = unknown ] \
+    || fail "FM_BUSY_REGEX must not bypass the Claude composer proof, got '$bare_out'"
+  [ "$structured_out" = busy ] \
+    || fail "FM_BUSY_REGEX must match inside a proven Claude composer, got '$structured_out'"
+  pass "fm_backend_herdr_rendered_busy_state: FM_BUSY_REGEX remains honored inside Claude's proven footer boundary"
+}
+
+test_send_text_submit_claude_ambiguous_footer_never_confirms() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-ambiguous-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  herdr_claude_idle_plain > "$resp/3.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '• Working (4s • esc to interrupt)\n' > "$resp/5.out"
+  printf '  ❯ hello captain\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" != empty ] || fail "a structurally ambiguous post-Enter capture falsely confirmed Claude delivery"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "an ambiguous post-Enter footer changed the configured Enter count: $enter_count"
+  pass "fm_backend_herdr_send_text_submit: an ambiguous Claude footer never confirms delivery"
 }
 
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
@@ -4637,6 +4732,9 @@ test_send_text_submit_idle_native_empty_composer_confirms_delivery
 test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
+test_rendered_busy_state_scopes_claude_to_the_current_footer
+test_rendered_busy_state_honors_claude_busy_override_inside_current_composer
+test_send_text_submit_claude_ambiguous_footer_never_confirms
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition
 test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
 test_send_text_submit_confirms_despite_codex_idle_tip_composer

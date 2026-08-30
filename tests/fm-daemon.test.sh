@@ -40,6 +40,39 @@ test_afk_start_refuses_when_flag_cannot_be_written() {
   pass "fm-afk-start.sh fails before daemon startup when the afk flag cannot be written"
 }
 
+test_afk_start_fails_when_fresh_cleanup_fails() {
+  local dir state out rc
+  dir=$(make_supercase afk-start-cleanup-failure)
+  state="$dir/state"
+  : > "$state/.subsuper-check-ledger"
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    fm_afk_clear_stale_artifacts() { return 1; }
+    set +e
+    fm_afk_start_main
+  ' _ "$AFK_START" 2>&1)
+  rc=$?
+
+  [ "$rc" -ne 0 ] || fail "fm-afk-start.sh continued after fresh artifact cleanup failed"
+  assert_not_contains "$out" "starting supervise daemon" "fm-afk-start.sh started the daemon after cleanup failed"
+  [ ! -e "$state/.afk" ] || fail "fm-afk-start.sh left a fresh away flag after cleanup failed"
+
+  if FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    set +e
+    fm_afk_start_main
+  ' _ "$AFK_START" >/dev/null 2>&1; then
+    :
+  else
+    fail "fm-afk-start.sh could not recover after a failed fresh cleanup"
+  fi
+  [ ! -e "$state/.subsuper-check-ledger" ] \
+    || fail "fm-afk-start.sh resumed with the stale ledger after a failed fresh cleanup"
+  pass "fm-afk-start.sh fails closed when fresh artifact cleanup fails"
+}
+
 test_afk_start_ignores_stale_pidfile_without_lock() {
   local dir state out status
   dir=$(make_supercase afk-start-stale-pidfile)
@@ -1431,6 +1464,204 @@ test_handle_wake_routes_self_and_escalate() {
   pass "handle_wake routes routine->self and captain->escalate"
 }
 
+test_check_wakes_dedupe_by_source_and_payload_within_one_session() {
+  local dir state reason
+  dir=$(make_supercase check-session-dedup)
+  state="$dir/state"
+  reason='check: /state/weekly.check.sh: weekly maintenance due'
+
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/weekly.check.sh 41
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/weekly.check.sh 41
+  FM_STATE_OVERRIDE="$state" handle_wake \
+    'check: mutated replay bytes for the same durable identity' \
+    "$state" /state/weekly.check.sh 41
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/weekly.check.sh 42
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 2 ] \
+    || fail "an exact identity replay or changed payload was not distinguished in the buffer"
+
+  FM_STATE_OVERRIDE="$state" handle_wake \
+    'check: /state/weekly.check.sh: weekly maintenance due with changed detail' \
+    "$state" /state/weekly.check.sh 43
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/other.check.sh 44
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 4 ] \
+    || fail "a changed payload or changed source was incorrectly deduplicated"
+  pass "check wakes dedupe exact source-sequence-payload repeats while preserving changed observations"
+}
+
+test_check_wake_replay_recovers_after_buffer_append_before_seen_record() {
+  local dir state reason
+  dir=$(make_supercase check-crash-after-buffer)
+  state="$dir/state"
+  reason='check: /state/due.check.sh: still due'
+
+  check_ledger_reserve "$state" 51 /state/due.check.sh "$reason" \
+    || fail "could not stage the pre-crash check reservation"
+  escalate_add "$state" "$reason"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/due.check.sh 51
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+    || fail "replay after buffer append but before seen recording appended a duplicate"
+  pass "check replay recovers the buffered original after an interrupted routing transaction"
+}
+
+test_check_wake_flush_reconciles_reserved_append_before_clearing() {
+  local dir state reason
+  dir=$(make_supercase check-crash-before-ack-flush)
+  state="$dir/state"
+  reason='check: /state/flush.check.sh: still due'
+  afk_enter "$state"
+
+  check_ledger_reserve "$state" 52 /state/flush.check.sh "$reason" \
+    || fail "could not stage the reserved check transaction"
+  escalate_add "$state" "$reason"
+  escalate_add "$state" "an unrelated buffered event"
+  (
+    inject_msg() { return 0; }
+    escalate_flush "$state" || fail "flush could not reconcile the reserved appended check"
+  ) || fail "reserved-append flush reconciliation subshell failed"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "flush retained the original buffer after reconciling its reservation"
+  [ "$(check_ledger_state "$state" 52 /state/flush.check.sh "$reason")" = delivered ] \
+    || fail "flush did not mark the reconciled check delivered"
+
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/flush.check.sh 52
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "replay appended a duplicate after the crash-before-ack window"
+  pass "check flush reconciles an appended reservation before clearing and replaying"
+}
+
+test_check_wake_reservation_does_not_borrow_another_sources_buffer_line() {
+  local dir state reason
+  dir=$(make_supercase check-reservation-source-isolation)
+  state="$dir/state"
+  reason='check: identical rendered output'
+
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/first.check.sh 55
+  check_ledger_reserve "$state" 56 /state/second.check.sh "$reason" \
+    || fail "could not stage the second source's pre-crash reservation"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/second.check.sh 56
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 2 ] \
+    || fail "a changed source borrowed another check's identical buffered line"
+  pass "check reservation recovery keeps identical output from distinct sources separate"
+}
+
+test_check_wake_failed_and_successful_flush_preserve_session_dedup() {
+  local dir state reason
+  dir=$(make_supercase check-flush-dedup)
+  state="$dir/state"
+  reason='check: procevent when entitlement-reminder 1'
+  afk_enter "$state"
+
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" procevent:entitlement-reminder:1 61
+  (
+    inject_msg() { return 1; }
+    if escalate_flush "$state"; then
+      fail "synthetic failed flush unexpectedly succeeded"
+    fi
+  ) || fail "failed-flush check subshell failed"
+  [ "$(check_ledger_state "$state" 61 procevent:entitlement-reminder:1 "$reason")" = buffered ] \
+    || fail "a failed flush marked the check delivered"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" procevent:entitlement-reminder:1 62
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+    || fail "a failed flush lost pending dedup and appended a second check"
+
+  (
+    inject_msg() { return 0; }
+    escalate_flush "$state" || fail "synthetic successful flush failed"
+  ) || fail "successful-flush check subshell failed"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "successful flush did not clear the buffer"
+  [ "$(check_ledger_state "$state" 61 procevent:entitlement-reminder:1 "$reason")" = delivered ] \
+    || fail "a verified successful flush did not mark the check delivered"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" procevent:entitlement-reminder:1 63
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a verified-delivered check re-escalated during the same away session"
+  pass "check dedup survives failed flushes and marks only verified successful delivery"
+}
+
+test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk() {
+  local dir state reason
+  dir=$(make_supercase check-daemon-restart)
+  state="$dir/state"
+  reason='check: /state/restart.check.sh: one logical event'
+
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; handle_wake "$2" "$3" /state/restart.check.sh 71' \
+    _ "$DAEMON" "$reason" "$state"
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; handle_wake "$2" "$3" /state/restart.check.sh 72' \
+    _ "$DAEMON" "$reason" "$state"
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+    || fail "a daemon restart inside one away session lost check dedup state"
+
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_afk_clear_stale_artifacts "$2"' \
+    _ "$AFK_START" "$state"
+  FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; handle_wake "$2" "$3" /state/restart.check.sh 73' \
+    _ "$DAEMON" "$reason" "$state"
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+    || fail "a fresh away session did not clear the prior session's check ledger"
+  pass "check ledger survives daemon restart and resets only on fresh away entry"
+}
+
+test_afk_start_recovery_preserves_session_ledger() {
+  local dir state
+  dir=$(make_supercase afk-start-recovery-ledger)
+  state="$dir/state"
+  : > "$state/.afk"
+  printf 'buffered\t73\t/state/restart.check.sh\tcheck: restart\t\n' \
+    > "$state/.subsuper-check-ledger"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_AFK_STATE_PREPARED=0 bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    fm_afk_start_main
+  ' _ "$AFK_START" >/dev/null 2>&1 \
+    || fail "direct away restart path failed"
+  [ -s "$state/.subsuper-check-ledger" ] \
+    || fail "direct away restart path cleared the active session ledger"
+  pass "direct away restart preserves the session check ledger"
+}
+
+test_check_wake_routing_failure_retains_the_durable_wake() {
+  local dir state reason
+  dir=$(make_supercase check-routing-failure-retains-wake)
+  state="$dir/state"
+  reason='check: /state/failing.check.sh: still due'
+  append_wake "$state" check /state/failing.check.sh "$reason"
+  mkdir "$state/.subsuper-check-ledger"
+
+  if FM_STATE_OVERRIDE="$state" handle_durable_wakes "$reason" "$state" 2> "$dir/routing.err"; then
+    fail "durable check routing succeeded despite an unwritable ledger"
+  fi
+  grep -F "$reason" "$state/.wake-queue" >/dev/null 2>&1 \
+    || fail "ledger failure acknowledged and removed the durable check wake"
+  pass "check routing failure retains the durable wake until ledger publication can succeed"
+}
+
+test_check_wake_flush_failure_retains_the_durable_wake() {
+  local dir state reason
+  dir=$(make_supercase check-flush-failure-retains-wake)
+  state="$dir/state"
+  reason='check: /state/flush-failure.check.sh: still due'
+  : > "$state/.afk"
+  append_wake "$state" check /state/flush-failure.check.sh "$reason" \
+    || fail "could not append the durable check wake"
+
+  if (
+    # shellcheck disable=SC2329 # Invoked indirectly by escalate_flush.
+    inject_msg() { return 0; }
+    # shellcheck disable=SC2329 # Invoked indirectly by escalate_flush.
+    check_ledger_mark_delivered() { return 1; }
+    FM_ESCALATE_BATCH_SECS=0 handle_durable_wakes "$reason" "$state"
+  ); then
+    fail "durable check routing acknowledged a wake after delivery-state persistence failed"
+  fi
+  grep -Fq "$reason" "$state/.wake-queue" \
+    || fail "delivery-state persistence failure acknowledged the durable check wake"
+  [ -s "$state/.subsuper-escalations" ] \
+    || fail "delivery-state persistence failure discarded the escalation buffer"
+  pass "delivery-state persistence failure retains both the durable wake and buffer"
+}
+
 test_inject_skip_forces_self() {
   local dir state
   dir=$(make_supercase skip)
@@ -2452,16 +2683,86 @@ test_discover_supervisor_target_herdr() {
   pass "discover_supervisor_target: override > TMUX_PANE > herdr '<session>:<pane-id>' composition > firstmate:0 fallback"
 }
 
-test_pane_is_busy_herdr_native_busy_state() {
+test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   local dir
-  dir=$(make_supercase primary-herdr-busy)
+  dir=$(make_supercase inject-herdr-claude-native-busy-idle)
+  afk_enter "$dir/state"
   (
+    fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected busy_state args: $1 $2"; printf 'busy'; }
-    fm_backend_capture() { fail "capture should not be consulted when busy_state is conclusive"; }
-    FM_STATE_OVERRIDE="$dir/state" FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr \
-      || fail "pane_is_busy should report busy from herdr's native busy_state"
-  ) || fail "herdr native-busy pane_is_busy subshell failed"
-  pass "pane_is_busy: herdr native busy_state='busy' short-circuits without a capture fallback"
+    fm_backend_capture() { printf '%b' '────────────────────────\n❯\n────────────────────────\nClaude 4.1\n'; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_send_text_submit() { printf 'empty'; }
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    LOG="$dir/daemon.log"
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    inject_msg "hello" "$dir/state" \
+      || fail "Herdr+Claude native busy with rendered idle should permit injection"
+  ) || fail "Herdr+Claude native-busy rendered-idle injection subshell failed"
+  pass "inject_msg: Herdr+Claude native busy does not block a rendered-idle empty composer"
+}
+
+test_pane_is_busy_herdr_claude_rendered_busy_state() {
+  (
+    fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_capture() { printf '%b' '────────────────────────\n❯\n────────────────────────\n✢ Pollinating… (16s · ↓ 1.1k tokens)\n'; }
+    FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr \
+      || fail "rendered Claude active turn was not busy"
+    [ "$FM_PANE_BUSY_REASON" = rendered-busy ] \
+      || fail "rendered active turn did not record rendered-busy"
+  ) || fail "Herdr+Claude rendered-busy pane_is_busy subshell failed"
+  pass "pane_is_busy: Herdr+Claude uses the current rendered footer"
+}
+
+test_inject_msg_ignores_nested_claude_busy_text_above_idle_composer() {
+  local dir state composer_seen
+  dir=$(make_supercase inject-herdr-claude-nested-busy-text)
+  state="$dir/state"
+  composer_seen="$dir/composer-seen"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_capture() {
+      printf '%s\n' 'tool output:' '• Working (4s • esc to interrupt)' \
+        '────────────────────────' '❯' '────────────────────────' 'Claude 4.1'
+    }
+    fm_backend_composer_state() { : > "$composer_seen"; printf 'empty'; }
+    fm_backend_send_text_submit() { printf 'empty'; }
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    LOG="$dir/daemon.log"
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    inject_msg "hello" "$state" \
+      || fail "nested busy text above an idle Claude composer blocked injection"
+  ) || fail "nested Claude busy-text injection subshell failed"
+  [ -e "$composer_seen" ] || fail "nested busy text prevented the composer check"
+  pass "inject_msg: nested busy text cannot impersonate Claude's current footer"
+}
+
+test_inject_msg_herdr_claude_unreadable_capture_defers() {
+  local dir state
+  dir=$(make_supercase inject-herdr-claude-unreadable)
+  state="$dir/state"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_capture() { return 1; }
+    fm_backend_composer_state() { fail "composer_state ran after unreadable capture"; }
+    fm_backend_send_text_submit() { fail "submit ran after unreadable capture"; }
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    LOG="$dir/daemon.log"
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    if inject_msg "hello" "$state"; then
+      fail "unreadable Herdr+Claude capture allowed injection"
+    fi
+    grep -F 'supervisor pane unreadable (subcause=unreadable; native-state=working)' "$dir/daemon.log" >/dev/null \
+      || fail "unreadable deferral did not retain its native-state diagnostic"
+  ) || fail "unreadable Herdr+Claude capture subshell failed"
+  pass "inject_msg: unreadable Herdr+Claude state fails closed"
 }
 
 test_primary_busy_guard_is_harness_scoped() {
@@ -2616,6 +2917,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 }
 
 test_afk_start_refuses_when_flag_cannot_be_written
+test_afk_start_fails_when_fresh_cleanup_fails
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_daemon_state_root_uses_fm_home
@@ -2654,6 +2956,15 @@ test_escalate_batches_into_one_digest
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate
+test_check_wakes_dedupe_by_source_and_payload_within_one_session
+test_check_wake_replay_recovers_after_buffer_append_before_seen_record
+test_check_wake_flush_reconciles_reserved_append_before_clearing
+test_check_wake_reservation_does_not_borrow_another_sources_buffer_line
+test_check_wake_failed_and_successful_flush_preserve_session_dedup
+test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk
+test_afk_start_recovery_preserves_session_ledger
+test_check_wake_routing_failure_retains_the_durable_wake
+test_check_wake_flush_failure_retains_the_durable_wake
 test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout
 test_terminal_stale_escalate_leaves_no_marker
@@ -2728,7 +3039,10 @@ test_fm_send_exits_nonzero_on_initial_send_failure
 test_fm_send_exits_nonzero_on_unproven_submit
 test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
-test_pane_is_busy_herdr_native_busy_state
+test_inject_msg_herdr_claude_native_busy_rendered_idle_submits
+test_pane_is_busy_herdr_claude_rendered_busy_state
+test_inject_msg_ignores_nested_claude_busy_text_above_idle_composer
+test_inject_msg_herdr_claude_unreadable_capture_defers
 test_primary_busy_guard_is_harness_scoped
 test_pane_is_busy_defaults_to_tmux_when_backend_omitted
 test_pane_input_pending_herdr_dispatch

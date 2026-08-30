@@ -1,0 +1,109 @@
+ivan@Ivans-MacBook-Pro 01M18AK9DDDS4PG8SKTMXY66T8 % pi --model openai-codex/gpt-5.6-sol --thin
+king low --approve --no-context-files --no-skills --no-prompt-templates --no-extensions --no-s
+ession --tools bash
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.84.4 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+──────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+ Package Updates Available
+ Package updates are available. Run pi update --extensions
+ Packages:
+ - pi-mcp-adapter
+──────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Reply with exactly FM_PI_SHORT_IDLE_65205_25306.
+
+
+ FM_PI_SHORT_IDLE_65205_25306
+
+
+ Use the bash tool to run sleep 8, then reply exactly FM_PI_BUSY_TRIGGER_1_65205_30489.
+
+
+
+ $ sleep 8 (timeout 15s)
+
+ (no output)
+
+ Took 8.1s
+
+
+
+ Reply with exactly FM_PI_SHORT_BUSY_65205_1907.
+
+
+ FM_PI_SHORT_BUSY_65205_1907
+
+
+ FM_PI_LONG_IDLE_HEAD_65205_22330
+ LONG_IDLE_LINE_01 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_02 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_03 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_04 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_05 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_06 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_07 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_08 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_09 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_10 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_11 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_12 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_13 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_14 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_15 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_16 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_17 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_18 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_19 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_20 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_21 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_22 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_23 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_24 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_25 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_26 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_27 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_28 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_29 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_30 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_31 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_32 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_33 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_34 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_35 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_36 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_37 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_38 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_39 abcdefghijklmnopqrstuvwxyz 0123456789
+ LONG_IDLE_LINE_40 abcdefghijklmnopqrstuvwxyz 0123456789
+ FM_PI_LONG_IDLE_TAIL_65205_3586
+ Reply with exactly LONG_IDLE_ACK.
+
+
+ LONG_IDLE_ACK
+
+
+ Use the bash tool to run sleep 8, then reply exactly FM_PI_BUSY_TRIGGER_2_65205_19202.
+
+
+
+ $ sleep 8 (timeout 15s)
+
+ Elapsed 4.0s
+
+
+ Steering: FM_PI_LONG_BUSY_HEAD_65205_29656
+ ↳ Option+Up to edit all queued messages
+
+ ⠦ Working...
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+~/.no-mistakes/worktrees/37852af5566c/01M18AK9DDDS4PG8SKTMXY66T8 (detached)
+↑4.6k ↓83 $0.025 (sub) 0.5%/272k (auto)                       (openai-codex) gpt-5.6-sol • low

@@ -1,0 +1,56 @@
+ivan@Ivans-MacBook-Pro 01M18AK9DDDS4PG8SKTMXY66T8 % pi --model openai-codex/gpt-5.6-sol --thin
+king low --approve --no-context-files --no-skills --no-prompt-templates --no-extensions --no-s
+ession --tools bash
+
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;2;255;255;0mUpdate Available[0m                                                                             
+ [0m[38;2;128;128;128mNew version 0.84.4 is available. Run [0m[38;2;138;190;183mpi update[0m                                               
+ [0m[38;2;128;128;128mChangelog: [0m[38;2;138;190;183mhttps://pi.dev/changelog[0m                                                          
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;2;255;255;0mPackage Updates Available[0m                                                                    
+ [0m[38;2;128;128;128mPackage updates are available. Run [0m[38;2;138;190;183mpi update --extensions[0m                                    
+ [0m[38;2;128;128;128mPackages:[0m                                                                                    
+ - pi-mcp-adapter                                                                             
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mReply with exactly FM_PI_SHORT_IDLE_65205_25306.[0m[48;2;52;53;65m                                             [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+ FM_PI_SHORT_IDLE_65205_25306                                                                 
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mUse the bash tool to run sleep 8, then reply exactly FM_PI_BUSY_TRIGGER_1_65205_30489.[0m[48;2;52;53;65m       [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+[0m[48;2;40;50;40m                                                                                              [0m
+[0m[48;2;40;50;40m [0m[1m[38;2;212;212;212m[48;2;40;50;40m$ sleep 8[0m[38;2;128;128;128m[48;2;40;50;40m (timeout 15s)[0m[48;2;40;50;40m                                                                      [0m
+[0m[48;2;40;50;40m                                                                                              [0m
+[0m[48;2;40;50;40m [0m[38;2;128;128;128m[48;2;40;50;40m(no output)[0m[48;2;40;50;40m                                                                                  [0m
+[0m[48;2;40;50;40m                                                                                              [0m
+[0m[48;2;40;50;40m [0m[38;2;128;128;128m[48;2;40;50;40mTook 8.1s[0m[48;2;40;50;40m                                                                                    [0m
+[0m[48;2;40;50;40m                                                                                              [0m
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mReply with exactly FM_PI_SHORT_BUSY_65205_1907.[0m[48;2;52;53;65m                                              [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+ FM_PI_SHORT_BUSY_65205_1907                                                                  
+
+[0m[38;2;95;135;175m─── ↑ 32 more ────────────────────────────────────────────────────────────────────────────────[0m
+LONG_IDLE_LINE_32 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_33 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_34 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_35 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_36 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_37 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_38 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_39 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_IDLE_LINE_40 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+FM_PI_LONG_IDLE_TAIL_65205_3586                                                               
+Reply with exactly LONG_IDLE_ACK.[0m[7m [0m                                                            
+[0m[38;2;95;135;175m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;102;102;102m~/.no-mistakes/worktrees/37852af5566c/01M18AK9DDDS4PG8SKTMXY66T8 (detached)[0m
+[0m[38;2;102;102;102m↑1.8k ↓52 $0.011 (sub) 0.2%/272k (auto)                       (openai-codex) gpt-5.6-sol • low[0m

@@ -50,7 +50,7 @@ setup_world() {
   fm_git_add_origin "$HOME_DIR/projects/gamma" "$TMP_ROOT/remotes/gamma.git"
   cat > "$HOME_DIR/data/projects.md" <<EOF
 - alpha [direct-PR +yolo] - alpha project (added 2026-06-22)
-- beta [direct-PR] - beta project (added 2026-06-22)
+- beta [direct-PR merge-authority=firstmate] - beta project (added 2026-06-22)
 - gamma - gamma project (added 2026-06-22)
 EOF
   ALPHA_ORIGIN=$(git -C "$HOME_DIR/projects/alpha" remote get-url origin)
@@ -105,6 +105,10 @@ phase_seed() {
     || fail "alpha delivery mode not preserved in the subhome"
   [ "$(FM_HOME="$SUB" "$ROOT/bin/fm-project-mode.sh" beta)" = "direct-PR off" ] \
     || fail "beta delivery mode not preserved in the subhome"
+  [ "$(FM_HOME="$SUB" "$ROOT/bin/fm-project-mode.sh" --authority beta)" = firstmate ] \
+    || fail "beta firstmate merge authority not inherited into the subhome"
+  assert_grep 'beta: merge-authority=firstmate' "$SUB/data/charter.md" \
+    "persistent charter did not retain beta's firstmate authority"
   FM_HOME="$HOME_DIR" "$ROOT/bin/fm-home-seed.sh" validate >/dev/null || fail "registry validation failed after seed"
 
   pass "seed: registry scope+projects, charter copied, clones+origins, no-mistakes init in subhome only"
@@ -215,6 +219,8 @@ phase_recovery() {
   assert_grep "home=$SUB_ABS" "$meta" "respawn did not preserve the persistent home from the registry"
   assert_grep 'projects=alpha, beta, gamma' "$meta" "respawn did not preserve the project list from the registry"
   assert_grep 'window=firstmate:fm-design' "$meta" "respawn did not reconstruct the direct-report window"
+  [ "$(FM_HOME="$SUB" "$ROOT/bin/fm-project-mode.sh" --authority beta)" = firstmate ] \
+    || fail "recovery respawn lost beta's inherited firstmate authority"
   pass "recovery: respawns from the durable registry and persistent home"
 }
 

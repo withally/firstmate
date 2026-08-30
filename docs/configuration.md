@@ -25,6 +25,36 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Project registry (`data/projects.md`)
+
+`data/projects.md` is the private per-home registry of standing project delivery and merge-authority posture.
+`bin/fm-project-mode.sh` owns parsing and mechanical resolution.
+Each project occupies one Markdown list line in this form:
+
+```text
+- <name> [<mode> merge-authority=<captain|firstmate|self>] - <description> (added YYYY-MM-DD)
+```
+
+The bracketed annotation is optional, and `<mode>` is `no-mistakes`, `direct-PR`, `local-only`, or the intake-only conditional policy `no-mistakes-prod-only`.
+The legacy `+yolo` token remains accepted.
+When `merge-authority=` is absent, `+yolo` maps to `self` and its absence maps to `captain`, preserving existing registry semantics and the default two-field `<mode> <yolo>` output.
+An explicit `merge-authority=self` pairs with yolo on, while `captain` and `firstmate` pair with yolo off; conflicting or unknown annotations fail safe to captain authority with a warning.
+Use `bin/fm-project-mode.sh --authority <project>` to print the resolved tier without changing the compatibility output used by existing mechanical callers.
+
+The tiers mean:
+
+- `captain`: the captain approves the concrete PR merge or local-only landing.
+- `firstmate`: a secondmate checks in with its registered main firstmate, which may approve green, in-scope work and routes product, destructive, device, irreversible, and security-sensitive calls to the captain.
+- `self`: the delivering home may land green, in-scope work under standing authority.
+
+For `firstmate`, the secondmate opens four exact keyed parent decisions for each task: `before-dispatch-<task-id>`, `before-landing-<task-id>`, `twice-failed-blocker-<task-id>`, and `worker-finish-<task-id>`.
+The main firstmate answers each through `bin/fm-send.sh <secondmate-id> --resolve-key <key> ...`.
+The landing guards accept `before-landing-<task-id>` only when the latest event for that key is `resolved` in the locally registered parent channel, and the GitHub guard additionally requires every reported check to be green before it invokes the forge merge.
+No tier authorizes a red merge.
+
+Ship briefs record `Merge authority: <tier>` beside their delivery contract, and `state/<id>.meta` records the same tier as `merge_authority=<tier>` beside `mode=` and `yolo=`.
+Secondmate charters resolve every listed project's tier from the primary registry, and `bin/fm-home-seed.sh` copies those exact registry lines into the secondmate home, so the tier survives normal relaunch and convergence.
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.

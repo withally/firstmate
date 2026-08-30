@@ -96,7 +96,7 @@ make_case() {
   local name=$1 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/home" "$fakebin"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -125,6 +125,13 @@ add_gh_mocks() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr checks")
+    if [ -f "$FM_TEST_CASE_DIR/github-checks" ]; then
+      cat "$FM_TEST_CASE_DIR/github-checks"
+    else
+      printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n'
+    fi
+    ;;
   "pr view")
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
@@ -354,12 +361,13 @@ glab_merge_line() {
 run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
-  FM_HOME="${FM_TEST_HOME:-$ROOT}" \
+  FM_HOME="${FM_TEST_HOME:-$case_dir/home}" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GH_OUTCOME="$case_dir/github-outcome" \
   FM_TEST_GH_RULES="$case_dir/github-rules" \
+  FM_TEST_CASE_DIR="$case_dir" \
   FM_TEST_META_AT_MERGE="$case_dir/meta-at-merge" \
   FM_TEST_REAL_MV="$REAL_MV" \
   FM_TEST_GLAB_LOG="$case_dir/glab.log" \
@@ -1803,6 +1811,11 @@ make_home_case() {
       printf 'route=%s\n' "$route"
       [ "$route" != local ] || printf 'parent_home=%s\n' "$parent"
     } >"$home/.fm-secondmate-parent"
+    if [ "$route" = local ]; then
+      mkdir -p "$parent/data" "$parent/state"
+      printf -- '- mate-x - test route (home: %s; scope: test; projects: test; added 2026-08-30)\n' \
+        "$home" > "$parent/data/secondmates.md"
+    fi
   fi
   printf '%s\n' "$case_dir"
 }
@@ -1871,6 +1884,59 @@ test_failed_merge_reports_nothing() {
   assert_absent "$case_dir/state/parent-replies.status" \
     "failed-merge-silent: a merge that never landed was reported as landed"
   pass "a refused or failed merge reports no outcome"
+}
+
+test_firstmate_authority_requires_parent_resolution_and_green_checks() {
+  local case_dir parent status url rc
+  url=https://github.com/example/repo/pull/81
+  parent="$TMP_ROOT/firstmate-authority/parent"
+  case_dir=$(make_home_case firstmate-authority local "$parent")
+  mkdir -p "$parent/state"
+  status="$parent/state/mate-x.status"
+  printf 'merge_authority=firstmate\n' >> "$case_dir/state/task-x1.meta"
+  add_gh_mocks "$case_dir" 8181818181818181818181818181818181818181
+  : > "$case_dir/gh-axi.log"
+
+  printf 'needs-decision [key=before-landing-task-x1]: approve landing\n' > "$status"
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "firstmate authority without a resolved parent record must refuse"
+  assert_grep 'parent-firstmate approval is not resolved' "$case_dir/stderr" \
+    "missing parent approval did not explain the keyed record"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "missing parent approval still reached the forge merge"
+
+  printf 'resolved [key=before-landing-task-x1]: approved by parent firstmate\n' >> "$status"
+  printf '%s\n' \
+    'summary: "1 passed, 1 failed, 2 total"' \
+    'checks[2]{name,conclusion}:' \
+    '  lint,pass' \
+    '  tests,fail' > "$case_dir/github-checks"
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout-red" 2> "$case_dir/stderr-red"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "firstmate authority must refuse a red PR after approval"
+  assert_grep 'checks are not green' "$case_dir/stderr-red" \
+    "red PR refusal did not name the failed green gate"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "red PR still reached the forge merge"
+
+  printf '%s\n' \
+    'summary: "2 passed, 0 failed, 2 total"' \
+    'checks[2]{name,conclusion}:' \
+    '  lint,pass' \
+    '  tests,pass' > "$case_dir/github-checks"
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout-green" 2> "$case_dir/stderr-green" \
+    || fail "resolved parent approval with green checks did not merge"
+  assert_grep 'pr merge 81 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    "green parent-approved PR did not reach the forge merge"
+  pass "firstmate authority accepts the parent resolution only for a green PR"
 }
 
 test_gitlab_refusal_reports_nothing() {
@@ -2072,6 +2138,31 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
+test_unregistered_local_parent_binding_cannot_escape_case_home() {
+  local case_dir outside rc url
+  url=https://github.com/example/repo/pull/82
+  outside="$TMP_ROOT/unregistered-parent-outside"
+  case_dir=$(make_home_case unregistered-parent-escape)
+  mkdir -p "$outside/state"
+  printf '%s\n' mate-x > "$case_dir/home/.fm-secondmate-home"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$outside" \
+    > "$case_dir/home/.fm-secondmate-parent"
+  add_gh_mocks "$case_dir" 8282828282828282828282828282828282828282
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "the confirmed forge merge must not be misreported as failed when upward publication refuses"
+  assert_absent "$outside/state/mate-x.status" \
+    "an unregistered parent binding escaped the case home and wrote outside it"
+  assert_grep 'could not report it upward' "$case_dir/stderr" \
+    "unregistered parent refusal was silent after the merge landed"
+  pass "an unregistered local parent binding cannot redirect merge outcomes outside the case home"
+}
+
 test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_agreeing_queue_rules_keep_retry_guidance
@@ -2127,9 +2218,11 @@ test_secondmate_merge_reports_on_the_local_route
 test_gitlab_merge_reports_upward
 test_queued_gitlab_merge_leaves_the_poll_armed
 test_failed_merge_reports_nothing
+test_firstmate_authority_requires_parent_resolution_and_green_checks
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake
 test_queued_github_merge_leaves_the_poll_armed
 test_distinct_merged_prs_keep_distinct_wakes
 test_uncommitted_marker_retry_is_never_silent
 test_secondmate_without_parent_binding_is_loud
+test_unregistered_local_parent_binding_cannot_escape_case_home

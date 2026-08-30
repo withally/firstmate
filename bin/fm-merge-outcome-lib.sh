@@ -31,6 +31,8 @@ _FM_MERGE_OUTCOME_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$_FM_MERGE_OUTCOME_LIB_DIR/fm-secondmate-registry-lib.sh"
 
 # The secondmate identity of the home reporting, or non-zero when this home is
 # a main home (1) or carries an unusable identity marker (2). Mirrors
@@ -98,6 +100,10 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
     case "$FM_SECONDMATE_PARENT_ROUTE" in
       local)
         [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 3
+        secondmate_registry_validate_bindings \
+          "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
+          secondmate_registry_path_key "$self" "$home" || return 3
+        [ "$SECONDMATE_REGISTRY_MATCH_REMOTE" -eq 0 ] || return 3
         destination="$FM_SECONDMATE_PARENT_HOME/state/$self.status"
         ;;
       remote) destination="$state/parent-replies.status" ;;

@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--merge-authority <captain|firstmate|self>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -45,6 +45,9 @@
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
+# Ship callers may pass the resolved --merge-authority tier; a missing value
+# retains the legacy captain default, while secondmate charters resolve each
+# listed project directly from their inherited registry.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
@@ -109,6 +112,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+MERGE_AUTHORITY=
+MERGE_AUTHORITY_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -118,6 +123,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      merge-authority) MERGE_AUTHORITY=$a; MERGE_AUTHORITY_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -130,6 +136,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --merge-authority) want_value=merge-authority ;;
+    --merge-authority=*) MERGE_AUTHORITY=${a#--merge-authority=}; MERGE_AUTHORITY_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -153,8 +161,18 @@ if [ "$KIND" = ship ]; then
       exit 1 ;;
     *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
   esac
+  if [ "$MERGE_AUTHORITY_SET" -eq 0 ]; then
+    MERGE_AUTHORITY=captain
+  fi
+  case "$MERGE_AUTHORITY" in
+    captain|firstmate|self) ;;
+    *) echo "error: --merge-authority must be one of captain, firstmate, self (got '$MERGE_AUTHORITY')" >&2; exit 1 ;;
+  esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+elif [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
+  echo "error: --merge-authority applies only to ship briefs; secondmate charters resolve each project from data/projects.md" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -195,8 +213,25 @@ The move IS the acknowledgement: without it firstmate rings again and eventually
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
+firstmate_authority_checkins() {  # <task-id-or-placeholder>
+  local task=$1
+  cat <<EOF
+For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through \`bin/fm-send.sh <task> --resolve-key <key>\`:
+
+- Before dispatch: \`needs-decision [key=before-dispatch-$task]: parent firstmate approval required before dispatch\`.
+- Before landing: \`needs-decision [key=before-landing-$task]: parent firstmate approval required before landing\`.
+- Twice-failed blocker: \`needs-decision [key=twice-failed-blocker-$task]: parent firstmate direction required after the same blocker fails twice\`.
+- Worker finish: \`needs-decision [key=worker-finish-$task]: parent firstmate review required when the worker finishes\`.
+
+The parent firstmate may approve green, in-scope engine work.
+Product, destructive, device, irreversible, and security-sensitive calls still go to the captain, and no authority tier permits a red merge.
+EOF
+}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
+SECONDMATE_AUTHORITIES=""
+SECONDMATE_HAS_FIRSTMATE=0
 idx=1
 while [ "$idx" -lt "${#POS[@]}" ]; do
   SECONDMATE_PROJECTS="${SECONDMATE_PROJECTS}${SECONDMATE_PROJECTS:+ }${POS[$idx]}"
@@ -206,6 +241,11 @@ if [ "$NO_PROJECTS" -eq 1 ]; then
   [ -z "$SECONDMATE_PROJECTS" ] || { echo "error: --no-projects cannot be combined with a project list" >&2; exit 1; }
 else
   [ -n "$SECONDMATE_PROJECTS" ] || { echo "error: --secondmate requires at least one project, or --no-projects for a project-less home" >&2; exit 1; }
+  for project in $SECONDMATE_PROJECTS; do
+    authority=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --authority "$project")
+    SECONDMATE_AUTHORITIES="${SECONDMATE_AUTHORITIES}${SECONDMATE_AUTHORITIES:+$'\n'}- $project: merge-authority=$authority"
+    [ "$authority" != firstmate ] || SECONDMATE_HAS_FIRSTMATE=1
+  done
 fi
 SECONDMATE_CHARTER=${FM_SECONDMATE_CHARTER:-"{TASK}"}
 SECONDMATE_SCOPE=${FM_SECONDMATE_SCOPE:-${FM_SECONDMATE_CHARTER:-"{TASK}"}}
@@ -215,6 +255,16 @@ if [ "$NO_PROJECTS" -eq 1 ]; then
 else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
+fi
+if [ "$NO_PROJECTS" -eq 1 ]; then
+  SECONDMATE_AUTHORITY_SECTION="None. This project-less charter has no registered project merge authority."
+else
+  SECONDMATE_AUTHORITY_SECTION=$SECONDMATE_AUTHORITIES
+  if [ "$SECONDMATE_HAS_FIRSTMATE" -eq 1 ]; then
+    SECONDMATE_AUTHORITY_SECTION="$SECONDMATE_AUTHORITY_SECTION
+
+$(firstmate_authority_checkins '<task-id>')"
+  fi
 fi
 cat > "$BRIEF" <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
@@ -227,6 +277,9 @@ $SECONDMATE_SCOPE
 
 # Project clones
 $PROJECT_CLONES_BODY
+
+# Merge authority
+$SECONDMATE_AUTHORITY_SECTION
 
 # Operating model
 You are in an isolated firstmate home. The local \`AGENTS.md\` is your job description, and your local \`data/\`, \`state/\`, \`config/\`, and \`projects/\` dirs are yours to operate.
@@ -286,6 +339,13 @@ exit 0
 fi
 
 REPO=${POS[1]}
+
+MERGE_AUTHORITY_SECTION="Merge authority: $MERGE_AUTHORITY"
+if [ "$MERGE_AUTHORITY" = firstmate ]; then
+  MERGE_AUTHORITY_SECTION="$MERGE_AUTHORITY_SECTION
+
+$(firstmate_authority_checkins "$ID")"
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -438,6 +498,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$MERGE_AUTHORITY_SECTION
 
 $HERDR_SECTION
 

@@ -1,0 +1,17 @@
+ok - no --model/--effort records defaults and types the claude launch instructions
+ok - non-cursor launches clear inherited Cursor identity markers
+ok - relative home overrides ignore CDPATH and become absolute before spawn launch construction
+ok - FM_HOME defaults resolve relative paths and preserve absolute spellings
+ok - absolute override spellings are preserved in spawn launch paths
+ok - unresolvable relative spawn overrides fail with named diagnostics
+ok - active crew-dispatch profile requires an explicit harness for ship spawns
+ok - active crew-dispatch profile requires an explicit harness for scout spawns
+ok - active crew-dispatch profile allows an explicit resolved harness
+ok - active crew-dispatch profile allows the legacy positional harness form
+ok - active crew-dispatch profile allows the raw launch-command escape hatch
+ok - claude receives --model and --effort profile flags
+ok - codex receives --model and model_reasoning_effort profile flags
+not ok - codex launch can block on the interactive update prompt before processing the brief (missing: '-c check_for_update_on_startup=false')
+--- output ---
+env -u CURSOR_AGENT -u CURSOR_INVOKED_AS codex --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch '/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-spawn-dispatch-profile.ltXFIS/profile-codex-update/home/state/profile-codex-update-z3b.turn-ended'\"]" "$('/tmp/fm-spawn-regression.ElUW4q/bin/fm-operational-input.sh' encode launch-brief < '/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-dispatch-profile.ltXFIS/profile-codex-update/home/data/profile-codex-update-z3b/brief.md')"
+baseline_exit=1

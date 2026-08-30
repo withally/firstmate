@@ -67,9 +67,9 @@
 #       submission nor visible retention; check the pane transcript/queue and
 #       composer before acting, and never retype blindly.
 #   1 = a verified failure: the literal/key transport failed, Pi's composer
-#       was proven empty during the bounded pre-Enter settle so Enter was not
-#       sent, or the bounded post-Enter read-back still visibly showed the
-#       current text.
+#       was proven empty or did not contain the current literal during the
+#       bounded pre-Enter settle so Enter was not sent, or the bounded
+#       post-Enter read-back still visibly showed the current text.
 #       A visibly retained message must be retried with Enter only, never by
 #       retyping it.
 # A marked request's pending-reply expectation stays armed for exits 3 and for
@@ -1018,7 +1018,7 @@ else
     text-not-typed)
       fm_send_known_undelivered_cleanup || \
         echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
-      echo "error: text not sent to $T: Herdr accepted pane send-text, but the current message did not remain visibly pending in the Pi composer during the bounded pre-Enter settle (tried $RESOLUTION_TRIED); Enter was not sent" >&2
+      echo "error: text not sent to $T: Herdr accepted pane send-text, but the current literal was not proven in the Pi composer during the bounded pre-Enter settle (it may have been dropped or a different draft may be visible; tried $RESOLUTION_TRIED); Enter was not sent" >&2
       exit 1
       ;;
     not-submitted|pending)

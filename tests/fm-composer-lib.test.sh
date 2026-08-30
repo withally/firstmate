@@ -620,6 +620,26 @@ test_pi_submit_observation_honors_pair_bound() {
   pass "fm_composer_pi_submit_observation: over-tall pairs remain unknown"
 }
 
+test_pi_submit_observation_rejects_nonmatching_pending_literal() {
+  local separator screen out
+  separator='─────────────────────────────────────────────────────'
+  screen=$'transcript\n'"$separator"$'\nother draft\n'"$separator"$'\nfooter'
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" "expected message" $'pi\tworking')
+  [ "$out" = $'0\tnot-current' ] \
+    || fail "a visible Pi draft that is not the current literal must not read as pending, got '$out'"
+
+  screen=$'transcript\n'"$separator"$'\nexpected message\n'"$separator"$'\nfooter'
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" "expected message" $'pi\tworking')
+  [ "$out" = $'0\tpending' ] \
+    || fail "a visible Pi draft matching the current literal must remain pending, got '$out'"
+
+  screen=$'transcript\n'"$separator"$'\nfirst line\nsecond line\n'"$separator"$'\nfooter'
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" $'first line\nsecond line' $'pi\tworking')
+  [ "$out" = $'0\tpending' ] \
+    || fail "a matching multiline Pi draft must remain pending, got '$out'"
+  pass "fm_composer_pi_submit_observation: a different visible Pi draft is not the current pending literal"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
@@ -651,6 +671,7 @@ test_titled_bottom_requires_matching_width
 test_cursor_on_proven_box_bottom_classifies_content
 test_selected_content_is_composer_scoped_and_wrap_normalized
 test_pi_submit_observation_honors_pair_bound
+test_pi_submit_observation_rejects_nonmatching_pending_literal
 
 test_submit_retry_reports_send_failed_before_any_enter() {
   local out

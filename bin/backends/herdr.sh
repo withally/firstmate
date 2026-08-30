@@ -2820,7 +2820,7 @@ fm_backend_herdr_pi_submit_capture_lines() {  # <text> -> line bound
   printf '%s' "$lines"
 }
 
-fm_backend_herdr_pi_submit_observation() {  # <target> <text> -> <echo-count><TAB><empty|pending|unknown>
+fm_backend_herdr_pi_submit_observation() {  # <target> <text> -> <echo-count><TAB><empty|pending|not-current|unknown>
   local target=$1 text=$2 cap caps identity capture_lines
   fm_backend_herdr_parse_target "$target" || { printf '0\tunknown'; return 0; }
   capture_lines=$(fm_backend_herdr_pi_submit_capture_lines "$text")
@@ -2868,6 +2868,7 @@ fm_backend_herdr_wait_pi_submit() {  # <target> <text> <pre-echo-count> <budget>
     case "$state" in
       empty) last=cleared ;;
       pending) last=pending ;;
+      not-current) last=not-current ;;
       *) last=unknown ;;
     esac
   done
@@ -2919,7 +2920,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     pi_echo_current=${pi_preflight%%$'\t'*}
     pi_preflight_rest=${pi_preflight#*$'\t'}
     pi_pre_state=$pi_preflight_rest
-    if [ "$pi_pre_state" = empty ]; then
+    if [ "$pi_pre_state" = empty ] || [ "$pi_pre_state" = not-current ]; then
       printf 'text-not-typed'
       return 0
     fi
@@ -2937,6 +2938,13 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         printf 'empty'
         return 0
       elif [ "$pi_pre_state" = empty ]; then
+        if [ "$enter_sent" -eq 1 ]; then
+          printf 'pending-unproven'
+        else
+          printf 'text-not-typed'
+        fi
+        return 0
+      elif [ "$pi_pre_state" = not-current ]; then
         if [ "$enter_sent" -eq 1 ]; then
           printf 'pending-unproven'
         else
@@ -3000,6 +3008,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
               verdict=pending-unproven
             fi
             ;;
+          not-current) verdict=pending-unproven ;;
           unknown) verdict=unknown ;;
         esac
       fi
@@ -3047,6 +3056,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
             verdict=pending
             ;;
           cleared) verdict=pending-unproven ;;
+          not-current) verdict=pending-unproven ;;
           unknown) verdict=unknown ;;
         esac
       else

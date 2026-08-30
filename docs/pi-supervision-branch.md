@@ -33,6 +33,8 @@ This feature is Pi-only by construction and changes nothing anywhere else:
 - Branch system prompt: `bin/fm-branch-prompt.sh`; its header owns the byte-stable-prefix contract (no timestamps, no fleet snapshot, no per-wake content).
 - Outcome store: `bin/fm-branch-outcome.sh`; its header owns the append-only format and the read cursor.
   Outcomes are written to the store before any main-bound delivery message is handed to Pi; the outcome-store header owns routine store-only consumption and session-start replay for rows left unread after a delivery attempt.
+  Firstmate-action reports use a durable wake-sequence marker so a re-presented wake recovers the pending row instead of opening a duplicate handoff.
+  A pending firstmate-action row is replayed as the same operational action envelope, not as raw JSON.
 - Consistency: `bin/fm-lease-lib.sh` owns the per-task lease contract, the main-only role partition, and the deliberate CONFUSED-AGENT-GRADE threat model these guards target (captain-decided; adversarial-grade separation is out of scope and tracked as follow-up design work); `bin/fm-lease.sh` is the command surface.
   The guards are wired into `fm-send.sh`, `fm-control.sh`, and `fm-teardown.sh` (overlap, lease-checked, with claim serialization retained through the mutation) and `fm-pr-merge.sh`, `fm-merge-local.sh`, and `fm-spawn.sh` (main-owned, branch refused; a relaunch through `fm-control` stays branch-legal recovery).
 - Autonomy: supervision is default-on for every task once a Pi primary session owns the fleet lock (docs/configuration.md "Pi supervision branch"); no captain grant file is required.
@@ -58,7 +60,8 @@ Stage one is unchanged: the bash watcher absorbs everything provably fine at zer
 Stage two is the branch's three-way verdict on each handled event, reported through its `fm_branch_report` tool.
 An unsolicited `routine` outcome remains only in the durable outcome store and opens no main turn.
 A `captain` outcome is a genuine captain-only result or question and sends one hidden delivery message that triggers exactly one follow-up turn for MAIN to surface it without replaying the fleet event.
-A `firstmate-action` outcome means the branch acknowledged the wake but an authorized downstream action that MAIN owns is still undone; it sends one hidden delivery message that triggers exactly one follow-up turn for MAIN to perform that action immediately and then report the result.
+A `firstmate-action` outcome means the branch acknowledged the wake but an authorized downstream action that MAIN owns is still undone.
+After the branch acknowledgment and task-lease release complete, it sends one hidden delivery message that triggers exactly one follow-up turn for MAIN to perform that action immediately and then report the result.
 The generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to preserve that distinction, so the hidden delivery message is never printed or rendered in Pi.
 Because Pi gives the model only a custom message's `content`, that hidden delivery message normally carries both the verdict-specific instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
 This self-description lets main distinguish a new supervision outcome from its own earlier captain-facing answer; without it, main can re-emit the earlier answer instead of relaying the outcome and lose the outcome while deciding how to handle it.

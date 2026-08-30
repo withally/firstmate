@@ -346,6 +346,18 @@ const { pathToFileURL } = await import("node:url");
 const home = process.env.FM_HOME;
 const realRoot = process.env.FM_ROOT_OVERRIDE;
 const approvedProject = `${home}/projects/approved`;
+globalThis.__fmExecuteBranchBash = async (context) => {
+  const result = spawnSync("bash", ["-c", context.command], {
+    encoding: "utf8",
+    cwd: context.cwd,
+    env: context.env,
+  });
+  return {
+    content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
+    details: { stdout: result.stdout, stderr: result.stderr, exitCode: result.status },
+    isError: result.status !== 0,
+  };
+};
 mkdirSync(`${home}/state`, { recursive: true });
 mkdirSync(`${home}/config`, { recursive: true });
 mkdirSync(approvedProject, { recursive: true });
@@ -486,7 +498,19 @@ const pi = {
     renderers.set(customType, renderer);
   },
   sendMessage(message, options) {
+    if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
+    if (globalThis.__fmAutoStartMainMessage !== false && message.customType === "fm-branch-merge") {
+      queueMicrotask(() => fire("message_start", {
+        message: {
+          role: "custom",
+          customType: message.customType,
+          content: message.content,
+          display: message.display,
+          details: message.details,
+        },
+      }));
+    }
   },
   sendUserMessage(content, options) {
     mainUserMessages.push({ content, options: options ?? {} });
@@ -644,8 +668,36 @@ fire("agent_start", {});
 await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy", silent: true }, undefined, undefined, {});
 if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
-await report.execute("call-3", { task: "task-9", verdict: "firstmate-action", summary: "green local-only worker result is ready for its standing auto-land and then the next plan task" }, undefined, undefined, {});
-if (sentToMain.length !== 1) throw new Error(`firstmate-action report did not merge exactly one note: ${sentToMain.length}`);
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-wake", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error(`fleet command failed: ${JSON.stringify(result)}`);
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stderr}`);
+  const action = await report.execute(
+    "call-3",
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result is ready for its standing auto-land and then the next plan task",
+      wake: "signal: action result",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (action.isError) throw new Error(`firstmate-action report failed: ${JSON.stringify(action)}`);
+  if (sentToMain.length !== 0) throw new Error("firstmate-action opened main before wake acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+const actionOffer = dispatch("signal: action result");
+if (!actionOffer.accepted) throw new Error("firstmate-action wake was not accepted");
+await settle(() => sentToMain.length === 1, "firstmate-action delivery after wake acknowledgement");
 if (sentToMain[0].options.triggerTurn !== true || sentToMain[0].options.deliverAs !== "followUp") {
   throw new Error(`firstmate-action merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
 }
@@ -840,6 +892,238 @@ EOF
     *) fail "captain outcome body lost the unconditional explicit-request rule: $body" ;;
   esac
   pass "captain and firstmate-action outcomes reach main with distinct typed instructions while routine outcomes stay store-only"
+}
+
+test_firstmate_action_replays_after_crash_before_ack() {
+  local repo home out status
+  repo="$TMP_ROOT/action-replay-root"
+  home="$TMP_ROOT/action-replay-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval("(async () => { " + prelude + "; globalThis.__t = { dispatch, settle, outcomeScript, sentToMain, mainUserMessages, home, realRoot }; })()");
+const { dispatch, settle, outcomeScript, sentToMain, mainUserMessages, home, realRoot } = globalThis.__t;
+import { spawnSync } from "node:child_process";
+
+let promptCount = 0;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-replay", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error("fleet command failed: " + JSON.stringify(result));
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error("drain did not return its acknowledgement command: " + drained.stderr);
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    "action-replay-" + promptCount,
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result still needs its authorized landing",
+      wake: "signal: local-only green result",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error("firstmate-action report failed: " + JSON.stringify(result));
+  if (sentToMain.length !== 0) throw new Error("action was delivered before the wake was acknowledged");
+  if (promptCount === 1) throw new Error("simulated crash before wake acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+
+const offer = dispatch("signal: local-only green result");
+if (!offer.accepted) throw new Error("action-replay wake was not accepted");
+await settle(() => mainUserMessages.length === 1, "fallback after crash-before-ack");
+if (sentToMain.length !== 0) throw new Error("crash-before-ack delivered an action turn");
+const replayResult = spawnSync(
+  "bash",
+  [realRoot + "/bin/fm-branch-outcome.sh", "startup-replay"],
+  { encoding: "utf8", env: { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: home + "/state" } },
+);
+if (replayResult.status !== 0) throw new Error("startup replay failed: " + replayResult.stderr);
+const replay = replayResult.stdout.trim();
+const header = "BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):\n";
+if (!replay.startsWith(header)) throw new Error("startup replay lost its outcome header: " + replay);
+const envelope = replay.slice(header.length);
+if (envelope.includes('"seq"')) throw new Error("startup replay emitted raw action JSON: " + envelope);
+const kind = spawnSync(
+  "bash",
+  [realRoot + "/bin/fm-operational-input.sh", "kind"],
+  { encoding: "utf8", input: envelope },
+);
+if (kind.status !== 0 || kind.stdout.trim() !== "branch-outcome") {
+  throw new Error("startup replay did not emit a branch-outcome envelope: " + kind.stdout + kind.stderr);
+}
+const body = spawnSync(
+  "bash",
+  [realRoot + "/bin/fm-operational-input.sh", "body"],
+  { encoding: "utf8", input: envelope },
+);
+if (body.status !== 0 ||
+    !body.stdout.includes("The downstream authorized action is not done.") ||
+    !body.stdout.includes("Perform that action now, then report the result.")) {
+  throw new Error("startup replay lost the action instruction: " + body.stdout);
+}
+if (outcomeScript(["unread"]) !== "") throw new Error("startup replay left the action unread");
+if (outcomeScript(["action-status", "--seq", "1"]) !== "started") {
+  throw new Error("startup replay did not complete the pending action marker");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "firstmate-action crash replay must preserve its envelope: $out"
+  [ -z "$out" ] || fail "firstmate-action crash replay test printed output: $out"
+  pass "firstmate-action crash-before-ack replays one operational action envelope"
+}
+
+test_firstmate_action_duplicate_handoff_is_deduplicated() {
+  local repo home out status
+  repo="$TMP_ROOT/action-dedup-root"
+  home="$TMP_ROOT/action-dedup-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval("(async () => { " + prelude + "; globalThis.__t = { dispatch, settle, outcomeScript, sentToMain, mainUserMessages }; })()");
+const { dispatch, settle, outcomeScript, sentToMain, mainUserMessages } = globalThis.__t;
+
+let promptCount = 0;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-dedup", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error("fleet command failed: " + JSON.stringify(result));
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error("drain did not return its acknowledgement command: " + drained.stderr);
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    "action-dedup-" + promptCount,
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "the same authorized downstream action is still pending",
+      wake: "signal: repeated wake",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error("duplicate firstmate-action report failed: " + JSON.stringify(result));
+  if (promptCount === 1) {
+    if (sentToMain.length !== 0) throw new Error("duplicate probe delivered before acknowledgement");
+    throw new Error("simulated crash before acknowledgement");
+  }
+  if (sentToMain.length !== 0) throw new Error("duplicate handoff opened a second turn before acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+
+const first = dispatch("signal: repeated wake");
+if (!first.accepted) throw new Error("first duplicate-probe wake was not accepted");
+await settle(() => mainUserMessages.length === 1, "first duplicate-probe fallback");
+const second = dispatch("signal: repeated wake");
+if (!second.accepted) throw new Error("re-presented wake was not accepted");
+await settle(() => sentToMain.length === 1, "deduplicated action delivery");
+if (promptCount !== 2) throw new Error("re-presented wake did not run exactly one recovery prompt");
+const rows = outcomeScript(["list", "--recent", "10"]).split("\n").filter(Boolean);
+if (rows.length !== 1) throw new Error("duplicate wake appended another outcome row: " + rows.join("\n"));
+if (outcomeScript(["unread"]) !== "") throw new Error("deduplicated action remained unread");
+if (outcomeScript(["action-status", "--seq", "1"]) !== "started") {
+  throw new Error("deduplicated action did not reach the started marker");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "firstmate-action duplicate handoff must stay one-shot: $out"
+  [ -z "$out" ] || fail "firstmate-action duplicate handoff test printed output: $out"
+  pass "firstmate-action duplicate wake reports reuse one durable handoff"
+}
+
+test_firstmate_action_delivery_waits_for_branch_lease_release() {
+  local repo home out status
+  repo="$TMP_ROOT/action-lease-root"
+  home="$TMP_ROOT/action-lease-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval("(async () => { " + prelude + "; globalThis.__t = { dispatch, settle, outcomeScript, sentToMain, realRoot, home }; })()");
+const { dispatch, settle, outcomeScript, sentToMain, realRoot, home } = globalThis.__t;
+import { spawnSync } from "node:child_process";
+
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runBranchCommand = async (command) => {
+    const result = await bash.execute("action-lease", { command });
+    if (result.isError) throw new Error("branch command failed: " + JSON.stringify(result));
+    return result.details;
+  };
+  const drained = await runBranchCommand("bin/fm-wake-drain.sh");
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error("drain did not return its acknowledgement command: " + drained.stderr);
+  await runBranchCommand("bin/fm-lease.sh claim task-9");
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    "action-lease",
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result requires the authorized landing",
+      wake: "signal: lease ordering",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error("lease-order action report failed: " + JSON.stringify(result));
+  if (sentToMain.length !== 0) throw new Error("action delivery raced the branch lease");
+  await runBranchCommand("bin/fm-wake-drain.sh --ack-through " + ack[1] + " --recovery-generation " + ack[2]);
+};
+
+const offer = dispatch("signal: lease ordering");
+if (!offer.accepted) throw new Error("lease-order wake was not accepted");
+await settle(() => sentToMain.length === 1, "lease-safe action delivery");
+const mainEnv = {
+  ...process.env,
+  FM_HOME: home,
+  FM_STATE_OVERRIDE: home + "/state",
+  FM_SUPERVISION_ACTOR: "main",
+};
+const claim = spawnSync("bash", [realRoot + "/bin/fm-lease.sh", "claim", "task-9"], {
+  encoding: "utf8",
+  env: mainEnv,
+});
+if (claim.status !== 0) throw new Error("main could not claim the task after action delivery: " + claim.stderr);
+const release = spawnSync("bash", [realRoot + "/bin/fm-lease.sh", "release", "task-9"], {
+  encoding: "utf8",
+  env: mainEnv,
+});
+if (release.status !== 0) throw new Error("main lease cleanup failed: " + release.stderr);
+if (outcomeScript(["unread"]) !== "") throw new Error("lease-ordered action remained unread");
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "firstmate-action delivery must wait for branch lease release: $out"
+  [ -z "$out" ] || fail "firstmate-action lease-order test printed output: $out"
+  pass "firstmate-action delivery waits for wake acknowledgement and branch lease release"
 }
 
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
@@ -3270,6 +3554,9 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
+test_firstmate_action_replays_after_crash_before_ack
+test_firstmate_action_duplicate_handoff_is_deduplicated
+test_firstmate_action_delivery_waits_for_branch_lease_release
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work
 test_captain_outcome_encoding_failure_delivers_plain_instruction
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot

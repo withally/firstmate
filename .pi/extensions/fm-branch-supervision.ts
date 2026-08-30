@@ -541,6 +541,16 @@ export default function (pi: ExtensionAPI) {
   // extension plus its model_select event, because createBranch runs at wake
   // time with no context of its own. It is what "follow main" applies.
   let mainModel: { provider: string; id: string } | null = null;
+  type ActiveWakeContext = { generation: number; eligibleSeqs: readonly string[] };
+  type PendingActionDelivery = {
+    generation: number;
+    wakeSeq: string;
+    task: string;
+    summary: string;
+    deliveryIssued: boolean;
+  };
+  let activeWakeContext: ActiveWakeContext | null = null;
+  const pendingActionDeliveries = new Map<string, PendingActionDelivery>();
 
   // Main's own current effort needs no such tracking: Pi answers it directly
   // on demand, including at wake time. It throws only when the extension
@@ -724,7 +734,14 @@ export default function (pi: ExtensionAPI) {
   // failure direction applies: an outcome that cannot be typed is still
   // delivered, carrying the same instruction as plain text, because an
   // untyped outcome main can still read beats an outcome main never receives.
-  function mainOutcomeInput(verdict: Exclude<Verdict, "routine">, task: string, summary: string): string {
+  function mainOutcomeInput(
+    seq: string,
+    verdict: Exclude<Verdict, "routine">,
+    task: string,
+    summary: string,
+  ): string {
+    const rendered = runOutcomeScript(["render", "--seq", seq]);
+    if (rendered.ok && rendered.stdout) return rendered.stdout;
     const instruction = verdict === "captain"
       ? CAPTAIN_OUTCOME_INSTRUCTION
       : FIRSTMATE_ACTION_OUTCOME_INSTRUCTION;
@@ -742,12 +759,29 @@ export default function (pi: ExtensionAPI) {
     task: string,
     verdict: Verdict,
     summary: string,
+    wakeSeq: string,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
-    if (verdict !== "routine") {
+    if (verdict === "firstmate-action") {
+      if (!/^[0-9]+$/.test(wakeSeq)) return false;
+      const prepared = runOutcomeScript(["action-prepare", "--seq", seq]);
+      if (!prepared.ok || !["pending", "started"].includes(prepared.stdout)) return false;
+      if (prepared.stdout === "started") {
+        if (!actingAsOwner(expectedGeneration)) return false;
+        return runOutcomeScript(["mark-read", "--through", seq]).ok;
+      }
+      const pending = pendingActionDeliveries.get(seq);
+      if (pending) {
+        pending.generation = expectedGeneration;
+      } else {
+        pendingActionDeliveries.set(seq, { generation: expectedGeneration, wakeSeq, task, summary, deliveryIssued: false });
+      }
+      return true;
+    }
+    if (verdict === "captain") {
       const message = {
         customType: "fm-branch-merge",
-        content: mainOutcomeInput(verdict, task, summary),
+        content: mainOutcomeInput(seq, verdict, task, summary),
         display: false,
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
@@ -757,6 +791,55 @@ export default function (pi: ExtensionAPI) {
       return runOutcomeScript(["mark-read", "--through", seq]).ok;
     }
     return true;
+  }
+
+  function wakeRowsAcknowledged(seqs: readonly string[]): boolean {
+    if (seqs.length === 0) return true;
+    try {
+      const queue = readFileSync(join(state, ".wake-queue"), "utf8");
+      const pending = new Set(seqs);
+      return queue
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0)
+        .every((line) => {
+          const fields = line.split("\t");
+          return fields.length < 2 || !pending.has(fields[1]);
+        });
+    } catch {
+      return false;
+    }
+  }
+
+  function deliverPendingActionDeliveries(
+    expectedGeneration: number,
+    eligibleWakeSeqs: readonly string[],
+  ): void {
+    const eligible = new Set(eligibleWakeSeqs);
+    for (const [seq, pending] of pendingActionDeliveries) {
+      if (pending.generation !== expectedGeneration || !eligible.has(pending.wakeSeq)) continue;
+      if (pending.deliveryIssued) continue;
+      if (!actingAsOwner(expectedGeneration)) return;
+      const status = runOutcomeScript(["action-status", "--seq", seq]);
+      if (!status.ok) continue;
+      if (status.stdout === "started") {
+        if (runOutcomeScript(["mark-read", "--through", seq]).ok) {
+          pendingActionDeliveries.delete(seq);
+        }
+        continue;
+      }
+      if (status.stdout !== "pending") continue;
+      const message = {
+        customType: "fm-branch-merge",
+        content: mainOutcomeInput(seq, "firstmate-action", pending.task, pending.summary),
+        display: false,
+        details: { outcomeSeq: seq, wakeSeq: pending.wakeSeq, verdict: "firstmate-action" },
+      };
+      try {
+        if (!actingAsOwner(expectedGeneration)) return;
+        pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+        pending.deliveryIssued = true;
+      } catch {}
+    }
   }
 
   function createReportTool(toolGeneration: number): ToolDefinition {
@@ -776,6 +859,9 @@ export default function (pi: ExtensionAPI) {
             "One or two sentences in captain outcome language; include the full https:// PR URL when a PR is involved",
         }),
         wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
+        wake_seq: Type.Optional(Type.String({
+          description: "For firstmate-action, the exact numeric queue sequence from the wake-drain row",
+        })),
         silent: Type.Optional(Type.Boolean({
           description: "Accepted for compatibility; routine outcomes are always stored silently, and main-turn outcomes are never silent",
         })),
@@ -785,6 +871,7 @@ export default function (pi: ExtensionAPI) {
         const verdictRaw = String((params as { verdict: unknown }).verdict || "");
         const summary = String((params as { summary: unknown }).summary || "").trim();
         const wake = String((params as { wake?: unknown }).wake ?? "").trim();
+        let wakeSeq = String((params as { wake_seq?: unknown }).wake_seq ?? "").trim();
         const silent = (params as { silent?: unknown }).silent === true;
         if (!task || !summary || !["routine", "captain", "firstmate-action"].includes(verdictRaw) || (silent && verdictRaw !== "routine")) {
           return {
@@ -794,7 +881,26 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const verdict = verdictRaw as Verdict;
-        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
+        if (verdict === "firstmate-action") {
+          if (!wakeSeq && activeWakeContext?.generation === toolGeneration && activeWakeContext.eligibleSeqs.length === 1) {
+            wakeSeq = activeWakeContext.eligibleSeqs[0];
+          }
+          if (
+            !/^[0-9]+$/.test(wakeSeq) ||
+            !activeWakeContext ||
+            activeWakeContext.generation !== toolGeneration ||
+            !activeWakeContext.eligibleSeqs.includes(wakeSeq)
+          ) {
+            return {
+              content: [{ type: "text", text: "invalid firstmate-action report: wake_seq must name the current wake-drain row" }],
+              details: undefined,
+              isError: true,
+            };
+          }
+        }
+        const appendArgs = verdict === "firstmate-action"
+          ? ["append-action", "--task", task, "--wake-seq", wakeSeq, "--summary", summary]
+          : ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
         if (wake) appendArgs.push("--wake", wake);
         if (!actingAsOwner(toolGeneration)) {
           return {
@@ -811,7 +917,7 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary)) {
+        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, wakeSeq)) {
           return {
             content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
             details: undefined,
@@ -819,9 +925,11 @@ export default function (pi: ExtensionAPI) {
           };
         }
         return {
-          content: [{ type: "text", text: verdict !== "routine"
-            ? `recorded seq ${appended.stdout} and merged [${verdict}] into main`
-            : `recorded seq ${appended.stdout} [routine] store-only` }],
+          content: [{ type: "text", text: verdict === "captain"
+            ? `recorded seq ${appended.stdout} and merged [captain] into main`
+            : verdict === "firstmate-action"
+              ? `recorded seq ${appended.stdout} and queued [firstmate-action] for main after wake acknowledgement`
+              : `recorded seq ${appended.stdout} [routine] store-only` }],
           details: undefined,
         };
       },
@@ -1009,6 +1117,21 @@ ${context.command}
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
   }
 
+  pi.on?.("message_start", (event) => {
+    const message = (event as { message?: { customType?: unknown; details?: unknown } }).message;
+    if (!message || message.customType !== "fm-branch-merge") return;
+    const details = message.details as { outcomeSeq?: unknown; verdict?: unknown } | undefined;
+    if (details?.verdict !== "firstmate-action") return;
+    const seq = String(details.outcomeSeq ?? "");
+    const pending = pendingActionDeliveries.get(seq);
+    if (!pending || pending.generation !== generation) return;
+    if (String((details as { wakeSeq?: unknown }).wakeSeq ?? "") !== pending.wakeSeq) return;
+    if (!actingAsOwner(generation)) return;
+    if (!runOutcomeScript(["action-started", "--seq", seq]).ok) return;
+    if (!runOutcomeScript(["mark-read", "--through", seq]).ok) return;
+    pendingActionDeliveries.delete(seq);
+  });
+
   function enqueueWake(messages: readonly string[], acceptedGeneration: number): void {
     const message = wakeBatchMessage(messages);
     branchChain = branchChain
@@ -1045,17 +1168,36 @@ ${context.command}
         );
         if (grant === "main-owned") throw new Error("the wake rows are already claimed by main");
         if (grant !== "published") throw new Error("could not record the branch's eligible row snapshot");
+        const wakeContext: ActiveWakeContext = {
+          generation: acceptedGeneration,
+          eligibleSeqs: [...scope.eligibleSeqs],
+        };
+        activeWakeContext = wakeContext;
         // A row can still arrive between this re-check and the model starting
         // the drain; that residual is accepted by the confused-agent-grade boundary.
-        await session.prompt(
+        try {
+          await session.prompt(
           `FIRSTMATE SUPERVISION WAKE: ${message}\n\nHandle this per your operating procedure and finish with fm_branch_report.`,
         );
+        } finally {
+          if (activeWakeContext === wakeContext) activeWakeContext = null;
+        }
+        const pendingForWake = [...pendingActionDeliveries.values()]
+          .some((pending) => pending.generation === acceptedGeneration && wakeContext.eligibleSeqs.includes(pending.wakeSeq));
+        if (pendingForWake && !wakeRowsAcknowledged(wakeContext.eligibleSeqs)) {
+          throw new Error("firstmate-action delivery requires the branch wake to be acknowledged");
+        }
         if (!releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration))) {
           throw new Error("could not release the branch's settled wake-row grant");
         }
+        if (!releaseBranchLeases(acceptedGeneration)) {
+          throw new Error("could not release the branch's settled task leases");
+        }
+        deliverPendingActionDeliveries(acceptedGeneration, wakeContext.eligibleSeqs);
       })
       .catch(async (error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
+        releaseBranchLeases(acceptedGeneration);
         try {
           await fallbackToMain(message, error instanceof Error ? error.message : String(error), acceptedGeneration);
         } catch {}

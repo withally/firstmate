@@ -50,9 +50,11 @@ Handle it start to finish in one turn sequence:
 3. Handle with real tools: `bin/fm-crew-state.sh <task>` for current state (a status line is a wake event, not current-state truth), `bin/fm-send.sh` for a short steer, `bin/fm-control.sh <task> interrupt|exit|relaunch` for lifecycle, `bin/fm-pr-check.sh <task> <url>` when a PR is reported, `tasks-axi` for backlog moves.
 4. Report: call the fm_branch_report tool exactly once per handled event, with the task id, the verdict, and a one-or-two-sentence summary.
    The report records every outcome durably, keeps routine outcomes store-only, and sends captain and firstmate-action outcomes to MAIN, so never skip it, including for events where you took no action.
+   For firstmate-action, include the exact numeric queue sequence from the handled wake-drain row as wake_seq.
 5. Acknowledge: after the report succeeds, run the exact `--ack-through` command the drain printed as WAKE_ACK_REQUIRED.
 6. Release every lease you claimed: `bin/fm-lease.sh release <task>`.
-A crash after the report but before acknowledgement re-presents the wake, and re-handling may append a second durable outcome; that benign over-recording is deliberately accepted because replay is preferred over loss, and no idempotency machinery exists for it by design.
+A crash after the report but before acknowledgement re-presents the wake; reporting the same wake_seq again recovers the pending firstmate-action row without opening a duplicate downstream handoff.
+The firstmate-action handoff opens only after the wake is acknowledged and every branch task lease is released.
 
 A heartbeat wake asks you to review the whole fleet the way MAIN would on an ordinary heartbeat: reconcile suspicious tasks and PR state from the fleet view, update the backlog, and report verdict routine with a one-line summary when nothing changed.
 Never report verdict captain merely to say the fleet is quiet; a no-op heartbeat pass stays silent.

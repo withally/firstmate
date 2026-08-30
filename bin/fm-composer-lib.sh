@@ -1395,16 +1395,19 @@ _fm_composer_classify_pi_rows() {  # <screen> <styled>
 
 # A valid Pi pair can still contain a different retained draft, or a literal
 # that Herdr visibly dropped after its first bytes. For submit confirmation,
-# require short boundary anchors from the current literal in the visible pair.
+# require short boundary anchors and, for multiline input, one interior anchor
+# from the current literal in the visible pair.
 # This deliberately does not reconstruct or compare the whole body: terminal
 # wrapping and Pi's bounded pair geometry make that unsafe for long input.
 _fm_composer_pi_submit_literal_state() {  # <screen> <styled> <text> -> match|not-current
-  local screen=$1 styled=$2 text=$3 row raw content line first='' last='' anchor
-  local first_anchor last_anchor first_content='' last_content=''
-  local first_match=0 last_match=0 have_text=0 have_content=0
+  local screen=$1 styled=$2 text=$3 row raw content line first='' last='' middle=''
+  local anchor first_anchor last_anchor middle_anchor='' first_content='' last_content=''
+  local first_match=0 middle_match=0 last_match=0 have_text=0 have_content=0
+  local text_lines=0 text_line_no=0 middle_line_index=0
   while IFS= read -r line; do
     fm_composer_normalize_trim_var line
     [ -n "$line" ] || continue
+    text_lines=$((text_lines + 1))
     if [ "$have_text" = 0 ]; then
       first=$line
       have_text=1
@@ -1417,6 +1420,23 @@ EOF
   anchor=16
   first_anchor=$(printf '%s' "$first" | LC_ALL=C awk -v n="$anchor" '{ printf "%s", substr($0, 1, n) }')
   last_anchor=$(printf '%s' "$last" | LC_ALL=C awk -v n="$anchor" '{ start=length($0)-n+1; if (start < 1) start=1; printf "%s", substr($0, start) }')
+  if [ "$text_lines" -ge 3 ]; then
+    middle_line_index=$(((text_lines + 1) / 2))
+    while IFS= read -r line; do
+      fm_composer_normalize_trim_var line
+      [ -n "$line" ] || continue
+      text_line_no=$((text_line_no + 1))
+      if [ "$text_line_no" -eq "$middle_line_index" ]; then
+        middle=$line
+        break
+      fi
+    done <<EOF
+$text
+EOF
+    middle_anchor=$(printf '%s' "$middle" | LC_ALL=C awk -v n=32 '{ printf "%s", substr($0, 1, n) }')
+  else
+    middle_match=1
+  fi
   row=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
   while [ "$row" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; do
     raw=$(_fm_composer_screen_row "$row" "$screen")
@@ -1429,6 +1449,11 @@ EOF
       fi
       last_content=$content
     fi
+    if [ -n "$middle_anchor" ]; then
+      case "$content" in
+        "$middle_anchor"*) middle_match=1 ;;
+      esac
+    fi
     row=$((row + 1))
   done
   case "$first_content" in
@@ -1437,7 +1462,7 @@ EOF
   case "$last_content" in
     *"$last_anchor") last_match=1 ;;
   esac
-  if [ "$first_match" = 1 ] && [ "$last_match" = 1 ]; then
+  if [ "$first_match" = 1 ] && [ "$middle_match" = 1 ] && [ "$last_match" = 1 ]; then
     printf 'match'
   else
     printf 'not-current'

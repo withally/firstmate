@@ -593,7 +593,7 @@ Registration writes one private record under `state/procevent/`, and a completed
 By default, results are published as ordinary `check` wakes carrying the source id and committed result sequence through the existing durable wake queue, so the runner adds no second notification control plane.
 The self-announcing adapter exception and its fail-safe ordering are defined below.
 The watcher delivers a queued result on its ordinary cycle by reporting it as an actionable `check` wake, so a default or fallback publication reaches firstmate through the same rewake path every other wake uses and never waits for a manual drain.
-A queued `check` delivery is reported at most once per captured source and sequence while any records for that key remain queued.
+Within one drain, queued `check` records are coalesced only when their kind, durable key, and payload are identical; a changed payload remains a separate delivery even when its key, including a source-and-sequence identity, is unchanged.
 A durable handled acknowledgement stops future source re-announcement, while a record already queued remains under the durable queue's authority until the ordinary drain's sequence-bound post-handling acknowledgement consumes it.
 
 Source-delivery acknowledgement is a separate adapter-owned seam from the local `handled` acknowledgement.

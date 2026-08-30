@@ -217,7 +217,7 @@ For known non-Claude harnesses whose native state is a foreground-turn signal, a
 If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
 After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter for those non-Claude harnesses, and keeps an idle pending composer as a genuine swallow.
 For a known Claude target, Herdr's native `working` signal is not that generating proof because a tracked background shell can keep it set after the foreground turn ends.
-A Claude queued Enter is confirmed only when the rendered Claude active-turn signature changes from idle immediately before that Enter to busy after it, or when the composer clears; native `working` alone and a pre-existing rendered-busy footer never prove that Enter.
+Claude's away-mode busy guard and queued-Enter confirmation use the same position- and shape-aware current-footer predicate, which accepts an active-turn signature only on the current final nonblank footer row after the shared classifier proves its composer context: the Enter is confirmed only when that predicate changes from idle immediately before the Enter to busy after it, or when the composer clears; native `working` alone and a pre-existing rendered-busy footer never prove that Enter.
 Rendered idle with pending text remains unconfirmed and preserves the escalation for retry.
 For a non-Claude target with an already active or unreadable native baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A known Claude target captures its rendered baseline before each Enter, so a pre-existing active-turn footer cannot serve as submit confirmation.
@@ -297,7 +297,7 @@ For Herdr, target existence, native state, capture, composer state, and verified
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
-`pane_is_busy` therefore requires the rendered Claude active-turn signature, such as `esc to interrupt` or a spinner with elapsed time, before declaring the pane busy.
+`pane_is_busy` therefore uses that shared current-footer predicate; matching text higher in the transcript is inert because nested worker output can quote another harness's busy footer.
 When the rendered pane is idle, injection falls through to the affirmative `empty` composer guard, while an unreadable capture or any non-`empty` composer verdict still defers.
 Each busy or composer deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`; an unreadable busy-guard capture is logged as `unreadable` and also defers.
 The Herdr `busy` adapter result is logged as its native `working` label; for Claude this preserves diagnostic evidence without making it a busy verdict.
@@ -310,7 +310,7 @@ It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
+Fresh-entry cleanup and flag ordering are owned by the AFK skill's stale-artifact lifecycle; an away restart or recovery with `state/.afk` already present preserves the session's escalation buffer, delivery sidecars, and check ledger.
 
 ## Destructive lab safety
 

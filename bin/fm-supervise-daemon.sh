@@ -436,6 +436,8 @@ classify_unknown() {  # <reason>
 # --- stale marker + escalation buffer (stateful, but via explicit state dir) -
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
 # Buffer:   state/.subsuper-escalations    one distilled line per escalation.
+# Checks:   state/.subsuper-check-ledger   session-scoped routing transactions
+#           and verified-delivery state for durable check wakes.
 # Seen:     state/.subsuper-seen-status-<task>  last status line the scan
 #           escalated, so the catch-all does not re-fire the same terminal.
 
@@ -594,7 +596,7 @@ fm_daemon_primary_harness() {
 }
 
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 visible harness
+  local target=$1 backend=${2:-tmux} native tail40 visible harness claude_footer_rc
   FM_PANE_BUSY_REASON=
   FM_PANE_NATIVE_BUSY_STATE=
   fm_daemon_primary_harness >/dev/null
@@ -612,18 +614,23 @@ pane_is_busy() {  # <target> [backend]
     # active-turn signature is the positive foreground-busy proof.
     tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
       FM_PANE_BUSY_REASON='unreadable'
-      return 0
+      return 1
     }
     visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
     [ -n "$visible" ] || {
       FM_PANE_BUSY_REASON='unreadable'
-      return 0
+      return 1
     }
-    if printf '%s' "$visible" | fm_busy_lines_match claude; then
+    if printf '%s' "$visible" | fm_claude_current_footer_busy; then
       FM_PANE_BUSY_REASON='rendered-busy'
       return 0
+    else
+      claude_footer_rc=$?
     fi
-    return 1
+    case "$claude_footer_rc" in
+      1) return 1 ;;
+      *) FM_PANE_BUSY_REASON='unreadable'; return 1 ;;
+    esac
   fi
   case "$native" in
     busy)
@@ -685,6 +692,163 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
+check_ledger_state() {  # <state> <sequence-or-empty> <key> <payload>
+  local state=$1 sequence=$2 key=$3 payload=$4 ledger
+  ledger="$state/.subsuper-check-ledger"
+  [ -s "$ledger" ] || return 0
+  awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
+    $3 == key && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) { state=$1 }
+    END { if (state != "") print state }
+  ' "$ledger"
+}
+
+check_ledger_append() {  # <state> <reserved|buffered|delivered> <sequence> <key> <payload> [buffer-lines]
+  local state=$1 status=$2 sequence=$3 key=$4 payload=$5 buffer_lines=${6:-} ledger
+  case "$status" in reserved|buffered|delivered) ;; *) return 2 ;; esac
+  case "$sequence" in ''|*[!0-9]*) return 2 ;; esac
+  case "$key$payload" in *$'\t'*|*$'\r'*|*$'\n'*) return 2 ;; esac
+  if [ "$status" = reserved ]; then
+    case "$buffer_lines" in ''|*[!0-9]*) return 2 ;; esac
+  else
+    buffer_lines=''
+  fi
+  ledger="$state/.subsuper-check-ledger"
+  (umask 077; printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$status" "$sequence" "$key" "$payload" "$buffer_lines" >> "$ledger")
+}
+
+check_ledger_reserve() {  # <state> <sequence> <key> <payload>
+  local state=$1 sequence=$2 key=$3 payload=$4 exact buf buffer_lines
+  exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
+  [ -n "$exact" ] && return 0
+  buf="$state/.subsuper-escalations"
+  buffer_lines=0
+  [ ! -e "$buf" ] || buffer_lines=$(wc -l < "$buf" | tr -d ' ')
+  check_ledger_append "$state" reserved "$sequence" "$key" "$payload" "$buffer_lines"
+}
+
+check_ledger_reserved_append_present() {  # <state> <sequence-or-empty> <key> <payload> <distilled>
+  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 ledger buf reservation before expected now line line_no
+  ledger="$state/.subsuper-check-ledger"
+  buf="$state/.subsuper-escalations"
+  [ -s "$ledger" ] && [ -s "$buf" ] || return 1
+  reservation=$(awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
+    $1 == "reserved" && $3 == key \
+      && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) {
+        lines=$5
+        original=$4
+      }
+    END { if (lines != "") print lines "\t" original }
+  ' "$ledger")
+  before=${reservation%%$'\t'*}
+  expected=${reservation#*$'\t'}
+  case "$before" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(wc -l < "$buf" | tr -d ' ')
+  line_no=$((before + 1))
+  [ "$now" -ge "$line_no" ] || return 1
+  line=$(sed -n "${line_no}p" "$buf") || return 1
+  [ "$line" = "$expected" ] || [ "$line" = "$distilled" ]
+}
+
+# Append one durable check to the escalation buffer exactly once per away
+# session.
+# A reservation is not a seen record: it lets replay finish a transaction that
+# died before the buffer append without suppressing the original event.
+check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
+  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 exact logical buf
+  buf="$state/.subsuper-escalations"
+  exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
+  case "$exact" in
+    buffered|delivered) return 2 ;;
+    reserved)
+      if check_ledger_reserved_append_present \
+        "$state" "$sequence" "$key" "$payload" "$distilled"; then
+        check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+        return 2
+      fi
+      ;;
+  esac
+
+  logical=$(check_ledger_state "$state" '' "$key" "$payload")
+  case "$logical" in
+    buffered|delivered) return 2 ;;
+    reserved)
+      if check_ledger_reserved_append_present \
+        "$state" '' "$key" "$payload" "$distilled"; then
+        check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+        return 2
+      fi
+      ;;
+  esac
+
+  check_ledger_reserve "$state" "$sequence" "$key" "$payload" || return 1
+  escalate_add "$state" "$distilled" || return 1
+  check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+  return 0
+}
+
+check_ledger_mark_delivered() {  # <state>
+  local state=$1 ledger buf tmp reservations reservation sequence key payload before line line_no
+  ledger="$state/.subsuper-check-ledger"
+  buf="$state/.subsuper-escalations"
+  [ -s "$ledger" ] || return 0
+  tmp=$(mktemp "$state/.subsuper-check-delivered.XXXXXX") || return 1
+  reservations=$(awk -F '\t' '
+    {
+      id=$2 FS $3 FS $4
+      status[id]=$1
+      sequence[id]=$2
+      key[id]=$3
+      payload[id]=$4
+      before[id]=$5
+    }
+    END {
+      for (id in status) {
+        if (status[id] == "reserved") print sequence[id], key[id], payload[id], before[id]
+      }
+    }
+  ' OFS='\t' "$ledger") || { rm -f "$tmp"; return 1; }
+  while IFS=$'\t' read -r sequence key payload before; do
+    [ -n "$sequence$key$payload$before" ] || continue
+    case "$before" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
+    line_no=$((before + 1))
+    line=$(sed -n "${line_no}p" "$buf") || { rm -f "$tmp"; return 1; }
+    [ "$line" = "$payload" ] || { rm -f "$tmp"; return 1; }
+  done <<EOF
+$reservations
+EOF
+  while IFS=$'\t' read -r sequence key payload before; do
+    [ -n "$sequence$key$payload$before" ] || continue
+    check_ledger_append "$state" buffered "$sequence" "$key" "$payload" \
+      || { rm -f "$tmp"; return 1; }
+  done <<EOF
+$reservations
+EOF
+  if ! awk -F '\t' '
+    BEGIN { OFS="\t" }
+    {
+      id=$2 OFS $3 OFS $4
+      status[id]=$1
+      sequence[id]=$2
+      key[id]=$3
+      payload[id]=$4
+    }
+    END {
+      for (id in status) {
+        if (status[id] == "buffered") print "delivered", sequence[id], key[id], payload[id]
+      }
+    }
+  ' "$ledger" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -s "$tmp" ] && ! cat "$tmp" >> "$ledger"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+}
+
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
@@ -698,7 +862,12 @@ escalate_flush() {  # <state>
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  if inject_msg "$msg" "$state"; then
+    check_ledger_mark_delivered "$state" || return 1
+    : > "$buf"
+    rm -f "${buf}.since" "$state/.subsuper-inject-wedged"
+    return 0
+  fi
   return 1
 }
 
@@ -1207,7 +1376,7 @@ inject_msg() {  # <message> [state]
     busy_rc=$?
   fi
   native_state=${FM_PANE_NATIVE_BUSY_STATE:-unknown}
-  if [ "$busy_rc" -eq 0 ]; then
+  if [ "$busy_rc" -eq 0 ] || [ "${FM_PANE_BUSY_REASON:-}" = unreadable ]; then
     case "${FM_PANE_BUSY_REASON:-native-busy}" in
       native-busy|rendered-busy)
         log "inject deferred: supervisor pane busy (agent mid-turn; subcause=${FM_PANE_BUSY_REASON:-native-busy}; native-state=$native_state)"
@@ -1280,8 +1449,9 @@ is_wake_reason() {  # <reason>
 
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
-handle_wake() {  # <reason> <state>
-  local reason=$1 state=$2 decision action distilled task last stale_detail
+handle_wake() {  # <reason> <state> [durable-key] [durable-sequence]
+  local reason=$1 state=$2 durable_key=${3:-} durable_sequence=${4:-}
+  local decision action distilled task last stale_detail check_rc
   local kind="" arg=""
   if should_force_self "$reason"; then
     log "wake force-self (FM_INJECT_SKIP): $reason"
@@ -1310,7 +1480,7 @@ handle_wake() {  # <reason> <state>
                        decision="escalate|${reason#stale: }" ;;
                    esac ;;
               esac ;;
-    check:*)  decision=$(classify_check "$reason") ;;
+    check:*)  kind=check; decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
     *)        decision=$(classify_unknown "$reason") ;;
   esac
@@ -1319,13 +1489,31 @@ handle_wake() {  # <reason> <state>
   [ "$kind" = signal ] && sync_pause_markers_from_signal "$state" "$arg"
   case "$action" in
     escalate)
+      if [ "$kind" = check ] && [ -n "$durable_key" ] && [ -n "$durable_sequence" ]; then
+        check_escalate_once "$state" "$durable_sequence" "$durable_key" "$reason" "$distilled"
+        check_rc=$?
+        case "$check_rc" in
+          0) ;;
+          2)
+            log "self-handle: $reason -> identical check already buffered or delivered this away session"
+            return 0
+            ;;
+          *)
+            log "check routing failed before durable acknowledgement: key=$durable_key sequence=$durable_sequence"
+            return 1
+            ;;
+        esac
+      else
+        escalate_add "$state" "$distilled" || return 1
+      fi
       log "escalate: $reason -> $distilled"
-      escalate_add "$state" "$distilled"
       # A terminal-stale escalate must not leave a persistence marker behind, or
       # housekeeping re-escalates the same pane as a false wedge later.
       [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
       mark_escalated_seen "$kind" "$arg" "$state"
-      [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ] && { escalate_flush "$state" || true; }
+      if [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ]; then
+        escalate_flush "$state" || return 1
+      fi
       ;;
     pause)
       # Declared wait, an external-wait pause or a verified captain-held transfer:
@@ -1370,11 +1558,12 @@ handle_wake() {  # <reason> <state>
       log "self-handle: $reason -> $distilled"
       ;;
   esac
+  return 0
 }
 
 handle_durable_wakes() {  # <watcher-reason> <state>
   local fallback_reason=$1 state=$2 out err tab epoch sequence kind key payload rest
-  local handled=0 ack_through ack_generation
+  local handled=0 routing_failed=0 ack_through ack_generation
   out=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || return 1
   err=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || { rm -f "$out"; return 1; }
   if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then
@@ -1388,10 +1577,20 @@ handle_durable_wakes() {  # <watcher-reason> <state>
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$sequence" in ''|*[!0-9]*) continue ;; esac
     case "$kind" in signal|stale|check|heartbeat) ;; *) continue ;; esac
-    handle_wake "$payload" "$state"
+    if ! handle_wake "$payload" "$state" "$key" "$sequence"; then
+      routing_failed=1
+      break
+    fi
     handled=$((handled + 1))
   done < "$out"
-  [ "$handled" -gt 0 ] || handle_wake "$fallback_reason" "$state"
+  if [ "$routing_failed" -eq 1 ]; then
+    rm -f "$out" "$err"
+    return 1
+  fi
+  if [ "$handled" -eq 0 ] && ! handle_wake "$fallback_reason" "$state"; then
+    rm -f "$out" "$err"
+    return 1
+  fi
 
   ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err" | tail -1)
   ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err" | tail -1)

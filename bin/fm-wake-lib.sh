@@ -1619,6 +1619,19 @@ fm_wake_clean_field() {
   LC_ALL=C tr '\t\r\n' '   '
 }
 
+fm_wake_check_queued() { # <key> <payload>
+  local key=$1 payload=$2 clean_key clean_payload needle rc
+  clean_key=$(printf '%s' "$key" | fm_wake_clean_field)
+  clean_payload=$(printf '%s' "$payload" | fm_wake_clean_field)
+  needle=$(printf '%s\t%s' "$clean_key" "$clean_payload")
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  awk -F '\t' 'NF >= 5 && $3 == "check" { print $4 "\t" $5 }' \
+    "$FM_WAKE_QUEUE" 2>/dev/null | grep -Fqx -- "$needle"
+  rc=$?
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  return "$rc"
+}
+
 fm_wake_append() {
   local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status
   local recovery_marker
@@ -1754,6 +1767,9 @@ fm_wake_print_deduped() {
   awk -F '\t' '
     NF >= 5 {
       dedupe = $3 SUBSEP $4
+      if ($3 == "check") {
+        dedupe = $3 SUBSEP $4 SUBSEP $5
+      }
       if ($3 == "heartbeat") {
         dedupe = "heartbeat"
       }

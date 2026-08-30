@@ -313,6 +313,7 @@ fm_composer_strip_ghost() {
 # outside its composer and the composer verdict is therefore always `unknown`.
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
+FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -350,6 +351,34 @@ fm_busy_lines_match() {  # [harness]
     esac
   fi
   [ -n "$regex" ] && printf '%s' "$lines" | grep -qiE "$regex"
+}
+
+# fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
+# unreadable or structurally ambiguous state.
+fm_claude_current_footer_busy() {
+  local lines plain footer composer caps verdict
+  IFS= read -r -d '' lines || true
+  [ -n "$lines" ] || return 2
+  plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
+  footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
+  fm_composer_normalize_trim_var footer
+  [ -n "$footer" ] || return 2
+  composer=$(printf '%s\n' "$plain" | awk '
+    { rows[NR]=$0 }
+    NF { last=NR }
+    END { for (row=1; row < last; row++) print rows[row] }
+  ')
+  caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
+  verdict=$(fm_composer_classify_screen "$caps" "$composer")
+  [ "$verdict" = empty ] || return 2
+  if [ -n "${FM_BUSY_REGEX:-}" ]; then
+    if printf '%s\n' "$footer" | fm_busy_lines_match claude; then
+      return 0
+    fi
+  elif printf '%s\n' "$footer" | grep -qE "$FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX"; then
+    return 0
+  fi
+  return 1
 }
 
 # The prompt glyphs, each declared exactly once (see THE SAFETY RULE above).

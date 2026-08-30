@@ -838,6 +838,7 @@ const urgentStatusLines = [
   "failed: provider unavailable",
   "done: checks green",
   "needs-decision: captain input required",
+  "needs-decision [corr=0123456789abcdef] [key=release]: captain input required",
   "working: credentials required",
   "working: login required",
   "working: PR ready for review",
@@ -872,6 +873,23 @@ for (const [index, fileName] of ["_branch-driver.status", "-branch-driver.status
   if (Date.now() - started >= urgentBudgetMs) {
     throw new Error(`leading-character status wake waited for the coalescing window (${Date.now() - started}ms)`);
   }
+}
+
+writeFileSync(statusPath, "working: still running\n");
+const traversalStatusPath = `${home}/state/../branch-driver.status`;
+const nestedStatusPath = `${home}/state/nested/branch-driver.status`;
+mkdirSync(`${home}/state/nested`, { recursive: true });
+writeFileSync(`${home}/branch-driver.status`, "blocked: outside state\n");
+writeFileSync(nestedStatusPath, "blocked: nested status\n");
+for (const [index, invalidPath] of [traversalStatusPath, nestedStatusPath].entries()) {
+  const before = (globalThis.__fmPrompts ?? []).length;
+  const invalid = dispatch(`signal: ${invalidPath}`);
+  if (!invalid.accepted) throw new Error(`invalid status wake ${index + 1} was not accepted`);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  if ((globalThis.__fmPrompts ?? []).length !== before) {
+    throw new Error(`traversal or nested status path ${index + 1} bypassed validation and urgent coalescing`);
+  }
+  await settle(() => (globalThis.__fmPrompts ?? []).length === before + 1, `rejected status path ${index + 1} delayed prompt`);
 }
 
 const fifoHome = `${home}/fifo-probe-home`;

@@ -229,7 +229,7 @@ function statusTailIsUrgent(path: string): boolean {
   for (const line of tail.split(/\r?\n/)) {
     if (line.trim()) last = line;
   }
-  return /^\s*(?:done|needs-decision|blocked|failed)\b(?:\s+\[[^\]]+\])?\s*:|\b(?:login|credentials?|PR[- ]ready|ready for review|checks green)\b/i.test(last);
+  return /^\s*(?:done|needs-decision|blocked|failed)\b(?:\s+\[[^\]]+\])*\s*:|\b(?:login|credentials?|PR[- ]ready|ready for review|checks green)\b/i.test(last);
 }
 
 function staleWakeWindow(message: string): string | null {

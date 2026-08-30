@@ -4102,7 +4102,7 @@ test_rendered_busy_state_reads_the_cursor_busy_token() {
 }
 
 test_rendered_busy_state_scopes_claude_to_the_current_footer() {
-  local dir log resp fb ambiguous_out bare_legacy_out current_legacy_out nested_out active_out fail_out
+  local dir log resp fb ambiguous_out bare_legacy_out current_legacy_out nested_out foreign_out active_out fail_out
   dir="$TMP_ROOT/rendered-busy-claude-current-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' \
     'foo bar… (4s)' > "$resp/1.out"
@@ -4120,8 +4120,14 @@ test_rendered_busy_state_scopes_claude_to_the_current_footer() {
     '❯' \
     '────────────────────────' \
     'Claude 4.1' > "$resp/4.out"
-  herdr_claude_busy_plain > "$resp/5.out"
-  printf '1\n' > "$resp/6.exit"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    'Claude 4.1' \
+    '✲ Working… (4s)' > "$resp/5.out"
+  herdr_claude_busy_plain > "$resp/6.out"
+  printf '1\n' > "$resp/7.exit"
   fb=$(make_herdr_fakebin "$dir")
   ambiguous_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
@@ -4130,6 +4136,8 @@ test_rendered_busy_state_scopes_claude_to_the_current_footer() {
   current_legacy_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
   nested_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  foreign_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
   active_out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
@@ -4143,6 +4151,8 @@ test_rendered_busy_state_scopes_claude_to_the_current_footer() {
     || fail "a current Claude legacy footer in a proven composer must be busy, got '$current_legacy_out'"
   [ "$nested_out" = idle ] \
     || fail "nested Claude worker output must not classify the current idle footer busy, got '$nested_out'"
+  [ "$foreign_out" = unknown ] \
+    || fail "a foreign Working row outside the selected Claude composer boundary must be unknown, got '$foreign_out'"
   [ "$active_out" = busy ] \
     || fail "a genuine current Claude spinner footer must remain busy, got '$active_out'"
   [ "$fail_out" = unknown ] \

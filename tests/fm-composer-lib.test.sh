@@ -673,6 +673,25 @@ test_selected_content_is_composer_scoped_and_wrap_normalized
 test_pi_submit_observation_honors_pair_bound
 test_pi_submit_observation_rejects_nonmatching_pending_literal
 
+test_claude_current_footer_requires_selected_composer_adjacency() {
+  local foreign genuine rc
+  foreign=$'────────────────────────\n❯\n────────────────────────\nClaude 4.1\n✲ Working… (4s)\n'
+  if printf '%s' "$foreign" | fm_claude_current_footer_busy; then
+    fail "a foreign Working row below an idle Claude composer must not read busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] \
+    || fail "a foreign Working row outside the selected composer boundary must read unknown, got rc=$rc"
+
+  genuine=$'────────────────────────\n❯\n────────────────────────\n✲ Pollinating… (16s · ↓ 1.1k tokens)\n'
+  printf '%s' "$genuine" | fm_claude_current_footer_busy \
+    || fail "a genuine Claude mid-turn footer immediately below its composer must read busy"
+  pass "fm_claude_current_footer_busy: the footer belongs to the selected composer boundary"
+}
+
+test_claude_current_footer_requires_selected_composer_adjacency
+
 test_submit_retry_reports_send_failed_before_any_enter() {
   local out
   submit_key_always_fails() { return 1; }

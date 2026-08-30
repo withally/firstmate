@@ -199,7 +199,7 @@ FM_MERGE_AUTHORITY_SCRIPT_DIR=$SCRIPT_DIR
 # shellcheck source=bin/fm-merge-authority-lib.sh
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 fm_merge_authority_require_landing "$FM_HOME" "$ID" "$META" || exit 1
-if [ "$FM_MERGE_AUTHORITY" = firstmate ] && [ "$PROVIDER" = github ]; then
+if [ "$PROVIDER" = github ]; then
   fm_merge_authority_github_green "$PR_OWNER/$PR_REPO" "$PR_NUMBER" || exit 1
 fi
 

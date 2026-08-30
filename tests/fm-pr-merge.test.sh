@@ -171,6 +171,7 @@ add_gh_mocks_merge_fails() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   esac
   exit 0
 SH
@@ -225,6 +226,7 @@ add_gh_axi_mock_view_fails() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr view") exit 1 ;;
 esac
 exit 0
@@ -426,6 +428,7 @@ test_pr_metadata_is_recorded_before_the_forge_call() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge")
     cat "$FM_STATE_OVERRIDE/task-x1.meta" > "$FM_TEST_META_AT_MERGE"
     printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}"
@@ -586,6 +589,7 @@ test_github_refusal_quotes_the_forge_output() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge") echo "will be added to the merge queue when all requirements are met" ;;
 esac
 exit 0
@@ -648,7 +652,7 @@ test_github_auto_merge_without_queue_refuses_legibly() {
       "github-auto-no-queue: the refusal left the operator to infer the pending state"
     grep -qxF "pr merge 66 --repo example/repo $spelling --merge" "$case_dir/gh-axi.log" \
       || fail "github-auto-no-queue: the attempted merge was changed unexpectedly"
-    [ "$(wc -l < "$case_dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
+    [ "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" = 1 ] \
       || fail "github-auto-no-queue: the wrapper attempted more than one merge"
     assert_grep 'pr=https://github.com/example/repo/pull/66' "$case_dir/state/task-x1.meta" \
       "github-auto-no-queue: the attempted merge lost its PR reference"
@@ -879,6 +883,7 @@ test_github_fallback_view_refusal_says_the_queue_was_unobservable() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
 esac
@@ -924,6 +929,7 @@ test_github_unreadable_outcome_refusal_quotes_the_forge_output() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge") echo "will be added to the merge queue when all requirements are met" ;;
   "pr view") exit 1 ;;
 esac
@@ -1044,6 +1050,7 @@ test_github_without_gh_failed_read_keeps_bookkeeping() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge") exit 0 ;;
   "pr view") exit 1 ;;
 esac
@@ -1100,7 +1107,7 @@ test_github_zero_exit_queue_required_refuses_with_exact_retry() {
     "github-zero-exit-queue-required: queue rules were not read with pagination and encoded branch path"
   grep -qxF 'pr merge 56 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "github-zero-exit-queue-required: the attempted merge was changed unexpectedly"
-  [ "$(wc -l < "$case_dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
+  [ "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" = 1 ] \
     || fail "github-zero-exit-queue-required: the wrapper attempted more than one merge"
   assert_no_grep --auto "$case_dir/gh-axi.log" \
     "github-zero-exit-queue-required: queue flags were auto-applied to the attempted merge"
@@ -1897,6 +1904,20 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
   add_gh_mocks "$case_dir" 8181818181818181818181818181818181818181
   : > "$case_dir/gh-axi.log"
 
+  printf 'mate-x\nextra\n' > "$case_dir/home/.fm-secondmate-home"
+  printf 'resolved [key=before-landing-task-x1]: fabricated\n' > "$status"
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout-marker" 2> "$case_dir/stderr-marker"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a multi-line secondmate marker must refuse before approval"
+  assert_grep 'no valid secondmate identity' "$case_dir/stderr-marker" \
+    "a multi-line secondmate marker did not fail closed"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "a multi-line secondmate marker still reached the forge merge"
+
+  printf '%s\n' mate-x > "$case_dir/home/.fm-secondmate-home"
   printf 'needs-decision [key=before-landing-task-x1]: approve landing\n' > "$status"
   set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
@@ -1908,6 +1929,32 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
     "missing parent approval did not explain the keyed record"
   assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
     "missing parent approval still reached the forge merge"
+
+  printf 'resolved [key=before-landing-task-x1]: fabricated\n' > "$status"
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout-resolved-only" 2> "$case_dir/stderr-resolved-only"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a resolved-only approval must not close an unopened key"
+  assert_grep 'parent-firstmate approval is not resolved' "$case_dir/stderr-resolved-only" \
+    "a resolved-only approval was accepted without an opening decision"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "a resolved-only approval reached the forge merge"
+
+  printf '%s\n' \
+    'needs-decision [key=before-landing-task-x1]: approve landing' \
+    'resolved: prose mentions [key=before-landing-task-x1]' > "$status"
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout-prose" 2> "$case_dir/stderr-prose"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a prose key mention must not resolve an open key"
+  assert_grep 'parent-firstmate approval is not resolved' "$case_dir/stderr-prose" \
+    "a prose key mention was accepted as a resolution"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "a prose key mention reached the forge merge"
 
   printf 'resolved [key=before-landing-task-x1]: approved by parent firstmate\n' >> "$status"
   printf '%s\n' \
@@ -1937,6 +1984,68 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
   assert_grep 'pr merge 81 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     "green parent-approved PR did not reach the forge merge"
   pass "firstmate authority accepts the parent resolution only for a green PR"
+}
+
+test_github_authority_tiers_refuse_red_work() {
+  local authority case_dir rc
+  for authority in captain self; do
+    case_dir=$(make_case "red-authority-$authority")
+    add_gh_mocks "$case_dir" 8383838383838383838383838383838383838383
+    printf '%s\n' \
+      'summary: "1 passed, 1 failed, 2 total"' \
+      'checks[2]{name,conclusion}:' \
+      '  lint,pass' \
+      '  tests,fail' > "$case_dir/github-checks"
+    if [ "$authority" = self ]; then
+      printf '%s\n' 'yolo=on' 'merge_authority=self' >> "$case_dir/state/task-x1.meta"
+    fi
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 \
+      https://github.com/example/repo/pull/83 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "$authority authority must refuse a red PR"
+    assert_grep 'checks are not green' "$case_dir/stderr" \
+      "$authority authority did not name the failed green gate"
+    assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+      "$authority authority still reached the forge for a red PR"
+  done
+  pass "captain and self authority refuse red GitHub PRs before the forge"
+}
+
+test_github_green_gate_rejects_malformed_summaries_and_rows() {
+  local name case_dir rc
+  for name in malformed-summary pending-row; do
+    case_dir=$(make_case "green-gate-$name")
+    add_gh_mocks "$case_dir" 8484848484848484848484848484848484848484
+    if [ "$name" = malformed-summary ]; then
+      printf '%s\n' \
+        'summary: "not-a-number passed, nope failed, nonsense total"' \
+        'checks[0]{name,conclusion}:' > "$case_dir/github-checks"
+    else
+      printf '%s\n' \
+        'summary: "1 passed, 0 failed, 1 total"' \
+        'checks[1]{name,conclusion}:' \
+        '  tests,pending' > "$case_dir/github-checks"
+    fi
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 \
+      https://github.com/example/repo/pull/84 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "$name must refuse before the forge"
+    assert_grep 'checks are not green' "$case_dir/stderr" \
+      "$name did not produce the green-gate refusal"
+    assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+      "$name still reached the forge merge"
+  done
+  pass "GitHub green checks require strict counts and green individual rows"
 }
 
 test_gitlab_refusal_reports_nothing() {
@@ -2219,6 +2328,8 @@ test_gitlab_merge_reports_upward
 test_queued_gitlab_merge_leaves_the_poll_armed
 test_failed_merge_reports_nothing
 test_firstmate_authority_requires_parent_resolution_and_green_checks
+test_github_authority_tiers_refuse_red_work
+test_github_green_gate_rejects_malformed_summaries_and_rows
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake
 test_queued_github_merge_leaves_the_poll_armed

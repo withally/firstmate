@@ -269,9 +269,35 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided merge posture"
+  assert_grep 'merge_authority=self' "$meta" "promotion did not preserve yolo=on's self authority"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
+}
+
+test_promote_preserves_explicit_firstmate_authority() {
+  local home meta out status
+  home="$TMP_ROOT/promote-firstmate/home"
+  mkdir -p "$home/state"
+  meta="$home/state/promote-f1.meta"
+  printf '%s\n' \
+    'window=fm-promote-f1' \
+    'kind=scout' \
+    'worktree=/tmp/wt' \
+    'yolo=off' \
+    'merge_authority=firstmate' > "$meta"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" \
+    promote-f1 --mode direct-PR --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "explicit firstmate promotion should succeed"
+  assert_grep 'merge_authority=firstmate' "$meta" \
+    "promotion dropped the explicit firstmate authority"
+  [ "$(grep -c '^merge_authority=' "$meta")" = 1 ] \
+    || fail "promotion wrote more than one merge authority line"
+  assert_contains "$out" 'promoted promote-f1 to ship mode=direct-PR yolo=off' \
+    "explicit firstmate promotion did not report success"
+  pass "fm-promote: an explicit firstmate authority survives scout promotion"
 }
 
 # The registry parser survives for the mechanical consumers only. It accepts the
@@ -332,5 +358,6 @@ test_spawn_refuses_a_brief_merge_authority_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_preserves_explicit_firstmate_authority
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"

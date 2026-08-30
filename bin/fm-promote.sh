@@ -114,12 +114,26 @@ META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
+PRIOR_AUTHORITY=$(awk -F= '$1 == "merge_authority" { value=substr($0, index($0, "=") + 1) } END { print value }' "$META")
+case "$PRIOR_AUTHORITY" in
+  ''|captain|firstmate|self) ;;
+  *) echo "error: task $ID has an invalid merge_authority record" >&2; exit 1 ;;
+esac
+if [ "$YOLO" = on ]; then
+  MERGE_AUTHORITY=self
+elif [ "$PRIOR_AUTHORITY" = firstmate ]; then
+  MERGE_AUTHORITY=firstmate
+else
+  MERGE_AUTHORITY=captain
+fi
+
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^merge_authority=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  echo "merge_authority=$MERGE_AUTHORITY"
 } >> "$TMP"
 mv "$TMP" "$META"
 TMP=

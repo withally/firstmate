@@ -187,7 +187,7 @@
 # resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
 # the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
 # park owns that home's supervision (docs/supervision-protocols/cursor.md).
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off> merge_authority=<tier>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [merge_authority=<tier>]
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
@@ -1062,7 +1062,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
   MERGE_AUTHORITY=$(fm_meta_get "$RELAUNCH_META" merge_authority)
-  if [ -z "$MERGE_AUTHORITY" ]; then
+  if [ "$KIND" = ship ] && [ -z "$MERGE_AUTHORITY" ]; then
     if [ "$YOLO" = on ]; then MERGE_AUTHORITY=self; else MERGE_AUTHORITY=captain; fi
   fi
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
@@ -2690,10 +2690,12 @@ fi
 if [ "$KIND" = secondmate ]; then
   MODE=secondmate
   YOLO=off
+  MERGE_AUTHORITY=
   : "${SECONDMATE_PROJECTS:=}"
 elif [ "$KIND" = scout ]; then
   MODE=
   YOLO=
+  MERGE_AUTHORITY=
 fi
 
 # Resolve the optional default-off W3C trace context (bin/fm-trace-context-lib.sh,
@@ -2956,5 +2958,9 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
 fi
 
 SPAWN_DELIVERY=
-[ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO merge_authority=$MERGE_AUTHORITY"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+SPAWN_AUTHORITY=
+if [ -n "$MODE" ]; then
+  SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
+  [ -z "$MERGE_AUTHORITY" ] || SPAWN_AUTHORITY=" merge_authority=$MERGE_AUTHORITY"
+fi
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_AUTHORITY"

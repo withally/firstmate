@@ -50,6 +50,7 @@ The tiers mean:
 For `firstmate`, the secondmate opens four exact keyed parent decisions for each task: `before-dispatch-<task-id>`, `before-landing-<task-id>`, `twice-failed-blocker-<task-id>`, and `worker-finish-<task-id>`.
 The main firstmate answers each through `bin/fm-send.sh <secondmate-id> --resolve-key <key> ...`.
 The landing guards accept `before-landing-<task-id>` only when the latest event for that key is `resolved` in the locally registered parent channel, and the GitHub guard additionally requires every reported check to be green before it invokes the forge merge.
+Remote `route=remote` firstmate-authority landings remain fail-closed until a parent approval-record transport exists; track that transport as a PR follow-up.
 No tier authorizes a red merge.
 
 Ship briefs record `Merge authority: <tier>` beside their delivery contract, and `state/<id>.meta` records the same tier as `merge_authority=<tier>` beside `mode=` and `yolo=`.

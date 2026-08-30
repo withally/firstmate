@@ -240,9 +240,19 @@ fm_pane_is_busy() {  # <target> [harness]
 # `unknown` verdict is preserved untouched: busy conversion without the
 # transition evidence could mark an undelivered message delivered.
 fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep> [baseline-idle]
-  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} i=0 j state busy_state
+  local target=$1 retries=$2 sleep_s=$3 baseline_idle=${4:-} i=0 j state busy_state enter_sent=0
   while :; do
-    tmux send-keys -t "$target" Enter 2>/dev/null || true
+    if tmux send-keys -t "$target" Enter 2>/dev/null; then
+      enter_sent=1
+    elif [ "$enter_sent" -eq 0 ]; then
+      i=$((i + 1))
+      if [ "$i" -ge "$retries" ]; then
+        printf 'send-failed'
+        return 0
+      fi
+      sleep "$sleep_s"
+      continue
+    fi
     sleep "$sleep_s"
     state=$(fm_tmux_composer_state "$target")
     case "$state" in

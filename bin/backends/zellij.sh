@@ -563,8 +563,8 @@ fm_backend_zellij_composer_observed_append() {  # <target> <before> <text> [expe
 # fm_backend_zellij_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then drive the shared verify-and-retry-Enter
 # loop (bin/fm-composer-lib.sh: fm_composer_submit_retry_core) against the
-# real composer verdict above. Echoes empty|pending|unknown|send-failed, a
-# subset of the proof-carrying submit vocabulary. Only a positively classified
+# real composer verdict above. Echoes empty|pending|pending-unproven|unknown|
+# send-failed, a subset of the proof-carrying submit vocabulary. Only a positively classified
 # empty composer confirms delivery - a pane that merely CHANGED does not, so
 # the old heuristic's false "delivery confirmed" cannot recur.
 fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label]

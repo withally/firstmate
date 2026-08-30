@@ -11,8 +11,9 @@
 // this file lives in .pi/extensions, so no other harness ever loads it.
 // Supervision is default-on for every task once
 // this Pi session owns the fleet lock: no captain grant file is required.
-// Away mode (or a broken branch) keeps today's wake-to-main behavior
-// untouched regardless.
+// Away mode (or a broken branch in the current generation) keeps wake delivery
+// on today's wake-to-main path; a replaced generation discards its stale
+// continuations instead.
 //
 // Prefix stability (the cache contract, owner: bin/fm-branch-prompt.sh
 // header): the branch's system prompt is the generator's byte-stable output,
@@ -30,12 +31,13 @@
 // for the whole process; and a secondary read-only Pi session that never owns
 // the lock must never write markers, clean leases, or accept wakes.
 //
-// Failure direction: every path that cannot reach a working branch falls back
-// to delivering the wake to MAIN exactly as before the branch existed - a
-// broken branch degrades to today's behavior, never to a lost wake. The wake
-// queue itself stays durable until the handler runs the drain's
-// acknowledgement, so a branch that dies mid-handling re-presents its rows at
-// the next drain exactly as a mid-handling main crash always has.
+// Failure direction: a current-generation path that cannot reach a working
+// branch falls back to delivering the wake to MAIN exactly as before the
+// branch existed - a broken branch degrades to today's behavior, never to a
+// lost wake. A continuation from a replaced generation is discarded instead;
+// its accepted rows remain durable until the handler runs the drain's
+// acknowledgement, so they re-present at the next drain exactly as a
+// mid-handling main crash always has.
 //
 // Model and effort selection: supervision is an easier job than main, so the
 // captain can pin a cheaper model AND a shallower reasoning effort for the

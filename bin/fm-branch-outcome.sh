@@ -340,6 +340,9 @@ case "$CMD" in
     [ -n "$SUMMARY" ] || usage
     case "$VERDICT" in routine|captain|firstmate-action) ;; *) usage ;; esac
     case "$SILENT" in true|false) ;; *) usage ;; esac
+    if [ "$VERDICT" != routine ]; then
+      SILENT=false
+    fi
     fm_lock_acquire_wait "$LOCK"
     if ! LAST_SEQ=$(last_seq); then
       fm_lock_release "$LOCK"

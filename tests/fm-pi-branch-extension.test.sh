@@ -1156,6 +1156,27 @@ test_firstmate_action_replay_uses_wake_sequence_idempotency() {
   pass "firstmate-action replay uses wake sequence as its durable idempotency key"
 }
 
+test_main_bound_outcome_cannot_be_silenced_at_format_boundary() {
+  local home store replay
+  home="$TMP_ROOT/main-bound-format-boundary"
+  store="$home/state/branch-outcomes.jsonl"
+  mkdir -p "$home/state"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append --task task-captain --verdict captain --summary "captain-only result" --silent true \
+    >/dev/null || fail "captain append was rejected at the format boundary"
+  [ "$(jq -r '.silent' "$store")" = false ] \
+    || fail "the format boundary persisted a main-bound outcome as silent"
+
+  replay=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) \
+    || fail "main-bound startup replay failed"
+  case "$replay" in
+    *"captain-only result"*) ;;
+    *) fail "a main-bound outcome escaped startup replay: $replay" ;;
+  esac
+  pass "the outcome format boundary keeps main-bound rows deliverable"
+}
+
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
   local repo home out status
   repo="$TMP_ROOT/coalesced-dispatch-root"
@@ -3592,6 +3613,7 @@ test_firstmate_action_replays_after_crash_before_ack
 test_firstmate_action_duplicate_handoff_is_deduplicated
 test_firstmate_action_delivery_waits_for_branch_lease_release
 test_firstmate_action_replay_uses_wake_sequence_idempotency
+test_main_bound_outcome_cannot_be_silenced_at_format_boundary
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work
 test_captain_outcome_encoding_failure_delivers_plain_instruction
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot

@@ -454,7 +454,9 @@ cat > "$modeldir/models.json" <<'JSON'
   }
 }
 JSON
-PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$modeldir" FM_LIVE_SESSIONS="$TMP_ROOT/model-sessions" \
+env -i \
+  PATH="${PATH:-/usr/bin:/bin}" HOME="$home" NODE_NO_WARNINGS=1 \
+  PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$modeldir" FM_LIVE_SESSIONS="$TMP_ROOT/model-sessions" \
   node --input-type=module > "$TMP_ROOT/model-output" 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
@@ -557,7 +559,9 @@ cat > "$effortdir/models.json" <<'JSON'
   }
 }
 JSON
-PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$effortdir" FM_LIVE_SESSIONS="$TMP_ROOT/effort-sessions" \
+env -i \
+  PATH="${PATH:-/usr/bin:/bin}" HOME="$home" NODE_NO_WARNINGS=1 \
+  PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$effortdir" FM_LIVE_SESSIONS="$TMP_ROOT/effort-sessions" \
   node --input-type=module > "$TMP_ROOT/effort-output" 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 

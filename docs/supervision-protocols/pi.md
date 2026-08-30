@@ -27,8 +27,8 @@ Only that call closes the outcome; an unrelated, empty, or paraphrased answer le
 The persisted entry is already the captain-visible record, so MAIN must not re-emit it verbatim merely because it appeared.
 Before MAIN steers, controls lifecycle, or cleans up a task, claim its lease with `bin/fm-lease.sh claim <task>` and release it afterwards; a refused claim means the branch is acting on that task right now.
 This conversation still receives every other fleet-wide or unresolvable wake, the branch's wakes when it is unavailable or away mode is active, and every watcher-failure alarm regardless, so the arm and repair contract above is unchanged.
-Treat the merged fleet event as already handled for fleet operations: MAIN must not re-drain, re-run, or acknowledge it.
-Separately, MAIN applies judgment about whether and how to surface, summarize, reference, or incorporate a merged sailboat outcome in the captain conversation; event ownership does not decide the conversational treatment.
+Treat an opened captain-facing turn as already handled; any legacy rendered branch note is historical and already handled - do not re-drain or re-handle its event.
+Separately, MAIN applies judgment about whether and how to surface, summarize, reference, or incorporate the captain outcome in the captain conversation; event ownership does not decide the conversational treatment.
 Read the durable outcome store with the fm_branch_outcomes tool when the captain asks what happened.
 
 The turn-end guard extension lives at `__FM_PI_TURNEND_EXT__`.

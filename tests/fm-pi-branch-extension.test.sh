@@ -604,52 +604,38 @@ const untouched = cacheHandler({ type: "before_provider_request", payload: { mod
 if (untouched !== undefined) throw new Error("cache-key hook rewrote a provider payload with no prompt_cache_key");
 console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 
-// 4. Two-stage filter, stage 2: routine while main is idle appends with no
-// turn; routine while main is busy defers to after the captain's next prompt;
-// captain-relevant appends and triggers exactly one turn. Store rows are
-// written BEFORE the merge note and marked read after it.
+// 4. Two-stage filter, stage 2: unsolicited routine outcomes stay durable but
+// never enter main, while captain-relevant outcomes trigger exactly one turn.
+// Store rows are written BEFORE delivery and marked read after it.
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
 const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
-if (sentToMain.length !== 1) throw new Error("routine report did not merge exactly one note");
-if (sentToMain[0].message.customType !== "fm-branch-merge") throw new Error("merge note has the wrong custom type");
-if (sentToMain[0].options.triggerTurn) throw new Error("routine idle merge must not trigger a turn");
-if (sentToMain[0].options.deliverAs) throw new Error("routine idle merge must append immediately");
+if (sentToMain.length !== 0) throw new Error("routine report entered main instead of remaining store-only");
 fire("agent_start", {});
-await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy" }, undefined, undefined, {});
-if (sentToMain[1].options.deliverAs !== "nextTurn" || sentToMain[1].options.triggerTurn) {
-  throw new Error(`routine busy merge must defer to nextTurn without a turn: ${JSON.stringify(sentToMain[1].options)}`);
-}
+await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy", silent: true }, undefined, undefined, {});
+if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
 await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
-if (sentToMain[2].options.triggerTurn !== true || sentToMain[2].options.deliverAs !== "followUp") {
-  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[2].options)}`);
+if (sentToMain.length !== 1) throw new Error(`captain report did not merge exactly one note: ${sentToMain.length}`);
+if (sentToMain[0].options.triggerTurn !== true || sentToMain[0].options.deliverAs !== "followUp") {
+  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
 }
-if (typeof sentToMain[0].message.content !== "string" || !sentToMain[0].message.content.startsWith("⛵ ")) {
-  throw new Error(`routine note missing sailboat prefix: ${sentToMain[0].message.content}`);
-}
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
-  throw new Error(`routine note still has boilerplate: ${sentToMain[0].message.content}`);
-}
-// A routine note is rendered (display: true); a captain-facing note must
-// never be printed or rendered at all - the follow-up turn triggered above
-// is itself the captain-visible outcome. display: false is the exact flag
+// A captain-facing note must never be printed or rendered at all - the
+// follow-up turn triggered above is itself the captain-visible outcome.
+// display: false is the exact flag
 // Pi's own chat renderer and HTML export both gate on before ever calling a
 // customType renderer, so this is the authoritative "never printed" proof.
-if (sentToMain[0].message.display !== true) {
-  throw new Error(`routine note must render: display=${sentToMain[0].message.display}`);
+if (sentToMain[0].message.display !== false) {
+  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[0].message.display}`);
 }
-if (sentToMain[2].message.display !== false) {
-  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[2].message.display}`);
+if (typeof sentToMain[0].message.content !== "string" || sentToMain[0].message.content.includes("⚓")) {
+  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[0].message.content}`);
 }
-if (typeof sentToMain[2].message.content !== "string" || sentToMain[2].message.content.includes("⚓")) {
-  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[2].message.content}`);
+if (!sentToMain[0].message.content.includes("task-9: PR https://example.com/pr/9")) {
+  throw new Error(`captain note lost its outcome: ${sentToMain[0].message.content}`);
 }
-if (!sentToMain[2].message.content.includes("task-9: PR https://example.com/pr/9")) {
-  throw new Error(`captain note lost its outcome: ${sentToMain[2].message.content}`);
-}
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[2].message.content)) {
-  throw new Error(`captain note still has boilerplate: ${sentToMain[2].message.content}`);
+if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
+  throw new Error(`captain note still has boilerplate: ${sentToMain[0].message.content}`);
 }
 // What main's model actually receives. Pi keeps only `content` when it turns a
 // custom message into a provider message - customType, display, and details are
@@ -658,8 +644,7 @@ if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[2].message.content))
 // the REAL bin/fm-operational-input.sh so the protocol's own executable, not a
 // pattern in this test, decides what was delivered. Pi's half of that contract
 // is proven separately against the real SDK in fm-pi-branch-live-e2e.test.sh.
-writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[2].message.content);
-writeFileSync(`${home}/state/delivered-routine-note`, sentToMain[0].message.content);
+writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[0].message.content);
 if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
   throw new Error("one captain outcome must open exactly one turn on main");
 }
@@ -669,6 +654,7 @@ if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
 const rows = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 if (rows.length !== 3) throw new Error(`expected 3 store rows, got ${rows.length}`);
 if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain") throw new Error("store verdicts out of order");
+if (rows.some((row) => row.verdict === "routine" && row.silent !== true)) throw new Error("routine outcomes were not forced silent in the durable store");
 if (rows[0].wake !== "signal: working") throw new Error("store lost the wake reason");
 if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not marked read");
 
@@ -754,7 +740,7 @@ const assertRenderedNote = (note, glyph) => {
     throw new Error(`note remainder must be dim: ${JSON.stringify(fgCalls)}`);
   }
 };
-assertRenderedNote(sentToMain[0].message.content, "⛵");
+assertRenderedNote("⛵ historical routine outcome", "⛵");
 process.exit(0);
 EOF
   status=$?
@@ -798,12 +784,155 @@ EOF
     *"An outcome that directly answers an explicit captain request is captain-facing"*"regardless of whether it is healthy, routine, measured, actionable, or requires a decision."*) ;;
     *) fail "captain outcome body lost the unconditional explicit-request rule: $body" ;;
   esac
-  # The routine note is rendered in the TUI, and its renderer reads the glyph off
-  # the front of this same string, so it must stay plain text.
-  if ./bin/fm-operational-input.sh kind < "$home/state/delivered-routine-note" >/dev/null 2>&1; then
-    fail "routine note must stay plain rendered text, not typed operational input"
-  fi
-  pass "a captain outcome reaches main's model as typed, self-describing input while routine notes stay plain"
+  pass "a captain outcome reaches main's model as typed, self-describing input while routine outcomes stay store-only"
+}
+
+test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
+  local repo home out status
+  repo="$TMP_ROOT/coalesced-dispatch-root"
+  home="$TMP_ROOT/coalesced-dispatch-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  out=$(PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_TEST_BRANCH_WAKE_COALESCE_MS=1000 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire, mainUserMessages, home }; })()`);
+const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const urgentBudgetMs = 800;
+
+const idleRepeated = "signal: routine idle pulse";
+for (let index = 0; index < 3; index += 1) {
+  const offer = dispatch(idleRepeated);
+  if (!offer.accepted) throw new Error(`idle repeat ${index + 1} was not accepted`);
+}
+await new Promise((resolve) => setTimeout(resolve, 80));
+if ((globalThis.__fmPrompts ?? []).length !== 0) {
+  throw new Error("a routine idle repeat prompted before the bounded coalescing window closed");
+}
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "one coalesced idle repeat prompt");
+await new Promise((resolve) => setTimeout(resolve, 450));
+if ((globalThis.__fmPrompts ?? []).length !== 1) {
+  throw new Error(`idle repeats opened ${globalThis.__fmPrompts.length} branch turns`);
+}
+
+const repeated = "stale: assets waiting-for-merge";
+const staleStarted = Date.now();
+for (let index = 0; index < 3; index += 1) {
+  const offer = dispatch(repeated);
+  if (!offer.accepted) throw new Error(`repeat ${index + 1} was not accepted`);
+}
+await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "one urgent stale repeat prompt");
+if (Date.now() - staleStarted >= urgentBudgetMs) {
+  throw new Error(`first stale wake waited for the coalescing window (${Date.now() - staleStarted}ms)`);
+}
+await new Promise((resolve) => setTimeout(resolve, 450));
+if ((globalThis.__fmPrompts ?? []).length !== 2) {
+  throw new Error(`same-text repeats opened ${globalThis.__fmPrompts.length} branch turns`);
+}
+
+const statusPath = `${home}/state/branch-driver.status`;
+const urgentStatusLines = [
+  "blocked: waiting for the captain",
+  "failed: provider unavailable",
+  "done: checks green",
+  "needs-decision: captain input required",
+  "needs-decision [corr=0123456789abcdef] [key=release]: captain input required",
+  "working: credentials required",
+  "working: login required",
+  "working: PR ready for review",
+  "working: checks green",
+];
+for (const [index, line] of urgentStatusLines.entries()) {
+  writeFileSync(statusPath, `${line}\n`);
+  const started = Date.now();
+  const urgent = dispatch(`signal: ${statusPath}`);
+  if (!urgent.accepted) throw new Error(`urgent status wake ${index + 1} was not accepted`);
+  await settle(() => (globalThis.__fmPrompts ?? []).length === index + 3, `urgent status bypass prompt ${index + 1}`);
+  if (Date.now() - started >= urgentBudgetMs) {
+    throw new Error(`urgent status wake waited for the coalescing window (${Date.now() - started}ms)`);
+  }
+}
+
+const relativeStatusStarted = Date.now();
+const relativeStatus = dispatch("signal: branch-driver.status");
+if (!relativeStatus.accepted) throw new Error("relative status wake was not accepted");
+await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 3, "relative urgent status prompt");
+if (Date.now() - relativeStatusStarted >= urgentBudgetMs) {
+  throw new Error(`relative status wake waited for the coalescing window (${Date.now() - relativeStatusStarted}ms)`);
+}
+
+for (const [index, fileName] of ["_branch-driver.status", "-branch-driver.status"].entries()) {
+  const statusPath = `${home}/state/${fileName}`;
+  writeFileSync(statusPath, `${index === 0 ? "blocked" : "failed"}: captain attention required\n`);
+  const started = Date.now();
+  const urgent = dispatch(`signal: ${statusPath}`);
+  if (!urgent.accepted) throw new Error(`leading-character status wake ${index + 1} was not accepted`);
+  await settle(() => (globalThis.__fmPrompts ?? []).length === urgentStatusLines.length + 4 + index, `leading-character status prompt ${index + 1}`);
+  if (Date.now() - started >= urgentBudgetMs) {
+    throw new Error(`leading-character status wake waited for the coalescing window (${Date.now() - started}ms)`);
+  }
+}
+
+writeFileSync(statusPath, "working: still running\n");
+const traversalStatusPath = `${home}/state/../branch-driver.status`;
+const nestedStatusPath = `${home}/state/nested/branch-driver.status`;
+mkdirSync(`${home}/state/nested`, { recursive: true });
+writeFileSync(`${home}/branch-driver.status`, "blocked: outside state\n");
+writeFileSync(nestedStatusPath, "blocked: nested status\n");
+for (const [index, invalidPath] of [traversalStatusPath, nestedStatusPath].entries()) {
+  const before = (globalThis.__fmPrompts ?? []).length;
+  const invalid = dispatch(`signal: ${invalidPath}`);
+  if (!invalid.accepted) throw new Error(`invalid status wake ${index + 1} was not accepted`);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  if ((globalThis.__fmPrompts ?? []).length !== before) {
+    throw new Error(`traversal or nested status path ${index + 1} bypassed validation and urgent coalescing`);
+  }
+  await settle(() => (globalThis.__fmPrompts ?? []).length === before + 1, `rejected status path ${index + 1} delayed prompt`);
+}
+
+const fifoHome = `${home}/fifo-probe-home`;
+const fifoState = `${fifoHome}/state`;
+mkdirSync(fifoState, { recursive: true });
+const fifoPath = `${fifoState}/fifo.status`;
+const fifoCreated = spawnSync("mkfifo", [fifoPath], { encoding: "utf8" });
+if (fifoCreated.status !== 0) throw new Error(`could not create FIFO probe: ${fifoCreated.stderr}`);
+const fifoProbe = spawnSync(
+  process.execPath,
+  ["--input-type=module"],
+  {
+    input: `const prelude = process.env.DRIVER_PRELUDE;\nawait eval(\`(async () => { \${prelude}; globalThis.__t = { dispatch, fire }; })()\`);\nconst { dispatch, fire } = globalThis.__t;\nfire("session_start", {});\nconst started = Date.now();\nconst offer = dispatch(\`signal: \${process.env.FM_FIFO_PATH}\`);\nif (!offer.accepted) throw new Error("FIFO probe wake was not accepted");\nif (Date.now() - started >= 150) throw new Error(\`FIFO probe dispatch blocked for \${Date.now() - started}ms\`);\nprocess.exit(0);\n`,
+    encoding: "utf8",
+    env: { ...process.env, FM_HOME: fifoHome, FM_FIFO_PATH: fifoPath },
+    timeout: 800,
+  },
+);
+unlinkSync(fifoPath);
+if (fifoProbe.status !== 0) {
+  throw new Error(`FIFO status-tail dispatch was not nonblocking: ${fifoProbe.stderr || fifoProbe.error || fifoProbe.stdout}`);
+}
+
+let releasePrompt;
+globalThis.__fmPromptGate = new Promise((resolve) => { releasePrompt = resolve; });
+const pending = dispatch("stale: pending replacement wake");
+if (!pending.accepted) throw new Error("pending wake was not accepted");
+await settle(() => globalThis.__fmPromptStarted === true, "in-flight stale wake prompt");
+const promptCountBeforeShutdown = (globalThis.__fmPrompts ?? []).length;
+fire("session_shutdown", {});
+fire("session_start", {});
+releasePrompt();
+await settle(() => (globalThis.__fmPrompts ?? []).length === promptCountBeforeShutdown + 1, "stale wake settlement");
+if (mainUserMessages.length !== 0) throw new Error("a shutdown-cleared wake fell back into the replacement main session");
+if (!readFileSync(`${home}/state/.wake-queue`, "utf8").includes("branch-driver.status")) {
+  throw new Error("shutdown cleared the durable wake instead of leaving it queued");
+}
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi branch must coalesce same-text routine floods and bypass the delay for urgent work: $out"
+  [ -z "$out" ] || fail "Pi branch wake-coalescing test printed output: $out"
+  pass "Pi branch coalesces same-text routine floods and bypasses the delay for urgent work"
 }
 
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
@@ -927,12 +1056,8 @@ fire("agent_start", {}, mainCtx);
 const unsolicited = dispatch("signal: healthy resource result");
 if (!unsolicited.accepted) throw new Error("branch did not accept the unsolicited result");
 await settle(() => fleetOperations.length === 2, "unsolicited result acknowledgement");
-if (sentToMain.length !== 1 || sentToMain[0].options.triggerTurn) {
+if (sentToMain.length !== 0) {
   throw new Error(`unsolicited healthy result opened a main turn: ${JSON.stringify(sentToMain)}`);
-}
-const sailboat = sentToMain[0];
-if (sailboat.message.display !== true || !sailboat.message.content.startsWith("⛵ task-resource:")) {
-  throw new Error(`unsolicited healthy result was not a rendered sailboat note: ${JSON.stringify(sailboat)}`);
 }
 
 const outcomes = mainTools.find((tool) => tool.name === "fm_branch_outcomes");
@@ -940,7 +1065,7 @@ if (!outcomes) throw new Error("main did not receive its outcome-reading permiss
 const visibleToMain = await outcomes.execute("main-reads-sailboat", { recent: 1 }, undefined, undefined, {});
 const mainOutcomeText = visibleToMain.content.map((item) => item.text ?? "").join("\n");
 if (visibleToMain.isError || !mainOutcomeText.includes("healthy resource report: CPU 12%, memory 41%")) {
-  throw new Error(`main could not use the sailboat content through its existing permission path: ${JSON.stringify(visibleToMain)}`);
+  throw new Error(`main could not use the stored routine outcome through its existing permission path: ${JSON.stringify(visibleToMain)}`);
 }
 if (fleetOperations.length !== 2) throw new Error("main's outcome read reprocessed the fleet event");
 
@@ -980,7 +1105,7 @@ if (mirroredCaptainText.some((text) =>
   throw new Error("canonical current or legacy operational input entered captain mirror context");
 }
 if ((globalThis.__fmPrompts ?? []).length !== 5) throw new Error("a handled fleet wake was rerun");
-if (sentToMain.length !== 5) throw new Error(`one result was reprocessed into ${sentToMain.length} main messages`);
+if (sentToMain.length !== 4) throw new Error(`one result was reprocessed into ${sentToMain.length} main messages`);
 if (fleetOperations.length !== 10 || fleetOperations.some((operation) => operation.status !== 0)) {
   throw new Error(`fleet event ownership repeated or failed work: ${JSON.stringify(fleetOperations)}`);
 }
@@ -1133,10 +1258,11 @@ if (dispatch("heartbeat", [], true, false).accepted) {
 }
 await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "heartbeat wake prompt");
 
-// The branch can downgrade its deeper review to a silent routine outcome or
-// escalate a captain-worthy finding into one main turn.
+// The branch keeps every routine disposition store-only and escalates a
+// captain-worthy finding into one main turn.
 const heartbeatSession = globalThis.__fmSessions[globalThis.__fmSessions.length - 1];
 const heartbeatReport = heartbeatSession.options.customTools.find((tool) => tool.name === "fm_branch_report");
+const mainMessagesBeforeRoutineReports = sentToMain.length;
 await heartbeatReport.execute(
   "heartbeat-noop",
   { task: "fleet", verdict: "routine", summary: "fleet reviewed, nothing changed", silent: true },
@@ -1144,9 +1270,9 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const noopMerge = sentToMain[sentToMain.length - 1];
-if (noopMerge.options.triggerTurn) throw new Error("a no-op heartbeat pass must not open a main turn");
-if (noopMerge.message.display !== false) throw new Error("a no-op heartbeat pass must not render a merge note");
+if (sentToMain.length !== mainMessagesBeforeRoutineReports) {
+  throw new Error("a no-op heartbeat pass entered main");
+}
 const storedNoop = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8")
   .trim()
   .split("\n")
@@ -1162,10 +1288,8 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const fleetRoutineMerge = sentToMain[sentToMain.length - 1];
-if (fleetRoutineMerge.message.display !== true) throw new Error("a fleet routine action must render");
-if (!fleetRoutineMerge.message.content.startsWith("⛵ fleet: reconciled the backlog after completed work")) {
-  throw new Error(`fleet routine action note changed: ${fleetRoutineMerge.message.content}`);
+if (sentToMain.length !== mainMessagesBeforeRoutineReports) {
+  throw new Error("a fleet routine action entered main");
 }
 await heartbeatReport.execute(
   "task-routine",
@@ -1174,10 +1298,8 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const taskRoutineMerge = sentToMain[sentToMain.length - 1];
-if (taskRoutineMerge.message.display !== true) throw new Error("a task-scoped routine outcome must render");
-if (!taskRoutineMerge.message.content.startsWith("⛵ task-9: worker healthy, no action needed")) {
-  throw new Error(`task-scoped routine note changed: ${taskRoutineMerge.message.content}`);
+if (sentToMain.length !== mainMessagesBeforeRoutineReports) {
+  throw new Error("a task-scoped routine outcome entered main");
 }
 await heartbeatReport.execute(
   "heartbeat-finding",
@@ -1187,6 +1309,9 @@ await heartbeatReport.execute(
   {},
 );
 const captainMerge = sentToMain[sentToMain.length - 1];
+if (sentToMain.length !== mainMessagesBeforeRoutineReports + 1) {
+  throw new Error("a captain-worthy heartbeat finding did not enter main exactly once");
+}
 if (captainMerge.options.triggerTurn !== true) throw new Error("a captain-worthy heartbeat finding must open a main turn");
 if (captainMerge.message.display !== false) throw new Error("the heartbeat captain-facing note must not be printed");
 
@@ -3090,6 +3215,7 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
+test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work
 test_captain_outcome_encoding_failure_delivers_plain_instruction
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot
 test_branch_cache_key_is_per_home_stable

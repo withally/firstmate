@@ -61,8 +61,15 @@ ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$repo/node_modules/typebox"
 
 # Stock macOS Bash 3.2 cannot reliably parse JavaScript template literals in a
 # heredoc nested inside command substitution, so capture through a file.
-PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-  PI_CODING_AGENT_DIR="$agentdir" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+# The real SDK also consults ambient provider credentials, so isolate every
+# probe in a clean child process. This preserves the child-process Gemini
+# credential isolation while preventing another configured provider from
+# making the empty agent dir promptable or contacting a provider.
+env -i \
+  PATH="${PATH:-/usr/bin:/bin}" HOME="$home" NODE_NO_WARNINGS=1 \
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PI_CODING_AGENT_DIR="$agentdir" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
+  node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -226,7 +233,9 @@ cat > "$modeldir/models.json" <<'JSON'
   }
 }
 JSON
-PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$modeldir" FM_LIVE_SESSIONS="$TMP_ROOT/model-sessions" \
+env -i \
+  PATH="${PATH:-/usr/bin:/bin}" HOME="$home" NODE_NO_WARNINGS=1 \
+  PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$modeldir" FM_LIVE_SESSIONS="$TMP_ROOT/model-sessions" \
   node --input-type=module > "$TMP_ROOT/model-output" 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
@@ -329,7 +338,9 @@ cat > "$effortdir/models.json" <<'JSON'
   }
 }
 JSON
-PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$effortdir" FM_LIVE_SESSIONS="$TMP_ROOT/effort-sessions" \
+env -i \
+  PATH="${PATH:-/usr/bin:/bin}" HOME="$home" NODE_NO_WARNINGS=1 \
+  PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$effortdir" FM_LIVE_SESSIONS="$TMP_ROOT/effort-sessions" \
   node --input-type=module > "$TMP_ROOT/effort-output" 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
@@ -470,7 +481,9 @@ pass "real Pi SDK $PI_VERSION reports its own supported effort levels and applie
 captain_payload=$(printf 'relay this\n\ntask-9: PR ready' \
   | "$ROOT/bin/fm-operational-input.sh" encode branch-outcome) \
   || fail "the operational-input owner does not encode the branch-outcome kind"
-CAPTAIN_PAYLOAD="$captain_payload" ROUTINE_PAYLOAD="⛵ task-9: worker healthy" \
+env -i \
+  PATH="${PATH:-/usr/bin:/bin}" HOME="$home" NODE_NO_WARNINGS=1 \
+  CAPTAIN_PAYLOAD="$captain_payload" ROUTINE_PAYLOAD="⛵ task-9: worker healthy" \
   DELIVERY_DIR="$TMP_ROOT" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
   node --input-type=module > "$TMP_ROOT/delivery-output" 2>&1 <<'EOF'
 import { writeFileSync } from "node:fs";

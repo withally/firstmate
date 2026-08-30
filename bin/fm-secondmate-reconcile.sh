@@ -24,10 +24,11 @@
 #     stale, cannot mis-order against a concurrent snapshot, and cannot
 #     mis-classify a repair as a new problem, which an identity-precise record
 #     has to get right in every direction to avoid silently swallowing a nudge;
-#   - sending through bin/fm-send.sh's fire-and-forget plane, which records the
-#     instruction durably for local and remote mates alike while staying out of
-#     the steering inbox's re-ring and escalation ladder: the parent expects no
-#     reply, so nothing should chase one.
+#   - sending through bin/fm-send.sh's fire-and-forget plane with this script's
+#     resolved FM_HOME passed explicitly, which records the instruction durably
+#     for local and remote mates alike while staying out of the steering inbox's
+#     re-ring and escalation ladder: the parent expects no reply, so nothing
+#     should chase one.
 #
 # What this script must never do:
 #   - edit the mate's backlog, metadata, or queue from the parent. The mate owns
@@ -59,7 +60,8 @@
 #   cooldown: <mate-id> <seconds>   nudged this recently; nothing sent
 #   skipped: <mate-id> lock         a required lock was busy; cooldown unchanged
 #   stale: <mate-id> <kind>         the sampled endpoint retired or changed
-#   failed: <mate-id> <kind>: <cause>  the steer could not be recorded
+#   failed: <mate-id> <kind>: <cause>  the steer could not be recorded; cause is
+#                                      fm-send's stderr when available
 #   sent-unrecorded: <mate-id> <kind>  sent, but cooldown commit failed
 set -u
 

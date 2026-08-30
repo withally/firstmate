@@ -254,6 +254,152 @@ test_drain_preserves_changed_check_payloads() {
 # plain drain-and-handle turn that runs no other supervision script. It must warn
 # when work is in flight with no live watcher, and stay silent right after a
 # normal fire from a live watcher with a fresh beacon, so it never false-alarms.
+assert_checkpoint_quiet() {
+  local status=$1 out=$2 seconds=$3 label=$4
+  [ "$status" -eq 124 ] || fail "$label: expected quiet checkpoint status 124, got $status"
+  grep -Fx "checkpoint: no actionable wake within ${seconds}s" "$out" >/dev/null \
+    || fail "$label: quiet checkpoint did not report its timeout"
+}
+
+assert_checkpoint_fired() {
+  local status=$1 out=$2 reason=$3 label=$4
+  [ "$status" -eq 0 ] || fail "$label: expected firing checkpoint status 0, got $status"
+  grep -F "$reason" "$out" >/dev/null \
+    || fail "$label: firing checkpoint omitted its wake reason"
+}
+
+test_secondmate_default_and_invalid_stall_threshold_allow_normal_latency() {
+  local override dir state sub fakebin out status
+  for override in unset invalid 0; do
+    dir=$(make_case "secondmate-default-stall-threshold-$override")
+    state="$dir/state"
+    sub="$dir/secondmate"
+    fakebin="$dir/fakebin"
+    out="$dir/watch.out"
+    mkdir -p "$sub/state"
+    printf 'mate\n' > "$sub/.fm-secondmate-home"
+    printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+    printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 220 ))" > "$sub/state/.wake-queue"
+
+    if [ "$override" = unset ]; then
+      env -u FM_SECONDMATE_WAKE_STALL_SECS PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+        FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+        FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+        "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+    else
+      PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+        FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+        FM_SECONDMATE_WAKE_STALL_SECS="$override" FM_POLL=1 FM_SIGNAL_GRACE=0 \
+        FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+        "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+    fi
+    status=$?
+    assert_checkpoint_quiet "$status" "$out" 2 "stall threshold $override"
+    [ ! -s "$state/.wake-queue" ] \
+      || fail "stall threshold $override published a false-positive parent wake"
+  done
+  pass "default, invalid, and zero secondmate stall thresholds allow normal queue latency"
+}
+
+test_secondmate_fresh_beat_suppresses_ordinary_aged_row() {
+  local dir state sub fakebin out status
+  dir=$(make_case secondmate-fresh-beat)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 35 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=30 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+  status=$?
+  assert_checkpoint_quiet "$status" "$out" 2 "the fresh secondmate watcher beat"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "a fresh secondmate watcher beat still published a parent stall wake"
+  pass "a fresh secondmate watcher beat suppresses an ordinarily aged row"
+}
+
+test_secondmate_default_fresh_beat_suppresses_120_second_row() {
+  local dir state sub fakebin out status
+  dir=$(make_case secondmate-default-fresh-beat)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 120 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
+
+  env -u FM_SECONDMATE_WAKE_STALL_SECS PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+  status=$?
+  assert_checkpoint_quiet "$status" "$out" 2 "the default threshold with a fresh secondmate watcher beat"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "a fresh secondmate watcher beat still published a parent stall wake for a 120-second-old row"
+  pass "the default threshold stays quiet for a 120-second-old row with a fresh beat"
+}
+
+test_secondmate_stale_beat_exposes_ordinary_aged_row() {
+  local dir state sub fakebin out status
+  dir=$(make_case secondmate-stale-beat)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 35 ))" > "$sub/state/.wake-queue"
+  touch -t 202001010000 "$sub/state/.last-watcher-beat"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=30 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+  status=$?
+  assert_checkpoint_fired "$status" "$out" \
+    'check: secondmate wake-loop stalled: mate=mate row=7' \
+    "the stale secondmate watcher beat"
+  pass "a stale secondmate watcher beat exposes an ordinarily aged row"
+}
+
+test_secondmate_very_old_row_alerts_despite_fresh_beat() {
+  local dir state sub fakebin out status
+  dir=$(make_case secondmate-very-old-row)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 100 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=30 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+  status=$?
+  assert_checkpoint_fired "$status" "$out" \
+    'check: secondmate wake-loop stalled: mate=mate row=7' \
+    "the very old foreign row"
+  pass "a row older than three thresholds alerts despite a fresh beat"
+}
+
 test_secondmate_foreign_queue_stall_is_one_shot_and_read_only() {
   local dir state sub fakebin out row_before row_after stall_count
   dir=$(make_case secondmate-foreign-stall)
@@ -1574,6 +1720,11 @@ test_acknowledged_stall_publication_survives_pre_marker_crash
 test_empty_prefix_mate_preserves_other_mate_receipt
 test_self_announced_append_guards
 test_historical_annotation_skips_announced_status
+test_secondmate_default_and_invalid_stall_threshold_allow_normal_latency
+test_secondmate_fresh_beat_suppresses_ordinary_aged_row
+test_secondmate_default_fresh_beat_suppresses_120_second_row
+test_secondmate_stale_beat_exposes_ordinary_aged_row
+test_secondmate_very_old_row_alerts_despite_fresh_beat
 test_concurrent_append_and_drain
 test_signal_catchup_without_running_watcher
 test_stale_enqueue_before_suppressor

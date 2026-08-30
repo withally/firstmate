@@ -50,6 +50,7 @@ The fork contributes changes upstream and stays close to the parent by adopting 
    Every audited PR and its verdict (already-upstream, superseded, no-longer-needed, or kept) goes in a table in the PR description, and the captain rules once at merge.
 9. Re-apply only the kept behaviors on top of the recorded upstream base.
    Resolve conflicts in favor of upstream and preserve newer upstream architecture, wording, tests, and safety contracts.
+   The beat-aware secondmate wake-loop stall detector - a foreign watcher beat younger than the threshold suppresses the ordinary threshold alert, while a row that reaches three times the threshold always alerts - is a kept fork patch and must be re-applied when upstream lacks it.
    The fork-local sync spine — `docs/upstream-sync.md` and `.agents/skills/upstream-sync/` — is restored from `origin/main` rather than re-applied through the audit, so its accumulated catch-up rows survive.
    Its companion edits in upstream-owned files — the `AGENTS.md` pointer, the skill's arm in `bin/fm-test-run.sh`'s changed-file map, its entries in `docs/documentation-audiences.json`, and the case covering that arm in `tests/fm-test-run.test.sh` — are re-applied as targeted edits onto upstream's copies, never restored wholesale.
 10. Validate by tier.

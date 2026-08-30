@@ -1,0 +1,6 @@
+PRE_FIX base=53e3368
+foreign-outside-composer-boundary verdict=busy rc=0
+genuine-claude-mid-turn-footer verdict=busy rc=0
+TARGET e5718cf
+foreign-outside-composer-boundary verdict=unknown rc=2
+genuine-claude-mid-turn-footer verdict=busy rc=0

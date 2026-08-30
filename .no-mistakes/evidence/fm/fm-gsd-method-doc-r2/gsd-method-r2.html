@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.11" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>gsd-method</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<h1 id="gsd-method-in-firstmate-revision-2">GSD method in Firstmate,
+revision 2</h1>
+<p>This document is Firstmate's adaptation of the GSD method from <a
+href="https://github.com/open-gsd/gsd-core">open-gsd/gsd-core</a>: the
+approach without the tool. It is a running document: the rules above the
+log are the current contract, and the dated log at the bottom is the
+evidence that shaped them.</p>
+<h2 id="1-purpose">1. Purpose</h2>
+<p>Phase-sized builds fail in one recurring way: a fact is assumed,
+never checked, and a subsystem that an engine already provides gets
+hand-rolled on top of that assumption. The GSD method's research-first
+discipline catches that failure before code exists, and Blockvalley
+Phase 0 proved it does (see the log).</p>
+<p>Why not the tool: gsd-core ships an installer, <code>/gsd-*</code>
+slash commands, <code>STATE.md</code> and milestone/phase file
+bookkeeping, git hooks that prompt the user, and an executor framework
+that runs plans in parallel fresh-context waves. Firstmate already
+provides each of those needs differently - the backlog, generated
+briefs, scouts and ship workers in isolated worktrees, keyed check-ins,
+captain-held tasks, and guarded merges - so installing the tool would
+add a second orchestrator beside the one this repo is. The captain's
+ruling is explicit: "GSD is a method here, not a tool: no gsd-core, no
+gsd-pi, no extra hooks." Section 6 names, for every dropped piece, the
+Firstmate piece that covers it.</p>
+<h2 id="2-when-it-applies">2. When it applies</h2>
+<ul>
+<li>Use the method for phase-sized builds: a new subsystem, an engine or
+runtime choice, or a multi-week slice whose shape is not yet known.</li>
+<li>Do not use it for bug fixes, one-file features, or clearly specified
+changes; those take the ordinary ship path in <code>AGENTS.md</code>
+section 7.</li>
+<li>The test is uncertainty that could materially change whether or what
+to build; that is the same threshold section 7 uses to justify a scout
+over a ship.</li>
+</ul>
+<h2 id="3-the-six-kept-parts">3. The six kept parts</h2>
+<p>Each part is stated as the rule, the Firstmate mechanism that
+enforces it, and the artifact with its owner. The mechanisms are
+referenced, not restated; their owners are <code>AGENTS.md</code>
+sections 7 and 10, <code>bin/fm-brief.sh --help</code>, and
+<code>.agents/skills/captain-hold-lifecycle/SKILL.md</code>.</p>
+<h3 id="31-research-before-planning">3.1 Research before planning</h3>
+<ul>
+<li>Rule: every phase starts with research in fresh-context researchers,
+one per stream, and one synthesizer that reads the researcher reports
+plus the authoritative CONTEXT/rulings document, nothing else.</li>
+<li>Mechanism: each researcher and the synthesizer is a scout spawned
+from a <code>bin/fm-brief.sh --scout</code> brief in its own worktree,
+so no researcher inherits another's context or the planner's sunk
+cost.</li>
+<li>Artifact and owner: each researcher leaves one
+<code>data/&lt;task&gt;/report.md</code>, and the synthesizer scout's
+single <code>data/&lt;task&gt;/report.md</code> is the durable synthesis
+artifact; the Blockvalley <code>RESEARCH-0.md</code> was a verbatim copy
+of that report, and the governing firstmate or secondmate owns the phase
+plan that names the streams.</li>
+</ul>
+<h3 id="32-claim-provenance">3.2 Claim provenance</h3>
+<ul>
+<li>Rule: every factual claim in research and plans carries
+<code>[VERIFIED: source]</code>, <code>[CITED: url]</code>, or
+<code>[ASSUMED]</code>, and an ASSUMED claim never becomes a locked
+decision without the captain's word.</li>
+<li>Rule detail: an API or engine capability is VERIFIED only by
+official documentation read that session or a working probe; a blog post
+or training memory is ASSUMED.</li>
+<li>Mechanism: the plan-check fails a load-bearing claim whose tag is
+false, and every ASSUMED item that gates the build is registered as a
+captain-held task through <code>captain-hold-lifecycle</code> before the
+research or plan is treated as complete.</li>
+<li>Artifact and owner: the provenance tags live in the report or plan
+that makes the claim; the held task in the owning home's backlog carries
+the captain's answer, closed only with his actual words.</li>
+</ul>
+<h3 id="33-the-context-document">3.3 The CONTEXT document</h3>
+<ul>
+<li>Rule: research is bounded by one document of locked decisions,
+discretion areas, and deferred ideas, and researchers investigate the
+locked decisions rather than alternatives to them.</li>
+<li>Mechanism: Firstmate already has this document as the captain's
+rulings files, written by the governing firstmate from confirmed captain
+answers and quoted verbatim into every brief, because rules a task
+depends on go inline in the brief.</li>
+<li>Artifact and owner: a dated rulings file under <code>data/</code>
+(for example a <code>UX-RULINGS</code> file or the phase plan's CONTEXT
+section); the governing firstmate or secondmate owns it and the captain
+owns its locked entries.</li>
+</ul>
+<h3 id="34-the-dont-hand-roll-list">3.4 The Don't-Hand-Roll list</h3>
+<ul>
+<li>Rule: research names the problems that must use an engine or library
+rather than custom code, and a plan that hand-rolls one of them fails
+plan-check.</li>
+<li>Rule: before a proof slice lands on local main, a code-level
+Don't-Hand-Roll audit and an independent critic must both pass, and
+their findings must never be deferred as residual work.</li>
+<li>Why: the Blockvalley Phase 1 retro found hand-rolled compositing and
+animation in a slice that had passed its earlier gates.</li>
+<li>Mechanism: the plan-check brief carries the list as a mandatory
+dimension, each ship brief carries the entries that task touches, and
+local-main landing requires both the code audit and critic verdict.</li>
+<li>Artifact and owner: the synthesis document owns the frozen
+<code>Don't Hand-Roll</code> list, while the independent critic's report
+owns the code-level verdict against it.</li>
+</ul>
+<h3 id="35-prescriptive-research-output">3.5 Prescriptive research
+output</h3>
+<ul>
+<li>Rule: the synthesizer's report says "use X", never "consider X or
+Y", and a survey without a recommendation is an incomplete
+deliverable.</li>
+<li>Mechanism: the synthesizer's scout brief fixes the output sections
+in order, with a single-stack recommendation and a scorecard with
+provenance, so a report without them fails its definition of done.</li>
+<li>Artifact and owner: the synthesizer scout's single
+<code>data/&lt;task&gt;/report.md</code> carries the Recommendation
+section, owned by the synthesizer; the captain rules on it as one
+decision with the ASSUMED list attached.</li>
+</ul>
+<h3 id="36-plan-check-before-any-code">3.6 Plan-check before any
+code</h3>
+<ul>
+<li>Rule: no execution task is dispatched from a plan that has not
+passed one adversarial plan-check whose only question is whether the
+plan is executable as written.</li>
+<li>Mechanism: the plan-check is a separate scout with its own brief,
+its verdict is BLOCKER or WARNING per finding, and the governing
+firstmate refuses dispatch on an unchecked plan; <code>AGENTS.md</code>
+section 7 already treats a report as evidence, not authorization.</li>
+<li>Artifact and owner:
+<code>data/&lt;plancheck-task&gt;/report.md</code> with a verdict, a
+finding table, and an explicit dispatch judgment, owned by the
+checker.</li>
+</ul>
+<h2 id="4-the-plan-cycle-and-its-hard-cap">4. The plan cycle and its
+hard cap</h2>
+<h3 id="41-phase-plan-budget">4.1 Phase-plan budget</h3>
+<ul>
+<li>Rule: every plan starts with a one-page slice contract that sets
+numeric caps for execution tasks and acceptance criteria per task, and
+the full plan must stay within those caps.</li>
+<li>Rule: before CHECK, the synthesizer runs a deletion pass that
+removes every task, criterion, explanation, and executable surface not
+required by that slice contract.</li>
+<li>Why: the Blockvalley Phase 1 retro found that four rewrites grew the
+plan from 790 to 1,220 lines while it was nominally converging.</li>
+</ul>
+<h3 id="42-scope-cut-reconciliation-gate">4.2 Scope-cut reconciliation
+gate</h3>
+<ul>
+<li>Rule: every scope cut produces one signed scope-delta artifact whose
+authoritative rows are <code>kept</code>, <code>changed</code>, or
+<code>parked</code>, and no affected work continues until every live
+worker acknowledges its row.</li>
+<li>Why: the Blockvalley Phase 1 retro found live briefs still
+requesting work that a later scope cut had parked.</li>
+<li>Mechanism: the governing firstmate or secondmate tombstones
+superseded acceptance criteria, rewrites affected live briefs, records
+each worker acknowledgment, and blocks dispatch, execution, and landing
+until the matrix is reconciled.</li>
+<li>Artifact and owner: the governing firstmate or secondmate owns the
+signed scope-delta artifact as the single post-cut matrix, while the
+captain owns the ruling it records.</li>
+</ul>
+<h3 id="43-write-check-patch">4.3 WRITE, CHECK, PATCH</h3>
+<ul>
+<li>The cycle is WRITE once, CHECK once, PATCH once.</li>
+<li>WRITE: the synthesizer produces the phase plan from the research and
+the CONTEXT document.</li>
+<li>CHECK: one adversarial plan-check returns BLOCKER and WARNING
+findings with a concrete fix per finding.</li>
+<li>PATCH: one scoped patch applies exactly the named fixes and nothing
+else, and the checker re-verifies the changed lines, the new claims, and
+every untouched section that consumes a changed contract.</li>
+<li>If blockers remain after the patch, the governing secondmate stops
+and posts one keyed check-in to the parent firstmate with the remaining
+blockers and two options.</li>
+<li>No second rewrite happens on the worker's or the secondmate's own
+authority; the parent firstmate decides between the options or escalates
+to the captain.</li>
+<li>A gate that depends only on already-closed findings may be
+dispatched while an unrelated blocker is escalated, when the checker's
+dispatch judgment says so explicitly.</li>
+</ul>
+<p>Roles:</p>
+<ul>
+<li>Researcher -&gt; report.</li>
+<li>Synthesizer -&gt; plan.</li>
+<li>Checker -&gt; verdict, BLOCKER or WARNING, on the single question
+"is it executable".</li>
+<li>Parent firstmate -&gt; the escalation decision when the cap is
+reached, and quota confirmation for the Fable seat.</li>
+<li>Captain -&gt; locked decisions only, reached through captain-held
+tasks.</li>
+</ul>
+<h2 id="5-model-seats">5. Model seats</h2>
+<p>This is the current setting as the captain set it on 2026-08-29; the
+captain's preference file (<code>data/captain.md</code>, or the
+governing secondmate's copy) wins whenever it differs from this
+section.</p>
+<ul>
+<li>Round 1 synthesis and plan writing: Claude Fable 5 at HIGH effort,
+never xhigh or max; this is the only Fable seat, and the parent
+firstmate confirms Fable quota before each Round 1 dispatch.</li>
+<li>If the Fable seat is unavailable, Round 1 waits; the parent
+firstmate reports the seat unavailable and the captain decides whether
+that round runs on Codex gpt-5.6-sol HIGH instead.</li>
+<li>Round 1 never downgrades on a worker or secondmate authority.</li>
+<li>Plan-check and every later patch: Codex gpt-5.6-sol HIGH; Fable does
+not re-enter to rewrite.</li>
+<li>Researchers: Codex gpt-5.6-sol HIGH.</li>
+<li>Execution workers: Codex gpt-5.6-sol medium by default, high when
+the task is genuinely hard, and every task names the slice element it
+unblocks.</li>
+</ul>
+<h2 id="6-explicitly-out">6. Explicitly out</h2>
+<ul>
+<li>Installer: Firstmate's scaffolded briefs and <code>bin/</code>
+scripts are already installed in every home and secondmate home.</li>
+<li>Slash commands (<code>/gsd-new-project</code>,
+<code>/gsd-onboard</code>, and the phase commands): the governing
+firstmate dispatches each phase step as a scout or ship task from the
+backlog.</li>
+<li>Milestone and phase file bookkeeping (<code>STATE.md</code>, phase
+archives): <code>data/backlog.md</code> and the dated rulings files
+under <code>data/</code> are the durable state, and this document's log
+is the method's own record.</li>
+<li>Hook-driven user prompts: keyed <code>needs-decision</code>
+check-ins and captain-held tasks carry every question to the parent
+firstmate and, only when genuinely his, to the captain.</li>
+<li>Executor framework: <code>bin/fm-spawn.sh</code> launches each
+execution task in its own isolated worktree with a fresh context;
+<code>bin/fm-pr-merge.sh</code> owns PR merges, and
+<code>bin/fm-merge-local.sh</code> owns approved local-only
+landing.</li>
+</ul>
+<h2 id="7-success-signals">7. Success signals</h2>
+<ul>
+<li>The plan survives one check with a bounded blocker count and reaches
+dispatch after the single patch.</li>
+<li>The build hits the phase's named proof, for example "the slice on
+the captain's phone", without a re-plan.</li>
+<li>Fable spend per phase is at most one HIGH-effort Round 1 seat; zero
+is valid only under the captain-approved fallback in section 5.</li>
+</ul>
+<h3 id="71-capture-coverage-contract">7.1 Capture-coverage contract</h3>
+<ul>
+<li>Rule: an "on the phone" proof passes only with a capture manifest
+that names every required element ID, the camera bounds, one
+deterministic state and frame, and an evidence link for every acceptance
+criterion.</li>
+<li>Why: the Blockvalley Phase 1 retro found that phone captures could
+look successful while omitting required elements and interactions.</li>
+<li>Artifact and owner: the proof-slice worker owns the capture
+manifest, and the independent critic verifies its criterion coverage
+before local-main landing.</li>
+</ul>
+<h2 id="8-how-we-review-our-use-of-it">8. How we review our use of
+it</h2>
+<ul>
+<li>After each phase's named proof lands, the governing secondmate posts
+one keyed check-in as a usage retrospective: what the method caught,
+what it cost, and what this document got wrong.</li>
+<li>The parent firstmate folds accepted changes into the sections above
+and records the retrospective as a log entry below.</li>
+<li>The log is the record; it is evidence-backed, dated, and pruned
+rather than appended forever, under the same contract as
+<code>data/learnings.md</code>.</li>
+</ul>
+<h3 id="81-check-in-cost-accounting">8.1 Check-in cost accounting</h3>
+<ul>
+<li>Rule: every phase check-in records the model used, the number of
+rounds, and elapsed wall time, with unavailable values marked unknown
+rather than reconstructed later.</li>
+<li>Why: the Blockvalley Phase 1 retro could not recover complete
+worker, model, and wall-time totals after task cleanup.</li>
+</ul>
+<h2 id="log">Log</h2>
+<p>Entries are dated, cite their evidence by stable name or path, and
+are rewritten or removed when superseded.</p>
+<ul>
+<li>2026-08-28 - Blockvalley Phase 0 ran the method by hand from a plan
+with a CONTEXT section, three researchers, and one synthesizer
+(<code>data/blockvalley-research-plan-phase0-2026-08-28.md</code>,
+<code>data/blockvalley-p0-synth-s/RESEARCH-0.md</code>, both in the
+Blockvalley home). It caught the real failure: the earlier substitution
+program had assumed a renderer could be hand-rolled from repainted
+photos, and the research named y-sort, autotile, and shadows as
+Don't-Hand-Roll items with provenance. The synthesis was prescriptive
+(Flutter + Flame, runner-up Godot 4) and its open ASSUMED items became
+one captain-held engine decision, which the captain answered the same
+day. The learnings entry that seeded this document is the GSD METHOD
+line in <code>data/learnings.md</code>.</li>
+<li>2026-08-28 to 2026-08-29 - Blockvalley Phase 1 planning ran four
+plan rounds before a cap existed. The Round 1 plan was written on Claude
+Fable 5 at xhigh (<code>data/blockvalley-p1-plan/report.md</code>) and
+failed its first check on nine dimensions, including a false
+<code>[VERIFIED]</code> Tiled command and locked UX behaviour reduced to
+Phase 2 (<code>data/blockvalley-p1-plancheck/report.md</code>). Revision
+4 on Fable still carried one blocker after the round-4 check, an
+argument-count mismatch in one task's Tiled contract, while Gate 0 was
+judged dispatchable
+(<code>data/blockvalley-p1-planrev3/report.md</code>,
+<code>data/blockvalley-p1-plancheck-r4/report.md</code>). The cost was
+roughly a week of Fable quota with no Fable or Opus seats available
+until the 2026-08-30 reset
+(<code>data/blockvalley-p1-scope-cut-2026-08-29.md</code>). Consequence
+recorded in section 4 and section 5: write once, check once, patch once
+on Codex, escalate on the third failure, Fable only at HIGH and only for
+Round 1.</li>
+<li>2026-08-29 - The captain set the planning and model rules that
+sections 4 and 5 state, in the Blockvalley steering protocol
+(<code>data/steering-protocol.md</code>, "Planning and model rules");
+the Phase 1 scope cut restated the plan-round cap and the slice-element
+rule for every task
+(<code>data/blockvalley-p1-scope-cut-2026-08-29.md</code>). The
+captain's UX rulings file is the worked example of a CONTEXT document
+that bounds behaviour without ruling on looks
+(<code>data/blockvalley-ux-v1/UX-RULINGS-v1.md</code>).</li>
+<li>2026-08-30 - The Blockvalley Phase 1 retro tightened revision 2 with
+a phase-plan budget, a scope-cut reconciliation gate, a pre-landing
+code-level Don't-Hand-Roll audit and independent critic, a
+capture-coverage contract, and minimal check-in cost accounting.</li>
+</ul>
+</body>
+</html>

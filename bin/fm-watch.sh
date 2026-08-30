@@ -82,9 +82,12 @@
 #                          upstream receipt
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
 #                          the oldest valid row in an endpoint-recorded local
-#                          secondmate home's durable wake queue exceeded
-#                          FM_SECONDMATE_WAKE_STALL_SECS; observation is read-only
-#                          and one parent receipt suppresses repeats for that row
+#                          secondmate home's durable wake queue reached
+#                          FM_SECONDMATE_WAKE_STALL_SECS and that home's watcher
+#                          beat is older than the same threshold, or the row age
+#                          exceeded three times the threshold; observation is
+#                          read-only and one parent receipt suppresses repeats
+#                          for that row
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
@@ -207,9 +210,10 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
-# A local secondmate's foreign queue is checked on every poll, but only after this
-# bounded age can it produce a parent notification.
-SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
+# A local secondmate's foreign queue is checked on every poll after this bounded
+# age, but a fresh watcher beat suppresses notification until the row exceeds
+# three times the bound.
+SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-300}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -415,13 +419,19 @@ secondmate_oldest_queue_row() {  # <queue-path>
 }
 
 # Surface one durable parent check for one unchanged foreign row after its
-# bounded age. The primary marker and queued-key check make repeated watcher
-# cycles converge without a notification storm, while an empty queue removes
-# only this home's marker so a later row can be observed.
+# bounded age when the foreign watcher beat is also stale, or after three times
+# that age regardless of the beat. The primary marker and queued-key check make
+# repeated watcher cycles converge without a notification storm, while an empty
+# queue removes only this home's marker so a later row can be observed.
 secondmate_wake_stall_tick() {
   local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
   local meta task kind remote_host home queue row epoch seq row_key marker receipt receipt_dir notify_key queued age reason
-  case "$threshold" in ''|*[!0-9]*|0) threshold=60 ;; esac
+  local beat beat_mtime beat_age very_old_age
+  case "$threshold" in
+    ''|*[!0-9]*) threshold=300 ;;
+    *) threshold=$((10#$threshold)) ;;
+  esac
+  [ "$threshold" -gt 0 ] || threshold=300
   # Endpoint metadata admits this queue-loop check; secondmate-liveness owns registered mates whose endpoint is missing or dead.
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -455,6 +465,17 @@ EOF
     case "$seq" in ''|*[!0-9]*) continue ;; esac
     age=$((now - epoch))
     [ "$age" -ge "$threshold" ] || continue
+    beat="$home/state/.last-watcher-beat"
+    beat_age=$((threshold + 1))
+    if [ -f "$beat" ] && [ ! -L "$beat" ]; then
+      beat_mtime=$(stat_mtime "$beat" 2>/dev/null || true)
+      case "$beat_mtime" in
+        ''|*[!0-9]*) ;;
+        *) beat_age=$((now - beat_mtime)) ;;
+      esac
+    fi
+    very_old_age=$((threshold * 3))
+    [ "$beat_age" -ge "$threshold" ] || [ "$age" -ge "$very_old_age" ] || continue
     row_key="$epoch-$seq"
     receipt="$receipt_dir/$row_key"
     if [ -e "$marker" ] || [ -L "$marker" ]; then

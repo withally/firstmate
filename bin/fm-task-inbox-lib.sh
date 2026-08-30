@@ -127,7 +127,8 @@ fm_task_inbox_lock_acquire() {  # <lock-path>
   rm -f "$probe" || return 1
   if [ ! -e "$lock" ] && [ ! -L "$lock" ]; then
     fm_lock_try_create "$lock" && return 0
-    [ -e "$lock" ] || [ -L "$lock" ] || return 1
+    # The winner may release between the failed create and an existence check;
+    # always enter the retry loop so that a vanished lock is acquired again.
   fi
   deadline=$(( $(date +%s) + wait ))
   while ! fm_lock_try_acquire "$lock"; do

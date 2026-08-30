@@ -7,7 +7,10 @@
 #     object per line: {"seq":N,"epoch":N,"task":"...","wake":"...",
 #     "verdict":"routine"|"captain"|"firstmate-action",
 #     "summary":"...","silent":true|false}.
-#     Legacy rows without `silent` remain valid and are treated as visible.
+#     New firstmate-action rows created by append-action also carry
+#     `wake_seq`:N, the queue sequence that owns their idempotency.
+#     Legacy rows without `silent` or `wake_seq` remain valid and are treated
+#     as visible.
 #     Existing lines are never rewritten, reordered, or deleted by any
 #     subcommand; the read state lives
 #     entirely in the cursor sidecar so marking outcomes read cannot disturb
@@ -102,6 +105,14 @@ last_seq() {
     | select(
         keys == ["epoch", "seq", "summary", "task", "verdict", "wake"]
         or (keys == ["epoch", "seq", "silent", "summary", "task", "verdict", "wake"] and (.silent | type) == "boolean")
+        or (
+          keys == ["epoch", "seq", "silent", "summary", "task", "verdict", "wake", "wake_seq"]
+          and (.silent | type) == "boolean"
+          and .verdict == "firstmate-action"
+          and (.wake_seq | type) == "number"
+          and .wake_seq >= 1
+          and .wake_seq == (.wake_seq | floor)
+        )
       )
     | select((.seq | type) == "number" and .seq >= 1 and .seq == (.seq | floor))
     | select((.epoch | type) == "number" and .epoch >= 0 and .epoch == (.epoch | floor))
@@ -128,11 +139,17 @@ record_for_seq() { # <seq>
   return 1
 }
 
-append_record_locked() { # <task> <verdict> <summary> <wake> <silent> <seq>
-  local task=$1 verdict=$2 summary=$3 wake=$4 silent=$5 seq=$6
-  printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s}\n' \
-    "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
-    "$verdict" "$(json_escape "$summary")" "$silent" >> "$STORE"
+append_record_locked() { # <task> <verdict> <summary> <wake> <silent> <seq> [<wake-seq>]
+  local task=$1 verdict=$2 summary=$3 wake=$4 silent=$5 seq=$6 wake_seq=${7:-}
+  if [ "$verdict" = firstmate-action ] && [ -n "$wake_seq" ]; then
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"wake_seq":%s}\n' \
+      "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
+      "$verdict" "$(json_escape "$summary")" "$silent" "$wake_seq" >> "$STORE"
+  else
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s}\n' \
+      "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
+      "$verdict" "$(json_escape "$summary")" "$silent" >> "$STORE"
+  fi
 }
 
 action_marker_path_for_wake() { # <wake-seq>
@@ -190,13 +207,13 @@ action_marker_state() { # <path>
   jq -er 'select(type == "object" and .version == "fm-branch-action-v1" and (.state == "pending" or .state == "started")) | .state' "$1"
 }
 
-find_matching_action_record() { # <task> <summary> <wake>
-  local task=$1 summary=$2 wake=$3 line seq
+find_action_record_by_wake_seq() { # <wake-seq>
+  local wake_seq=$1 line seq
   [ -s "$STORE" ] || return 1
   while IFS= read -r line; do
     if printf '%s\n' "$line" | jq -e \
-      --arg task "$task" --arg summary "$summary" --arg wake "$wake" \
-      'type == "object" and .verdict == "firstmate-action" and .task == $task and .summary == $summary and .wake == $wake' \
+      --arg wake_seq "$wake_seq" \
+      'type == "object" and .verdict == "firstmate-action" and .wake_seq == ($wake_seq|tonumber)' \
       >/dev/null 2>&1; then
       seq=$(record_seq "$line")
       [ -n "$seq" ] || return 1
@@ -232,21 +249,22 @@ ensure_action_marker_for_record_locked() { # <record-line>
 }
 
 reconcile_action_markers_locked() {
-  local path task summary wake seq existing
+  local path task summary wake wake_seq seq existing
   [ -d "$ACTION_DIR" ] || return 0
   for path in "$ACTION_DIR"/wake-*.json; do
     [ -f "$path" ] || continue
     jq -e 'type == "object" and .version == "fm-branch-action-v1" and (.state == "pending" or .state == "started") and (.wake_seq | type == "number") and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string") and (.wake | type == "string")' "$path" >/dev/null 2>&1 || return 1
+    wake_seq=$(jq -er '.wake_seq | tostring' "$path") || return 1
     seq=$(jq -r '.outcome_seq // empty' "$path") || return 1
     if [ -z "$seq" ]; then
       task=$(jq -er '.task' "$path") || return 1
       summary=$(jq -er '.summary' "$path") || return 1
       wake=$(jq -er '.wake' "$path") || return 1
-      existing=$(find_matching_action_record "$task" "$summary" "$wake" 2>/dev/null || true)
+      existing=$(find_action_record_by_wake_seq "$wake_seq" 2>/dev/null || true)
       if [ -z "$existing" ]; then
         if ! LAST_SEQ=$(last_seq); then return 1; fi
         existing=$(( LAST_SEQ + 1 ))
-        append_record_locked "$task" firstmate-action "$summary" "$wake" false "$existing" || return 1
+        append_record_locked "$task" firstmate-action "$summary" "$wake" false "$existing" "$wake_seq" || return 1
       fi
       update_action_marker "$path" ".outcome_seq = $existing" || return 1
     fi
@@ -357,16 +375,16 @@ case "$CMD" in
     MARKER=$(action_marker_path_for_wake "$WAKE_SEQ")
     if [ -f "$MARKER" ]; then
       if ! jq -e \
-        --arg wake_seq "$WAKE_SEQ" --arg task "$TASK" --arg summary "$SUMMARY" --arg wake "$WAKE" \
-        'type == "object" and .version == "fm-branch-action-v1" and .wake_seq == ($wake_seq|tonumber) and .task == $task and .verdict == "firstmate-action" and .summary == $summary and .wake == $wake and (.state == "pending" or .state == "started")' \
+        --arg wake_seq "$WAKE_SEQ" \
+        'type == "object" and .version == "fm-branch-action-v1" and .wake_seq == ($wake_seq|tonumber) and .verdict == "firstmate-action" and (.state == "pending" or .state == "started")' \
         "$MARKER" >/dev/null 2>&1; then
         fm_lock_release "$LOCK"
-        echo "error: firstmate-action wake marker does not match the repeated report" >&2
+        echo "error: firstmate-action wake marker is invalid for the repeated wake sequence" >&2
         exit 1
       fi
       SEQ=$(jq -r '.outcome_seq // empty' "$MARKER")
       if [ -z "$SEQ" ]; then
-        SEQ=$(find_matching_action_record "$TASK" "$SUMMARY" "$WAKE" 2>/dev/null || true)
+        SEQ=$(find_action_record_by_wake_seq "$WAKE_SEQ" 2>/dev/null || true)
         if [ -z "$SEQ" ]; then
           if ! LAST_SEQ=$(last_seq); then
             fm_lock_release "$LOCK"
@@ -374,7 +392,7 @@ case "$CMD" in
             exit 1
           fi
           SEQ=$(( LAST_SEQ + 1 ))
-          if ! append_record_locked "$TASK" firstmate-action "$SUMMARY" "$WAKE" false "$SEQ"; then
+          if ! append_record_locked "$TASK" firstmate-action "$SUMMARY" "$WAKE" false "$SEQ" "$WAKE_SEQ"; then
             fm_lock_release "$LOCK"
             exit 1
           fi
@@ -397,7 +415,7 @@ case "$CMD" in
         exit 1
       fi
       SEQ=$(( LAST_SEQ + 1 ))
-      if ! append_record_locked "$TASK" firstmate-action "$SUMMARY" "$WAKE" false "$SEQ"; then
+      if ! append_record_locked "$TASK" firstmate-action "$SUMMARY" "$WAKE" false "$SEQ" "$WAKE_SEQ"; then
         fm_lock_release "$LOCK"
         exit 1
       fi

@@ -1126,6 +1126,36 @@ EOF
   pass "firstmate-action delivery waits for wake acknowledgement and branch lease release"
 }
 
+test_firstmate_action_replay_uses_wake_sequence_idempotency() {
+  local home seq1 replay1 seq2 replay2 rows marker
+  home="$TMP_ROOT/action-wake-sequence-idempotency"
+  mkdir -p "$home/state" "$home/config"
+
+  seq1=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 41 --summary "original action summary" --wake "original wake")
+  replay1=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 41 --summary "reworded replay summary") \
+    || fail "a reworded replay of wake sequence 41 was rejected"
+  [ "$replay1" = "$seq1" ] || fail "wake sequence 41 replay allocated a new outcome: $seq1 versus $replay1"
+
+  seq2=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 42 --summary "same action summary" --wake "same wake")
+  marker="$home/state/branch-action/wake-42.json"
+  jq '.outcome_seq = null' "$marker" > "$home/state/branch-action/replay-marker.json" \
+    || fail "could not build the crash-window marker fixture"
+  mv -f "$home/state/branch-action/replay-marker.json" "$marker"
+  replay2=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 42 --summary "reworded crash replay" --wake "reworded wake") \
+    || fail "a crash-window replay of wake sequence 42 was rejected"
+  [ "$replay2" = "$seq2" ] || fail "wake sequence 42 replay bound to the wrong outcome: expected $seq2, got $replay2"
+
+  rows=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" list --recent 10 | jq -s 'length')
+  [ "$rows" -eq 2 ] || fail "wake-sequence replays appended duplicate rows: $rows"
+  [ "$(jq -r '.wake_seq' "$home/state/branch-action/wake-41.json")" = 41 ] || fail "wake 41 lost its durable sequence binding"
+  [ "$(jq -r '.wake_seq' "$home/state/branch-action/wake-42.json")" = 42 ] || fail "wake 42 lost its durable sequence binding"
+  pass "firstmate-action replay uses wake sequence as its durable idempotency key"
+}
+
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
   local repo home out status
   repo="$TMP_ROOT/coalesced-dispatch-root"
@@ -3561,6 +3591,7 @@ test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
 test_firstmate_action_replays_after_crash_before_ack
 test_firstmate_action_duplicate_handoff_is_deduplicated
 test_firstmate_action_delivery_waits_for_branch_lease_release
+test_firstmate_action_replay_uses_wake_sequence_idempotency
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work
 test_captain_outcome_encoding_failure_delivers_plain_instruction
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot

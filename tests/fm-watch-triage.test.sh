@@ -2841,19 +2841,27 @@ test_heartbeat_no_change_absorbed() {
   local dir state fakebin out pid i
   dir=$(make_case heartbeat-absorb); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   # A truly quiet fleet (no windows, no statuses) with a fast heartbeat cadence.
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=1 "$WATCH" > "$out" &
   pid=$!
-  if ! wait_poll_cycle "$state" "$pid"; then
-    reap "$pid"; fail "watcher exited for a no-change heartbeat (should absorb): $(cat "$out")"
-  fi
   # The heartbeat fires on the first poll whose .last-heartbeat has aged past
-  # FM_HEARTBEAT, which need not be the first completed cycle, so wait for the
-  # absorbed heartbeat itself rather than assuming one cycle produced it.
+  # FM_HEARTBEAT, which need not be the first completed cycle. Wait on the
+  # heartbeat's durable backoff marker itself, while treating an early watcher
+  # exit as a failure instead of conflating it with a beacon timing miss.
   i=0
   while [ "$i" -lt 200 ]; do
-    [ "$(cat "$state/.heartbeat-streak" 2>/dev/null || echo 0)" -ge 1 ] && break
-    kill -0 "$pid" 2>/dev/null || break
+    if [ "$(cat "$state/.heartbeat-streak" 2>/dev/null || echo 0)" -ge 1 ]; then
+      if ! is_live_non_zombie "$pid"; then
+        wait "$pid" 2>/dev/null || true
+        fail "watcher exited after absorbing a no-change heartbeat: $(cat "$out")"
+      fi
+      break
+    fi
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      fail "watcher exited for a no-change heartbeat (should absorb): $(cat "$out")"
+    fi
     sleep 0.1
     i=$((i + 1))
   done

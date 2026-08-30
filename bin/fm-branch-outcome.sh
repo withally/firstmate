@@ -5,7 +5,8 @@
 # CONTRACT (this header is the one owner of the store's format).
 #   - Store: $STATE/branch-outcomes.jsonl, strictly APPEND-ONLY. One JSON
 #     object per line: {"seq":N,"epoch":N,"task":"...","wake":"...",
-#     "verdict":"routine"|"captain","summary":"...","silent":true|false}.
+#     "verdict":"routine"|"captain"|"firstmate-action",
+#     "summary":"...","silent":true|false}.
 #     Legacy rows without `silent` remain valid and are treated as visible.
 #     Existing lines are never rewritten, reordered, or deleted by any
 #     subcommand; the read state lives
@@ -20,12 +21,13 @@
 #     durable and available through the main session's fm_branch_outcomes tool.
 #   - Every mutation runs under $STATE/.branch-outcomes.lock so the branch
 #     extension and a concurrent session-start replay cannot interleave.
-#   - The store is written BEFORE any captain outcome is delivered to main
-#     (store-first durability): routine outcomes have no main handoff, and
-#     nothing about a handled event depends on conversation memory.
+#   - The store is written BEFORE any captain or firstmate-action outcome is
+#     delivered to main (store-first durability): routine outcomes have no
+#     main handoff, and nothing about a handled event depends on conversation
+#     memory.
 #
 # Usage:
-#   fm-branch-outcome.sh append --task <id> --verdict routine|captain \
+#   fm-branch-outcome.sh append --task <id> --verdict routine|captain|firstmate-action \
 #       --summary <text> [--wake <text>] [--silent true|false]
 #     Append one outcome record; prints the assigned seq.
 #   fm-branch-outcome.sh unread
@@ -52,7 +54,7 @@ CURSOR="$STATE/.branch-outcomes-cursor"
 LOCK="$STATE/.branch-outcomes.lock"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain|firstmate-action --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay" >&2
   exit 2
 }
 
@@ -90,7 +92,7 @@ last_seq() {
     | select((.seq | type) == "number" and .seq >= 1 and .seq == (.seq | floor))
     | select((.epoch | type) == "number" and .epoch >= 0 and .epoch == (.epoch | floor))
     | select((.task | type) == "string" and (.wake | type) == "string")
-    | select((.summary | type) == "string" and (.verdict == "routine" or .verdict == "captain"))
+    | select((.summary | type) == "string" and (.verdict == "routine" or .verdict == "captain" or .verdict == "firstmate-action"))
     | .seq
   ') || return 1
   printf '%s\n' "$value"
@@ -143,7 +145,7 @@ case "$CMD" in
     done
     [ -n "$TASK" ] || usage
     [ -n "$SUMMARY" ] || usage
-    case "$VERDICT" in routine|captain) ;; *) usage ;; esac
+    case "$VERDICT" in routine|captain|firstmate-action) ;; *) usage ;; esac
     case "$SILENT" in true|false) ;; *) usage ;; esac
     fm_lock_acquire_wait "$LOCK"
     if ! LAST_SEQ=$(last_seq); then

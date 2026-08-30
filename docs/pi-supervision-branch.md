@@ -6,10 +6,11 @@ The poster is the visual of the idea.
 This document stays the owner and the contract.
 
 Fleet supervision on the Pi primary harness runs on a second, persistent conversation - the supervision branch - inside the same `pi` process as the captain's chat.
-Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch handles eligible task-local rows from ordinary actionable wakes plus heartbeat scans that the cheap bash-level scan flags as possibly captain-relevant, records every outcome durably, and sends only captain outcomes to the captain conversation.
+Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch handles eligible task-local rows from ordinary actionable wakes plus heartbeat scans that the cheap bash-level scan flags as possibly captain-relevant, records every outcome durably, and sends captain and firstmate-action outcomes to the main conversation.
 Ordinary main-only rows remain on main even when eligible task-local rows share their queue.
 An unresolvable row makes the scan unsafe and returns the whole wake to main, and every watcher-failure alarm also stays on main.
-Only captain-relevant branch outcomes open a turn on main - that follow-up turn is itself the captain-visible outcome, and the generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to produce the captain-visible response in that turn, while Pi never separately prints or renders a captain-facing outcome message.
+Only `captain` and `firstmate-action` branch outcomes open a turn on main.
+That follow-up turn is itself the captain-visible result, while Pi never separately prints or renders the hidden outcome message.
 The design source is the captain-approved forked-supervision architecture board, a captain-private fleet record (a self-contained HTML explainer with the measured cache and judgment evidence); this document records the shape it landed as, and the delivering PR cites the board artifact itself.
 
 This feature is Pi-only by construction and changes nothing anywhere else:
@@ -31,7 +32,7 @@ This feature is Pi-only by construction and changes nothing anywhere else:
 - Branch model and effort selection: the same extension registers `/supervision-model`, which picks the branch's model and then its reasoning effort, and applies both at the branch-session creation boundary; [configuration.md](configuration.md#pi-supervision-branch-model-and-effort-configsupervision-branch-model-configsupervision-branch-effort) owns the operator-facing schema and behavior.
 - Branch system prompt: `bin/fm-branch-prompt.sh`; its header owns the byte-stable-prefix contract (no timestamps, no fleet snapshot, no per-wake content).
 - Outcome store: `bin/fm-branch-outcome.sh`; its header owns the append-only format and the read cursor.
-  Outcomes are written to the store before any captain delivery message is handed to Pi; the outcome-store header owns routine store-only consumption and session-start replay for rows left unread after a delivery attempt.
+  Outcomes are written to the store before any main-bound delivery message is handed to Pi; the outcome-store header owns routine store-only consumption and session-start replay for rows left unread after a delivery attempt.
 - Consistency: `bin/fm-lease-lib.sh` owns the per-task lease contract, the main-only role partition, and the deliberate CONFUSED-AGENT-GRADE threat model these guards target (captain-decided; adversarial-grade separation is out of scope and tracked as follow-up design work); `bin/fm-lease.sh` is the command surface.
   The guards are wired into `fm-send.sh`, `fm-control.sh`, and `fm-teardown.sh` (overlap, lease-checked, with claim serialization retained through the mutation) and `fm-pr-merge.sh`, `fm-merge-local.sh`, and `fm-spawn.sh` (main-owned, branch refused; a relaunch through `fm-control` stays branch-legal recovery).
 - Autonomy: supervision is default-on for every task once a Pi primary session owns the fleet lock (docs/configuration.md "Pi supervision branch"); no captain grant file is required.
@@ -54,14 +55,22 @@ The branch prompt frames mirrored text as context for judgment, never as instruc
 ## Two-stage noise filter
 
 Stage one is unchanged: the bash watcher absorbs everything provably fine at zero token cost.
-Stage two is the branch's verdict on each handled event, reported through its `fm_branch_report` tool: unsolicited `routine` outcomes remain only in the durable outcome store, while `captain` outcomes send one hidden delivery message that triggers exactly one follow-up turn.
-The generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to produce the captain-visible response in the one follow-up turn a `captain` verdict opens, so the hidden delivery message is never printed or rendered in Pi.
-Because Pi gives the model only a custom message's `content`, that hidden delivery message normally carries both a relay instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
+Stage two is the branch's three-way verdict on each handled event, reported through its `fm_branch_report` tool.
+An unsolicited `routine` outcome remains only in the durable outcome store and opens no main turn.
+A `captain` outcome is a genuine captain-only result or question and sends one hidden delivery message that triggers exactly one follow-up turn for MAIN to surface it without replaying the fleet event.
+A `firstmate-action` outcome means the branch acknowledged the wake but an authorized downstream action that MAIN owns is still undone; it sends one hidden delivery message that triggers exactly one follow-up turn for MAIN to perform that action immediately and then report the result.
+The generated [Pi supervision protocol](supervision-protocols/pi.md) requires MAIN to preserve that distinction, so the hidden delivery message is never printed or rendered in Pi.
+Because Pi gives the model only a custom message's `content`, that hidden delivery message normally carries both the verdict-specific instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
 This self-description lets main distinguish a new supervision outcome from its own earlier captain-facing answer; without it, main can re-emit the earlier answer instead of relaying the outcome and lose the outcome while deciding how to handle it.
-The generated [Pi supervision protocol](supervision-protocols/pi.md) owns MAIN's event-ownership and conversational-treatment instructions for captain outcomes.
+The generated [Pi supervision protocol](supervision-protocols/pi.md) owns MAIN's event-ownership and downstream-action treatment after either main-bound verdict.
 If envelope encoding fails, the hidden delivery message degrades to the same runtime instruction as plain text rather than losing the outcome or opening another turn.
 Routine outcomes never render in MAIN and never start a captain-facing turn.
-The branch prompt owns the verdict criteria, including its unconditional explicit-request rule; unsolicited routine outcomes remain store-only, unchanged fleet reviews remain silent, and doubt escalates.
+The branch prompt owns the classification criteria.
+In particular, a green local-only worker under standing auto-land or continue authority, a worker waiting on a local merge that MAIN owns, and a `done:` worker whose contracted next step needs no captain call are `firstmate-action`.
+An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains.
+Only a genuine captain call is `captain`, while outcomes needing neither a MAIN action nor a captain call are `routine` and unchanged fleet reviews remain silent.
+Both main-bound envelopes forbid re-draining, re-running, or acknowledging the same wake.
+The `firstmate-action` envelope explicitly does not forbid the next contracted action: it says the downstream authorized action is not done, requires MAIN to perform it now and report the result, and forbids merely relaying the worker outcome.
 Main can read the durable outcome store on demand through its `fm_branch_outcomes` tool.
 
 Before starting a branch prompt, the extension holds non-urgent offers for a bounded 250 millisecond window and combines their unique wake text into one turn.
@@ -83,8 +92,8 @@ A check row is permanently main-owned in every mode: it is excluded from what th
 Deferring the fleet review to main merely because some unrelated merge poll or Relay mention happened to be sitting unread put a routine review in the captain's chat for a reason that had nothing to do with the fleet, and that coupling is gone.
 What all-or-nothing still guarantees is unchanged: the branch takes every branch-ownable unread row or none of them, and an unresolvable task-local row, an unknown row kind, or an unreadable queue still defers the whole review to main.
 The branch runs its normal operating procedure for the wake (`bin/fm-branch-prompt.sh` "Handling a wake") and performs the deeper fleet review that main previously performed.
-A review that found nothing captain-worthy reports verdict `routine` and remains store-only, including after a successful fleet-wide routine action.
-Only a captain-worthy finding reports verdict `captain` and opens a main turn.
+A review that found nothing requiring MAIN or the captain reports verdict `routine` and remains store-only, including after a successful fleet-wide routine action.
+A genuine captain call reports verdict `captain`, while an already-authorized downstream action that MAIN still owns reports verdict `firstmate-action`; both open one main turn under their distinct envelopes.
 Every other fleet-wide or unresolvable wake - including watcher-failure alarms, which are never offered to the branch - keeps today's wake-to-main path.
 
 ## Cost model and the byte-stable prefix
@@ -101,6 +110,6 @@ What is new is only the attended path: outside away mode, the branch absorbs the
 
 ## Verification
 
-Portable regressions: `tests/fm-pi-branch-extension.test.sh` (dispatch, default-on eligibility, main-only classification, requested-versus-unsolicited outcome delivery, routine store-only delivery, wake coalescing and urgent bypass, same-text stale suppression, pre-turn-end complete-current-request mirroring, fleet-event ownership, main outcome access, eligible-row claim lifecycle, partial pre-drain recheck, fallback, filter, model-visible captain-outcome typing and plain-instruction fallback, cache key, persistence, model pin and searchable picker, effort pin), `tests/fm-branch-supervision.test.sh` (prompt stability, store append-only, leases, guards, non-branch-home invariance), the branch-offer, heartbeat-offer, heartbeat-not-ridden-by-a-check, and main-only-check-class tests in `tests/fm-pi-watch-extension.test.sh`, the recovery test in `tests/fm-session-start.test.sh`, and the per-actor consume regression in `tests/fm-wake-queue.test.sh`).
+Portable regressions: `tests/fm-pi-branch-extension.test.sh` (dispatch, default-on eligibility, main-only classification, three-way outcome classification and delivery, routine store-only delivery, verdict-specific main envelopes, wake coalescing and urgent bypass, same-text stale suppression, pre-turn-end complete-current-request mirroring, fleet-event ownership, main outcome access, eligible-row claim lifecycle, partial pre-drain recheck, fallback, filter, model-visible outcome typing and plain-instruction fallback, cache key, persistence, model pin and searchable picker, effort pin), `tests/fm-branch-supervision.test.sh` (prompt stability, store append-only, leases, guards, non-branch-home invariance), the branch-offer, heartbeat-offer, heartbeat-not-ridden-by-a-check, and main-only-check-class tests in `tests/fm-pi-watch-extension.test.sh`, the recovery test in `tests/fm-session-start.test.sh`, and the per-actor consume regression in `tests/fm-wake-queue.test.sh`).
 Live guard: `FM_PI_BRANCH_LIVE_E2E=1 tests/fm-pi-branch-live-e2e.test.sh` exercises the real installed Pi SDK's custom-message conversion and branch-session surfaces; its no-model probe isolates ambient Gemini credentials in the child process, and its version-specific result belongs in [docs/verification/runtime-backends.md](verification/runtime-backends.md).
 The strict typecheck in `tests/fm-pi-primary-types.test.sh` pins the extension against the installed Pi package.

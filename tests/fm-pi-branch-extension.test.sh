@@ -605,9 +605,38 @@ if (untouched !== undefined) throw new Error("cache-key hook rewrote a provider 
 console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 
 // 4. Two-stage filter, stage 2: unsolicited routine outcomes stay durable but
-// never enter main, while captain-relevant outcomes trigger exactly one turn.
+// never enter main, while captain-only and firstmate-action outcomes each
+// trigger exactly one semantically distinct turn.
 // Store rows are written BEFORE delivery and marked read after it.
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+const verdictChoices = report.parameters.properties.verdict.anyOf.map((choice) => choice.const);
+if (JSON.stringify(verdictChoices) !== JSON.stringify(["routine", "captain", "firstmate-action"])) {
+  throw new Error(`report tool did not expose the three verdicts: ${JSON.stringify(verdictChoices)}`);
+}
+const verdictDescription = report.parameters.properties.verdict.description;
+for (const requiredRule of [
+  "green worker result on a local-only branch under standing auto-land or continue authority",
+  "worker waiting on a local merge that main owns",
+  "contracted next step needs no captain call",
+  "Only a genuine captain call uses captain",
+  "An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains",
+]) {
+  if (!verdictDescription.includes(requiredRule)) {
+    throw new Error(`report tool lost the firstmate-action classification rule '${requiredRule}': ${verdictDescription}`);
+  }
+}
+for (const requiredPromptRule of [
+  "# Verdict: routine, captain, or firstmate-action",
+  "A green worker result on a local-only branch under standing auto-land or continue authority",
+  "A worker waiting on a local merge that MAIN owns",
+  "A worker `done:` whose contracted next step needs no captain call",
+  "Only a genuine captain call is verdict captain",
+  "An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains",
+]) {
+  if (!loader.options.systemPrompt.includes(requiredPromptRule)) {
+    throw new Error(`branch prompt lost the three-way classification rule '${requiredPromptRule}'`);
+  }
+}
 const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
 if (sentToMain.length !== 0) throw new Error("routine report entered main instead of remaining store-only");
@@ -615,27 +644,36 @@ fire("agent_start", {});
 await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy", silent: true }, undefined, undefined, {});
 if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
-await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
-if (sentToMain.length !== 1) throw new Error(`captain report did not merge exactly one note: ${sentToMain.length}`);
+await report.execute("call-3", { task: "task-9", verdict: "firstmate-action", summary: "green local-only worker result is ready for its standing auto-land and then the next plan task" }, undefined, undefined, {});
+if (sentToMain.length !== 1) throw new Error(`firstmate-action report did not merge exactly one note: ${sentToMain.length}`);
 if (sentToMain[0].options.triggerTurn !== true || sentToMain[0].options.deliverAs !== "followUp") {
-  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
+  throw new Error(`firstmate-action merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
+}
+if (sentToMain[0].message.display !== false) {
+  throw new Error(`firstmate-action note must never be printed or rendered: display=${sentToMain[0].message.display}`);
+}
+writeFileSync(`${home}/state/delivered-firstmate-action-note`, sentToMain[0].message.content);
+await report.execute("call-4", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
+if (sentToMain.length !== 2) throw new Error(`captain report did not merge exactly one additional note: ${sentToMain.length}`);
+if (sentToMain[1].options.triggerTurn !== true || sentToMain[1].options.deliverAs !== "followUp") {
+  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[1].options)}`);
 }
 // A captain-facing note must never be printed or rendered at all - the
 // follow-up turn triggered above is itself the captain-visible outcome.
 // display: false is the exact flag
 // Pi's own chat renderer and HTML export both gate on before ever calling a
 // customType renderer, so this is the authoritative "never printed" proof.
-if (sentToMain[0].message.display !== false) {
-  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[0].message.display}`);
+if (sentToMain[1].message.display !== false) {
+  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[1].message.display}`);
 }
-if (typeof sentToMain[0].message.content !== "string" || sentToMain[0].message.content.includes("⚓")) {
-  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[0].message.content}`);
+if (typeof sentToMain[1].message.content !== "string" || sentToMain[1].message.content.includes("⚓")) {
+  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[1].message.content}`);
 }
-if (!sentToMain[0].message.content.includes("task-9: PR https://example.com/pr/9")) {
-  throw new Error(`captain note lost its outcome: ${sentToMain[0].message.content}`);
+if (!sentToMain[1].message.content.includes("task-9: PR https://example.com/pr/9")) {
+  throw new Error(`captain note lost its outcome: ${sentToMain[1].message.content}`);
 }
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
-  throw new Error(`captain note still has boilerplate: ${sentToMain[0].message.content}`);
+if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[1].message.content)) {
+  throw new Error(`captain note still has boilerplate: ${sentToMain[1].message.content}`);
 }
 // What main's model actually receives. Pi keeps only `content` when it turns a
 // custom message into a provider message - customType, display, and details are
@@ -644,17 +682,20 @@ if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content))
 // the REAL bin/fm-operational-input.sh so the protocol's own executable, not a
 // pattern in this test, decides what was delivered. Pi's half of that contract
 // is proven separately against the real SDK in fm-pi-branch-live-e2e.test.sh.
-writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[0].message.content);
-if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
-  throw new Error("one captain outcome must open exactly one turn on main");
+writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[1].message.content);
+if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 2) {
+  throw new Error("captain and firstmate-action outcomes must each open exactly one turn on main");
 }
 
-// The store (the owned durable contract) holds all three outcomes in order,
+// The store (the owned durable contract) holds all four outcomes in order,
 // and each merged note advanced the read cursor.
 const rows = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-if (rows.length !== 3) throw new Error(`expected 3 store rows, got ${rows.length}`);
-if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain") throw new Error("store verdicts out of order");
+if (rows.length !== 4) throw new Error(`expected 4 store rows, got ${rows.length}`);
+if (rows[0].verdict !== "routine" || rows[2].verdict !== "firstmate-action" || rows[3].verdict !== "captain") {
+  throw new Error(`store verdicts out of order: ${JSON.stringify(rows)}`);
+}
 if (rows.some((row) => row.verdict === "routine" && row.silent !== true)) throw new Error("routine outcomes were not forced silent in the durable store");
+if (rows.some((row) => row.verdict !== "routine" && row.silent !== false)) throw new Error("main-turn outcomes became silent in the durable store");
 if (rows[0].wake !== "signal: working") throw new Error("store lost the wake reason");
 if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not marked read");
 
@@ -703,7 +744,7 @@ try {
 if (!exportCallFellBack || !exportResultFellBack) {
   throw new Error("fm_branch_outcomes replaced Pi stock export rendering");
 }
-const listed = await outcomesTool.execute("call-4", { recent: 2 }, undefined, undefined, {});
+const listed = await outcomesTool.execute("call-5", { recent: 2 }, undefined, undefined, {});
 const listedText = listed.content[0].text;
 if (listedText.split("\n").length !== 2 || !listedText.includes("checks green")) {
   throw new Error(`fm_branch_outcomes did not read the store: ${listedText}`);
@@ -758,7 +799,21 @@ EOF
   # it. The real protocol executable is the oracle here: it decides the kind and
   # extracts the body, so this asserts delivered behavior rather than a shape
   # this test already knows.
-  local kind body
+  local kind body action_kind action_body
+  action_kind=$(./bin/fm-operational-input.sh kind < "$home/state/delivered-firstmate-action-note") \
+    || fail "firstmate-action outcome reaches main's model as unattributed text"
+  [ "$action_kind" = branch-outcome ] \
+    || fail "firstmate-action outcome delivered as kind '$action_kind', not branch-outcome"
+  action_body=$(./bin/fm-operational-input.sh body < "$home/state/delivered-firstmate-action-note") \
+    || fail "firstmate-action outcome envelope carries no readable body"
+  case "$action_body" in
+    *"The wake is already acknowledged: do not re-drain, re-run, or acknowledge it."*"The downstream authorized action is not done."*"Perform that action now, then report the result."*) ;;
+    *) fail "firstmate-action envelope did not separate wake ownership from the next authorized action: $action_body" ;;
+  esac
+  case "$action_body" in
+    *"Do not merely relay this worker outcome."*"green local-only worker result is ready for its standing auto-land and then the next plan task"*) ;;
+    *) fail "firstmate-action envelope still limited main to relaying or lost its outcome: $action_body" ;;
+  esac
   kind=$(./bin/fm-operational-input.sh kind < "$home/state/delivered-captain-note") \
     || fail "captain outcome reaches main's model as unattributed text the model cannot tell from its own answer"
   [ "$kind" = branch-outcome ] \
@@ -773,7 +828,7 @@ EOF
   # delivered instruction forbids reprocessing the fleet event but leaves main
   # free to decide how the outcome belongs in the captain conversation.
   case "$body" in
-    *"The fleet event is already handled: do not re-drain, re-run, or acknowledge it."*) ;;
+    *"The fleet event is already handled: do not re-drain, re-run, or acknowledge it."*"Do not take another fleet action from this delivery."*) ;;
     *) fail "captain outcome body lost the event-ownership boundary: $body" ;;
   esac
   case "$body" in
@@ -784,7 +839,7 @@ EOF
     *"An outcome that directly answers an explicit captain request is captain-facing"*"regardless of whether it is healthy, routine, measured, actionable, or requires a decision."*) ;;
     *) fail "captain outcome body lost the unconditional explicit-request rule: $body" ;;
   esac
-  pass "a captain outcome reaches main's model as typed, self-describing input while routine outcomes stay store-only"
+  pass "captain and firstmate-action outcomes reach main with distinct typed instructions while routine outcomes stay store-only"
 }
 
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {

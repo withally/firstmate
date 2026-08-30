@@ -49,8 +49,8 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor() {
     *) fail "branch prompt lost the inlined recovery playbook" ;;
   esac
   case "$out_a" in
-    *"Report verdict captain for any outcome that directly answers an explicit captain request."*"This rule is unconditional"*"Keep an unsolicited routine outcome as verdict routine"*"Keep an unchanged fleet review silent"*) ;;
-    *) fail "branch prompt lost the unconditional requested-outcome or routine-silence rules" ;;
+    *"# Verdict: routine, captain, or firstmate-action"*"Report verdict captain for any outcome that directly answers an explicit captain request."*"Only a genuine captain call is verdict captain."*"A green worker result on a local-only branch under standing auto-land or continue authority."*"A worker waiting on a local merge that MAIN owns."*"whose contracted next step needs no captain call"*"Keep an unchanged fleet review silent"*) ;;
+    *) fail "branch prompt lost the three-way classification or routine-silence rules" ;;
   esac
   pass "branch prompt is byte-stable across homes, cwd, timezone, and time, above the cache floor"
 }

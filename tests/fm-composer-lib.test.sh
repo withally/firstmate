@@ -282,7 +282,7 @@ test_matrix_herdr_halfblock_rule_bounds_bare_wrap() {
   case "$plain" in *"Run Everything"*) : ;; *) fail "fixture lost its footer content" ;; esac
   ESC_LOCAL=$(printf '\033')
   screen=$'transcript\n ▄▄▄▄▄▄▄▄\n'"  ${ESC_LOCAL}[2m→ ${ESC_LOCAL}[0;7mA${ESC_LOCAL}[0;2mdd a follow-up${ESC_LOCAL}[0m"$'\n ▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 6.7%   Run Everything\n  ~/wt · 64cdd3a'
-  out=$(fm_composer_classify_screen "$CAPS_STYLED" "$(printf '%b' "$screen")")
+  out=$(fm_composer_classify_screen "$CAPS_STYLED" "$screen")
   [ "$out" = empty ] \
     || fail "an idle cursor composer inside herdr half-block rules must read empty, got '$out'"
   pass "matrix: herdr half-block rules bound a bare composer's wrap region"
@@ -603,6 +603,43 @@ test_selected_content_is_composer_scoped_and_wrap_normalized() {
   pass "fm_composer_extract_selected_content: scopes user content and excludes furniture"
 }
 
+test_pi_submit_observation_honors_pair_bound() {
+  local separator blank screen out
+  separator='─────────────────────────────────────────────────────'
+  blank=$(printf ' \n%.0s' {1..12})
+  screen=$'Steering: hello\n'"$separator"$'\n'"$blank$separator"
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" "hello" $'pi\tworking')
+  [ "$out" = $'1\tunknown' ] \
+    || fail "an over-tall empty Pi pair must stay unknown despite a matching echo, got '$out'"
+
+  blank=$(printf ' \n%.0s' {1..9})
+  screen=$'Steering: first line\n'"$separator"$'\n first   line \n second\tline\n'"$blank$separator"
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" $'first line\nsecond line' $'pi\tworking')
+  [ "$out" = $'1\tunknown' ] \
+    || fail "an over-tall Pi pair must stay unknown despite visible composer text, got '$out'"
+  pass "fm_composer_pi_submit_observation: over-tall pairs remain unknown"
+}
+
+test_pi_submit_observation_rejects_nonmatching_pending_literal() {
+  local separator screen out
+  separator='─────────────────────────────────────────────────────'
+  screen=$'transcript\n'"$separator"$'\nother draft\n'"$separator"$'\nfooter'
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" "expected message" $'pi\tworking')
+  [ "$out" = $'0\tnot-current' ] \
+    || fail "a visible Pi draft that is not the current literal must not read as pending, got '$out'"
+
+  screen=$'transcript\n'"$separator"$'\nexpected message\n'"$separator"$'\nfooter'
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" "expected message" $'pi\tworking')
+  [ "$out" = $'0\tpending' ] \
+    || fail "a visible Pi draft matching the current literal must remain pending, got '$out'"
+
+  screen=$'transcript\n'"$separator"$'\nfirst line\nsecond line\n'"$separator"$'\nfooter'
+  out=$(fm_composer_pi_submit_observation "$CAPS_STYLED" "$screen" $'first line\nsecond line' $'pi\tworking')
+  [ "$out" = $'0\tpending' ] \
+    || fail "a matching multiline Pi draft must remain pending, got '$out'"
+  pass "fm_composer_pi_submit_observation: a different visible Pi draft is not the current pending literal"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
@@ -633,6 +670,20 @@ test_incomplete_lower_box_invalidates_stale_candidate
 test_titled_bottom_requires_matching_width
 test_cursor_on_proven_box_bottom_classifies_content
 test_selected_content_is_composer_scoped_and_wrap_normalized
+test_pi_submit_observation_honors_pair_bound
+test_pi_submit_observation_rejects_nonmatching_pending_literal
+
+test_submit_retry_reports_send_failed_before_any_enter() {
+  local out
+  submit_key_always_fails() { return 1; }
+  submit_state_is_unknown() { printf 'unknown'; }
+  out=$(fm_composer_submit_retry_core submit_key_always_fails submit_state_is_unknown target 3 0)
+  [ "$out" = send-failed ] \
+    || fail "failed Enter transport must report send-failed, got '$out'"
+  pass "fm_composer_submit_retry_core: failed Enter transport never claims an unconfirmed submit"
+}
+
+test_submit_retry_reports_send_failed_before_any_enter
 
 test_queued_enter_verdict_busy_pending_is_empty() {
   local out

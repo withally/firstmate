@@ -143,7 +143,7 @@ Zellij has no verified recovery-grade agent process probe, while Orca and cmux d
 
 The current classifier matrix and its refresh guard are recorded in [Composer classification matrix](#composer-classification-matrix), with portable shape coverage in `tests/fm-composer-lib.test.sh` and `tests/fm-composer-ghost.test.sh`.
 Kimi pointer delivery and OpenCode 1.18.4 busy-queue behavior remain pinned by `tests/fm-kimi-harness.test.sh`, `tests/fm-tmux-submit-busy.test.sh`, and `tests/fm-composer-lib.test.sh`.
-Herdr's Claude submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`; the known-Claude rule is owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), and the away-mode guard additionally requires rendered or composer proof rather than native `working` alone.
+Herdr submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`; the harness-specific rules are owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), and the away-mode guard additionally requires rendered or composer proof rather than native `working` alone.
 
 ### Cleanup endpoint identity
 
@@ -273,22 +273,27 @@ No ambient `herdr server stop` command is a supported test operation.
 
 ### Submit confirmation
 
-Measured 2026-08-19 against Herdr 0.8.0 and Claude Code 2.1.236 in an isolated `fm-lab-` session.
+Measured 2026-08-29 against Herdr 0.8.2, Claude Code 2.1.251, and Pi 0.84.2 using `openai-codex/gpt-5.6-sol` in one isolated `fm-lab-` session.
 
-`herdr agent get` reported `agent_status=idle` on every sample across a landed one-word turn and an 8-second `sleep` tool call, while the pane rendered `Pontificating…` then `Sock-hopping… (11s · ↓ 234 tokens)`.
-`fm_backend_herdr_send_text_submit` therefore cannot treat native idle alone as either delivery proof or proof of a swallow.
-The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-composer-lib.test.sh` pin the non-Claude verdicts: native idle plus a cleared composer is delivery, proven pending plus idle is a swallow, and proven pending plus a generating busy signal is a queued Enter.
+The earlier Claude observation still holds the safety boundary: `herdr agent get` can stay `idle` across a landed turn, so native idle alone proves neither delivery nor a swallow.
+The Pi run exercised short and 1500+ character multiline messages while idle and while already working.
+Busy Pi rendered the current message as a `Steering:` queue echo, cleared the separator composer, and later rendered the full long-message tail.
+`fm_backend_herdr_send_text_submit` now requires a cleared Pi composer plus either a new matching transcript/queue echo or an observed idle-to-busy transition.
+The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-send-strict.test.sh` pin busy queueing, delayed composer flushes, long text retained after Enter, and the distinct confirmed/unconfirmed/not-submitted exits.
 The known-Claude submit cases exercise the rendered-transition-or-cleared-composer rule owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), so native `working` alone is never delivery proof.
-Refresh the live Claude proof with:
+Refresh both live harness proofs with:
 
 ```sh
-FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  FM_HERDR_SUBMIT_CONFIRM_LIVE=1 \
+  tests/fm-herdr-submit-confirm-live-e2e.test.sh
 ```
 
-Observed 2026-08-19:
+Observed 2026-08-29:
 
 ```text
-ok - live Herdr submit confirm: Claude Code (2.1.236 (Claude Code)) on herdr 0.8.0 reports empty for a landed idle steer
+ok - live Herdr submit confirm: Claude Code (2.1.251 (Claude Code)) on herdr 0.8.2 reports empty and renders the requested reply in an isolated named lab
+ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms short/long idle/busy sends in an isolated named lab
 ```
 
 ### Prune and respawn
@@ -921,7 +926,7 @@ Before those were taught to the shared edge detector, a bare composer's wrap reg
 Measured as an A/B on the same live pane, the pre-fix classifier returned `pending` and the current one returned `empty`.
 
 The idle fix alone did not confirm typed delivery, because the composer branch reads the mid-turn row instead.
-With the rendered-footer transition in place, a typed-plane `bin/fm-send.sh` invocation exited 0 and the steer executed in the pane; the same send previously exited 1 with `delivery unconfirmed; verdict=pending` on a message that had actually landed.
+With the rendered-footer transition in place, a typed-plane `bin/fm-send.sh` invocation exited 0 and the steer executed in the pane; the exact typed-plane exit mapping is owned by [`bin/fm-send.sh`](../../bin/fm-send.sh).
 
 The rest of the lifecycle was driven end to end on that worker:
 
@@ -935,7 +940,7 @@ Other harnesses on Herdr are unaffected by the edge-detector change.
 All seven live panes of the running default session - one Pi, four Claude, two plain shells - classified identically under the pre-fix and current classifiers.
 
 **Typed-submit confirmation is verified on tmux and Herdr only.**
-Zellij, cmux, and Orca share a submit core that never consults the busy footer, so a typed-plane Cursor send there lands but `fm-send` reports delivery unconfirmed and exits non-zero; ordinary text steers ride the durable inbox and exit 0 at enqueue.
+Zellij, cmux, and Orca share a submit core that never consults the busy footer, so a typed-plane Cursor send there lands but `fm-send` reports an unconfirmed submission and exits non-zero; ordinary text steers ride the durable inbox and exit 0 at enqueue.
 Teaching that shared core the same transition is deliberately separate work, because it changes the submit path for every harness on those three backends and needs its own live validation on each.
 
 The portable regression is `tests/fm-cursor-harness.test.sh`, the composer captures are pinned in `tests/fm-composer-lib.test.sh`, and the Herdr submit and footer behavior is pinned in `tests/fm-backend-herdr.test.sh`.

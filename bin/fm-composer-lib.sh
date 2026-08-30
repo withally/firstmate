@@ -1331,9 +1331,19 @@ EOF
 # tmux and herdr keep richer cores that consume this same shared verdict plus
 # fm_composer_queued_enter_verdict; no shape knowledge lives in any loop.
 fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label]
-  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} i=0 state
+  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} i=0 state enter_sent=0
   while :; do
-    "$send_key_fn" "$target" Enter "$expected_label" || true
+    if "$send_key_fn" "$target" Enter "$expected_label"; then
+      enter_sent=1
+    elif [ "$enter_sent" -eq 0 ]; then
+      i=$((i + 1))
+      if [ "$i" -ge "$retries" ]; then
+        printf 'send-failed'
+        return 0
+      fi
+      sleep "$sleep_s"
+      continue
+    fi
     sleep "$sleep_s"
     state=$("$state_fn" "$target" "$expected_label")
     case "$state" in
@@ -1354,7 +1364,7 @@ fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries>
 # Every other composer verdict is returned unchanged, so pending-unproven,
 # empty, and unknown never receive this conversion.
 # Adapters supply their own busy primitive (tmux: fm_pane_is_busy; herdr:
-# native agent_status=working for known non-Claude harnesses). Claude's submit
+# native agent_status=working for known non-Claude, non-Pi harnesses). Claude's submit
 # loop requires a per-Enter rendered transition or cleared composer instead and
 # does not use this final conversion. This function does not read a pane.
 fm_composer_queued_enter_verdict() {  # <composer-state> <busy|idle|unknown>
@@ -1381,6 +1391,57 @@ _fm_composer_classify_pi_rows() {  # <screen> <styled>
     row=$((row + 1))
   done
   printf 'empty'
+}
+
+# A valid Pi pair can still contain a different retained draft, or a literal
+# that Herdr visibly dropped after its first bytes. For submit confirmation,
+# require short boundary anchors from the current literal in the visible pair.
+# This deliberately does not reconstruct or compare the whole body: terminal
+# wrapping and Pi's bounded pair geometry make that unsafe for long input.
+_fm_composer_pi_submit_literal_state() {  # <screen> <styled> <text> -> match|not-current
+  local screen=$1 styled=$2 text=$3 row raw content line first='' last='' anchor
+  local first_anchor last_anchor first_content='' last_content=''
+  local first_match=0 last_match=0 have_text=0 have_content=0
+  while IFS= read -r line; do
+    fm_composer_normalize_trim_var line
+    [ -n "$line" ] || continue
+    if [ "$have_text" = 0 ]; then
+      first=$line
+      have_text=1
+    fi
+    last=$line
+  done <<EOF
+$text
+EOF
+  [ "$have_text" = 1 ] || { printf 'match'; return 0; }
+  anchor=16
+  first_anchor=$(printf '%s' "$first" | LC_ALL=C awk -v n="$anchor" '{ printf "%s", substr($0, 1, n) }')
+  last_anchor=$(printf '%s' "$last" | LC_ALL=C awk -v n="$anchor" '{ start=length($0)-n+1; if (start < 1) start=1; printf "%s", substr($0, start) }')
+  row=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
+  while [ "$row" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; do
+    raw=$(_fm_composer_screen_row "$row" "$screen")
+    content=$(_fm_composer_row_content "$raw" "$styled")
+    fm_composer_normalize_trim_var content
+    if [ -n "$content" ]; then
+      if [ "$have_content" = 0 ]; then
+        first_content=$content
+        have_content=1
+      fi
+      last_content=$content
+    fi
+    row=$((row + 1))
+  done
+  case "$first_content" in
+    "$first_anchor"*) first_match=1 ;;
+  esac
+  case "$last_content" in
+    *"$last_anchor") last_match=1 ;;
+  esac
+  if [ "$first_match" = 1 ] && [ "$last_match" = 1 ]; then
+    printf 'match'
+  else
+    printf 'not-current'
+  fi
 }
 
 _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <identity> <bare-row>
@@ -1442,5 +1503,84 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   case "$agent_status" in
     idle|done) printf 'empty' ;;
     *) printf 'unknown' ;;
+  esac
+}
+
+# fm_composer_pi_submit_observation is the submission-only Pi surface reader.
+# It keeps Pi shape knowledge in this fleet-wide owner while allowing a backend
+# to combine two positive facts without weakening the ordinary composer verdict:
+# the separator composer is structurally empty, and Pi rendered a transcript
+# or `Steering:` queue echo for the current message.
+#
+# Output is `<echo-count><TAB><empty|pending|not-current|unknown>`.
+# The count lets the backend require a post-Enter increase over its immediately
+# pre-Enter capture, so an older identical queue row cannot confirm a new send.
+# The queue echo remains prefix-matched because Pi intentionally renders only a
+# preview of busy queued input.
+# Matching rows are counted only above the selected composer pair, so the
+# pre-Enter draft itself is never mistaken for a transcript echo.
+# `not-current` means a valid pending pair did not contain both bounded
+# boundary anchors from the current literal; it is a fail-closed transport or
+# retained-draft mismatch, not evidence that another draft can be submitted.
+# This function does not decide delivery; the Herdr adapter owns that verdict.
+fm_composer_pi_submit_observation() {  # <caps> <screen> <text> <identity>
+  local caps=$1 screen=$2 text=$3 identity=$4 styled=0 has_identity=0 kv
+  local plain agent first prefix line count=0 state row=0 literal_state
+  while IFS= read -r kv; do
+    case "$kv" in
+      styled=1) styled=1 ;;
+      identity=1) has_identity=1 ;;
+    esac
+  done <<EOF
+$caps
+EOF
+  [ "$has_identity" = 1 ] || { printf '0\tunknown'; return 0; }
+  case "$identity" in
+    *$'\t'*) agent=${identity%%$'\t'*} ;;
+    *) printf '0\tunknown'; return 0 ;;
+  esac
+  [ "$agent" = pi ] || { printf '0\tunknown'; return 0; }
+  plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
+  _fm_composer_scan_screen "$plain" ''
+  # Pi's status footer can begin with a dollar-denominated cost (`$0.003`).
+  # The generic cursorless selector correctly treats a lower shell-looking row
+  # as staleness evidence when identity is unknown, but native Pi identity plus
+  # the bottom-most valid separator pair is the stronger submit-only proof.
+  if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" != 1 ] \
+    || [ "$FM_COMPOSER_SCAN_PI_CLOSE" != "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" ]; then
+    printf '0\tunknown'
+    return 0
+  fi
+  state=$(_fm_composer_classify_pi_rows "$screen" "$styled")
+  first=$(printf '%s\n' "$text" | sed -n '/[^[:space:]]/ { p; q; }')
+  fm_composer_normalize_trim_var first
+  prefix=$(printf '%s' "$first" | LC_ALL=C awk '{ printf "%s", substr($0, 1, 48) }')
+  if [ -n "$prefix" ]; then
+    while IFS= read -r line; do
+      fm_composer_normalize_trim_var line
+      if [ "$row" -lt "$FM_COMPOSER_SCAN_PI_OPEN" ]; then
+        case "$line" in
+          "$prefix"*|"Steering: $prefix"*) count=$((count + 1)) ;;
+        esac
+      fi
+      row=$((row + 1))
+    done <<EOF
+$plain
+EOF
+  fi
+  if [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
+    printf '%s\tunknown' "$count"
+    return 0
+  fi
+  if [ "$state" = pending ]; then
+    literal_state=$(_fm_composer_pi_submit_literal_state "$screen" "$styled" "$text")
+    if [ "$literal_state" = not-current ]; then
+      printf '%s\tnot-current' "$count"
+      return 0
+    fi
+  fi
+  case "$state" in
+    empty|pending) printf '%s\t%s' "$count" "$state" ;;
+    *) printf '%s\tunknown' "$count" ;;
   esac
 }

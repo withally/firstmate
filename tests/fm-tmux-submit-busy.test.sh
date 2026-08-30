@@ -47,6 +47,7 @@ case "${1:-}" in
       case "$1" in -t) shift ;; -l) ;; Enter) is_enter=1 ;; esac; shift
     done
     if [ "$is_enter" = 1 ]; then
+      [ "${FM_FAKE_SEND_ENTER_FAIL:-0}" = 1 ] && exit 1
       [ -z "${FM_FAKE_SENT:-}" ] || printf 'Enter\n' >> "$FM_FAKE_SENT"
       if [ -n "${FM_FAKE_SWALLOW:-}" ] && [ -f "$FM_FAKE_SWALLOW" ]; then
         [ "${FM_FAKE_PERSIST_SWALLOW:-0}" = 1 ] || rm -f "$FM_FAKE_SWALLOW"
@@ -102,6 +103,24 @@ test_idle_pane_pending_returns_pending() {
     fm_tmux_submit_enter_core "win" 3 0.05 > "$vfile" 2>/dev/null
   [ "$(cat "$vfile")" = pending ] || fail "idle-pane pending should return pending, got '$(cat "$vfile")'"
   pass "fm_tmux_submit_enter_core: idle pane + pending composer stays pending (genuine swallow preserved)"
+}
+
+test_enter_transport_failure_reports_send_failed() {
+  local dir fakebin composer sent vfile
+  dir="$TMP_ROOT/enter-transport-failure"
+  fakebin=$(make_submit_mock "$dir")
+  composer="$dir/composer"
+  sent="$dir/sent.log"
+  vfile="$dir/verdict"
+  printf '│ > unbounded\n' > "$composer"
+  : > "$sent"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$composer" FM_FAKE_SENT="$sent" \
+    FM_FAKE_SEND_ENTER_FAIL=1 \
+    fm_tmux_submit_enter_core "win" 3 0.01 > "$vfile" 2>/dev/null
+  [ "$(cat "$vfile")" = send-failed ] \
+    || fail "failed Enter transport must report send-failed, got '$(cat "$vfile")'"
+  [ ! -s "$sent" ] || fail "failed Enter transport was recorded as delivered"
+  pass "fm_tmux_submit_enter_core: failed Enter transport never reports an unconfirmed submit"
 }
 
 test_wrapped_continuation_retries_swallowed_enter() {
@@ -329,6 +348,7 @@ test_claude_busy_signature_uses_real_capture_shapes() {
 
 test_busy_pane_pending_returns_empty
 test_idle_pane_pending_returns_pending
+test_enter_transport_failure_reports_send_failed
 test_wrapped_continuation_retries_swallowed_enter
 test_placeholder_like_bare_input_retries_swallowed_enter
 test_busy_pane_composer_clears_first_try

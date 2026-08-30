@@ -6,11 +6,13 @@
 #   Sets state/.afk unless FM_AFK_STATE_PREPARED=1, checks
 #   state/.supervise-daemon.lock, and:
 #     - prints "afk: daemon already running pid=<pid>" then exits 0 when that
-#       lock is held by a live daemon (a REFRESH: no stale-artifact clear);
-#     - otherwise clears any prior away session's stale escalation artifacts
-#       (fm_afk_clear_stale_artifacts) for a direct, non-prepared start, then
-#       execs bin/fm-supervise-daemon.sh in the foreground. A prepared start was
-#       already cleared transactionally by bin/fm-afk-launch.sh.
+#       lock is held by a live daemon (a refresh: no stale-artifact clear);
+#     - otherwise, for a direct non-prepared start with no existing state/.afk,
+#       clears any prior away session's stale delivery artifacts
+#       (fm_afk_clear_stale_artifacts), then execs bin/fm-supervise-daemon.sh in
+#       the foreground. A prepared start delegates the same fresh-versus-
+#       recovery handling to bin/fm-afk-launch.sh; an existing state/.afk keeps
+#       the current session's delivery artifacts for recovery.
 #
 # This file is sourceable: its BASH_SOURCE guard keeps main from running, while
 # exposing the daemon-lock helpers and fm_afk_clear_stale_artifacts. Sourcing it
@@ -46,19 +48,17 @@ fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# fm_afk_clear_stale_artifacts: on a FRESH away-session entry (the daemon is not
-# already running), drop the previous away session's leftover escalation-delivery
-# artifacts so they cannot surface as stale escalations under the new session.
-# These are session-scoped by timing: a fresh entry owns a new supervision
-# session and the new daemon has not produced anything yet, so anything present
-# here belongs to a PRIOR session. This never drops a genuinely-pending
-# escalation - the delivery buffer is a transient cache, and any condition still
-# true (a crew still blocked, a check still firing) is re-derived and re-escalated
-# fresh by the daemon's heartbeat catch-all scan and the durable
-# state/.wake-queue replay (see docs/herdr-backend.md "Away-mode stale-artifact
-# lifecycle" and bin/fm-supervise-daemon.sh's escalate_add/inject_wedge_alarm).
-# NOT called on a refresh (daemon already alive), so the current session's own
-# buffered escalations are preserved.
+# fm_afk_clear_stale_artifacts: on a FRESH away-session entry (state/.afk is
+# absent and the daemon is not already running), drop the previous session's
+# leftover escalation-delivery artifacts so they cannot surface as stale
+# escalations under the new session. A restart or recovery with state/.afk
+# already present preserves the current session's buffer, delivery sidecars,
+# wedge marker, and check ledger for replay-safe routing. The fresh-entry clear
+# does not drop durable work: a condition still true is re-derived by the
+# daemon's heartbeat catch-all scan, and an unacknowledged wake remains in
+# state/.wake-queue (see .agents/skills/afk/SKILL.md "Stale-artifact lifecycle"
+# and bin/fm-supervise-daemon.sh's escalate_add/inject_wedge_alarm). This helper
+# is not called on a refresh or same-session recovery.
 fm_afk_clear_stale_artifacts() {  # <state-dir>
   local state=$1
   rm -f "$state/.subsuper-escalations" \

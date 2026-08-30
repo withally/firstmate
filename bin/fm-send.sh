@@ -59,14 +59,22 @@
 # (the same boundary that keeps it unmarked and outside --resolve-key). These
 # type the literal
 # text through the target backend's verified submit core: typed ONCE, then
-# Enter retried (never retyped) until the backend confirms a submit or reports
-# an inconclusive send. Typed-plane exit contract: 0 = submit confirmed;
-# 3 = the text was typed into the live endpoint and
-# Enter was sent, but the submit read-back stayed unconfirmed (verify the pane
-# before any resend, and never re-type blindly; a marked request's
-# pending-reply expectation stays armed because this outcome is not a proven
-# failure); any other nonzero = the send failed and nothing may be assumed
-# delivered. Submission dispatches through the target's recorded backend; the
+# Enter retried (never retyped) until the backend returns a proof-carrying
+# verdict in one of the three typed-plane exit classes.
+# Typed-plane exit contract:
+#   0 = submission confirmed by a positive harness-specific postcondition.
+#   3 = text was typed and Enter was sent, but bounded read-back proved neither
+#       submission nor visible retention; check the pane transcript/queue and
+#       composer before acting, and never retype blindly.
+#   1 = a verified failure: the literal/key transport failed, Pi's composer
+#       was proven empty or did not contain the current literal during the
+#       bounded pre-Enter settle so Enter was not sent, or the bounded
+#       post-Enter read-back still visibly showed the current text.
+#       A visibly retained message must be retried with Enter only, never by
+#       retyping it.
+# A marked request's pending-reply expectation stays armed for exits 3 and for
+# a visibly retained exit 1 because a later Enter can still submit those bytes.
+# Submission dispatches through the target's recorded backend; the
 # tmux adapter shares its composer/submit core with the away-mode daemon via
 # bin/fm-tmux-lib.sh. Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP
 # (0.4). Slash commands, and codex `$...` skill invocations resolved through
@@ -107,8 +115,9 @@
 # the commit and marker are BOTH lost the send still remains successful with a
 # reply-tracking-degraded warning naming the expectation an operator must
 # inspect (it can no longer reconcile or escalate on its own). Only a
-# failed enqueue discards the expectation. On the typed plane an unconfirmed submit (exit 3) keeps
-# it armed rather than dropping it, and only a proven send failure discards it.
+# failed enqueue discards the expectation. On the typed plane, exit 3 and an
+# exit 1 with visibly retained text keep it armed rather than dropping it, and
+# only a proven send failure discards it.
 # Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending a recovery request
 # for an already-open expectation so a second record is not created. Direct
 # unmarked captain input never creates one. A marked secondmate instruction
@@ -1006,26 +1015,38 @@ else
       echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
-    pending)
+    text-not-typed)
+      fm_send_known_undelivered_cleanup || \
+        echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
+      echo "error: text not sent to $T: Herdr accepted pane send-text, but the current literal was not proven in the Pi composer during the bounded pre-Enter settle (it may have been dropped or a different draft may be visible; tried $RESOLUTION_TRIED); Enter was not sent" >&2
+      exit 1
+      ;;
+    not-submitted|pending)
+      # The bounded harness-specific read-back still sees the current text in
+      # the composer. This is a proven non-submit, not the ambiguous exit-3
+      # state, but retyping would duplicate the pending bytes.
+      echo "error: text not submitted to $T: the current message is still visibly pending in the composer after the bounded confirmation wait (tried $RESOLUTION_TRIED); do not retype it - inspect with fm-peek.sh, then send '--key Enter' once" >&2
+      exit 1
+      ;;
+    pending-unproven|unknown)
       # The text was typed into the live target and Enter was sent; only the
-      # submit read-back stayed unconfirmed (e.g. a busy harness queues the
-      # steer and keeps rendering it). That is not a proven failure, so never
-      # re-type the message: verify the pane instead. Exit 3 is the documented
-      # delivered-unconfirmed status.
+      # submit read-back stayed unconfirmed. That proves neither delivery nor
+      # non-delivery, so never retype the message: verify the pane instead.
+      # Exit 3 is the documented honest middle state.
       # The pending-reply expectation is deliberately NOT discarded here:
       # dropping it would silently stop tracking a marked request that very
       # likely landed. It stays armed on its unconfirmed-delivery marker, so a
       # correlated report still resolves it and an unanswered one still
       # surfaces through the library's own reconciliation
       # (bin/fm-pending-reply-lib.sh).
-      echo "fm-send: text delivered to $T but submission is unconfirmed (verdict=pending; tried $RESOLUTION_TRIED); do not retype or blindly resend - verify with fm-peek.sh, then re-send '--key Enter' only if the composer still holds the text" >&2
+      echo "fm-send: submission is unconfirmed for $T (verdict=${verdict:-unknown}; tried $RESOLUTION_TRIED); do not retype or blindly resend - check the pane transcript and composer with fm-peek.sh: if the transcript/queue contains the message, stop; if the composer still holds it, send '--key Enter' once" >&2
       exit 3
       ;;
     *)
       if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
         fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
       fi
-      echo "error: text not submitted to $T (delivery unconfirmed; verdict=${verdict:-unknown}; tried $RESOLUTION_TRIED)" >&2
+      echo "error: text not sent to $T (unexpected submit verdict=${verdict:-empty}; tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
   esac

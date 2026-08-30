@@ -3592,6 +3592,161 @@ test_send_text_submit_preexisting_working_pending_is_queued_enter() {
   pass "fm_backend_herdr_send_text_submit: native working + proven pending after retries reports empty (queued Enter)"
 }
 
+test_send_text_submit_pi_busy_queue_echo_confirms() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-busy-queue"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=queued \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=3 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "busy queue token" 1 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a Pi busy queue echo plus cleared separator composer should confirm submission, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a confirmed Pi queue submit should send one Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: Pi busy queue echo plus cleared composer confirms delivery"
+}
+
+test_send_text_submit_pi_fast_idle_transcript_echo_confirms() {
+  local dir log state fb out
+  dir="$TMP_ROOT/submit-pi-fast-idle"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=landed \
+    FM_FAKE_HERDR_AGENT_STATUS=idle FM_BACKEND_HERDR_SUBMIT_POLLS=2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "fast idle token" 1 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a fast Pi turn that returns idle before polling must confirm from its new transcript echo and cleared composer, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: fast Pi idle turn confirms from transcript echo plus cleared composer"
+}
+
+test_send_text_submit_pi_delayed_queue_flush_settles_before_verdict() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-delayed-queue"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=queued \
+    FM_FAKE_HERDR_DELAY_READS=1 FM_BACKEND_HERDR_SUBMIT_POLLS=3 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "delayed queue token" 1 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a Pi queue redraw delayed by one capture should settle to confirmed, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] \
+    || fail "a delayed composer flush must be polled before another Enter, sent $enter_count Enters"
+  pass "fm_backend_herdr_send_text_submit: delayed Pi composer flush settles without a false verdict or extra Enter"
+}
+
+test_send_text_submit_pi_retry_preflight_accepts_late_queue_echo() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-late-queue"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=queued \
+    FM_FAKE_HERDR_DELAY_READS=1 FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "late queue token" 2 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a queue echo that lands during retry preflight should confirm without another Enter, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] \
+    || fail "a late queue echo already visible before retry must not receive a second Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: retry preflight accepts a late Pi queue landing against one send-wide echo baseline"
+}
+
+test_send_text_submit_pi_pre_enter_echo_never_confirms() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-pre-echo"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=pre-echo \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "stale echo token" 2 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = text-not-typed ] \
+    || fail "a pre-Enter queue echo must not confirm a send that has not pressed Enter, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log" || true)
+  [ "$enter_count" -eq 0 ] || fail "a pre-Enter echo must not cause an Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a pre-Enter Pi echo cannot confirm the current send"
+}
+
+test_send_text_submit_pi_different_pending_does_not_press_enter() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-different-pending"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=different-pending \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "current literal" 1 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = text-not-typed ] \
+    || fail "a different retained Pi draft must stop before Enter with text-not-typed, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log" || true)
+  [ "$enter_count" -eq 0 ] \
+    || fail "a different retained Pi draft must never receive Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a different retained Pi draft fails closed before Enter"
+}
+
+test_send_text_submit_pi_truncated_literal_does_not_press_enter() {
+  local dir log state fb out enter_count long_text i
+  dir="$TMP_ROOT/submit-pi-truncated-pending"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  long_text=''
+  i=1
+  while [ "$i" -le 40 ]; do
+    long_text="${long_text}LONG_TRUNCATED_SEGMENT_${i} abcdefghijklmnopqrstuvwxyz 0123456789"
+    i=$((i + 1))
+  done
+  [ "${#long_text}" -ge 1500 ] || fail "truncated Pi fixture is shorter than 1500 characters"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=truncated-pending \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 1 0.03 0.01 "" pi' "$ROOT" "$long_text" )
+  [ "$out" = text-not-typed ] \
+    || fail "a visibly truncated long Pi literal must stop with text-not-typed, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log" || true)
+  [ "$enter_count" -eq 0 ] \
+    || fail "a visibly truncated long Pi literal must never receive Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a truncated 1500+ character Pi literal is detected before Enter"
+}
+
+test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-unknown-pre"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=unknown-pending \
+    FM_FAKE_HERDR_AGENT_STATUS=working FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "unknown pre token" 1 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = pending-unproven ] \
+    || fail "an unknown Pi pre-state followed by pending post-state must remain unproven, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "the unknown-pre Pi case should make one bounded Enter attempt, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: unknown Pi pre-state cannot borrow native working as delivery proof"
+}
+
+test_send_text_submit_pi_unknown_pre_state_can_reach_native_proof() {
+  local dir log state fb out enter_count
+  dir="$TMP_ROOT/submit-pi-unknown-native"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=unknown-late-landing \
+    FM_FAKE_HERDR_AGENT_STATUS=idle FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "late native proof" 2 0.03 0.01 "" pi' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "an unknown Pi pre-state must still allow a later native idle-to-busy proof, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 2 ] \
+    || fail "the native proof arriving on the retry must receive the second bounded Enter attempt, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: unknown Pi pre-state falls through to a later native idle-to-busy proof"
+}
+
+test_send_text_submit_pi_long_text_still_pending_is_true_failure() {
+  local dir log state fb out long_text i
+  dir="$TMP_ROOT/submit-pi-long-pending"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
+  long_text=''
+  i=1
+  while [ "$i" -le 40 ]; do
+    long_text="${long_text}LONG_PENDING_SEGMENT_${i} abcdefghijklmnopqrstuvwxyz 0123456789"
+    i=$((i + 1))
+  done
+  [ "${#long_text}" -ge 1500 ] || fail "long-text fixture is shorter than 1500 characters"
+  fb=$(make_herdr_pi_submit_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=pending \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=3 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 1 0.03 0.01 "" pi' "$ROOT" "$long_text" )
+  [ "$out" = not-submitted ] \
+    || fail "a 1500+ character Pi message still visibly pending after the bounded wait should be a true not-submitted failure, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: a long Pi message still visibly pending after bounded confirmation reports not-submitted"
+}
+
 test_send_text_submit_claude_working_pending_requires_rendered_busy() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-working-rendered-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4784,6 +4939,16 @@ test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_pending_is_queued_enter
+test_send_text_submit_pi_busy_queue_echo_confirms
+test_send_text_submit_pi_fast_idle_transcript_echo_confirms
+test_send_text_submit_pi_delayed_queue_flush_settles_before_verdict
+test_send_text_submit_pi_retry_preflight_accepts_late_queue_echo
+test_send_text_submit_pi_pre_enter_echo_never_confirms
+test_send_text_submit_pi_different_pending_does_not_press_enter
+test_send_text_submit_pi_truncated_literal_does_not_press_enter
+test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion
+test_send_text_submit_pi_unknown_pre_state_can_reach_native_proof
+test_send_text_submit_pi_long_text_still_pending_is_true_failure
 test_send_text_submit_claude_working_pending_requires_rendered_busy
 test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empty_proof
 test_send_text_submit_claude_idle_baseline_preexisting_rendered_busy_does_not_confirm

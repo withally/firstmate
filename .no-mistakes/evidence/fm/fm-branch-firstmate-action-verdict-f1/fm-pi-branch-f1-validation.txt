@@ -1,0 +1,15 @@
+Targeted validation evidence for firstmate-action branch outcomes
+
+Direct executable durable-store probe (temporary FM_HOME; assertions passed):
+durable_rows=[{"seq":1,"task":"task-legacy","verdict":"routine","silent":null},{"seq":2,"task":"task-9","verdict":"firstmate-action","silent":false},{"seq":3,"task":"task-10","verdict":"routine","silent":false}]
+action_seq=2 action_status_before_replay=pending
+render_kind=branch-outcome
+render_body=This is a supervision outcome delivered automatically by the supervision branch. It was not typed by the captain. The wake is already acknowledged: do not re-drain, re-run, or acknowledge it. The downstream authorized action is not done. Perform that action now, then report the result. Do not merely relay this worker outcome. Use the standing authority and contracted next step already in fleet context; stop only if the action reaches a genuine captain-only boundary.
+task-9: landing is authorized and still needs main
+action_status_after_replay=started unread_after_replay=empty
+
+Real Pi branch E2E:
+ok - real Pi SDK 0.84.2 accepts the branch session construction and preserves an unpromptable wake
+ok - real Pi SDK 0.84.2 applies an explicit branch model on create and over a reopened session's recorded model
+ok - real Pi SDK 0.84.2 reports its own supported effort levels and applies an explicit branch effort over a reopened session's recorded level
+ok - real Pi SDK 0.84.2 delivers a custom message to the provider as user text carrying only content, so the captain outcome's typed envelope is what reaches the model

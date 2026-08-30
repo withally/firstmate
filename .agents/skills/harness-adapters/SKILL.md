@@ -219,7 +219,7 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 | Interrupt | single Escape |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
 
-Codex CLI 0.150.1 exposes `check_for_update_on_startup` as a top-level boolean config key, so `bin/fm-spawn.sh` passes `-c check_for_update_on_startup=false` on every Firstmate-launched Codex session to prevent the interactive update modal from blocking the brief.
+Codex CLI 0.150.1 accepts the top-level boolean override `check_for_update_on_startup=false` under strict config, and the `bin/fm-spawn.sh` Codex launch template passes it with `-c` so an interactive update modal cannot block an unattended brief.
 
 A `$<skill>` invocation opens a `$`-autocomplete (skill) popup, the same hazard as the `/` slash popup: submitting too fast lets the popup swallow the Enter, so the invocation never lands.
 `fm-send` handles it the same way it handles `/` - it gives the popup a longer settle (1.2s) between typing and the first Enter, with the target backend's submit retry as the safety net - but the `$` settle is scoped to `harness=codex`, read from the target metadata for exact task ids or legacy `fm-<id>` labels.

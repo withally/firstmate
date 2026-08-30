@@ -2698,7 +2698,8 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
 # (Enter only, never retyped) until the harness-aware native, composer,
-# rendered-Claude, or queued-Enter policy confirms delivery. Verified hazard
+# rendered-Claude, Pi submit-observation, or queued-Enter policy confirms
+# delivery. Verified hazard
 # (herdr-verification-p2.md "slash/$ autocomplete popup"): a `/`- or
 # `$`-prefixed send opens a completion popup within ~0.1s, exactly like tmux's
 # claude/codex popups, so the caller's <settle> before the first Enter matters
@@ -2710,19 +2711,23 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # foreground-turn signal. The away-mode Claude primary is the exception:
 # native working alone never proves delivery; a rendered Claude active-turn
 # signature must transition from idle immediately before that Enter to busy
-# after it, or the composer must clear. Live Claude on Herdr 0.8.0 can keep
+# after it, or the composer must clear. Live Claude on Herdr can keep
 # agent_status idle for a whole landed turn, so an idle native result falls
 # through to the shared composer verdict: empty is positive delivery, proven
 # pending retries Enter, and the final queued-Enter conversion remains limited
 # to harnesses with a trustworthy busy signal (bin/fm-composer-lib.sh).
+# Pi uses a separate submit-only observation: a cleared separator composer must
+# gain a new matching transcript or `Steering:` echo, or the native state must
+# make an idle-to-busy transition; a cleared surface alone is inconclusive.
 #
 # Incident (2026-07-07, followed up on 2026-07-08): a redelivery loop in the
 # away-mode daemon. Root cause: composer-content submit confirmation was too
 # sensitive to harness rendering details. Real claude/codex use bare prompt
 # rows, and real codex adds dynamic idle suggestions after `›`; the later
-# ANSI-aware composer classifier now handles that Codex shape, and non-Claude
-# idle-baseline submit confirmation still prefers native agent-state so a faint
-# idle tip cannot block a landed send. Composer content is consulted after
+# ANSI-aware composer classifier now handles that Codex shape, and idle-baseline
+# submit confirmation for non-Claude, non-Pi harnesses still prefers native
+# agent-state so a faint idle tip cannot block a landed send. Composer content is
+# consulted after
 # native state stays idle, while Claude additionally captures a rendered
 # baseline before every Enter and requires its own rendered transition or a
 # cleared composer.
@@ -2760,9 +2765,9 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # (bin/fm-tmux-lib.sh): an idle-to-busy transition ACROSS our Enter is proof the
 # harness accepted the submission. Claude's rendered baseline is taken
 # immediately before every Enter, so a pane already mid-turn cannot use its
-# pre-existing rendered footer as proof of this Enter. Non-Claude harnesses
-# retain their native confirmation path.
-# Queued-while-busy Enter (OpenCode 1.18.4, and any non-Claude harness that
+# pre-existing rendered footer as proof of this Enter. Non-Claude, non-Pi
+# harnesses retain their native confirmation path.
+# Queued-while-busy Enter (OpenCode 1.18.4, and any non-Claude, non-Pi harness that
 # keeps typed text visible until the current turn ends): after the retry budget,
 # a proven pending composer plus native agent_status=working is delivered, not
 # swallowed. blocked is not working, so a Cursor pane that is blocked in every
@@ -2771,13 +2776,14 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # across the current Enter or a cleared composer. The policy is
 # fm_composer_queued_enter_verdict; this adapter supplies only trusted
 # non-Claude busy primitives.
-# Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
-# submit vocabulary. Empty means confirmed submitted for every backend; how
-# each backend confirms it is an internal decision.
+# Echoes empty|pending|not-submitted|pending-unproven|unknown|text-not-typed|
+# send-failed, a subset of the proof-carrying submit vocabulary. Empty means
+# confirmed submitted for every backend; how each backend confirms it is an
+# internal decision.
 #
 # fm_backend_herdr_queued_enter_busy: delivery-busy for the shared queued-Enter
 # conversion. Native agent_status=working is generating for every known
-# non-Claude harness. Claude requires a rendered idle-to-busy transition across
+# non-Claude, non-Pi harness. Claude requires a rendered idle-to-busy transition across
 # this Enter; an unknown target harness never uses native working as proof.
 fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [footer-baseline] [target-harness]
   local target=$1 allow_rendered=${2:-0} target_harness=${4:-} raw
@@ -3249,7 +3255,7 @@ fm_backend_herdr_busy_state() {  # <target>
 # <budget-seconds>, returning on stdout the STRONGEST signal observed:
 #
 #   busy    - a submit-active status was observed at least once. For
-#             non-Claude callers this confirms that a real turn started or
+#             non-Claude, non-Pi callers this confirms that a real turn started or
 #             reached a prompt - the submit landed - independent of whatever
 #             the composer's own text happens to show (docs/herdr-backend.md
 #             "Incident (2026-07-07)": composer content is what fooled the
@@ -3257,19 +3263,24 @@ fm_backend_herdr_busy_state() {  # <target>
 #             away-mode Claude caller treats native working as diagnostic and
 #             requires rendered or composer proof. Returned the INSTANT it is
 #             seen, without waiting out the rest of the budget.
+#             The Pi submit caller combines this result with its own cleared
+#             composer and transcript/queue observation instead of accepting
+#             native working alone.
 #   idle    - the target was legibly read at least once and never reported
 #             "busy" across the whole window. This is readable but
 #             inconclusive: native state can remain idle for a landed turn,
 #             so the caller falls through to composer confirmation.
-#   unknown - EVERY poll in the window failed to read the target at all (a
-#             hard I/O failure - pane gone, socket error - not a timing
-#             race). The caller must not keep retrying Enter against a target
-#             it cannot even read.
+#   unknown - EVERY poll in the window failed to read native state (a hard I/O
+#             failure - pane gone, socket error - not a timing race). Non-Pi
+#             callers must not keep retrying Enter against a target they cannot
+#             read; the Pi caller may continue only to its separate pane-surface
+#             proof.
 #
 # <polls> spread across <budget-seconds> (rather than one check at the end)
 # lets the fast path catch a native transition that lands partway through the
 # window. A whole-window idle result remains inconclusive and is resolved by
-# the caller's shared composer fallback.
+# the non-Pi caller's shared composer fallback or the Pi caller's submit-only
+# surface observation.
 # FM_BACKEND_HERDR_SUBMIT_POLLS (default 6): how many samples
 # fm_backend_herdr_send_text_submit spreads across each Enter attempt's
 # confirmation budget. Overridable for tests (a value of 1

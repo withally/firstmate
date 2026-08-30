@@ -143,7 +143,7 @@ Zellij has no verified recovery-grade agent process probe, while Orca and cmux d
 
 The current classifier matrix and its refresh guard are recorded in [Composer classification matrix](#composer-classification-matrix), with portable shape coverage in `tests/fm-composer-lib.test.sh` and `tests/fm-composer-ghost.test.sh`.
 Kimi pointer delivery and OpenCode 1.18.4 busy-queue behavior remain pinned by `tests/fm-kimi-harness.test.sh`, `tests/fm-tmux-submit-busy.test.sh`, and `tests/fm-composer-lib.test.sh`.
-Herdr's Claude submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`; the known-Claude rule is owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), and the away-mode guard additionally requires rendered or composer proof rather than native `working` alone.
+Herdr submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`; the harness-specific rules are owned by [Current transport behavior](../herdr-backend.md#current-transport-behavior), and the away-mode guard additionally requires rendered or composer proof rather than native `working` alone.
 
 ### Cleanup endpoint identity
 
@@ -292,8 +292,8 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 Observed 2026-08-29:
 
 ```text
-ok - live Herdr submit confirm: Claude Code (2.1.251 (Claude Code)) on herdr 0.8.2 reports empty and renders the requested reply in isolated session fm-lab-herdr-submit-con-24634-28848
-ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms short/long idle/busy sends in isolated session fm-lab-herdr-submit-con-24634-28848
+ok - live Herdr submit confirm: Claude Code (2.1.251 (Claude Code)) on herdr 0.8.2 reports empty and renders the requested reply in an isolated named lab
+ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms short/long idle/busy sends in an isolated named lab
 ```
 
 ### Prune and respawn

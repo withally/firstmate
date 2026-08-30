@@ -59,15 +59,16 @@
 # (the same boundary that keeps it unmarked and outside --resolve-key). These
 # type the literal
 # text through the target backend's verified submit core: typed ONCE, then
-# Enter retried (never retyped) until the backend reaches one of three verdicts.
+# Enter retried (never retyped) until the backend returns a proof-carrying
+# verdict in one of the three typed-plane exit classes.
 # Typed-plane exit contract:
 #   0 = submission confirmed by a positive harness-specific postcondition.
 #   3 = text was typed and Enter was sent, but bounded read-back proved neither
 #       submission nor visible retention; check the pane transcript/queue and
 #       composer before acting, and never retype blindly.
-#   1 = a verified failure: the literal/key transport failed, Pi's current
-#       composer did not remain visibly pending after the bounded pre-Enter
-#       settle, or the bounded post-Enter read-back still visibly showed the
+#   1 = a verified failure: the literal/key transport failed, Pi's composer
+#       was proven empty during the bounded pre-Enter settle so Enter was not
+#       sent, or the bounded post-Enter read-back still visibly showed the
 #       current text.
 #       A visibly retained message must be retried with Enter only, never by
 #       retyping it.
@@ -114,8 +115,9 @@
 # the commit and marker are BOTH lost the send still remains successful with a
 # reply-tracking-degraded warning naming the expectation an operator must
 # inspect (it can no longer reconcile or escalate on its own). Only a
-# failed enqueue discards the expectation. On the typed plane an unconfirmed submit (exit 3) keeps
-# it armed rather than dropping it, and only a proven send failure discards it.
+# failed enqueue discards the expectation. On the typed plane, exit 3 and an
+# exit 1 with visibly retained text keep it armed rather than dropping it, and
+# only a proven send failure discards it.
 # Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending a recovery request
 # for an already-open expectation so a second record is not created. Direct
 # unmarked captain input never creates one. A marked secondmate instruction

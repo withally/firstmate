@@ -43,7 +43,7 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 - Mechanism: Firstmate already has this document as the captain's rulings files, written by the governing firstmate from confirmed captain answers and quoted verbatim into every brief, because rules a task depends on go inline in the brief.
 - Artifact and owner: a dated rulings file under `data/` (for example a `UX-RULINGS` file or the phase plan's CONTEXT section); the governing firstmate or secondmate owns it and the captain owns its locked entries.
 
-### 3.4 The Don't-Hand-Roll audit
+### 3.4 The Don't-Hand-Roll list
 
 - Rule: research names the problems that must use an engine or library rather than custom code, and a plan that hand-rolls one of them fails plan-check.
 - Rule: before a proof slice lands on local main, a code-level Don't-Hand-Roll audit and an independent critic must both pass, and their findings must never be deferred as residual work.
@@ -118,6 +118,7 @@ This is the current setting as the captain set it on 2026-08-29; the captain's p
 ## 7. Success signals
 
 - The plan survives one check with a bounded blocker count and reaches dispatch after the single patch.
+- The build hits the phase's named proof, for example "the slice on the captain's phone", without a re-plan.
 - Fable spend per phase is at most one HIGH-effort Round 1 seat; zero is valid only under the captain-approved fallback in section 5.
 
 ### 7.1 Capture-coverage contract

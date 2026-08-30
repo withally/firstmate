@@ -1,0 +1,30 @@
+WORKTREE CHECK
+pwd=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1989ZAYFCE40PR7M9BMKFKB
+git_root=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1989ZAYFCE40PR7M9BMKFKB
+root_marker=absent
+TARGET END-TO-END DELIVERY
+caller_FM_HOME=UNSET rc=0 notify_output=sent: mate orphan_in_flight durable_records=1
+durable_record=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-secondmate-reconcile-e2e-evidence.4TLDmv/target-success/state/mate.inbox/001.msg
+record_body=[fm-from-firstmate]⁣delivery=b590b5d0eaa1c030 A fleet snapshot found that your home's backlog and task metadata disagreed.||Please check your current books and, if they still disagree, reconcile them to match reality. Nothing outside your home has been changed, and no reply is expected.
+TARGET FAILURE DIAGNOSTIC
+rc=1 notify_output=failed: mate orphan_in_flight: ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: unknown backend 'unsupported' (known: tmux herdr zellij orca cmux) durable_records=0 cooldown=absent
+FM-SEND STRICT PRESERVATION
+ok - fm-send strict: exact task/lane ids resolve through home metadata
+ok - fm-send --key: exit status follows delivery, and an undelivered key never reports success
+ok - fm-send Herdr typed plane: confirmed, unconfirmed, and visibly pending verdicts have truthful distinct exits
+ok - fm-send strict: unset FM_HOME fails before target resolution
+ok - fm-send strict: unresolvable selectors do not fall back to tmux
+ok - fm-send strict: prefixless herdr pane ids are rejected before tmux fallback
+ok - fm-send strict: unmatched single-colon explicit targets must verify live before sending
+ok - fm-send strict: malformed Herdr metadata targets fail before typing or Enter
+ok - fm-send strict: fm-prefixed Herdr sessions remain explicit backend targets
+ok - fm-send strict: healthy fm-<id> sends record the steer and ring once
+fm-send-strict.test.sh rc=0
+EVIDENCE_RESULT=product scenarios and strict guard passed

@@ -1,0 +1,34 @@
+WORKTREE CHECK
+pwd=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1989ZAYFCE40PR7M9BMKFKB
+git_root=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1989ZAYFCE40PR7M9BMKFKB
+root_marker=absent
+BASE COMMIT REPRODUCTION
+attempt=1 rc=1 durable_records=0 output=failed: mate orphan_in_flight
+attempt=2 rc=1 durable_records=0 output=failed: mate orphan_in_flight
+baseline_result=reported failure with no durable record
+TARGET END-TO-END DELIVERY
+caller_FM_HOME=UNSET rc=0 notify_output=sent: mate orphan_in_flight durable_records=1
+durable_record=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-secondmate-reconcile-evidence.AlwY8e/target-success/state/mate.inbox/001.msg
+record_body=[fm-from-firstmate]⁣delivery=b590b5d0eaa1c030 A fleet snapshot found that your home's backlog and task metadata disagreed.||Please check your current books and, if they still disagree, reconcile them to match reality. Nothing outside your home has been changed, and no reply is expected.
+TARGET FAILURE DIAGNOSTIC
+rc=1 notify_output=failed: mate orphan_in_flight: ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: unknown backend 'unsupported' (known: tmux herdr zellij orca cmux) durable_records=0 cooldown=absent
+TARGET FOCUSED TESTS
+ok - a home in mismatch is asked once, and later recaps stay silent
+ok - notify gives fm-send its resolved home when FM_HOME was unset
+ok - a mismatch outliving the cooldown earns one re-nudge, then goes quiet again
+ok - the cooldown begins when delivery finishes
+ok - the cooldown window is four hours
+ok - the cooldown is per home, not fleet-wide
+ok - the reconcile ask expects no reply and stays out of a ladder that still rings ordinary steers
+ok - only a backlog-vs-metadata mismatch produces an ask
+ok - the parent asks and changes nothing inside the mate's home
+ok - a failed ask starts no cooldown, so the next run retries it
+not ok - a busy meta lock blocked the reconcile path
+fm-secondmate-reconcile.test.sh rc=1

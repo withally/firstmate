@@ -1,0 +1,7 @@
+WORKTREE CHECK
+pwd=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1989ZAYFCE40PR7M9BMKFKB
+git_root=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1989ZAYFCE40PR7M9BMKFKB
+root_marker=absent
+attempt=1 rc=1 durable_records=0 output=failed: mate orphan_in_flight
+attempt=2 rc=1 durable_records=0 output=failed: mate orphan_in_flight
+BASELINE_RESULT=FM_HOME unset reproduced bare failure with zero durable records

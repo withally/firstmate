@@ -331,6 +331,30 @@ test_secondmate_fresh_beat_suppresses_ordinary_aged_row() {
   pass "a fresh secondmate watcher beat suppresses an ordinarily aged row"
 }
 
+test_secondmate_default_fresh_beat_suppresses_120_second_row() {
+  local dir state sub fakebin out status
+  dir=$(make_case secondmate-default-fresh-beat)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 120 ))" > "$sub/state/.wake-queue"
+  touch "$sub/state/.last-watcher-beat"
+
+  env -u FM_SECONDMATE_WAKE_STALL_SECS PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 2 > "$out" 2> "$dir/watch.err"
+  status=$?
+  assert_checkpoint_quiet "$status" "$out" 2 "the default threshold with a fresh secondmate watcher beat"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "a fresh secondmate watcher beat still published a parent stall wake for a 120-second-old row"
+  pass "the default threshold stays quiet for a 120-second-old row with a fresh beat"
+}
+
 test_secondmate_stale_beat_exposes_ordinary_aged_row() {
   local dir state sub fakebin out status
   dir=$(make_case secondmate-stale-beat)
@@ -1354,6 +1378,7 @@ test_self_announced_append_guards
 test_historical_annotation_skips_announced_status
 test_secondmate_default_and_invalid_stall_threshold_allow_normal_latency
 test_secondmate_fresh_beat_suppresses_ordinary_aged_row
+test_secondmate_default_fresh_beat_suppresses_120_second_row
 test_secondmate_stale_beat_exposes_ordinary_aged_row
 test_secondmate_very_old_row_alerts_despite_fresh_beat
 test_concurrent_append_and_drain

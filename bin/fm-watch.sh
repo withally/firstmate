@@ -83,9 +83,9 @@
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
 #                          the oldest valid row in an endpoint-recorded local
 #                          secondmate home's durable wake queue reached
-#                          FM_SECONDMATE_WAKE_STALL_SECS and that home's watcher
-#                          beat is older than the same threshold, or the row age
-#                          exceeded three times the threshold; observation is
+#                          FM_SECONDMATE_WAKE_STALL_SECS and no usable watcher
+#                          beat is younger than the same threshold, or the row
+#                          age reached three times the threshold; observation is
 #                          read-only and one parent receipt suppresses repeats
 #                          for that row
 # For normal supervision, resume the session-start primary-harness protocol
@@ -211,7 +211,7 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A local secondmate's foreign queue is checked on every poll after this bounded
-# age, but a fresh watcher beat suppresses notification until the row exceeds
+# age, but a fresh watcher beat suppresses notification until the row reaches
 # three times the bound.
 SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-300}
 # A crew that declared a pause is idling on a known external wait, so its stale
@@ -419,10 +419,11 @@ secondmate_oldest_queue_row() {  # <queue-path>
 }
 
 # Surface one durable parent check for one unchanged foreign row after its
-# bounded age when the foreign watcher beat is also stale, or after three times
-# that age regardless of the beat. The primary marker and queued-key check make
-# repeated watcher cycles converge without a notification storm, while an empty
-# queue removes only this home's marker so a later row can be observed.
+# bounded age when the foreign watcher has no usable beat younger than that age,
+# or at three times that age regardless of the beat. The primary marker and
+# queued-key check make repeated watcher cycles converge without a notification
+# storm, while an empty queue removes only this home's marker so a later row can
+# be observed.
 secondmate_wake_stall_tick() {
   local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
   local meta task kind remote_host home queue row epoch seq row_key marker receipt receipt_dir notify_key queued age reason

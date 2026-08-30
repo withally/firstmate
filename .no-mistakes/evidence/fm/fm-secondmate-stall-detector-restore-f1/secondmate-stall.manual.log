@@ -1,0 +1,17 @@
+case=fresh-default-120 row_age=120s threshold=default beat=fresh status=124
+stdout:
+checkpoint: no actionable wake within 2s
+parent_queue: <empty>
+
+case=stale-threshold row_age=35s threshold=30 beat=stale status=0
+stdout:
+check: secondmate wake-loop stalled: mate=mate row=7 age=35s
+parent_queue:
+1788073503	1	check	secondmate-wake-loop-mate-1788073467-7	check: secondmate wake-loop stalled: mate=mate row=7 age=35s
+
+case=fresh-hard-fallback row_age=100s threshold=30 beat=fresh status=0
+stdout:
+check: secondmate wake-loop stalled: mate=mate row=7 age=101s
+parent_queue:
+1788073504	1	check	secondmate-wake-loop-mate-1788073403-7	check: secondmate wake-loop stalled: mate=mate row=7 age=101s
+

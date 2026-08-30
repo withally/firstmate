@@ -1,4 +1,4 @@
-# GSD method in Firstmate
+# GSD method in Firstmate, revision 2
 
 This document is Firstmate's adaptation of the GSD method from [open-gsd/gsd-core](https://github.com/open-gsd/gsd-core): the approach without the tool.
 It is a running document: the rules above the log are the current contract, and the dated log at the bottom is the evidence that shaped them.
@@ -43,11 +43,13 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 - Mechanism: Firstmate already has this document as the captain's rulings files, written by the governing firstmate from confirmed captain answers and quoted verbatim into every brief, because rules a task depends on go inline in the brief.
 - Artifact and owner: a dated rulings file under `data/` (for example a `UX-RULINGS` file or the phase plan's CONTEXT section); the governing firstmate or secondmate owns it and the captain owns its locked entries.
 
-### 3.4 The Don't-Hand-Roll list
+### 3.4 The Don't-Hand-Roll audit
 
 - Rule: research names the problems that must use an engine or library rather than custom code, and a plan that hand-rolls one of them fails plan-check.
-- Mechanism: the plan-check brief carries the list as a mandatory dimension, and the ship brief for each execution task carries the entries that task touches.
-- Artifact and owner: a `Don't Hand-Roll` section in the synthesis document, owned by the synthesizer and frozen by the captain's engine ruling.
+- Rule: before a proof slice lands on local main, a code-level Don't-Hand-Roll audit and an independent critic must both pass, and their findings must never be deferred as residual work.
+- Why: the Blockvalley Phase 1 retro found hand-rolled compositing and animation in a slice that had passed its earlier gates.
+- Mechanism: the plan-check brief carries the list as a mandatory dimension, each ship brief carries the entries that task touches, and local-main landing requires both the code audit and critic verdict.
+- Artifact and owner: the synthesis document owns the frozen `Don't Hand-Roll` list, while the independent critic's report owns the code-level verdict against it.
 
 ### 3.5 Prescriptive research output
 
@@ -62,6 +64,21 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 - Artifact and owner: `data/<plancheck-task>/report.md` with a verdict, a finding table, and an explicit dispatch judgment, owned by the checker.
 
 ## 4. The plan cycle and its hard cap
+
+### 4.1 Phase-plan budget
+
+- Rule: every plan starts with a one-page slice contract that sets numeric caps for execution tasks and acceptance criteria per task, and the full plan must stay within those caps.
+- Rule: before CHECK, the synthesizer runs a deletion pass that removes every task, criterion, explanation, and executable surface not required by that slice contract.
+- Why: the Blockvalley Phase 1 retro found that four rewrites grew the plan from 790 to 1,220 lines while it was nominally converging.
+
+### 4.2 Scope-cut reconciliation gate
+
+- Rule: every scope cut produces one signed scope-delta artifact whose authoritative rows are `kept`, `changed`, or `parked`, and no affected work continues until every live worker acknowledges its row.
+- Why: the Blockvalley Phase 1 retro found live briefs still requesting work that a later scope cut had parked.
+- Mechanism: the governing firstmate or secondmate tombstones superseded acceptance criteria, rewrites affected live briefs, records each worker acknowledgment, and blocks dispatch, execution, and landing until the matrix is reconciled.
+- Artifact and owner: the governing firstmate or secondmate owns the signed scope-delta artifact as the single post-cut matrix, while the captain owns the ruling it records.
+
+### 4.3 WRITE, CHECK, PATCH
 
 - The cycle is WRITE once, CHECK once, PATCH once.
 - WRITE: the synthesizer produces the phase plan from the research and the CONTEXT document.
@@ -101,8 +118,13 @@ This is the current setting as the captain set it on 2026-08-29; the captain's p
 ## 7. Success signals
 
 - The plan survives one check with a bounded blocker count and reaches dispatch after the single patch.
-- The build hits the phase's named proof, for example "the slice on the captain's phone", without a re-plan.
 - Fable spend per phase is at most one HIGH-effort Round 1 seat; zero is valid only under the captain-approved fallback in section 5.
+
+### 7.1 Capture-coverage contract
+
+- Rule: an "on the phone" proof passes only with a capture manifest that names every required element ID, the camera bounds, one deterministic state and frame, and an evidence link for every acceptance criterion.
+- Why: the Blockvalley Phase 1 retro found that phone captures could look successful while omitting required elements and interactions.
+- Artifact and owner: the proof-slice worker owns the capture manifest, and the independent critic verifies its criterion coverage before local-main landing.
 
 ## 8. How we review our use of it
 
@@ -110,9 +132,14 @@ This is the current setting as the captain set it on 2026-08-29; the captain's p
 - The parent firstmate folds accepted changes into the sections above and records the retrospective as a log entry below.
 - The log is the record; it is evidence-backed, dated, and pruned rather than appended forever, under the same contract as `data/learnings.md`.
 
+### 8.1 Check-in cost accounting
+
+- Rule: every phase check-in records the model used, the number of rounds, and elapsed wall time, with unavailable values marked unknown rather than reconstructed later.
+- Why: the Blockvalley Phase 1 retro could not recover complete worker, model, and wall-time totals after task cleanup.
+
 ## Log
 
-Entries are dated, cite their evidence by path, and are rewritten or removed when superseded.
+Entries are dated, cite their evidence by stable name or path, and are rewritten or removed when superseded.
 
 - 2026-08-28 - Blockvalley Phase 0 ran the method by hand from a plan with a CONTEXT section, three researchers, and one synthesizer (`data/blockvalley-research-plan-phase0-2026-08-28.md`, `data/blockvalley-p0-synth-s/RESEARCH-0.md`, both in the Blockvalley home).
   It caught the real failure: the earlier substitution program had assumed a renderer could be hand-rolled from repainted photos, and the research named y-sort, autotile, and shadows as Don't-Hand-Roll items with provenance.
@@ -125,3 +152,4 @@ Entries are dated, cite their evidence by path, and are rewritten or removed whe
   Consequence recorded in section 4 and section 5: write once, check once, patch once on Codex, escalate on the third failure, Fable only at HIGH and only for Round 1.
 - 2026-08-29 - The captain set the planning and model rules that sections 4 and 5 state, in the Blockvalley steering protocol (`data/steering-protocol.md`, "Planning and model rules"); the Phase 1 scope cut restated the plan-round cap and the slice-element rule for every task (`data/blockvalley-p1-scope-cut-2026-08-29.md`).
   The captain's UX rulings file is the worked example of a CONTEXT document that bounds behaviour without ruling on looks (`data/blockvalley-ux-v1/UX-RULINGS-v1.md`).
+- 2026-08-30 - The Blockvalley Phase 1 retro tightened revision 2 with a phase-plan budget, a scope-cut reconciliation gate, a pre-landing code-level Don't-Hand-Roll audit and independent critic, a capture-coverage contract, and minimal check-in cost accounting.

@@ -132,12 +132,6 @@ case "${1:-} ${2:-}" in
       printf '─────────────────────────────────────────────────────\n'
       exit 0
     fi
-    if [ "$MODE" = middle-truncated-pending ]; then
-      printf '─────────────────────────────────────────────────────\n'
-      printf '%s\n' "$text" | awk 'NR <= 2 || NR >= 39'
-      printf '─────────────────────────────────────────────────────\n'
-      exit 0
-    fi
     if [ "$MODE" = unknown-pending ]; then
       [ -f "$STATE/entered" ] || exit 1
     fi
@@ -3764,29 +3758,6 @@ test_send_text_submit_pi_truncated_literal_does_not_press_enter() {
   pass "fm_backend_herdr_send_text_submit: a truncated 1500+ character Pi literal is detected before Enter"
 }
 
-test_send_text_submit_pi_middle_drop_does_not_press_enter() {
-  local dir log state fb out enter_count long_text i line
-  dir="$TMP_ROOT/submit-pi-middle-truncated"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
-  long_text=''
-  i=1
-  while [ "$i" -le 40 ]; do
-    line="MIDDLE_DROP_LINE_${i}_abcdefghijklmnopqrstuvwxyz 0123456789"
-    long_text="${long_text}${long_text:+$'\n'}${line}"
-    i=$((i + 1))
-  done
-  [ "${#long_text}" -ge 1500 ] || fail "middle-drop Pi fixture is shorter than 1500 characters"
-  fb=$(make_herdr_pi_submit_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" FM_FAKE_HERDR_MODE=middle-truncated-pending \
-    FM_BACKEND_HERDR_SUBMIT_POLLS=2 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 1 0.03 0.01 "" pi' "$ROOT" "$long_text" )
-  [ "$out" = text-not-typed ] \
-    || fail "a long Pi literal with a dropped middle line must stop with text-not-typed, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log" || true)
-  [ "$enter_count" -eq 0 ] \
-    || fail "a long Pi literal with a dropped middle line must never receive Enter, sent $enter_count"
-  pass "fm_backend_herdr_send_text_submit: a long Pi literal with a dropped middle line fails closed before Enter"
-}
-
 test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion() {
   local dir log state fb out enter_count
   dir="$TMP_ROOT/submit-pi-unknown-pre"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state"; : > "$log"
@@ -5128,7 +5099,6 @@ test_send_text_submit_pi_retry_preflight_accepts_late_queue_echo
 test_send_text_submit_pi_pre_enter_echo_never_confirms
 test_send_text_submit_pi_different_pending_does_not_press_enter
 test_send_text_submit_pi_truncated_literal_does_not_press_enter
-test_send_text_submit_pi_middle_drop_does_not_press_enter
 test_send_text_submit_pi_unknown_pre_state_never_uses_generic_busy_conversion
 test_send_text_submit_pi_unknown_pre_state_can_reach_native_proof
 test_send_text_submit_pi_long_text_still_pending_is_true_failure

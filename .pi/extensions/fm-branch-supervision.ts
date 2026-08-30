@@ -1747,7 +1747,7 @@ ${context.command}
   });
 
   // Existing transcripts can contain rendered routine notes written by older
-  // versions. New routine outcomes are store-only, and captain-facing outcome messages
+  // versions. New routine outcomes are store-only, and main-bound outcome messages
   // are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
     const note = textOfContent(message.content);

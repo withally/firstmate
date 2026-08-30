@@ -2984,9 +2984,13 @@ fire("turn_end", {}, {
 });
 unlinkSync(`${home}/state/.lock`);
 releasePrompt();
-await settle(() => mainUserMessages.length === 1, "lost-ownership fallback");
-if (!mainUserMessages[0].content.includes("FIRSTMATE WATCHER WAKE: signal: queued wake")) {
-  throw new Error(`queued wake did not fall back to main: ${mainUserMessages[0].content}`);
+await settle(() => mainUserMessages.length === 2, "lost-ownership fallbacks");
+const fallbackBodies = mainUserMessages.map((message) => message.content);
+if (!fallbackBodies.some((content) => content.includes("FIRSTMATE WATCHER WAKE: signal: active wake"))) {
+  throw new Error(`in-flight wake did not fall back to main: ${fallbackBodies.join(" | ")}`);
+}
+if (!fallbackBodies.some((content) => content.includes("FIRSTMATE WATCHER WAKE: signal: queued wake"))) {
+  throw new Error(`queued wake did not fall back to main: ${fallbackBodies.join(" | ")}`);
 }
 await new Promise((resolve) => setTimeout(resolve, 25));
 const session = globalThis.__fmSessions[0];

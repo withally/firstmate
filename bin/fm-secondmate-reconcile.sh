@@ -59,7 +59,7 @@
 #   cooldown: <mate-id> <seconds>   nudged this recently; nothing sent
 #   skipped: <mate-id> lock         a required lock was busy; cooldown unchanged
 #   stale: <mate-id> <kind>         the sampled endpoint retired or changed
-#   failed: <mate-id> <kind>        the steer could not be recorded
+#   failed: <mate-id> <kind>: <cause>  the steer could not be recorded
 #   sent-unrecorded: <mate-id> <kind>  sent, but cooldown commit failed
 set -u
 
@@ -238,7 +238,7 @@ cmd_notify() {
     | [.id, .spawn_gen, .host, $kind]
     | join($sep)')
 
-  local id sampled_spawn_gen sampled_host expected_remote_host kind path last age now delivered_at reconcile_lock control_lock meta meta_lock did send_rc
+  local id sampled_spawn_gen sampled_host expected_remote_host kind path last age now delivered_at reconcile_lock control_lock meta meta_lock did send_err send_rc
   while IFS=$'\037' read -r id sampled_spawn_gen sampled_host kind; do
     [ -n "${id:-}" ] || continue
     path=$(nudge_path "$id")
@@ -300,14 +300,19 @@ cmd_notify() {
     [ -n "$sampled_spawn_gen" ] || expected_remote_host=$sampled_host
     release_active_locks
     send_rc=0
-    FM_TASK_INBOX_LOCK_WAIT_SECS=0 FM_SEND_EXPECTED_SPAWN_GEN="$sampled_spawn_gen" \
+    send_err=$(FM_HOME="$FM_HOME" FM_TASK_INBOX_LOCK_WAIT_SECS=0 \
+      FM_SEND_EXPECTED_SPAWN_GEN="$sampled_spawn_gen" \
       FM_SEND_EXPECTED_REMOTE_HOST="$expected_remote_host" \
       "$SCRIPT_DIR/fm-send.sh" "$id" --fire-and-forget "$did" \
-      "$(reconcile_text)" >/dev/null 2>&1 || send_rc=$?
+      "$(reconcile_text)" 2>&1 >/dev/null) || send_rc=$?
     # exit 3 is "typed but unconfirmed": the mate may already hold the ask, so
     # record the nudge rather than risk asking twice.
     if [ "$send_rc" -ne 0 ] && [ "$send_rc" -ne 3 ]; then
-      printf 'failed: %s %s\n' "$id" "$kind"
+      if [ -n "$send_err" ]; then
+        printf 'failed: %s %s: %s\n' "$id" "$kind" "$send_err"
+      else
+        printf 'failed: %s %s: fm-send exited %s without a diagnostic\n' "$id" "$kind" "$send_rc"
+      fi
       rc=1
       continue
     fi

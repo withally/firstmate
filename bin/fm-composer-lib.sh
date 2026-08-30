@@ -1364,7 +1364,7 @@ fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries>
 # Every other composer verdict is returned unchanged, so pending-unproven,
 # empty, and unknown never receive this conversion.
 # Adapters supply their own busy primitive (tmux: fm_pane_is_busy; herdr:
-# native agent_status=working for known non-Claude harnesses). Claude's submit
+# native agent_status=working for known non-Claude, non-Pi harnesses). Claude's submit
 # loop requires a per-Enter rendered transition or cleared composer instead and
 # does not use this final conversion. This function does not read a pane.
 fm_composer_queued_enter_verdict() {  # <composer-state> <busy|idle|unknown>

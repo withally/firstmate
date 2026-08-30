@@ -215,7 +215,7 @@ Typed-plane text is typed once; only Enter is retried.
 On an idle or done native baseline, the adapter samples for `working` or `blocked` across a bounded polling window.
 For known non-Claude, non-Pi harnesses whose native state is a foreground-turn signal, a detected submit-active status confirms delivery.
 For those other harnesses, if native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
-After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter for those other non-Claude harnesses, and keeps an idle pending composer as a genuine swallow.
+After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter for those other non-Claude, non-Pi harnesses, and keeps an idle pending composer as a genuine swallow.
 Pi uses a stricter submit-only observation from the shared classifier because its ordinary composer verdict intentionally stays unknown while Pi is working.
 The Pi path confirms only when the separator composer clears and either the current text gains a new ordinary or `Steering:` transcript echo, or native state makes an idle-to-busy transition.
 It polls that postcondition across the bounded settle window instead of deciding from the first redraw.

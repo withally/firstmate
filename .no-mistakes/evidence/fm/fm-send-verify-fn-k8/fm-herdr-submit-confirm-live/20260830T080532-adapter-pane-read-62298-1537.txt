@@ -1,0 +1,116 @@
+ivan@Ivans-MacBook-Pro 01M16K41PZBRKQ254DYP927RCG % pi --model openai-codex/gpt-5.6-sol --thin
+king low --approve --no-context-files --no-skills --no-prompt-templates --no-extensions --no-s
+ession --tools bash
+
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;2;255;255;0mUpdate Available[0m                                                                             
+ [0m[38;2;128;128;128mNew version 0.84.4 is available. Run [0m[38;2;138;190;183mpi update[0m                                               
+ [0m[38;2;128;128;128mChangelog: [0m[38;2;138;190;183mhttps://pi.dev/changelog[0m                                                          
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;2;255;255;0mPackage Updates Available[0m                                                                    
+ [0m[38;2;128;128;128mPackage updates are available. Run [0m[38;2;138;190;183mpi update --extensions[0m                                    
+ [0m[38;2;128;128;128mPackages:[0m                                                                                    
+ - pi-mcp-adapter                                                                             
+[0m[38;2;255;255;0m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mReply with exactly FM_PI_SHORT_IDLE_2091_6032.[0m[48;2;52;53;65m                                               [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+ FM_PI_SHORT_IDLE_2091_6032                                                                   
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mUse the bash tool to run sleep 8, then reply exactly FM_PI_BUSY_TRIGGER_1_2091_15847.[0m[48;2;52;53;65m        [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+[0m[48;2;40;50;40m                                                                                              [0m
+[0m[48;2;40;50;40m [0m[1m[38;2;212;212;212m[48;2;40;50;40m$ sleep 8[0m[38;2;128;128;128m[48;2;40;50;40m (timeout 15s)[0m[48;2;40;50;40m                                                                      [0m
+[0m[48;2;40;50;40m                                                                                              [0m
+[0m[48;2;40;50;40m [0m[38;2;128;128;128m[48;2;40;50;40m(no output)[0m[48;2;40;50;40m                                                                                  [0m
+[0m[48;2;40;50;40m                                                                                              [0m
+[0m[48;2;40;50;40m [0m[38;2;128;128;128m[48;2;40;50;40mTook 8.1s[0m[48;2;40;50;40m                                                                                    [0m
+[0m[48;2;40;50;40m                                                                                              [0m
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mReply with exactly FM_PI_SHORT_BUSY_2091_22305.[0m[48;2;52;53;65m                                              [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+ FM_PI_SHORT_BUSY_2091_22305                                                                  
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mFM_PI_LONG_IDLE_HEAD_2091_22687[0m[48;2;52;53;65m                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_01 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_02 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_03 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_04 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_05 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_06 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_07 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_08 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_09 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_10 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_11 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_12 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_13 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_14 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_15 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_16 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_17 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_18 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_19 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_20 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_21 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_22 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_23 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_24 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_25 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_26 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_27 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_28 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_29 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_30 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_31 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_32 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_33 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_34 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_35 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_36 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_37 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_38 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_39 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mLONG_IDLE_LINE_40 abcdefghijklmnopqrstuvwxyz 0123456789[0m[48;2;52;53;65m                                      [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mFM_PI_LONG_IDLE_TAIL_2091_19289[0m[48;2;52;53;65m                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mReply with exactly LONG_IDLE_ACK.[0m[48;2;52;53;65m                                                            [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+ LONG_IDLE_ACK                                                                                
+
+[0m[48;2;52;53;65m                                                                                              [0m
+[0m[48;2;52;53;65m [0m[38;2;212;212;212m[48;2;52;53;65mUse the bash tool to run sleep 8, then reply exactly FM_PI_BUSY_TRIGGER_2_2091_14808.[0m[48;2;52;53;65m        [0m
+[0m[48;2;52;53;65m                                                                                              [0m
+
+[0m[48;2;40;40;50m                                                                                              [0m
+[0m[48;2;40;40;50m [0m[1m[38;2;212;212;212m[48;2;40;40;50m$ sleep 8[0m[38;2;128;128;128m[48;2;40;40;50m (timeout 15s)[0m[48;2;40;40;50m                                                                      [0m
+[0m[48;2;40;40;50m                                                                                              [0m
+[0m[48;2;40;40;50m [0m[38;2;128;128;128m[48;2;40;40;50mElapsed 0.0s[0m[48;2;40;40;50m                                                                                 [0m
+[0m[48;2;40;40;50m                                                                                              [0m
+
+ [0m[38;2;138;190;183m⠼[0m [0m[38;2;128;128;128mWorking...[0m                                                                                 
+
+[0m[38;2;95;135;175m─── ↑ 32 more ────────────────────────────────────────────────────────────────────────────────[0m
+LONG_BUSY_LINE_32 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_33 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_34 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_35 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_36 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_37 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_38 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_39 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+LONG_BUSY_LINE_40 abcdefghijklmnopqrstuvwxyz 0123456789                                       
+FM_PI_LONG_BUSY_TAIL_2091_30348                                                               
+Reply with exactly LONG_BUSY_ACK.[0m[7m [0m                                                            
+[0m[38;2;95;135;175m──────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;102;102;102m~/.no-mistakes/worktrees/37852af5566c/01M16K41PZBRKQ254DYP927RCG (detached)[0m
+[0m[38;2;102;102;102m↑4.6k ↓83 $0.025 (sub) 0.5%/272k (auto)                       (openai-codex) gpt-5.6-sol • low[0m

@@ -1,0 +1,24 @@
+
+[mode=queued]
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+exit=0
+enter_attempts=1
+
+[mode=pending]
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: text not submitted to fm-lab-fake:w1:p2: the current message is still visibly pending in the composer after the bounded confirmation wait (tried explicit target 'fm-lab-fake:w1:p2' matched /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-send-manual.yuZHPZ/manual-verdicts/home/state/lab.meta; backend=herdr); do not retype it - inspect with fm-peek.sh, then send '--key Enter' once
+exit=1
+enter_attempts=1
+
+[mode=unknown]
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+fm-send: submission is unconfirmed for fm-lab-fake:w1:p2 (verdict=unknown; tried explicit target 'fm-lab-fake:w1:p2' matched /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-send-manual.yuZHPZ/manual-verdicts/home/state/lab.meta; backend=herdr); do not retype or blindly resend - check the pane transcript and composer with fm-peek.sh: if the transcript/queue contains the message, stop; if the composer still holds it, send '--key Enter' once
+exit=3
+enter_attempts=1
+exit=0

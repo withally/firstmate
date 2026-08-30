@@ -1,0 +1,40 @@
+ivan@Ivans-MacBook-Pro 01M16K41PZBRKQ254DYP927RCG % pi --model openai-codex/gpt-5.6-sol --thin
+king low --approve --no-context-files --no-skills --no-prompt-templates --no-extensions --no-s
+ession --tools bash
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.84.4 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+──────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+ Package Updates Available
+ Package updates are available. Run pi update --extensions
+ Packages:
+ - pi-mcp-adapter
+──────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Reply with exactly FM_PI_SHORT_IDLE_2091_6032.
+
+
+ FM_PI_SHORT_IDLE_2091_6032
+
+
+ Use the bash tool to run sleep 8, then reply exactly FM_PI_BUSY_TRIGGER_1_2091_15847.
+
+
+
+ $ sleep 8 (timeout 15s)
+
+ Elapsed 2.0s
+
+
+ ⠹ Working...
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+Reply with exactly FM_PI_SHORT_BUSY_2091_22305.
+──────────────────────────────────────────────────────────────────────────────────────────────
+~/.no-mistakes/worktrees/37852af5566c/01M16K41PZBRKQ254DYP927RCG (detached)
+↑1.2k ↓38 $0.007 (sub) 0.2%/272k (auto)                       (openai-codex) gpt-5.6-sol • low

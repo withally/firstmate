@@ -1,0 +1,14 @@
+CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions
+ivan@Ivans-MacBook-Pro 01M16K41PZBRKQ254DYP927RCG % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=fals
+e claude --dangerously-skip-permissions
+ ▐▛███▛█   Claude Code v2.1.251
+▝▜██████▀  Fable 5 with medium effort · Claude Max
+  ▝▝ ▝▝    ~/.no-mistakes/worktrees/37852af5566c/01M16K41PZBRKQ254DYP927RCG
+
+⚠ 1 MCP server needs authentication · run /mcp
+
+─────────────────────────────────────────────────────────────────────────────────────────────
+❯ Reply with exactly FMHERDRPONG2091_19084 and nothing else.
+─────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                          ◐ medium · /effort
+                                                                                 /rc active

@@ -2371,6 +2371,90 @@ test_inject_msg_ignores_nested_claude_busy_text_above_idle_composer() {
   pass "inject_msg: nested worker busy text cannot impersonate the current Claude active footer"
 }
 
+test_inject_msg_recovers_stable_rendered_false_busy_after_alarm() {
+  local dir state sent attempt
+  dir=$(make_supercase inject-stable-rendered-recovery)
+  state="$dir/state"
+  sent="$dir/sent"
+  afk_enter "$state"
+  printf 'none\t-\tnative\n' > "$state/.afk-daemon-terminal"
+  printf '%s\n' 'alarm already fired' > "$state/.subsuper-inject-wedged"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() {
+      FM_PANE_BUSY_REASON=rendered-busy
+      FM_PANE_NATIVE_BUSY_STATE=working
+      FM_PANE_BUSY_MATCHED_ROW='• Working (4s • esc to interrupt)'
+      return 0
+    }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_send_text_submit() { printf '%s\n' "$1" >> "$sent"; printf 'empty'; }
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    FM_RENDERED_BUSY_RECOVERY_POLLS=3
+    LOG="$dir/daemon.log"
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    for attempt in 1 2; do
+      if inject_msg "hello" "$state"; then
+        fail "stable rendered busy recovered before the configured poll threshold on attempt $attempt"
+      fi
+    done
+    inject_msg "hello" "$state" \
+      || fail "stable rendered false busy did not recover after the alarm and configured poll threshold"
+  ) || fail "stable rendered-busy recovery subshell failed"
+  [ "$(wc -l < "$sent" 2>/dev/null || echo 0)" -eq 1 ] \
+    || fail "stable rendered-busy recovery submitted more or less than once"
+  grep -F 'inject recovery: alarm-fired stable rendered-busy row for 3 polls; native-state=working; composer=empty; matched-row=• Working (4s • esc to interrupt)' "$dir/daemon.log" >/dev/null \
+    || fail "stable rendered-busy recovery did not log its exact proof: $(cat "$dir/daemon.log")"
+  pass "inject_msg: an alarmed byte-stable stale Claude row recovers once through an affirmatively empty composer"
+}
+
+test_inject_msg_rendered_recovery_stays_fail_safe() {
+  local dir state sent attempt
+  dir=$(make_supercase inject-rendered-recovery-fail-safe)
+  state="$dir/state"
+  sent="$dir/sent"
+  afk_enter "$state"
+  printf 'none\t-\tnative\n' > "$state/.afk-daemon-terminal"
+  printf '%s\n' 'alarm already fired' > "$state/.subsuper-inject-wedged"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() {
+      FM_PANE_BUSY_REASON=rendered-busy
+      FM_PANE_NATIVE_BUSY_STATE=working
+      FM_PANE_BUSY_MATCHED_ROW='esc to interrupt'
+      return 0
+    }
+    fm_backend_composer_state() { printf 'pending'; }
+    fm_backend_send_text_submit() { printf '%s\n' "$1" >> "$sent"; printf 'empty'; }
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    FM_RENDERED_BUSY_RECOVERY_POLLS=2
+    LOG="$dir/daemon.log"
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    for attempt in 1 2 3; do
+      if inject_msg "hello" "$state"; then
+        fail "a static esc-to-interrupt footer without an elapsed token recovered"
+      fi
+    done
+    pane_is_busy() {
+      FM_PANE_BUSY_REASON=rendered-busy
+      FM_PANE_NATIVE_BUSY_STATE=working
+      FM_PANE_BUSY_MATCHED_ROW='• Working (4s • esc to interrupt)'
+      return 0
+    }
+    for attempt in 1 2 3; do
+      if inject_msg "hello" "$state"; then
+        fail "a pending composer recovered from rendered busy"
+      fi
+    done
+  ) || fail "rendered-busy fail-safe recovery subshell failed"
+  [ ! -s "$sent" ] || fail "rendered-busy recovery typed into an unsafe composer"
+  grep -F 'subcause=composer=pending' "$dir/daemon.log" >/dev/null \
+    || fail "post-alarm pending composer did not log its fail-safe verdict: $(cat "$dir/daemon.log")"
+  pass "inject_msg: post-alarm recovery never overrides a static live footer or a pending composer"
+}
+
 test_inject_msg_herdr_claude_unreadable_capture_defers() {
   local dir state
   dir=$(make_supercase inject-herdr-claude-unreadable)
@@ -2661,6 +2745,8 @@ test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard
 test_pane_is_busy_native_busy_fast_path_outside_herdr_claude
 test_inject_msg_logs_native_busy_subcause
 test_inject_msg_logs_rendered_busy_subcause
+test_inject_msg_recovers_stable_rendered_false_busy_after_alarm
+test_inject_msg_rendered_recovery_stays_fail_safe
 test_inject_msg_ignores_nested_claude_busy_text_above_idle_composer
 test_inject_msg_herdr_claude_unreadable_capture_defers
 test_primary_busy_guard_is_harness_scoped

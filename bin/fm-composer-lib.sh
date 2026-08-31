@@ -314,6 +314,8 @@ fm_composer_strip_ghost() {
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
+FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX='Press up to edit queued messages'
+FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX='Running…[[:space:]]+\([0-9]+[smh].*timeout'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -329,7 +331,8 @@ FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
 fm_busy_lines_match() {  # [harness]
-  local harness=${1:-} lines regex
+  local harness=${1:-} lines regex matched
+  FM_BUSY_MATCHED_ROW=
   IFS= read -r -d '' lines || true
   if [ -n "${FM_BUSY_REGEX:-}" ]; then
     regex=$FM_BUSY_REGEX
@@ -350,13 +353,18 @@ fm_busy_lines_match() {  # [harness]
         ;;
     esac
   fi
-  [ -n "$regex" ] && printf '%s' "$lines" | grep -qiE "$regex"
+  [ -n "$regex" ] || return 1
+  matched=$(printf '%s' "$lines" | grep -iE "$regex" | tail -1)
+  [ -n "$matched" ] || return 1
+  FM_BUSY_MATCHED_ROW=$matched
+  return 0
 }
 
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local lines plain footer footer_row composer caps verdict
+  local lines plain footer footer_row composer caps verdict active_rows preceding screen_caps screen_verdict
+  FM_CLAUDE_BUSY_MATCHED_ROW=
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
@@ -369,17 +377,42 @@ fm_claude_current_footer_busy() {
     NF { last=NR }
     END { for (row=1; row < last; row++) print rows[row] }
   ')
+  _fm_composer_scan_screen "$composer" ''
+  _fm_composer_select_cursorless "$composer" || return 2
+  screen_caps=$(printf '%s\n' 'styled=1' 'cursor=0' 'identity=0' 'rows=12')
+  screen_verdict=$(fm_composer_classify_screen "$screen_caps" "$lines")
+  case "$screen_verdict" in
+    pending|pending-unproven) return 1 ;;
+  esac
+  active_rows=$(printf '%s\n' "$composer" | awk \
+    -v first="$FM_COMPOSER_SELECTED_FIRST" -v last="$FM_COMPOSER_SELECTED_LAST" \
+    'NR - 1 >= first && NR - 1 <= last { print }')
+  preceding=$(printf '%s\n' "$composer" | awk \
+    -v first="$FM_COMPOSER_SELECTED_FIRST" 'NR <= first { print }' \
+    | grep -v '^[[:space:]]*$' | tail -8)
+  if [ "$screen_verdict" = empty ] \
+     && { printf '%s\n' "$active_rows" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX" \
+     || { printf '%s\n' "$preceding" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX" \
+          && printf '%s\n' "$preceding" | grep -Fq '(ctrl+b to run in background)'; }; }; then
+    if fm_busy_lines_match claude <<< "$preceding"; then
+      # shellcheck disable=SC2034 # Output read by sourcing callers after this function returns.
+      FM_CLAUDE_BUSY_MATCHED_ROW=${FM_BUSY_MATCHED_ROW:-unknown}
+      return 0
+    fi
+    return 2
+  fi
   caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
   verdict=$(fm_composer_classify_screen "$caps" "$composer")
   [ "$verdict" = empty ] || return 2
-  _fm_composer_scan_screen "$composer" ''
-  _fm_composer_select_cursorless "$composer" || return 2
   [ "$footer_row" -eq $((FM_COMPOSER_SELECTED_BOUNDARY + 1)) ] || return 2
   if [ -n "${FM_BUSY_REGEX:-}" ]; then
     if printf '%s\n' "$footer" | fm_busy_lines_match claude; then
+      FM_CLAUDE_BUSY_MATCHED_ROW=$footer
       return 0
     fi
   elif printf '%s\n' "$footer" | grep -qE "$FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX"; then
+    # shellcheck disable=SC2034 # Output read by sourcing callers after this function returns.
+    FM_CLAUDE_BUSY_MATCHED_ROW=$footer
     return 0
   fi
   return 1

@@ -640,7 +640,9 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
-The 2026-08-28 Herdr 0.8.2 plus Claude Code 2.1.248 away-mode result is recorded in [supervision verification](supervision.md#herdrclaude-away-mode-busy-guard-2026-08-28), and the live guard is refreshed with `FM_AFK_HERDR_CLAUDE_LIVE=1 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh`.
+The 2026-08-31 Herdr 0.8.2 plus Claude Code 2.1.251 away-mode result is recorded in [supervision verification](supervision.md#herdrclaude-away-mode-busy-guard-2026-08-31).
+The live guard is refreshed with `HERDR_LAB_HELPER=/Users/ivan/Projects/firstmate/bin/fm-herdr-lab.sh FM_AFK_HERDR_CLAUDE_LIVE=1 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh`.
+It proves the broad idle-footer false positive, scoped idle delivery, repeated real foreground-turn deferral with exact spinner rows, and pending human-text preservation in one named non-default lab session.
 
 ## Zellij
 

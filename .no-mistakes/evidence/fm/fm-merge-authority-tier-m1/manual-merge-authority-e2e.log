@@ -1,0 +1,89 @@
+$ fm-project-mode.sh --authority beta
+firstmate
+
+$ fm-brief.sh ship-authority beta --mode direct-PR --merge-authority firstmate
+scaffolded: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-manual-authority.qBB7NP/main/data/ship-authority/brief.md (ship, mode=direct-PR; replace {TASK})
+ship brief owned contract:
+<!-- fm-merge-authority-contract:start -->
+Merge authority: firstmate
+For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through `bin/fm-send.sh <task> --resolve-key <key>`:
+- Before dispatch: `needs-decision [key=before-dispatch-ship-authority]: parent firstmate approval required before dispatch`.
+- Before landing: `needs-decision [key=before-landing-ship-authority-<spawn_gen>]: parent firstmate approval required before landing`.
+- Twice-failed blocker: `needs-decision [key=twice-failed-blocker-ship-authority]: parent firstmate direction required after the same blocker fails twice`.
+- Worker finish: `needs-decision [key=worker-finish-ship-authority]: parent firstmate review required when the worker finishes`.
+<!-- fm-merge-authority-contract:end -->
+Delivery contract: mode=direct-PR
+
+$ fm-brief.sh secondmate-authority --secondmate beta
+scaffolded: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-manual-authority.qBB7NP/main/data/secondmate-authority/brief.md (secondmate charter)
+secondmate charter authority section:
+# Merge authority
+- beta: merge-authority=firstmate
+
+For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through `bin/fm-send.sh <task> --resolve-key <key>`:
+
+- Before dispatch: `needs-decision [key=before-dispatch-<task-id>]: parent firstmate approval required before dispatch`.
+- Before landing: `needs-decision [key=before-landing-<task-id>-<spawn_gen>]: parent firstmate approval required before landing`.
+- Twice-failed blocker: `needs-decision [key=twice-failed-blocker-<task-id>]: parent firstmate direction required after the same blocker fails twice`.
+- Worker finish: `needs-decision [key=worker-finish-<task-id>]: parent firstmate review required when the worker finishes`.
+
+The parent firstmate may approve green, in-scope engine work.
+Product, destructive, device, irreversible, and security-sensitive calls still go to the captain, and no authority tier permits a red merge.
+
+# Operating model
+
+$ fm-promote.sh promote-authority --mode direct-PR --yolo off
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+promoted promote-authority to ship mode=direct-PR yolo=off (teardown protection restored)
+next: FM_HOME=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-manual-authority.qBB7NP/main bin/fm-send.sh fm-promote-authority '<ship instructions for mode=direct-PR: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/promote-authority; implement; report done>'
+promoted ship meta:
+kind=ship
+mode=direct-PR
+yolo=off
+merge_authority=firstmate
+promoted ship brief contract:
+<!-- fm-merge-authority-contract:start -->
+Merge authority: firstmate
+- Before landing: `needs-decision [key=before-landing-promote-authority-<spawn_gen>]: parent firstmate approval required before landing`.
+<!-- fm-merge-authority-contract:end -->
+Delivery contract: mode=direct-PR
+
+secondmate spawn and inherited contract:
+warning: secondmate design sync skipped before launch: primary default-branch commit cannot be resolved
+spawned design harness=codex kind=secondmate mode=secondmate yolo=off window=firstmate:fm-design worktree=/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-manual-authority.qBB7NP/secondmate
+secondmate persisted meta:
+window=firstmate:fm-design
+harness=codex
+kind=secondmate
+home=/private/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-manual-authority.qBB7NP/secondmate
+projects=
+secondmate home resolves inherited beta authority:
+firstmate
+secondmate charter authority contract:
+For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through `bin/fm-send.sh <task> --resolve-key <key>`:
+- Before dispatch: `needs-decision [key=before-dispatch-<task-id>]: parent firstmate approval required before dispatch`.
+- Before landing: `needs-decision [key=before-landing-<task-id>-<spawn_gen>]: parent firstmate approval required before landing`.
+- Twice-failed blocker: `needs-decision [key=twice-failed-blocker-<task-id>]: parent firstmate direction required after the same blocker fails twice`.
+- Worker finish: `needs-decision [key=worker-finish-<task-id>]: parent firstmate review required when the worker finishes`.
+
+guarded local landing:
+without parent resolution rc=1
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: parent-firstmate approval is not resolved for task local-authority-manual; ask with needs-decision [key=before-landing-local-authority-manual-manual-a] and have the parent answer through fm-send --resolve-key before-landing-local-authority-manual-manual-a
+with parent resolution:
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+merged fm/local-authority-manual into local main (bd21080 -> 5e9abb9) in /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-manual-authority.qBB7NP/local-project
+local main head=5e9abb960a64c17b4a765a51a312c0cbeecf5aba
+expected feature head=5e9abb960a64c17b4a765a51a312c0cbeecf5aba

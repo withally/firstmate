@@ -1,0 +1,10 @@
+ok - fm-spawn: a ship spawn requires a valid explicit mode and yolo before anything is created
+ok - fm-spawn: scout and secondmate spawns refuse ship delivery flags
+ok - fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree
+ok - fm-spawn: the brief and explicit merge authority agree while legacy yolo remains compatible
+ok - fm-spawn: a rigor downgrade against the registered posture is announced, never blocked
+ok - fm-spawn: a scout spawn resolves no delivery posture from the registry
+ok - fm-promote: promotion requires the delivery contract and records it exactly once
+ok - fm-promote: registered firstmate authority survives scout promotion
+ok - fm-project-mode: valid policy resolves and malformed annotations fail safe
+# all fm-task-delivery tests passed

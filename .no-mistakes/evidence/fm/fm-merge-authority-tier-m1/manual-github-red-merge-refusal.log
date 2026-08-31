@@ -1,0 +1,3 @@
+red GitHub PR merge attempt rc=1
+error: GitHub PR checks are not green; refusing before merge
+forge merge calls=0

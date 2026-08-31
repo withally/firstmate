@@ -133,6 +133,7 @@ fm_merge_authority_github_check_proof() {  # <owner/repo> <head>
   }
   owner=${repo%%/*}
   name=${repo#*/}
+  # shellcheck disable=SC2016  # GraphQL variables are literal query syntax.
   proof=$(gh api graphql \
     -f query='query($owner:String!,$repo:String!,$oid:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$oid){oid ... on Commit {statusCheckRollup {state}}}}}' \
     -F "owner=$owner" -F "repo=$name" -F "oid=$head" \

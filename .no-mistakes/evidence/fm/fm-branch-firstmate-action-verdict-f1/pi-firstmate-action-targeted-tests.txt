@@ -1,0 +1,33 @@
+Target commit: 0ad6736a1e01ab5a4da0b514dddd0dbe461feaf3
+
+Command: bash tests/fm-branch-supervision.test.sh
+Exit: 0
+Observed behavioral evidence:
+ok - branch prompt is byte-stable across homes, cwd, timezone, and time, above the cache floor
+ok - outcome store is append-only and refuses sequence reuse after a torn tail
+ok - startup replay skips silent outcomes and preserves visible and legacy rows
+ok - concurrent stale-lease claims serialize so exactly one actor succeeds
+ok - lease guard excludes a concurrent actor for the complete mutation
+
+Command: bash tests/fm-pi-branch-extension.test.sh
+Exit: 0
+Observed behavioral evidence:
+ok - captain and firstmate-action outcomes reach main with distinct typed instructions while routine outcomes stay store-only
+ok - firstmate-action crash-before-ack replays one operational action envelope
+ok - firstmate-action duplicate wake reports reuse one durable handoff
+ok - firstmate-action delivery waits for wake acknowledgement and branch lease release
+ok - firstmate-action replay uses wake sequence as its durable idempotency key
+ok - the outcome format boundary keeps main-bound rows deliverable
+ok - scopeForUnreadWake excludes every main-only class without vetoing eligible task-local rows, and writes the eligible snapshot
+
+Command: FM_PI_BRANCH_LIVE_E2E=1 bash tests/fm-pi-branch-live-e2e.test.sh
+Exit: 0
+Observed real-SDK evidence:
+ok - real Pi SDK 0.84.2 accepts the branch session construction and preserves an unpromptable wake
+ok - real Pi SDK 0.84.2 applies an explicit branch model on create and over a reopened session's recorded model
+ok - real Pi SDK 0.84.2 reports its own supported effort levels and applies an explicit branch effort over a reopened session's recorded level
+ok - real Pi SDK 0.84.2 delivers a custom message to the provider as user text carrying only content, so the captain outcome's typed envelope is what reaches the model
+
+Post-test check:
+git status --short --branch
+## HEAD (no branch)

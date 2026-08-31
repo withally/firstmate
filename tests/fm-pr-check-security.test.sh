@@ -82,11 +82,18 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "api graphql")
-    printf '%s\n' \
-      'state=MERGED' \
-      'merged=true' \
-      'queued=false' \
-      'base=main'
+    case " $* " in
+      *statusCheckRollup*)
+        printf '%s\tSUCCESS\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+        ;;
+      *)
+        printf '%s\n' \
+          'state=MERGED' \
+          'merged=true' \
+          'queued=false' \
+          'base=main'
+        ;;
+    esac
     exit 0
     ;;
 esac

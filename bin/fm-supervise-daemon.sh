@@ -691,7 +691,7 @@ rendered_busy_recovery_ready() {  # <state> <backend> <harness> <native-state> <
     idle|done)
       ;;
     *)
-      FM_RENDERED_BUSY_RECOVERY_SUBCAUSE=native-unknown
+      FM_RENDERED_BUSY_RECOVERY_SUBCAUSE='native-unknown'
       FM_RENDERED_BUSY_LAST_ROW=
       FM_RENDERED_BUSY_STREAK=0
       return 1

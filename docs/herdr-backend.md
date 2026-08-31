@@ -243,6 +243,10 @@ It accepts an active-turn signature only when the final nonblank footer row is i
 A footer-like row outside that boundary is structurally ambiguous and returns `unknown`, including a foreign `Working` row below an idle Claude composer.
 The Enter is confirmed only when that predicate changes from idle immediately before the Enter to busy after it, or when the composer clears; native `working` alone and a pre-existing rendered-busy footer never prove that Enter.
 Rendered idle with pending text remains unconfirmed and preserves the escalation for retry.
+After a max-defer alarm, only the Herdr+Claude path may reconsider a `rendered-busy` result.
+The exact matched row must include an elapsed duration and remain byte-identical for `FM_RENDERED_BUSY_RECOVERY_POLLS` polls, which defaults to 3, while native state is `idle` or `done`, or is `working` with the tracked daemon-terminal record.
+Only then does the daemon re-read the composer and proceed on an exact `empty` verdict; a changed or durationless row, unknown native state, non-background `working` state, `pending` composer, or `unknown` composer remains deferred.
+The recovery gate admits one submit attempt and resets its stability streak before that attempt; normal verified-submit confirmation remains the only path that clears the escalation buffer.
 For another non-Claude, non-Pi target with an already active or unreadable native baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A known Claude target captures its rendered baseline before each Enter, so a pre-existing active-turn footer cannot serve as submit confirmation.
 A fully unreadable target stops retrying and reports unknown.
@@ -323,7 +327,7 @@ The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-a
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
 `pane_is_busy` therefore uses that shared current-footer predicate; footer-like text outside the selected composer boundary is inert, including nested worker output that can quote another harness's busy footer.
 When the rendered pane is idle, injection falls through to the affirmative `empty` composer guard, while an unreadable capture or any non-`empty` composer verdict still defers.
-Each busy or composer deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`; an unreadable busy-guard capture is logged as `unreadable` and also defers.
+Each busy or composer deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`; a `rendered-busy` record includes the exact matched row, and an unreadable busy-guard capture is logged as `unreadable` and also defers.
 The Herdr `busy` adapter result is logged as its native `working` label; for Claude this preserves diagnostic evidence without making it a busy verdict.
 Every other harness/backend combination retains its native-busy fast path.
 

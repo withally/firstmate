@@ -29,7 +29,7 @@ done
   || fail "FM_AFK_HERDR_CLAUDE_LIVE=1 but the Herdr lab helper is not executable at $HERDR_LAB_HELPER"
 
 ORIGINAL_PATH=$PATH
-HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-herdr-claude-busy-guard-f1) \
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-inject-wedge-w2) \
   || fail "could not generate the isolated Herdr lab session name"
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-afk-herdr-claude-guard.XXXXXX") \
   || fail "could not create the live-test temporary root"
@@ -126,10 +126,18 @@ composer_state() {
 }
 
 rendered_claude_busy() {
-  local capture
-  capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null) || return 1
-  printf '%s' "$capture" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match claude
+  local capture caps
+  if ! declare -F fm_backend_herdr_capture_ansi >/dev/null 2>&1; then
+    fm_backend_source herdr >/dev/null 2>&1 || return 1
+  fi
+  if capture=$(fm_backend_herdr_capture_ansi "$TARGET" 40 2>/dev/null) && [ -n "$capture" ]; then
+    caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+  else
+    caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+    capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null) || return 1
+  fi
+  capture=$(printf '%s' "$capture" | grep -v '^[[:space:]]*$' | tail -12)
+  fm_claude_current_footer_busy "$caps" <<< "$capture"
 }
 
 claude_pane_is_busy() {
@@ -209,6 +217,31 @@ wait_for_idle_native_working() {
 
 screen_text() {
   lab pane read "$PANE" --source recent --lines 500 2>/dev/null || true
+}
+
+screen_ansi() {
+  lab pane read "$PANE" --source recent --lines 500 --format ansi 2>/dev/null || true
+}
+
+emit_verdict_evidence() {
+  local label=$1 busy_rc=1 broad_rc=1 scoped_rc=1 capture caps
+  claude_pane_is_busy && busy_rc=0
+  if capture=$(fm_backend_herdr_capture_ansi "$TARGET" 40 2>/dev/null) && [ -n "$capture" ]; then
+    caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+  else
+    caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+    capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null)
+  fi
+  capture=$(printf '%s' "$capture" | grep -v '^[[:space:]]*$' | tail -12)
+  fm_busy_lines_match claude <<< "$capture" && broad_rc=0
+  fm_claude_current_footer_busy "$caps" <<< "$capture" && scoped_rc=0
+  printf 'verdict: %s agent_status=%s composer=%s pane_is_busy_rc=%s broad_match_rc=%s scoped_match_rc=%s subcause=%s native-state=%s matched-row=%s\n' \
+    "$label" "$(agent_status)" "$(composer_state)" "$busy_rc" "$broad_rc" "$scoped_rc" \
+    "${FM_PANE_BUSY_REASON:-idle}" "${FM_PANE_NATIVE_BUSY_STATE:-unknown}" \
+    "${FM_BUSY_MATCHED_ROW:-none}"
+  printf 'ansi-rows-begin: %s\n' "$label"
+  screen_ansi | tail -n 16
+  printf 'ansi-rows-end: %s\n' "$label"
 }
 
 token_count() {
@@ -299,6 +332,32 @@ wait_for_log_subcause() {
   return 1
 }
 
+wait_for_log_subcause_count() {
+  local subcause=$1 want=$2 count
+  for _ in $(seq 1 60); do
+    count=$(grep -F -c "subcause=$subcause" "$STATE_DIR/.supervise-daemon.log" 2>/dev/null || true)
+    [ "$count" -ge "$want" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_rendered_idle_with_pending() {
+  local human=$1 screen composer busy
+  for _ in $(seq 1 60); do
+    screen=$(screen_text)
+    composer=$(composer_state)
+    busy=1
+    claude_pane_is_busy || busy=0
+    if [ "$composer" = pending ] && [ "$busy" -eq 0 ] \
+      && printf '%s\n' "$screen" | grep -Fq "$human"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 wait_for_log_native_state_working() {
   for _ in $(seq 1 30); do
     if grep -Fq 'native-state=working' "$STATE_DIR/.supervise-daemon.log" 2>/dev/null; then
@@ -325,6 +384,7 @@ if ! wait_for_afk_daemon; then
 fi
 wait_for_idle_native_working \
   || fail "Herdr did not report working with an idle Claude composer after the foreground /afk turn"
+emit_verdict_evidence idle-post-afk
 
 ESCALATION_ONE="FM_AFK_CLAUDE_GUARD_ONE_$$"
 printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR/crew-one.status"
@@ -344,24 +404,35 @@ fi
 pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: native working with rendered-idle empty composer submits once"
 
 FOREGROUND_TOKEN="FM_AFK_CLAUDE_GUARD_FOREGROUND_$$"
-send_line "Use Bash to run python3 -c 'import time; time.sleep(12)' and then reply exactly $FOREGROUND_TOKEN and nothing else." \
+send_line "Use Bash to run python3 -c 'import time; time.sleep(150)' and then reply exactly $FOREGROUND_TOKEN and nothing else." \
   || fail "could not start a genuine foreground Claude turn"
-wait_for_rendered_busy "$FOREGROUND_TOKEN" \
-  || fail "the genuine Claude foreground turn never exposed its rendered active-turn signature"
-
+if ! wait_for_rendered_busy "$FOREGROUND_TOKEN"; then
+  emit_verdict_evidence active-foreground-unmatched
+  echo "daemon log:" >&2
+  sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
+  fail "the genuine Claude foreground turn never exposed its rendered active-turn signature"
+fi
+emit_verdict_evidence active-foreground-before-escalation
 ESCALATION_TWO="FM_AFK_CLAUDE_GUARD_TWO_$$"
 printf 'done: %s https://example.test/afk-two\n' "$ESCALATION_TWO" > "$STATE_DIR/crew-two.status"
+if ! wait_for_log_subcause_count rendered-busy 2; then
+  emit_verdict_evidence active-foreground-missed-by-daemon
+  echo "daemon log:" >&2
+  sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
+  fail "the active foreground turn did not produce two rendered-busy daemon polls"
+fi
+wait_for_log_native_state_working \
+  || fail "the rendered-busy deferral did not record native-state=working"
+emit_verdict_evidence active-foreground
 HUMAN_TEXT="bright-human-draft-$$"
 lab pane send-text "$PANE" "$HUMAN_TEXT" >/dev/null \
   || fail "could not leave bright human text in the Claude composer"
 wait_for_human_pending "$HUMAN_TEXT" \
   || fail "bright human text did not remain pending in the Claude composer"
-wait_for_log_subcause rendered-busy \
-  || fail "the active foreground deferral did not log subcause=rendered-busy"
-wait_for_log_native_state_working \
-  || fail "the rendered-busy deferral did not record native-state=working"
-wait_for_foreground_done_with_pending "$FOREGROUND_TOKEN" "$HUMAN_TEXT" \
-  || fail "after the foreground turn, Claude did not settle with pending human text and a rendered-idle pane"
+lab pane send-keys "$PANE" escape >/dev/null \
+  || fail "could not interrupt the deliberately long foreground turn"
+wait_for_rendered_idle_with_pending "$HUMAN_TEXT" \
+  || fail "after interrupting the foreground turn, Claude did not settle with pending human text and a rendered-idle pane"
 
 [ "$(token_count "$ESCALATION_TWO")" -eq 0 ] \
   || fail "the second escalation was injected into the bright human composer"
@@ -376,6 +447,7 @@ if [ ! -s "$STATE_DIR/.subsuper-escalations" ]; then
 fi
 wait_for_log_subcause composer=pending \
   || fail "the pending-composer deferral did not log subcause=composer=pending"
+emit_verdict_evidence pending-human-text
 screen=$(screen_text)
 printf '%s\n' "$screen" | grep -Fq "$HUMAN_TEXT" \
   || fail "bright human text was modified or disappeared while the daemon deferred"

@@ -1,0 +1,21 @@
+Pi supervision routine stale-wake boundary evidence
+target=8494a17dd4fc9b90bdba248132c45136e6de3f6a
+base=95b76889d0f4497251f6a5896de370ba6d604e88
+target_boundary_status=0
+ok - Pi branch coalesces routine floods, bypasses urgent delay, and rechecks post-snapshot stale rows
+base_boundary_status=1 (expected non-zero regression)
+not ok - Pi branch must recheck an accepted identical stale row after the current snapshot settles: <anonymous_script>:214
+  throw new Error(`timed out waiting for ${label}`);
+        ^
+
+Error: timed out waiting for deferred acknowledgement for the post-snapshot duplicate
+    at settle (eval at <anonymous> [90m(file:///Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1BY8767NGWFHAZHAD7GE982/[39m[eval1]:2:7), <anonymous>:214:9[90m)[39m
+    at async [90mfile:///Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1BY8767NGWFHAZHAD7GE982/[39m[eval1]:92:1
+
+Node.js v24.20.0: expected exit 0, got 1
+real_sdk_status=0
+ok - real Pi SDK 0.84.2 accepts the branch session construction and preserves an unpromptable wake
+ok - real Pi SDK 0.84.2 applies an explicit branch model on create and over a reopened session's recorded model
+ok - real Pi SDK 0.84.2 reports its own supported effort levels and applies an explicit branch effort over a reopened session's recorded level
+ok - real Pi SDK 0.84.2 delivers a custom message to the provider as user text carrying only content, so the captain outcome's typed envelope is what reaches the model
+preserved_contract_files=unchanged

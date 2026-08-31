@@ -5,7 +5,7 @@
 # firstmate authority is meaningful only inside a locally routed secondmate
 # home. Its approval record is the existing parent-channel keyed resolution
 # written when the main firstmate answers the secondmate through:
-#   bin/fm-send.sh <secondmate-id> --resolve-key before-landing-<task-id> ...
+#   bin/fm-send.sh <secondmate-id> --resolve-key before-landing-<task-id>-<spawn_gen> ...
 # The latest event for that exact key must be resolved. No new approval file or
 # transport exists; the established status/fm-send decision contract is reused.
 
@@ -71,13 +71,20 @@ fm_merge_authority_github_head() {  # <owner/repo> <number>
 }
 
 fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
-  local home=$1 id=$2 meta=$3 authority mate parent_record parent_status key
+  local home=$1 id=$2 meta=$3 authority mate parent_record parent_status key spawn_gen
   authority=$(fm_merge_authority_resolve "$meta") || {
     echo "error: task $id has an invalid merge_authority record" >&2
     return 1
   }
   export FM_MERGE_AUTHORITY=$authority
   [ "$authority" = firstmate ] || return 0
+  spawn_gen=$(fm_merge_authority_meta_get "$meta" spawn_gen)
+  case "$spawn_gen" in
+    ''|*[!A-Za-z0-9._-]*)
+      echo "error: task $id requires parent-firstmate approval, but its spawn generation is unavailable or invalid" >&2
+      return 1
+      ;;
+  esac
 
   if ! mate=$(fm_merge_outcome_home_id "$home"); then
     echo "error: task $id requires parent-firstmate approval, but this home has no valid secondmate identity" >&2
@@ -111,11 +118,42 @@ fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
     echo "error: parent-firstmate approval is not resolved for task $id (missing parent status)" >&2
     return 1
   }
-  key="before-landing-$id"
+  key="before-landing-$id-$spawn_gen"
   fm_merge_authority_key_is_resolved "$parent_status" "$key" || {
     echo "error: parent-firstmate approval is not resolved for task $id; ask with needs-decision [key=$key] and have the parent answer through fm-send --resolve-key $key" >&2
     return 1
   }
+}
+
+fm_merge_authority_github_check_proof() {  # <owner/repo> <head>
+  local repo=$1 head=$2 owner name proof proof_head proof_state extra
+  command -v gh >/dev/null 2>&1 || {
+    echo "error: GitHub green-check proof requires gh on PATH; refusing before merge" >&2
+    return 1
+  }
+  owner=${repo%%/*}
+  name=${repo#*/}
+  proof=$(gh api graphql \
+    -f query='query($owner:String!,$repo:String!,$oid:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$oid){oid ... on Commit {statusCheckRollup {state}}}}}' \
+    -F "owner=$owner" -F "repo=$name" -F "oid=$head" \
+    --jq '.data.repository.object | [(.oid // ""), (.statusCheckRollup.state // "")] | @tsv' \
+    2>/dev/null) || return 1
+  case "$proof" in
+    *$'\n'*) return 1 ;;
+  esac
+  proof_head=
+  proof_state=
+  extra=
+  if ! IFS=$'\t' read -r proof_head proof_state extra <<EOF
+$proof
+EOF
+  then
+    return 1
+  fi
+  [ -z "$extra" ] || return 1
+  fm_merge_authority_github_head_valid "$proof_head" || return 1
+  [ "$proof_head" = "$head" ] || return 1
+  [ "$proof_state" = SUCCESS ]
 }
 
 fm_merge_authority_github_green() {  # <owner/repo> <number>
@@ -123,6 +161,10 @@ fm_merge_authority_github_green() {  # <owner/repo> <number>
   export FM_MERGE_AUTHORITY_CHECKED_HEAD=
   FM_MERGE_AUTHORITY_CHECKED_HEAD=$(fm_merge_authority_github_head "$repo" "$number") || {
     echo "error: GitHub PR head is not readable; refusing before merge" >&2
+    return 1
+  }
+  fm_merge_authority_github_check_proof "$repo" "$FM_MERGE_AUTHORITY_CHECKED_HEAD" || {
+    echo "error: GitHub PR checks are not green for the checked head; refusing before merge" >&2
     return 1
   }
   checks=$(gh-axi pr checks "$number" -R "$repo" 2>/dev/null) || {

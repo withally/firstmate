@@ -374,8 +374,13 @@ test_firstmate_merge_authority_renders_keyed_checkins() {
   grep -qx 'Merge authority: firstmate' "$ship" \
     || fail "ship brief did not record its machine-readable merge authority"
   for key in before-dispatch before-landing twice-failed-blocker worker-finish; do
-    assert_grep "needs-decision [key=$key-authority-ship]" "$ship" \
-      "ship brief lost the $key parent check-in"
+    if [ "$key" = before-landing ]; then
+      assert_grep "needs-decision [key=$key-authority-ship-<spawn_gen>]" "$ship" \
+        "ship brief lost the $key parent check-in"
+    else
+      assert_grep "needs-decision [key=$key-authority-ship]" "$ship" \
+        "ship brief lost the $key parent check-in"
+    fi
   done
   # shellcheck disable=SC2016 # Backticks are literal brief prose.
   assert_grep 'answers through `bin/fm-send.sh <task> --resolve-key <key>`' "$ship" \
@@ -388,8 +393,13 @@ test_firstmate_merge_authority_renders_keyed_checkins() {
   assert_grep 'alpha: merge-authority=firstmate' "$charter" \
     "secondmate charter did not render alpha's inherited authority"
   for key in before-dispatch before-landing twice-failed-blocker worker-finish; do
-    assert_grep "needs-decision [key=$key-<task-id>]" "$charter" \
-      "secondmate charter lost the reusable $key parent check-in"
+    if [ "$key" = before-landing ]; then
+      assert_grep "needs-decision [key=$key-<task-id>-<spawn_gen>]" "$charter" \
+        "secondmate charter lost the reusable $key parent check-in"
+    else
+      assert_grep "needs-decision [key=$key-<task-id>]" "$charter" \
+        "secondmate charter lost the reusable $key parent check-in"
+    fi
   done
   pass "fm-brief.sh: firstmate authority renders the tier and four keyed parent check-ins"
 }

@@ -34,7 +34,7 @@
 #       recorded and the merge poll armed
 #   (y) agreeing queue rules still produce exact retry flags
 #   (z) conflicting queue rules report ambiguous retry guidance
-#   (aa) gh-axi remains usable when gh is absent
+#   (aa) GitHub exact green proof requires gh before any merge
 #   (ab) a landed merge whose fallback outcome read fails keeps its poll armed
 #   (ac) a successful merge in a secondmate home reports the landed PR upward
 #       once, on the route its parent binding names, and a repeat merge of the
@@ -66,8 +66,8 @@
 #       guesses no method
 #   (au) unreadable branch rules are reported apart from a queue-less base
 #   (av) a base branch with no queue rule says nothing about a merge queue
-#   (aw) a refusal built on the gh-axi view says the merge queue could not be
-#       observed, and judges that view's state like the queue-aware one
+#   (aw) a gh-less GitHub merge refuses before the queue-aware outcome fallback
+#       because exact green proof requires gh
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -153,7 +153,10 @@ case "\${1:-} \${2:-}" in
     esac
     ;;
   "api graphql")
-    cat "\$FM_TEST_GH_OUTCOME"
+    case " \$* " in
+      *statusCheckRollup*) printf '%s\\tSUCCESS\\n' '$head' ;;
+      *) cat "\$FM_TEST_GH_OUTCOME" ;;
+    esac
     exit 0
     ;;
   api\ *)
@@ -194,7 +197,10 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql")
-    cat "$FM_TEST_GH_OUTCOME"
+    case " $* " in
+      *statusCheckRollup*) printf '%s\tSUCCESS\n' 1111111111111111111111111111111111111111 ;;
+      *) cat "$FM_TEST_GH_OUTCOME" ;;
+    esac
     exit 0
     ;;
   api\ *)
@@ -222,8 +228,10 @@ case "\${1:-} \${2:-}" in
     esac
     ;;
   "api graphql")
-    echo 'error: could not reach the GitHub API' >&2
-    exit 1
+    case " \$* " in
+      *statusCheckRollup*) printf '%s\\tSUCCESS\\n' '$head' ; exit 0 ;;
+      *) echo 'error: could not reach the GitHub API' >&2 ; exit 1 ;;
+    esac
     ;;
 esac
 exit 0
@@ -839,7 +847,10 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql")
-    cat "$FM_TEST_GH_OUTCOME"
+    case " $* " in
+      *statusCheckRollup*) printf '%s\tSUCCESS\n' 8484848484848484848484848484848484848484 ;;
+      *) cat "$FM_TEST_GH_OUTCOME" ;;
+    esac
     exit 0
     ;;
   api\ *) exit 1 ;;
@@ -888,7 +899,7 @@ test_github_no_queue_rule_says_nothing_about_a_queue() {
   pass "fm-pr-merge says nothing about a merge queue when the base branch has no queue rule"
 }
 
-test_github_fallback_view_refusal_says_the_queue_was_unobservable() {
+test_github_without_gh_refuses_before_queue_outcome_fallback() {
   local case_dir ghless_path rc
   case_dir=$(make_case github-fallback-unobservable-queue)
   mkdir -p "$case_dir/wt"
@@ -921,22 +932,14 @@ SH
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "github-fallback-unobservable-queue: an unproved merge must fail"
-  assert_grep 'isInMergeQueue=unknown' "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: refusal did not name the concrete observed state"
-  assert_grep 'the merge queue could not be observed for https://github.com/example/repo/pull/73' \
-    "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: the refusal implied an unqueued PR it could not see"
-  assert_grep "re-check the pull request's merge queue state" "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: the refusal named no concrete next step"
-  # The lowercase state the fallback view reports must be judged the same way
-  # the queue-aware read's uppercase enum is, or every explanation is skipped.
-  assert_grep 'auto-merge was requested and armed for https://github.com/example/repo/pull/73' \
-    "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: the fallback view's state skipped the auto-merge explanation"
+  expect_code 1 "$rc" "github-fallback-unobservable-queue: a gh-less merge must fail before outcome fallback"
+  assert_grep 'GitHub green-check proof requires gh on PATH; refusing before merge' "$case_dir/stderr" \
+    "github-fallback-unobservable-queue: refusal did not name the exact-proof prerequisite"
   assert_no_grep 'verified: ' "$case_dir/stdout" \
     "github-fallback-unobservable-queue: an unproved merge was reported as verified"
-  pass "fm-pr-merge says the merge queue was unobservable when only the gh-axi view answered"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "github-fallback-unobservable-queue: an unproved merge reached the forge"
+  pass "fm-pr-merge requires gh before the GitHub outcome fallback"
 }
 
 test_github_unreadable_outcome_refusal_quotes_the_forge_output() {
@@ -1034,7 +1037,7 @@ test_github_failed_merge_names_an_observed_landed_state() {
   pass "fm-pr-merge names a landed state hiding behind a failed GitHub merge command"
 }
 
-test_github_without_gh_still_uses_gh_axi_merge() {
+test_github_without_gh_refuses_unbound_green_proof() {
   local case_dir ghless_path rc
   case_dir=$(make_case github-without-gh)
   mkdir -p "$case_dir/wt"
@@ -1051,17 +1054,15 @@ test_github_without_gh_still_uses_gh_axi_merge() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "github-without-gh: gh-axi can prove a landed merge without gh"
-  assert_grep 'pr merge 60 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    "github-without-gh: the configured merge abstraction was not invoked"
-  assert_grep 'pr view 60 --repo example/repo' "$case_dir/gh-axi.log" \
-    "github-without-gh: the gh-axi fallback did not verify the landed state"
-  assert_grep 'verified: https://github.com/example/repo/pull/60 is merged' \
-    "$case_dir/stdout" "github-without-gh: the fallback did not report the proven merge"
-  pass "fm-pr-merge reaches and verifies the gh-axi merge path without gh"
+  expect_code 1 "$rc" "github-without-gh: exact green proof requires gh"
+  assert_grep 'GitHub green-check proof requires gh on PATH' "$case_dir/stderr" \
+    "github-without-gh: the missing exact proof prerequisite was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "github-without-gh: a merge reached the forge without an exact green proof"
+  pass "fm-pr-merge refuses a GitHub merge without its exact green-check proof"
 }
 
-test_github_without_gh_failed_read_keeps_bookkeeping() {
+test_github_without_gh_refuses_before_bookkeeping() {
   local case_dir ghless_path rc
   case_dir=$(make_case github-without-gh-read-fails)
   mkdir -p "$case_dir/wt"
@@ -1092,16 +1093,16 @@ SH
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "github-without-gh-read-fails: an unreadable outcome must fail"
-  assert_grep 'pr merge 61 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    "github-without-gh-read-fails: the merge call did not happen before the failed read"
-  assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
-    "$case_dir/stderr" "github-without-gh-read-fails: the failed read was not reported"
-  assert_grep 'pr=https://github.com/example/repo/pull/61' "$case_dir/state/task-x1.meta" \
-    "github-without-gh-read-fails: a landed merge lost its PR metadata"
-  assert_present "$case_dir/state/task-x1.check.sh" \
-    "github-without-gh-read-fails: a landed merge lost its merge poll"
-  pass "fm-pr-merge preserves bookkeeping when gh is absent and the fallback read fails"
+  expect_code 1 "$rc" "github-without-gh-read-fails: exact green proof requires gh"
+  assert_grep 'GitHub green-check proof requires gh on PATH' "$case_dir/stderr" \
+    "github-without-gh-read-fails: the missing exact proof prerequisite was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "github-without-gh-read-fails: a merge reached the forge without an exact green proof"
+  assert_no_grep 'pr=https://github.com/example/repo/pull/61' "$case_dir/state/task-x1.meta" \
+    "github-without-gh-read-fails: PR metadata was recorded before the exact proof"
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "github-without-gh-read-fails: a merge poll was armed without the exact proof"
+  pass "fm-pr-merge refuses before bookkeeping when gh is absent"
 }
 
 test_github_zero_exit_queue_required_refuses_with_exact_retry() {
@@ -1924,12 +1925,12 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
   case_dir=$(make_home_case firstmate-authority local "$parent")
   mkdir -p "$parent/state"
   status="$parent/state/mate-x.status"
-  printf 'merge_authority=firstmate\n' >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' 'merge_authority=firstmate' 'spawn_gen=spawn-a' >> "$case_dir/state/task-x1.meta"
   add_gh_mocks "$case_dir" 8181818181818181818181818181818181818181
   : > "$case_dir/gh-axi.log"
 
   printf 'mate-x\nextra\n' > "$case_dir/home/.fm-secondmate-home"
-  printf 'resolved [key=before-landing-task-x1]: fabricated\n' > "$status"
+  printf 'resolved [key=before-landing-task-x1-spawn-a]: fabricated\n' > "$status"
   set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
     > "$case_dir/stdout-marker" 2> "$case_dir/stderr-marker"
@@ -1942,7 +1943,7 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
     "a multi-line secondmate marker still reached the forge merge"
 
   printf '%s\n' mate-x > "$case_dir/home/.fm-secondmate-home"
-  printf 'needs-decision [key=before-landing-task-x1]: approve landing\n' > "$status"
+  printf 'needs-decision [key=before-landing-task-x1-spawn-a]: approve landing\n' > "$status"
   set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -1954,7 +1955,7 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
   assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
     "missing parent approval still reached the forge merge"
 
-  printf 'resolved [key=before-landing-task-x1]: fabricated\n' > "$status"
+  printf 'resolved [key=before-landing-task-x1-spawn-a]: fabricated\n' > "$status"
   set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
     > "$case_dir/stdout-resolved-only" 2> "$case_dir/stderr-resolved-only"
@@ -1967,8 +1968,8 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
     "a resolved-only approval reached the forge merge"
 
   printf '%s\n' \
-    'needs-decision [key=before-landing-task-x1]: approve landing' \
-    'resolved: prose mentions [key=before-landing-task-x1]' > "$status"
+    'needs-decision [key=before-landing-task-x1-spawn-a]: approve landing' \
+    'resolved: prose mentions [key=before-landing-task-x1-spawn-a]' > "$status"
   set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
     > "$case_dir/stdout-prose" 2> "$case_dir/stderr-prose"
@@ -1980,7 +1981,7 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
   assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
     "a prose key mention reached the forge merge"
 
-  printf 'resolved [key=before-landing-task-x1]: approved by parent firstmate\n' >> "$status"
+  printf 'resolved [key=before-landing-task-x1-spawn-a]: approved by parent firstmate\n' >> "$status"
   printf '%s\n' \
     'summary: "1 passed, 1 failed, 2 total"' \
     'checks[2]{name,conclusion}:' \
@@ -2008,6 +2009,80 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks() {
   assert_grep 'pr merge 81 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     "green parent-approved PR did not reach the forge merge"
   pass "firstmate authority accepts the parent resolution only for a green PR"
+}
+
+test_firstmate_authority_approval_is_bound_to_spawn_generation() {
+  local case_dir parent status rc
+  parent="$TMP_ROOT/firstmate-authority-spawn-gen/parent"
+  case_dir=$(make_home_case firstmate-authority-spawn-gen local "$parent")
+  mkdir -p "$parent/state"
+  status="$parent/state/mate-x.status"
+  printf '%s\n' 'merge_authority=firstmate' 'spawn_gen=spawn-b' >> "$case_dir/state/task-x1.meta"
+  add_gh_mocks "$case_dir" 8282828282828282828282828282828282828282
+  printf '%s\n' \
+    'needs-decision [key=before-landing-task-x1-spawn-a]: approve old incarnation' \
+    'resolved [key=before-landing-task-x1-spawn-a]: approved old incarnation' > "$status"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/88 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "firstmate-authority-spawn-gen: an old incarnation approval must refuse"
+  assert_grep 'before-landing-task-x1-spawn-b' "$case_dir/stderr" \
+    "firstmate-authority-spawn-gen: the current incarnation key was not requested"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "firstmate-authority-spawn-gen: an old incarnation approval reached the forge"
+  pass "firstmate authority approval is bound to the child's spawn generation"
+}
+
+test_github_green_gate_binds_checks_to_checked_head() {
+  local case_dir head rc
+  head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  case_dir=$(make_case github-check-proof-head)
+  add_gh_mocks "$case_dir" "$head"
+  printf '%s\n' \
+    'summary: "1 passed, 0 failed, 1 total"' \
+    'checks[1]{name,conclusion}:' \
+    '  checks-from-another-head,pass' > "$case_dir/github-checks"
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "\$FM_TEST_GH_LOG"
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *headRefOid*) printf '%s\\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+  "api graphql")
+    case " \$* " in
+      *statusCheckRollup*) printf '%s\\tFAILURE\\n' '$head' ;;
+      *) cat "\$FM_TEST_GH_OUTCOME" ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/89 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "github-check-proof-head: a red checked head must refuse"
+  assert_grep "oid=$head" "$case_dir/gh.log" \
+    "github-check-proof-head: the green proof was not queried for the checked head"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "github-check-proof-head: an unbound green result reached the forge"
+  pass "GitHub green proof is queried against the exact checked head"
 }
 
 test_github_authority_tiers_refuse_red_work() {
@@ -2150,7 +2225,10 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql")
-    cat "$FM_TEST_GH_OUTCOME"
+    case " $* " in
+      *statusCheckRollup*) printf '%s\tSUCCESS\n' "$(cat "$FM_TEST_CASE_DIR/head-before")" ;;
+      *) cat "$FM_TEST_GH_OUTCOME" ;;
+    esac
     exit 0
     ;;
   api\ *)
@@ -2422,14 +2500,14 @@ test_github_mismatched_queue_flags_still_name_the_retry
 test_github_unrecognised_queue_method_still_names_the_queue
 test_github_unreadable_queue_rules_are_not_reported_as_no_queue
 test_github_no_queue_rule_says_nothing_about_a_queue
-test_github_fallback_view_refusal_says_the_queue_was_unobservable
+test_github_without_gh_refuses_before_queue_outcome_fallback
 test_github_auto_merge_without_queue_refuses_legibly
 test_github_failed_merge_never_claims_armed_auto_merge
 test_github_failed_merge_with_queue_flags_never_claims_acceptance
 test_github_failed_gh_read_falls_back_to_gh_axi
 test_github_failed_merge_names_an_observed_landed_state
-test_github_without_gh_still_uses_gh_axi_merge
-test_github_without_gh_failed_read_keeps_bookkeeping
+test_github_without_gh_refuses_unbound_green_proof
+test_github_without_gh_refuses_before_bookkeeping
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
@@ -2462,10 +2540,12 @@ test_gitlab_merge_reports_upward
 test_queued_gitlab_merge_leaves_the_poll_armed
 test_failed_merge_reports_nothing
 test_firstmate_authority_requires_parent_resolution_and_green_checks
+test_firstmate_authority_approval_is_bound_to_spawn_generation
 test_github_authority_tiers_refuse_red_work
 test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed
 test_github_green_gate_rejects_malformed_summaries_and_rows
 test_github_head_change_after_green_checks_refuses_merge
+test_github_green_gate_binds_checks_to_checked_head
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake
 test_queued_github_merge_leaves_the_poll_armed

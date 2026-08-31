@@ -48,9 +48,10 @@ The tiers mean:
 - `firstmate`: a secondmate checks in with its registered main firstmate, which may approve green, in-scope work and routes product, destructive, device, irreversible, and security-sensitive calls to the captain.
 - `self`: the delivering home may land green, in-scope work under standing authority.
 
-For `firstmate`, the secondmate opens four exact keyed parent decisions for each task: `before-dispatch-<task-id>`, `before-landing-<task-id>`, `twice-failed-blocker-<task-id>`, and `worker-finish-<task-id>`.
+For `firstmate`, the secondmate opens four exact keyed parent decisions for each task: `before-dispatch-<task-id>`, `before-landing-<task-id>-<spawn_gen>`, `twice-failed-blocker-<task-id>`, and `worker-finish-<task-id>`.
+`<spawn_gen>` is the current `spawn_gen` recorded for that task, so a landing approval cannot cross a relaunch.
 The main firstmate answers each through `bin/fm-send.sh <secondmate-id> --resolve-key <key> ...`.
-The landing guards accept `before-landing-<task-id>` only when the latest event for that key is `resolved` in the locally registered parent channel, and the GitHub guard additionally requires every reported check to be green before it invokes the forge merge.
+The landing guards accept `before-landing-<task-id>-<spawn_gen>` only when the latest event for that key is `resolved` in the locally registered parent channel, and the GitHub guard additionally requires every reported check to be green for that exact head before it invokes the forge merge.
 Remote `route=remote` firstmate-authority landings remain fail-closed until a parent approval-record transport exists; track that transport as a PR follow-up.
 No tier authorizes a red merge.
 

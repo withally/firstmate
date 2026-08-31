@@ -218,7 +218,7 @@ firstmate_authority_checkins() {  # <task-id-or-placeholder>
 For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through \`bin/fm-send.sh <task> --resolve-key <key>\`:
 
 - Before dispatch: \`needs-decision [key=before-dispatch-$task]: parent firstmate approval required before dispatch\`.
-- Before landing: \`needs-decision [key=before-landing-$task]: parent firstmate approval required before landing\`.
+- Before landing: \`needs-decision [key=before-landing-$task-<spawn_gen>]: parent firstmate approval required before landing\`.
 - Twice-failed blocker: \`needs-decision [key=twice-failed-blocker-$task]: parent firstmate direction required after the same blocker fails twice\`.
 - Worker finish: \`needs-decision [key=worker-finish-$task]: parent firstmate review required when the worker finishes\`.
 

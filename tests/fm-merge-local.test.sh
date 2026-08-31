@@ -36,9 +36,10 @@ kind=ship
 mode=local-only
 yolo=off
 merge_authority=firstmate
+spawn_gen=spawn-a
 EOF
 
-printf 'needs-decision [key=before-landing-%s]: approve local landing\n' "$id" \
+printf 'needs-decision [key=before-landing-%s-spawn-a]: approve local landing\n' "$id" \
   > "$parent/state/mate-x.status"
 if FM_HOME="$home" "$ROOT/bin/fm-merge-local.sh" "$id" >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then
   fail "firstmate-authority local landing succeeded without resolved parent approval"
@@ -60,7 +61,7 @@ awk '$0 !~ /^merge_authority=/' "$home/state/$id.meta" > "$TMP_ROOT/valid-meta"
 printf 'merge_authority=firstmate\n' >> "$TMP_ROOT/valid-meta"
 mv "$TMP_ROOT/valid-meta" "$home/state/$id.meta"
 
-printf 'resolved [key=before-landing-%s]: approved by parent firstmate\n' "$id" \
+printf 'resolved [key=before-landing-%s-spawn-a]: approved by parent firstmate\n' "$id" \
   >> "$parent/state/mate-x.status"
 FM_HOME="$home" "$ROOT/bin/fm-merge-local.sh" "$id" >"$TMP_ROOT/out" 2>"$TMP_ROOT/err" \
   || fail "resolved parent approval did not permit the local landing"

@@ -339,7 +339,7 @@ test_promote_resolves_registered_firstmate_authority() {
     "registered firstmate promotion left the scout brief in place"
   assert_grep 'Merge authority: firstmate' "$home/data/promote-f1/brief.md" \
     "registered firstmate promotion did not render its authority"
-  assert_grep 'before-landing-promote-f1' "$home/data/promote-f1/brief.md" \
+  assert_grep 'before-landing-promote-f1-<spawn_gen>' "$home/data/promote-f1/brief.md" \
     "registered firstmate promotion omitted the parent landing check-in"
   assert_contains "$out" 'promoted promote-f1 to ship mode=direct-PR yolo=off' \
     "registered firstmate promotion did not report success"

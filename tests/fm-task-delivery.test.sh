@@ -41,12 +41,15 @@ make_home() {  # <name> [<registry-line>...]
   printf '%s\n' "$home|$projects/proj|$fakebin"
 }
 
-write_brief() {  # <home> <id> [<recorded-mode>]
-  local home=$1 id=$2 mode=${3:-}
+write_brief() {  # <home> <id> [<recorded-mode>] [<recorded-merge-authority>]
+  local home=$1 id=$2 mode=${3:-} merge_authority=${4:-}
   mkdir -p "$home/data/$id"
   {
     printf 'You are a crewmate.\n\n# Task\n## Captain'\''s intent\nExercise the delivery contract.\n\n## Firstmate spec\nVerify the selected delivery behavior.\n\n# Definition of done\n'
     [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
+    if [ -n "$merge_authority" ]; then
+      printf '%s\n' '<!-- fm-merge-authority-contract:start -->' "Merge authority: $merge_authority" '<!-- fm-merge-authority-contract:end -->'
+    fi
   } > "$home/data/$id/brief.md"
 }
 
@@ -155,6 +158,66 @@ EOF
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
 }
 
+# The merge authority is part of the same worker-visible contract as delivery
+# mode. A concrete mismatch must stop before endpoint creation, while a legacy
+# brief with no authority line retains the yolo-derived posture.
+test_spawn_refuses_a_brief_merge_authority_mismatch() {
+  local rec home proj fakebin out status
+  rec=$(make_home authority-agreement)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" delivery-authority-mismatch-b4 no-mistakes firstmate
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-mismatch-b4 "$proj" claude \
+    --mode no-mistakes --yolo off --merge-authority captain)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a brief/spawn merge-authority mismatch should exit non-zero"
+  assert_contains "$out" "merge-authority mismatch for delivery-authority-mismatch-b4" \
+    "merge-authority mismatch refusal did not name the task"
+  assert_absent "$home/state/delivery-authority-mismatch-b4.meta" \
+    "mismatched merge authority wrote task metadata"
+
+  write_brief "$home" delivery-authority-agree-b5 no-mistakes firstmate
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-agree-b5 "$proj" claude \
+    --mode no-mistakes --yolo off --merge-authority firstmate)
+  assert_not_contains "$out" "merge-authority mismatch" \
+    "an agreeing merge authority was reported as a mismatch"
+
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-brief.sh" \
+    delivery-authority-shadow-b8 "$proj" --mode no-mistakes --merge-authority firstmate \
+    >/dev/null 2>&1 || fail "the executable brief generator did not scaffold the shadowing fixture"
+  sed 's/{TASK}/Merge authority: self/' \
+    "$home/data/delivery-authority-shadow-b8/brief.md" \
+    > "$home/data/delivery-authority-shadow-b8/brief.tmp"
+  mv "$home/data/delivery-authority-shadow-b8/brief.tmp" \
+    "$home/data/delivery-authority-shadow-b8/brief.md"
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-shadow-b8 "$proj" claude \
+    --mode no-mistakes --yolo off --merge-authority firstmate)
+  assert_not_contains "$out" "merge-authority mismatch" \
+    "task text shadowed the owned merge-authority contract"
+
+  write_brief "$home" delivery-authority-legacy-b6 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-legacy-b6 "$proj" claude \
+    --mode no-mistakes --yolo on)
+  assert_contains "$out" "records no merge authority line" \
+    "a legacy brief did not announce its yolo-derived merge authority"
+  assert_not_contains "$out" "merge-authority mismatch" \
+    "a legacy brief was treated as a merge-authority mismatch"
+
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-brief.sh" \
+    delivery-authority-generated-b7 "$proj" --mode no-mistakes >/dev/null 2>&1 \
+    || fail "the executable brief generator did not scaffold a legacy-compatible brief"
+  assert_no_grep 'Merge authority:' "$home/data/delivery-authority-generated-b7/brief.md" \
+    "an omitted --merge-authority rendered a line into the generated brief"
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-generated-b7 "$proj" claude \
+    --mode no-mistakes --yolo on)
+  assert_contains "$out" "records no merge authority line" \
+    "a generated legacy yolo-on brief did not reach spawn's derivation path"
+  assert_not_contains "$out" "merge-authority mismatch" \
+    "a generated legacy yolo-on brief was rejected as a mismatch"
+  pass "fm-spawn: the brief and explicit merge authority agree while legacy yolo remains compatible"
+}
+
 # The registry is the captain's standing posture, so dropping below its rigor is
 # allowed but never silent, while matching or exceeding it stays quiet. An
 # unregistered project resolves to the same no-mistakes standing default
@@ -212,12 +275,14 @@ EOF
 test_promote_requires_and_records_the_delivery_contract() {
   local home meta out status blocked_data instructions_path
   home="$TMP_ROOT/promote/home"
-  mkdir -p "$home/state"
+  mkdir -p "$home/state" "$home/data" "$home/projects/proj"
+  printf '%s\n' '- proj [direct-PR] - fixture (added 2026-01-01)' > "$home/data/projects.md"
   meta="$home/state/promote-d1.meta"
   write_brief "$home" promote-d1
 
   write_scout_meta() {
-    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\nproject=%s\n' \
+      "$home/projects/proj" > "$meta"
   }
 
   write_scout_meta
@@ -266,6 +331,11 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided merge posture"
+  assert_grep 'merge_authority=self' "$meta" "promotion did not preserve yolo=on's self authority"
+  assert_grep 'Delivery contract: mode=direct-PR' "$home/data/promote-d1/brief.md" \
+    "promotion did not replace the scout brief with a ship delivery contract"
+  assert_grep 'Merge authority: self' "$home/data/promote-d1/brief.md" \
+    "promotion did not render the resolved ship authority"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
@@ -408,6 +478,14 @@ test_project_mode_maps_the_conditional_policy() {
 - yoloproj [no-mistakes-prod-only +yolo] - fixture (added 2026-01-01)
 - flatproj [direct-PR] - fixture (added 2026-01-01)
 - typoproj [no-mistakez] - fixture (added 2026-01-01)
+- routedproj [direct-PR merge-authority=firstmate] - fixture (added 2026-01-01)
+- captainproj [direct-PR] - fixture (added 2026-01-01)
+- selfproj [direct-PR +yolo] - fixture (added 2026-01-01)
+- explicitself [direct-PR merge-authority=self] - fixture (added 2026-01-01)
+- unknown-token [direct-PR mystery] - fixture (added 2026-01-01)
+- duplicate-authority [direct-PR merge-authority=firstmate merge-authority=self] - fixture (added 2026-01-01)
+- duplicate-yolo [direct-PR +yolo +yolo] - fixture (added 2026-01-01)
+- unclosed [direct-PR merge-authority=firstmate - fixture (added 2026-01-01)
 EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" prodproj 2>/dev/null)
   [ "$out" = "no-mistakes off" ] || fail "conditional policy did not map to its most rigorous leg (got '$out')"
@@ -427,7 +505,28 @@ EOF
   [ "$out" = "no-mistakes off" ] || fail "a typo'd mode no longer falls back to the most rigorous default"
   err=$(FM_HOME="$home" "$PROJECT_MODE" typoproj 2>&1 >/dev/null)
   assert_contains "$err" "unknown mode" "a typo'd registry mode stopped warning"
-  pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --authority routedproj 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "explicit firstmate merge authority did not parse (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --authority captainproj 2>/dev/null)
+  [ "$out" = "captain" ] \
+    || fail "legacy yolo=off did not map to captain authority (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --authority selfproj 2>/dev/null)
+  [ "$out" = "self" ] \
+    || fail "legacy +yolo did not map to self authority (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" explicitself 2>/dev/null)
+  [ "$out" = "direct-PR on" ] \
+    || fail "explicit self authority did not project to yolo on (got '$out')"
+  local invalid
+  for invalid in unknown-token duplicate-authority duplicate-yolo unclosed; do
+    out=$(FM_HOME="$home" "$PROJECT_MODE" --authority "$invalid" 2>/dev/null)
+    [ "$out" = captain ] || fail "$invalid did not fail safe to captain authority (got '$out')"
+    err=$(FM_HOME="$home" "$PROJECT_MODE" --authority "$invalid" 2>&1 >/dev/null)
+    assert_contains "$err" "malformed registry annotation" \
+      "$invalid did not report its malformed registry annotation"
+  done
+  pass "fm-project-mode: valid policy resolves and malformed annotations fail safe"
 }
 
 # Spawn and promotion refuse leftover Task-subsection placeholders through the
@@ -750,6 +849,7 @@ EOF
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
+test_spawn_refuses_a_brief_merge_authority_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract

@@ -14,7 +14,7 @@ The attestation must bind to the current PR head commit and report the review, t
 The check refreshes live PR data and tolerates a temporarily stale attestation for up to ten minutes, but a missing or invalid `head_sha`, a skipped required step, or an attestation that is still stale at the end fails.
 The refresh step passes the final live attestation comment to the pinned verifier so marker-shaped examples in the evidence cannot shadow the real attestation.
 The delayed refresh behavior is manually verified with mocked live PR responses for stale-to-current convergence, permanent staleness, missing or empty attestations, the matching fast path, and transient API errors because the repository workflow tests do not execute delayed GitHub events.
-After any later commit, including an automated gate repair, push through `git push no-mistakes` again to create a new head-bound attestation; never reuse or hand-edit an older one.
+After any later commit, including an automated gate-repair commit, perform a fresh `git push no-mistakes` to create a new head-bound attestation; the previous attestation cannot be reused or hand-edited.
 It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
 The maintainer follow-up request for the shared verifier is recorded in [`docs/upstream-sync.md`](docs/upstream-sync.md#upstream-follow-up-pr-body-draft).

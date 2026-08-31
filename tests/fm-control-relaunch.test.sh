@@ -1437,6 +1437,23 @@ test_spawn_relaunch_refuses_contradicting_flags() {
   pass "fm-spawn --relaunch: every identity axis comes from the record, and a contradicting flag refuses"
 }
 
+test_spawn_relaunch_refuses_inconsistent_persisted_merge_authority() {
+  local dir out rc
+  dir=$(new_case inconsistent-authority rl19)
+  add_ship_task "$dir" rl19 claude
+  printf '%s\n' 'merge_authority=self' >> "$dir/home/state/rl19.meta"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl19 --relaunch); rc=$?
+  expect_code 1 "$rc" "an inconsistent persisted merge authority should refuse relaunch"
+  assert_contains "$out" "conflicts with --yolo off" \
+    "the relaunch refusal did not validate the persisted authority/yolo tuple"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "an inconsistent persisted merge authority still armed a replacement"
+  [ "$(cat "$dir/fake/command")" = zsh ] \
+    || fail "an inconsistent persisted merge authority should refuse before lifecycle input"
+  pass "fm-spawn --relaunch: persisted merge authority is validated before replacement"
+}
+
 test_spawn_relaunch_refuses_an_unrecorded_task() {
   local dir out rc
   dir=$(new_case norecord rl17)
@@ -1541,6 +1558,7 @@ test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection
 test_spawn_relaunch_keeps_its_early_meta_lock_continuous
 test_spawn_relaunch_refuses_a_pending_authoritative_close
 test_spawn_relaunch_refuses_contradicting_flags
+test_spawn_relaunch_refuses_inconsistent_persisted_merge_authority
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it

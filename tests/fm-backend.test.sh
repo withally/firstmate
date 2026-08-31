@@ -914,6 +914,8 @@ run_spawn_symlink_case() {  # <label> <physical|logical>
   expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix when the backend reports $first_reply cwd"$'\n'"$out"
   assert_contains "$out" "worktree=$wt" \
     "fm-spawn.sh did not resolve a symlinked-prefix project to its real worktree when the backend reports $first_reply cwd"
+  assert_grep 'merge_authority=captain' "$state/$id.meta" \
+    "fm-spawn.sh did not durably record the yolo-off compatibility authority"
 
   rm -rf "/tmp/fm-$id"
 }

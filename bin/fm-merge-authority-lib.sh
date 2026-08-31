@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# Resolve and enforce a task's recorded merge_authority= tier at a landing gate.
+# Legacy metadata maps yolo=on to self and yolo=off/absent to captain.
+#
+# firstmate authority is meaningful only inside a locally routed secondmate
+# home. Its approval record is the existing parent-channel keyed resolution
+# written when the main firstmate answers the secondmate through:
+#   bin/fm-send.sh <secondmate-id> --resolve-key before-landing-<task-id>-<spawn_gen> ...
+# The latest event for that exact key must be resolved. No new approval file or
+# transport exists; the established status/fm-send decision contract is reused.
+
+_FM_MERGE_AUTHORITY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_MERGE_AUTHORITY_LIB_DIR="."
+FM_MERGE_AUTHORITY_SCRIPT_DIR="${FM_MERGE_AUTHORITY_SCRIPT_DIR:-$_FM_MERGE_AUTHORITY_LIB_DIR}"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$_FM_MERGE_AUTHORITY_LIB_DIR/fm-classify-lib.sh"
+if ! type fm_merge_outcome_home_id >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-merge-outcome-lib.sh
+  . "$_FM_MERGE_AUTHORITY_LIB_DIR/fm-merge-outcome-lib.sh"
+fi
+
+fm_merge_authority_meta_get() {  # <meta> <key>
+  awk -F= -v key="$2" '$1 == key { value=substr($0, index($0, "=") + 1) } END { print value }' "$1"
+}
+
+fm_merge_authority_resolve() {  # <meta>
+  local meta=$1 authority yolo
+  authority=$(fm_merge_authority_meta_get "$meta" merge_authority)
+  yolo=$(fm_merge_authority_meta_get "$meta" yolo)
+  [ -n "$yolo" ] || yolo=off
+  if [ -z "$authority" ]; then
+    if [ "$yolo" = on ]; then authority=self; else authority=captain; fi
+  fi
+  case "$authority" in captain|firstmate|self) ;; *) return 1 ;; esac
+  case "$yolo" in on|off) ;; *) return 1 ;; esac
+  case "$authority:$yolo" in
+    captain:off|firstmate:off|self:on) ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$authority"
+}
+
+fm_merge_authority_key_is_resolved() {  # <status-file> <key>
+  local status=$1 key=$2 resolve
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  [ "$(status_key_closing_verb "$status" "$key")" = "$resolve" ]
+}
+
+FM_MERGE_AUTHORITY_CHECKED_HEAD=
+fm_merge_authority_github_head_valid() {  # <head>
+  local head=$1
+  [[ "$head" =~ ^[0-9a-f]{40}$ || "$head" =~ ^[0-9a-f]{64}$ ]]
+}
+
+fm_merge_authority_github_head() {  # <owner/repo> <number>
+  local repo=$1 number=$2 output head
+  if command -v gh >/dev/null 2>&1; then
+    output=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || return 1
+  else
+    output=$(gh-axi pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || return 1
+  fi
+  if fm_merge_authority_github_head_valid "$output"; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+  head=$(printf '%s\n' "$output" | awk '
+    $1 == "headRefOid:" { count++; value=$2 }
+    END { if (count == 1 && value != "") print value; else exit 1 }
+  ') || return 1
+  fm_merge_authority_github_head_valid "$head" || return 1
+  printf '%s\n' "$head"
+}
+
+fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
+  local home=$1 id=$2 meta=$3 authority mate parent_record parent_status key spawn_gen
+  authority=$(fm_merge_authority_resolve "$meta") || {
+    echo "error: task $id has an invalid merge_authority record" >&2
+    return 1
+  }
+  export FM_MERGE_AUTHORITY=$authority
+  [ "$authority" = firstmate ] || return 0
+  spawn_gen=$(fm_merge_authority_meta_get "$meta" spawn_gen)
+  case "$spawn_gen" in
+    ''|*[!A-Za-z0-9._-]*)
+      echo "error: task $id requires parent-firstmate approval, but its spawn generation is unavailable or invalid" >&2
+      return 1
+      ;;
+  esac
+
+  if ! mate=$(fm_merge_outcome_home_id "$home"); then
+    echo "error: task $id requires parent-firstmate approval, but this home has no valid secondmate identity" >&2
+    return 1
+  fi
+  parent_record="$home/.fm-secondmate-parent"
+  # shellcheck source=bin/fm-secondmate-parent-lib.sh
+  . "${FM_MERGE_AUTHORITY_SCRIPT_DIR:?}/fm-secondmate-parent-lib.sh"
+  fm_secondmate_parent_record_parse "$parent_record" || {
+    echo "error: task $id requires parent-firstmate approval, but its parent binding is unavailable" >&2
+    return 1
+  }
+  [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || {
+    echo "error: task $id requires a parent-firstmate approval record, but route=remote has no supported approval-record transport" >&2
+    return 1
+  }
+  # shellcheck source=bin/fm-secondmate-registry-lib.sh
+  . "${FM_MERGE_AUTHORITY_SCRIPT_DIR:?}/fm-secondmate-registry-lib.sh"
+  secondmate_registry_validate_bindings \
+    "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
+    secondmate_registry_path_key "$mate" "$home" || {
+    echo "error: task $id requires parent-firstmate approval, but the claimed parent does not register this secondmate home" >&2
+    return 1
+  }
+  [ "$SECONDMATE_REGISTRY_MATCH_REMOTE" -eq 0 ] || {
+    echo "error: task $id requires parent-firstmate approval, but the parent registry route is not local" >&2
+    return 1
+  }
+  parent_status="$FM_SECONDMATE_PARENT_HOME/state/$mate.status"
+  [ -f "$parent_status" ] && [ ! -L "$parent_status" ] || {
+    echo "error: parent-firstmate approval is not resolved for task $id (missing parent status)" >&2
+    return 1
+  }
+  key="before-landing-$id-$spawn_gen"
+  fm_merge_authority_key_is_resolved "$parent_status" "$key" || {
+    echo "error: parent-firstmate approval is not resolved for task $id; ask with needs-decision [key=$key] and have the parent answer through fm-send --resolve-key $key" >&2
+    return 1
+  }
+}
+
+fm_merge_authority_github_check_proof() {  # <owner/repo> <head>
+  local repo=$1 head=$2 owner name proof proof_head proof_state extra
+  command -v gh >/dev/null 2>&1 || {
+    echo "error: GitHub green-check proof requires gh on PATH; refusing before merge" >&2
+    return 1
+  }
+  owner=${repo%%/*}
+  name=${repo#*/}
+  # shellcheck disable=SC2016  # GraphQL variables are literal query syntax.
+  proof=$(gh api graphql \
+    -f query='query($owner:String!,$repo:String!,$oid:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$oid){oid ... on Commit {statusCheckRollup {state}}}}}' \
+    -F "owner=$owner" -F "repo=$name" -F "oid=$head" \
+    --jq '.data.repository.object | [(.oid // ""), (.statusCheckRollup.state // "")] | @tsv' \
+    2>/dev/null) || return 1
+  case "$proof" in
+    *$'\n'*) return 1 ;;
+  esac
+  proof_head=
+  proof_state=
+  extra=
+  if ! IFS=$'\t' read -r proof_head proof_state extra <<EOF
+$proof
+EOF
+  then
+    return 1
+  fi
+  [ -z "$extra" ] || return 1
+  fm_merge_authority_github_head_valid "$proof_head" || return 1
+  [ "$proof_head" = "$head" ] || return 1
+  [ "$proof_state" = SUCCESS ]
+}
+
+fm_merge_authority_github_green() {  # <owner/repo> <number>
+  local repo=$1 number=$2 checks
+  export FM_MERGE_AUTHORITY_CHECKED_HEAD=
+  FM_MERGE_AUTHORITY_CHECKED_HEAD=$(fm_merge_authority_github_head "$repo" "$number") || {
+    echo "error: GitHub PR head is not readable; refusing before merge" >&2
+    return 1
+  }
+  fm_merge_authority_github_check_proof "$repo" "$FM_MERGE_AUTHORITY_CHECKED_HEAD" || {
+    echo "error: GitHub PR checks are not green for the checked head; refusing before merge" >&2
+    return 1
+  }
+  checks=$(gh-axi pr checks "$number" -R "$repo" 2>/dev/null) || {
+    echo "error: GitHub PR checks are not readable; refusing before merge" >&2
+    return 1
+  }
+  printf '%s\n' "$checks" | awk '
+    function is_uint(value) { return value ~ /^[0-9]+$/ }
+    /^summary: "/ {
+      if (seen_summary++) { invalid=1; next }
+      if ($0 !~ /^summary: "[^"]*"$/) { invalid=1; next }
+      line=$0
+      sub(/^summary: "/, "", line)
+      sub(/"$/, "", line)
+      n=split(line, a, " ")
+      if (n == 6 && a[2] == "passed," && a[4] == "failed," && a[6] == "total" &&
+          is_uint(a[1]) && is_uint(a[3]) && is_uint(a[5])) {
+        passed=a[1]+0
+        failed=a[3]+0
+        pending=0
+        total=a[5]+0
+      } else if (n == 8 && a[2] == "passed," && a[4] == "failed," &&
+                 a[6] == "pending," && a[8] == "total" &&
+                 is_uint(a[1]) && is_uint(a[3]) && is_uint(a[5]) && is_uint(a[7])) {
+        passed=a[1]+0
+        failed=a[3]+0
+        pending=a[5]+0
+        total=a[7]+0
+      } else {
+        invalid=1
+      }
+      next
+    }
+    /^checks\[[0-9][0-9]*\]\{name,conclusion\}:$/ {
+      if (seen_checks++) { invalid=1; next }
+      header=$0
+      sub(/^checks\[/, "", header)
+      sub(/\].*$/, "", header)
+      if (is_uint(header)) expected=header+0; else invalid=1
+      in_checks=1
+      in_help=0
+      next
+    }
+    /^help\[[0-9][0-9]*\]:$/ {
+      in_checks=0
+      in_help=1
+      next
+    }
+    in_help { next }
+    in_checks {
+      if ($0 !~ /^  .+$/) { invalid=1; next }
+      line=$0
+      sub(/^  /, "", line)
+      comma=0
+      for (i=1; i<=length(line); i++) {
+        if (substr(line, i, 1) == ",") comma=i
+      }
+      if (comma <= 1 || comma >= length(line)) { invalid=1; next }
+      name=substr(line, 1, comma - 1)
+      conclusion=substr(line, comma + 1)
+      if (name == "" || conclusion != "pass") invalid=1
+      rows++
+    }
+    END {
+      if (!seen_summary || !seen_checks || invalid || expected != rows || total != expected) exit 1
+      if (passed + failed + pending != total || failed != 0 || pending != 0 || passed != total) exit 1
+      exit 0
+    }
+  ' || {
+    echo "error: GitHub PR checks are not green; refusing before merge" >&2
+    return 1
+  }
+}

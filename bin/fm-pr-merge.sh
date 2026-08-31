@@ -501,13 +501,41 @@ METHODS
 }
 
 record_pr_metadata() {
-  if ! "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"; then
-    return 1
+  if [ "$PROVIDER" = github ]; then
+    FM_PR_CHECKED_HEAD="$FM_MERGE_AUTHORITY_CHECKED_HEAD" \
+      "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL" || return 1
+  else
+    "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL" || return 1
   fi
   grep -qxF "pr=$URL" "$META" || {
     echo "error: PR metadata recording failed" >&2
     return 1
   }
+}
+
+github_verify_merge_head() {
+  local live_head recorded_checked_head
+  live_head=$(fm_merge_authority_github_head "$PR_OWNER/$PR_REPO" "$PR_NUMBER") || {
+    echo "error: GitHub PR head is not readable at the merge boundary; refusing to merge" >&2
+    return 1
+  }
+  recorded_checked_head=$(grep '^pr_checks_head=' "$META" | tail -1 | cut -d= -f2- || true)
+  if [ "$recorded_checked_head" != "$FM_MERGE_AUTHORITY_CHECKED_HEAD" ]; then
+    printf 'error: GitHub check proof for head %s was recorded as %s; refusing to merge\n' \
+      "$FM_MERGE_AUTHORITY_CHECKED_HEAD" "${recorded_checked_head:-<missing>}" >&2
+    return 1
+  fi
+  if [ "$live_head" != "$FM_MERGE_AUTHORITY_CHECKED_HEAD" ]; then
+    printf 'error: GitHub PR head changed after checks: checked %s, current %s; refusing to merge\n' \
+      "$FM_MERGE_AUTHORITY_CHECKED_HEAD" "$live_head" >&2
+    return 1
+  fi
+  RECORDED_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
+  if [ -n "$RECORDED_HEAD" ] && [ "$live_head" != "$RECORDED_HEAD" ]; then
+    printf 'error: GitHub PR head differs from recorded pr_head: recorded %s, current %s; refusing to merge\n' \
+      "$RECORDED_HEAD" "$live_head" >&2
+    return 1
+  fi
 }
 
 FM_PR_GITHUB_AUTO_REQUESTED=false
@@ -635,6 +663,9 @@ gitlab_confirm_merged() {
 # landed outcome, so even a provider read failure after a real merge cannot
 # leave teardown without the PR identity it needs to verify the result.
 record_pr_metadata || exit 1
+if [ "$PROVIDER" = github ]; then
+  github_verify_merge_head || exit 1
+fi
 
 case "$PROVIDER" in
   github)

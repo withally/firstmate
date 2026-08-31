@@ -19,6 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -86,9 +87,11 @@ CONTROL_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
+BRIEF_TMP=
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
+  [ -z "$BRIEF_TMP" ] || rm -f -- "$BRIEF_TMP" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -138,6 +141,57 @@ case "$MERGE_AUTHORITY:$YOLO" in
     exit 1
     ;;
 esac
+
+BRIEF="$DATA/$ID/brief.md"
+BRIEF_TMP="$DATA/$ID/.brief.promote.${BASHPID:-$$}"
+mkdir -p "$DATA/$ID"
+FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_STATE_OVERRIDE="$STATE" \
+  FM_BRIEF_OUTPUT_OVERRIDE="$BRIEF_TMP" \
+  "$FM_ROOT/bin/fm-brief.sh" "$ID" "$PROJECT_PATH" --mode "$MODE" \
+  --merge-authority "$MERGE_AUTHORITY" >/dev/null || {
+    echo "error: could not render the ship brief for task $ID; refusing promotion" >&2
+    exit 1
+  }
+PROMOTE_BRIEF_AUTHORITY=$(awk '
+  $0 == "<!-- fm-merge-authority-contract:start -->" {
+    starts++
+    if (in_section) invalid=1
+    in_section=1
+    next
+  }
+  $0 == "<!-- fm-merge-authority-contract:end -->" {
+    if (!in_section) invalid=1
+    ends++
+    in_section=0
+    next
+  }
+  in_section && $0 ~ /^Merge authority: / {
+    authorities++
+    if ($0 !~ /^Merge authority: (captain|firstmate|self)$/) {
+      invalid=1
+    } else {
+      value=$0
+      sub(/^Merge authority: /, "", value)
+    }
+  }
+  END {
+    if (starts != 1 || ends != 1 || in_section || authorities != 1 || invalid) exit 1
+    print value
+  }
+' "$BRIEF_TMP") || {
+  echo "error: rendered ship brief for task $ID has no valid merge-authority contract; refusing promotion" >&2
+  exit 1
+}
+[ "$PROMOTE_BRIEF_AUTHORITY" = "$MERGE_AUTHORITY" ] || {
+  echo "error: rendered ship brief for task $ID disagrees with merge authority $MERGE_AUTHORITY; refusing promotion" >&2
+  exit 1
+}
+grep -qx "Delivery contract: mode=$MODE" "$BRIEF_TMP" || {
+  echo "error: rendered ship brief for task $ID has no delivery contract; refusing promotion" >&2
+  exit 1
+}
+mv -f -- "$BRIEF_TMP" "$BRIEF"
+BRIEF_TMP=
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^merge_authority=' "$META" > "$TMP"

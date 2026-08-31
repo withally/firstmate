@@ -25,17 +25,49 @@ fm_merge_authority_meta_get() {  # <meta> <key>
 fm_merge_authority_resolve() {  # <meta>
   local meta=$1 authority yolo
   authority=$(fm_merge_authority_meta_get "$meta" merge_authority)
+  yolo=$(fm_merge_authority_meta_get "$meta" yolo)
+  [ -n "$yolo" ] || yolo=off
   if [ -z "$authority" ]; then
-    yolo=$(fm_merge_authority_meta_get "$meta" yolo)
     if [ "$yolo" = on ]; then authority=self; else authority=captain; fi
   fi
-  case "$authority" in captain|firstmate|self) printf '%s\n' "$authority" ;; *) return 1 ;; esac
+  case "$authority" in captain|firstmate|self) ;; *) return 1 ;; esac
+  case "$yolo" in on|off) ;; *) return 1 ;; esac
+  case "$authority:$yolo" in
+    captain:off|firstmate:off|self:on) ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$authority"
 }
 
 fm_merge_authority_key_is_resolved() {  # <status-file> <key>
   local status=$1 key=$2 resolve
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   [ "$(status_key_closing_verb "$status" "$key")" = "$resolve" ]
+}
+
+FM_MERGE_AUTHORITY_CHECKED_HEAD=
+fm_merge_authority_github_head_valid() {  # <head>
+  local head=$1
+  [[ "$head" =~ ^[0-9a-f]{40}$ || "$head" =~ ^[0-9a-f]{64}$ ]]
+}
+
+fm_merge_authority_github_head() {  # <owner/repo> <number>
+  local repo=$1 number=$2 output head
+  if command -v gh >/dev/null 2>&1; then
+    output=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || return 1
+  else
+    output=$(gh-axi pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || return 1
+  fi
+  if fm_merge_authority_github_head_valid "$output"; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+  head=$(printf '%s\n' "$output" | awk '
+    $1 == "headRefOid:" { count++; value=$2 }
+    END { if (count == 1 && value != "") print value; else exit 1 }
+  ') || return 1
+  fm_merge_authority_github_head_valid "$head" || return 1
+  printf '%s\n' "$head"
 }
 
 fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
@@ -88,6 +120,11 @@ fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
 
 fm_merge_authority_github_green() {  # <owner/repo> <number>
   local repo=$1 number=$2 checks
+  FM_MERGE_AUTHORITY_CHECKED_HEAD=
+  FM_MERGE_AUTHORITY_CHECKED_HEAD=$(fm_merge_authority_github_head "$repo" "$number") || {
+    echo "error: GitHub PR head is not readable; refusing before merge" >&2
+    return 1
+  }
   checks=$(gh-axi pr checks "$number" -R "$repo" 2>/dev/null) || {
     echo "error: GitHub PR checks are not readable; refusing before merge" >&2
     return 1
@@ -96,6 +133,7 @@ fm_merge_authority_github_green() {  # <owner/repo> <number>
     function is_uint(value) { return value ~ /^[0-9]+$/ }
     /^summary: "/ {
       if (seen_summary++) { invalid=1; next }
+      if ($0 !~ /^summary: "[^"]*"$/) { invalid=1; next }
       line=$0
       sub(/^summary: "/, "", line)
       sub(/"$/, "", line)

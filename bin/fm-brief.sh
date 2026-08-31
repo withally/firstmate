@@ -186,7 +186,7 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   exit 1
 fi
 
-BRIEF="$DATA/$ID/brief.md"
+BRIEF="${FM_BRIEF_OUTPUT_OVERRIDE:-$DATA/$ID/brief.md}"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 mkdir -p "$DATA/$ID"
 
@@ -341,12 +341,17 @@ REPO=${POS[1]}
 
 MERGE_AUTHORITY_SECTION=
 if [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
-  MERGE_AUTHORITY_SECTION="Merge authority: $MERGE_AUTHORITY"
+  MERGE_AUTHORITY_SECTION="<!-- fm-merge-authority-contract:start -->
+Merge authority: $MERGE_AUTHORITY"
 fi
 if [ "$MERGE_AUTHORITY" = firstmate ] && [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
   MERGE_AUTHORITY_SECTION="$MERGE_AUTHORITY_SECTION
 
 $(firstmate_authority_checkins "$ID")"
+fi
+if [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
+  MERGE_AUTHORITY_SECTION="$MERGE_AUTHORITY_SECTION
+<!-- fm-merge-authority-contract:end -->"
 fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then

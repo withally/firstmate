@@ -1722,7 +1722,42 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 if [ "$KIND" = ship ]; then
   PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
-  BRIEF_MERGE_AUTHORITY=$(sed -n 's/^Merge authority: \([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+  BRIEF_MERGE_AUTHORITY_RC=0
+  BRIEF_MERGE_AUTHORITY=$(awk '
+    $0 == "<!-- fm-merge-authority-contract:start -->" {
+      starts++
+      if (in_section) invalid=1
+      in_section=1
+      next
+    }
+    $0 == "<!-- fm-merge-authority-contract:end -->" {
+      if (!in_section) invalid=1
+      ends++
+      in_section=0
+      next
+    }
+    in_section && $0 ~ /^Merge authority: / {
+      authorities++
+      if ($0 !~ /^Merge authority: (captain|firstmate|self)$/) {
+        invalid=1
+      } else {
+        value=$0
+        sub(/^Merge authority: /, "", value)
+      }
+    }
+    END {
+      if (starts == 0 && ends == 0) exit 0
+      if (starts != 1 || ends != 1 || in_section || authorities != 1 || invalid) exit 2
+      print value
+    }
+  ' "$BRIEF") || BRIEF_MERGE_AUTHORITY_RC=$?
+  if [ "$BRIEF_MERGE_AUTHORITY_RC" -eq 2 ]; then
+    echo "error: merge-authority contract in $BRIEF is malformed; expected one exact owned authority line" >&2
+    exit 1
+  elif [ "$BRIEF_MERGE_AUTHORITY_RC" -ne 0 ]; then
+    echo "error: could not read merge-authority contract from $BRIEF" >&2
+    exit 1
+  fi
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
   elif [ "$BRIEF_MODE" != "$MODE" ]; then

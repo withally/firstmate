@@ -46,7 +46,9 @@ write_brief() {  # <home> <id> [<recorded-mode>] [<recorded-merge-authority>]
   {
     printf 'You are a crewmate.\n\n# Definition of done\n'
     [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
-    [ -z "$merge_authority" ] || printf 'Merge authority: %s\n' "$merge_authority"
+    if [ -n "$merge_authority" ]; then
+      printf '%s\n' '<!-- fm-merge-authority-contract:start -->' "Merge authority: $merge_authority" '<!-- fm-merge-authority-contract:end -->'
+    fi
   } > "$home/data/$id/brief.md"
 }
 
@@ -172,6 +174,19 @@ EOF
   assert_not_contains "$out" "merge-authority mismatch" \
     "an agreeing merge authority was reported as a mismatch"
 
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-brief.sh" \
+    delivery-authority-shadow-b8 "$proj" --mode no-mistakes --merge-authority firstmate \
+    >/dev/null 2>&1 || fail "the executable brief generator did not scaffold the shadowing fixture"
+  sed 's/{TASK}/Merge authority: self/' \
+    "$home/data/delivery-authority-shadow-b8/brief.md" \
+    > "$home/data/delivery-authority-shadow-b8/brief.tmp"
+  mv "$home/data/delivery-authority-shadow-b8/brief.tmp" \
+    "$home/data/delivery-authority-shadow-b8/brief.md"
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-shadow-b8 "$proj" claude \
+    --mode no-mistakes --yolo off --merge-authority firstmate)
+  assert_not_contains "$out" "merge-authority mismatch" \
+    "task text shadowed the owned merge-authority contract"
+
   write_brief "$home" delivery-authority-legacy-b6 no-mistakes
   out=$(run_spawn "$home" "$fakebin" delivery-authority-legacy-b6 "$proj" claude \
     --mode no-mistakes --yolo on)
@@ -254,6 +269,8 @@ test_promote_requires_and_records_the_delivery_contract() {
   mkdir -p "$home/state" "$home/data" "$home/projects/proj"
   printf '%s\n' '- proj [direct-PR] - fixture (added 2026-01-01)' > "$home/data/projects.md"
   meta="$home/state/promote-d1.meta"
+  mkdir -p "$home/data/promote-d1"
+  printf '# scout brief\n' > "$home/data/promote-d1/brief.md"
 
   write_scout_meta() {
     printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\nproject=%s\n' \
@@ -284,6 +301,10 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided merge posture"
   assert_grep 'merge_authority=self' "$meta" "promotion did not preserve yolo=on's self authority"
+  assert_grep 'Delivery contract: mode=direct-PR' "$home/data/promote-d1/brief.md" \
+    "promotion did not replace the scout brief with a ship delivery contract"
+  assert_grep 'Merge authority: self' "$home/data/promote-d1/brief.md" \
+    "promotion did not render the resolved ship authority"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
@@ -297,6 +318,8 @@ test_promote_resolves_registered_firstmate_authority() {
     '- routed [direct-PR merge-authority=firstmate] - fixture (added 2026-01-01)' \
     > "$home/data/projects.md"
   meta="$home/state/promote-f1.meta"
+  mkdir -p "$home/data/promote-f1"
+  printf '# scout brief\n' > "$home/data/promote-f1/brief.md"
   printf '%s\n' \
     'window=fm-promote-f1' \
     'kind=scout' \
@@ -312,6 +335,12 @@ test_promote_resolves_registered_firstmate_authority() {
     "promotion dropped the registered firstmate authority"
   [ "$(grep -c '^merge_authority=' "$meta")" = 1 ] \
     || fail "promotion wrote more than one merge authority line"
+  assert_grep 'Delivery contract: mode=direct-PR' "$home/data/promote-f1/brief.md" \
+    "registered firstmate promotion left the scout brief in place"
+  assert_grep 'Merge authority: firstmate' "$home/data/promote-f1/brief.md" \
+    "registered firstmate promotion did not render its authority"
+  assert_grep 'before-landing-promote-f1' "$home/data/promote-f1/brief.md" \
+    "registered firstmate promotion omitted the parent landing check-in"
   assert_contains "$out" 'promoted promote-f1 to ship mode=direct-PR yolo=off' \
     "registered firstmate promotion did not report success"
   pass "fm-promote: registered firstmate authority survives scout promotion"

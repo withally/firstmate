@@ -120,6 +120,7 @@ make_case() {
 # headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
 add_gh_mocks() {
   local case_dir=$1 head=$2
+  printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -133,8 +134,11 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "pr view")
-    [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
+    [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
+    case " $* " in
+      *headRefOid*) printf '  headRefOid: %s\n' "$(cat "$FM_TEST_CASE_DIR/github-head")" ;;
+    esac
     ;;
 esac
 exit 0
@@ -172,6 +176,11 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
   "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
+  "pr view")
+    case " $* " in
+      *headRefOid*) printf '%s\n' 1111111111111111111111111111111111111111 ;;
+    esac
+    ;;
   esac
   exit 0
 SH
@@ -179,6 +188,11 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *headRefOid*) printf '%s\n' 1111111111111111111111111111111111111111 ;;
+    esac
+    ;;
   "api graphql")
     cat "$FM_TEST_GH_OUTCOME"
     exit 0
@@ -885,7 +899,12 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
-  "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
+  "pr view")
+    case " $* " in
+      *headRefOid*) printf '%s\n' 8686868686868686868686868686868686868686 ;;
+      *) printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
+    esac
+    ;;
 esac
 exit 0
 SH
@@ -1052,7 +1071,12 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr checks") printf 'summary: "0 passed, 0 failed, 0 total"\nchecks[0]{name,conclusion}:\n' ;;
   "pr merge") exit 0 ;;
-  "pr view") exit 1 ;;
+  "pr view")
+    case " $* " in
+      *headRefOid*) printf '%s\n' 4141414141414141414141414141414141414141 ;;
+      *) exit 1 ;;
+    esac
+    ;;
 esac
 exit 0
 SH
@@ -2058,19 +2082,25 @@ test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed() {
 
 test_github_green_gate_rejects_malformed_summaries_and_rows() {
   local name case_dir rc
-  for name in malformed-summary pending-row; do
+  for name in malformed-summary pending-row unclosed-summary; do
     case_dir=$(make_case "green-gate-$name")
     add_gh_mocks "$case_dir" 8484848484848484848484848484848484848484
-    if [ "$name" = malformed-summary ]; then
-      printf '%s\n' \
-        'summary: "not-a-number passed, nope failed, nonsense total"' \
-        'checks[0]{name,conclusion}:' > "$case_dir/github-checks"
-    else
-      printf '%s\n' \
-        'summary: "1 passed, 0 failed, 1 total"' \
-        'checks[1]{name,conclusion}:' \
-        '  tests,pending' > "$case_dir/github-checks"
-    fi
+    case "$name" in
+      malformed-summary)
+        printf '%s\n' \
+          'summary: "not-a-number passed, nope failed, nonsense total"' \
+          'checks[0]{name,conclusion}:' > "$case_dir/github-checks" ;;
+      pending-row)
+        printf '%s\n' \
+          'summary: "1 passed, 0 failed, 1 total"' \
+          'checks[1]{name,conclusion}:' \
+          '  tests,pending' > "$case_dir/github-checks" ;;
+      unclosed-summary)
+        printf '%s\n' \
+          'summary: "1 passed, 0 failed, 1 total' \
+          'checks[1]{name,conclusion}:' \
+          '  tests,pass' > "$case_dir/github-checks" ;;
+    esac
     : > "$case_dir/gh-axi.log"
 
     set +e
@@ -2086,6 +2116,68 @@ test_github_green_gate_rejects_malformed_summaries_and_rows() {
       "$name still reached the forge merge"
   done
   pass "GitHub green checks require strict counts and green individual rows"
+}
+
+test_github_head_change_after_green_checks_refuses_merge() {
+  local case_dir rc head_checked head_current
+  case_dir=$(make_case github-head-race)
+  mkdir -p "$case_dir/wt"
+  head_checked=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  head_current=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  add_gh_mocks "$case_dir" "$head_checked"
+  printf '%s\n' "$head_checked" > "$case_dir/head-before"
+  printf '%s\n' "$head_current" > "$case_dir/head-after"
+  printf '0\n' > "$case_dir/head-reads"
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *headRefOid*)
+        count=$(cat "$FM_TEST_CASE_DIR/head-reads")
+        count=$((count + 1))
+        printf '%s\n' "$count" > "$FM_TEST_CASE_DIR/head-reads"
+        if [ "$count" -le 2 ]; then
+          cat "$FM_TEST_CASE_DIR/head-before"
+        else
+          cat "$FM_TEST_CASE_DIR/head-after"
+        fi
+        exit 0
+        ;;
+    esac
+    ;;
+  "api graphql")
+    cat "$FM_TEST_GH_OUTCOME"
+    exit 0
+    ;;
+  api\ *)
+    cat "$FM_TEST_GH_RULES"
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/87 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "github-head-race: a changed PR head must refuse the merge"
+  assert_grep "GitHub PR head changed after checks: checked $head_checked, current $head_current" \
+    "$case_dir/stderr" "github-head-race: refusal did not name both head SHAs"
+  assert_grep "pr_checks_head=$head_checked" "$case_dir/state/task-x1.meta" \
+    "github-head-race: the checked head was not recorded with the verdict"
+  assert_grep "pr_head=$head_checked" "$case_dir/state/task-x1.meta" \
+    "github-head-race: the recorded PR head was not retained"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "github-head-race: the changed head still reached the forge merge"
+  pass "fm-pr-merge refuses a GitHub head change after green checks"
 }
 
 test_gitlab_refusal_reports_nothing() {
@@ -2371,6 +2463,7 @@ test_firstmate_authority_requires_parent_resolution_and_green_checks
 test_github_authority_tiers_refuse_red_work
 test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed
 test_github_green_gate_rejects_malformed_summaries_and_rows
+test_github_head_change_after_green_checks_refuses_merge
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake
 test_queued_github_merge_leaves_the_poll_armed

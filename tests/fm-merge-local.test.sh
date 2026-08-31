@@ -48,6 +48,18 @@ fi
 assert_grep 'parent-firstmate approval is not resolved' "$TMP_ROOT/err" \
   "local refusal did not name the missing parent resolution"
 
+awk '$0 !~ /^merge_authority=/' "$home/state/$id.meta" > "$TMP_ROOT/invalid-meta"
+printf 'merge_authority=self\n' >> "$TMP_ROOT/invalid-meta"
+mv "$TMP_ROOT/invalid-meta" "$home/state/$id.meta"
+if FM_HOME="$home" "$ROOT/bin/fm-merge-local.sh" "$id" >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then
+  fail "self authority with yolo=off bypassed the local merge tuple gate"
+fi
+assert_grep 'invalid merge_authority record' "$TMP_ROOT/err" \
+  "local merge tuple refusal did not identify the invalid durable record"
+awk '$0 !~ /^merge_authority=/' "$home/state/$id.meta" > "$TMP_ROOT/valid-meta"
+printf 'merge_authority=firstmate\n' >> "$TMP_ROOT/valid-meta"
+mv "$TMP_ROOT/valid-meta" "$home/state/$id.meta"
+
 printf 'resolved [key=before-landing-%s]: approved by parent firstmate\n' "$id" \
   >> "$parent/state/mate-x.status"
 FM_HOME="$home" "$ROOT/bin/fm-merge-local.sh" "$id" >"$TMP_ROOT/out" 2>"$TMP_ROOT/err" \

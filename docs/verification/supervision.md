@@ -213,7 +213,10 @@ The idle status footer visibly carried `1 shell · esc to interrupt`, so the his
 A real 150-second foreground Bash turn then produced repeated `rendered-busy` daemon deferrals carrying `native-state=working` and exact changing spinner rows such as `✽ Enchanting… (11s · ↓ 128 tokens)`.
 After the turn was interrupted, bright human composer text remained pending and unchanged with a `composer=pending` deferral.
 The colocated unit suites in `tests/fm-daemon.test.sh`, `tests/fm-backend-herdr.test.sh`, and `tests/fm-composer-lib.test.sh` pin the idle shell footer, agent-count and update footers, dim and dark-truecolor ghosts, real active-tool plus spinner context, exact matched-row logging, and the alarmed byte-stable false-busy recovery.
+The reconstructed failure separates trigger, masking condition, and symptom: `/afk` left Claude's tracked background Bash visible to Herdr as native `working`; the pre-PR-94 unanchored last-12-row matcher treated the exact status-footer token as rendered busy before the composer guard; and the daemon retained the digest until the max-defer alarm.
 The exact Incident-B ANSI row captured by the pre-PR-94 broad matcher was `  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage`.
+Replacing only `esc to interrupt` in that row with `turn finished` flipped the broad matcher to idle while the scoped matcher stayed idle, proving the smallest footer-token counterfactual.
+The recovery matrix admits three identical `• Working (4s • esc to interrupt)` rows only with the tracked daemon-terminal condition and an `empty` composer; a durationless row, a pending composer, and unknown native state remain deferred.
 Incident C, observed on 2026-08-25, is treated as the same family by inference because it predates sub-cause logging and no contrary evidence is recorded here.
 The separately observed prompt-submit-to-spinner delivery race is excluded from this PR and filed as follow-up `fm-afk-prespinner-race-f1`.
 

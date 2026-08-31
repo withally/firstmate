@@ -16,8 +16,9 @@
 # a clone of that project in this home; a bare <project> is accepted only when
 # this home already has projects/<project>, whose origin is then read instead.
 # bin/fm-project-origin-lib.sh owns which URLs are accepted, and this home's
-# data/projects.md still owns the project's registered delivery mode, so an
-# unregistered or local-only project is refused rather than provisioned.
+# data/projects.md still owns the project's registered delivery mode and
+# merge-authority posture, so an unregistered or local-only project is refused
+# rather than provisioned.
 # Seeding writes nothing under projects/ and needs no fleet sync first.
 #
 # Known provisioning failure rolls the registry back. SSH status 255 preserves

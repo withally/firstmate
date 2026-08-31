@@ -4,7 +4,7 @@ description: >-
   Agent-only procedure for Firstmate project management.
   Use before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.
-  Owns project add, create, clone, remove, initialization, registry, delivery-mode, autonomy, and outward-consent decisions.
+  Owns project add, create, clone, remove, initialization, registry intake, delivery-mode, merge-authority, and outward-consent decisions.
 user-invocable: false
 metadata:
   internal: true
@@ -20,8 +20,8 @@ It does not replace `secondmate-provisioning`, which owns project clones inside 
 ## Preconditions and registry
 
 Projects live flat under `projects/`, and `data/projects.md` is the private fleet registry.
-Use the registry format and parser contract owned by the header of `bin/fm-project-mode.sh`.
-Keep each registry description useful for identifying the project, but keep delivery posture, captain-private state, and detailed project knowledge in their existing designated homes.
+Use the registry schema documented in [`docs/configuration.md`](../../../docs/configuration.md#project-registry-dataprojectsmd) and the parser contract owned by the header of `bin/fm-project-mode.sh`.
+Keep each registry description useful for identifying the project, but keep delivery and merge-authority posture, captain-private state, and detailed project knowledge in their existing designated homes.
 Do not turn the registry into project documentation.
 
 Before adding, cloning, creating, or registering any project in the main home, inspect the authoritative `data/secondmates.md` routing table and judge every existing natural-language `scope:` against the proposed project or domain.
@@ -29,13 +29,15 @@ Apply `AGENTS.md` section 7's authoritative secondmate routing rules; if an exis
 Absence from the main `data/projects.md` registry is never evidence that no second mate owns the domain.
 If the owning second mate cannot accept the route, report that concrete blocker or obtain an explicit captain redirection rather than silently duplicating the project in the main home.
 
-Resolve the project name, destination, delivery posture, and autonomy posture before changing local or remote state.
+Resolve the project name, destination, delivery posture, and merge-authority tier before changing local or remote state.
 Keep a newly added clone and its registry entry consistent, and roll back only artifacts created by the incomplete operation when a later initialization step fails and that rollback is safe.
 Do not overwrite or repurpose an existing path.
 
 ## Delivery posture
 
-The registry records the project's standing posture, which is the captain's default for the work rather than any task's answer; `AGENTS.md` section 7 owns how each task's concrete mode and yolo are resolved at intake and passed explicitly to the brief, the spawn, and any promotion.
+The registry records the project's standing delivery and merge-authority posture, which is the captain's default for the work rather than any task's answer.
+`AGENTS.md` section 7 owns how each task's concrete mode, compatibility `yolo`, and merge-authority tier are resolved at intake and passed explicitly to the brief and spawn.
+`fm-promote.sh` re-resolves the tier from the current registry when a scout becomes a ship task.
 Choose that posture when adding or creating the project:
 
 - `no-mistakes` runs the full validation pipeline before a PR.
@@ -48,13 +50,13 @@ State that resolved default while confirming the source, local name, and posture
 Existing registry entries keep the meaning they already have and are never migrated or reinterpreted, so a legacy entry with no bracket stays `no-mistakes`.
 Registering a conditional policy is a one-time choice and never requires classifying any change; the per-task surface classification happens at each task's intake, and internal-only is never inferred from file location or project name.
 
-The optional `+yolo` posture changes merge authority only and does not change the delivery mode.
-Default it off for every project and every posture, and enable it only on the captain's explicit instruction.
-`AGENTS.md` section 7 owns the merge-authority contract.
+The optional `+yolo` token remains a legacy compatibility form; use [`docs/configuration.md`](../../../docs/configuration.md#project-registry-dataprojectsmd) for its merge-authority mapping and yolo projection.
+Prefer an explicit `merge-authority=` tier for new registry entries, and retain `+yolo` only when preserving a legacy entry.
+[`docs/configuration.md`](../../../docs/configuration.md#project-registry-dataprojectsmd) owns the registry schema, and `AGENTS.md` section 7 owns per-task authority resolution.
 
 ## Add or clone an existing project
 
-Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
+Confirm the source URL, local project name, delivery posture, and merge-authority tier, stating the resolved default for each rather than asking the captain to invent one.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
@@ -63,7 +65,7 @@ A `local-only` project may have no remote and skips no-mistakes initialization.
 ## Create a project
 
 Creating a GitHub repository is outward-facing.
-Before making that remote change, propose the repository name, owner or organization, visibility, and delivery posture, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
+Before making that remote change, propose the repository name, owner or organization, visibility, delivery posture, and merge-authority tier, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
 Use `gh-axi` for the approved GitHub operation and consult its current help rather than relying on remembered flags.
 After remote creation succeeds, clone it locally, add the registry entry, and initialize it according to its delivery posture.
 

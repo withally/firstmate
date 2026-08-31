@@ -137,11 +137,18 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "api graphql")
-    printf '%s\n' \
-      'state=MERGED' \
-      'merged=true' \
-      'queued=false' \
-      'base=main'
+    case " $* " in
+      *statusCheckRollup*)
+        printf '%s\tSUCCESS\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+        ;;
+      *)
+        printf '%s\n' \
+          'state=MERGED' \
+          'merged=true' \
+          'queued=false' \
+          'base=main'
+        ;;
+    esac
     exit 0
     ;;
 esac
@@ -158,6 +165,11 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks")
+    printf '%s\n' \
+      'summary: "0 passed, 0 failed, 0 total"' \
+      'checks[0]{name,conclusion}:'
+    ;;
   "pr view")
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Resolve a project's REGISTERED delivery and merge-authority posture from the data/projects.md registry.
-# Prints two words to stdout: "<mode> <yolo>" where mode is one of
+# In normal mode, prints two words to stdout: "<mode> <yolo>" where mode is one of
 # no-mistakes|direct-PR|local-only and yolo is on|off.
 # --authority prints the resolved merge-authority tier instead: captain,
 # firstmate, or self. An explicit non-conflicting registry field wins; when
@@ -35,11 +35,13 @@
 # yolo is the compatibility projection of merge authority: self maps to on,
 #   while captain and firstmate map to off (AGENTS.md section 7).
 #
-# --raw prints the registered annotation unmapped, so a caller that must tell a
-# conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
+# Without --authority, --raw prints the registered annotation unmapped, so a
+# caller that must tell a conditional policy apart from a flat mode sees
+# "no-mistakes-prod-only" itself.
 #
-# An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
-# to stderr, so a typo never silently drops the gate.
+# An unknown/missing project or invalid registry entry falls back to
+# "no-mistakes off" with captain authority and warns to stderr, so a typo never
+# silently drops the gate; --authority prints that fallback as captain.
 # Usage: fm-project-mode.sh [--raw] [--authority] <project-name>
 set -eu
 

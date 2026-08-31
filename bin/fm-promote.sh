@@ -11,7 +11,8 @@
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
 # read the scout's report (AGENTS.md section 7), and re-resolves merge authority
 # through the current data/projects.md registry: yolo=on selects self, while yolo=off
-# uses the registered tier and the parser's captain fallback for an unregistered project.
+# uses the registered tier or the parser's captain fallback when the project is absent
+# or its registry entry is invalid.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
 set -eu

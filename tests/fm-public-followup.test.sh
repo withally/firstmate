@@ -1441,7 +1441,7 @@ test_control_registered_followon_is_guarded() {
 }
 
 test_rechain_delivers_second_post_on_same_thread() {
-  local parent log out posts command command_log
+  local parent log out posts command command_log command_prefix command_suffix
   parent=$(make_home rechain-parent)
   log="$parent/curl.log"; : > "$log"
   seed_repro_commitment "$parent" public-final-a req-rechain main scout-a
@@ -1473,7 +1473,9 @@ SH
   ')
   assert_contains "$command" "--outcome-text" \
     "the exact rechain command must remain continuous through outcome text"
-  command=${command/"$ROOT/bin/fm-public-followup-emit.sh"/"$parent/fakebin/record-emit"}
+  command_prefix=${command%%"$ROOT/bin/fm-public-followup-emit.sh"*}
+  command_suffix=${command#*"$ROOT/bin/fm-public-followup-emit.sh"}
+  command="${command_prefix}${parent}/fakebin/record-emit${command_suffix}"
   command=${command//<value>/https://github.com/example/repo/pull/99}
   RECORD_ARGS="$command_log" bash -c "$command" \
     || fail "the exact rechain command must execute after filling its deliverable value"
@@ -2153,6 +2155,8 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
   parent=$(make_home promote-parent)
   stale=$(make_home promote-stale-parent)
   child=$(make_home promote-child relay-off)
+  printf '%s\n' '- projects [local-only] - synthetic promotion project (added 2026-08-21)' \
+    > "$child/data/projects.md"
   printf '%s\n' mate > "$child/.fm-secondmate-home"
   printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' \
     "$stale" > "$child/.fm-secondmate-parent"
@@ -2168,7 +2172,8 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
     "$stale/state/public-followup/registry/pf-stale"
 
   fm_write_meta "$child/state/promote-conflict.meta" \
-    "window=firstmate:fm-promote-conflict" "kind=scout"
+    "window=firstmate:fm-promote-conflict" "kind=scout" \
+    "project=$child/projects"
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
     "$PROMOTE" promote-conflict --mode local-only --yolo off 2>&1) \
@@ -2182,7 +2187,8 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
 
   rm -f "$child/.fm-secondmate-parent"
   fm_write_meta "$child/state/promote-legacy.meta" \
-    "window=firstmate:fm-promote-legacy" "kind=scout"
+    "window=firstmate:fm-promote-legacy" "kind=scout" \
+    "project=$child/projects"
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
     "$PROMOTE" promote-legacy --mode local-only --yolo off 2>&1) \
@@ -2193,12 +2199,15 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
     "legacy parent recovery must print the rechain hint"
 
   remote_child=$(make_home promote-remote-child relay-off)
+  printf '%s\n' '- projects [local-only] - synthetic promotion project (added 2026-08-21)' \
+    > "$remote_child/data/projects.md"
   printf '%s\n' remote-mate > "$remote_child/.fm-secondmate-home"
   printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=remote.example\n' \
     > "$remote_child/.fm-secondmate-parent"
   printf 'FMX_PAIRING_TOKEN=child-local-token\n' > "$remote_child/.env"
   fm_write_meta "$remote_child/state/promote-remote.meta" \
-    "window=firstmate:fm-promote-remote" "kind=scout"
+    "window=firstmate:fm-promote-remote" "kind=scout" \
+    "project=$remote_child/projects"
   out=$(PATH="$remote_child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$remote_child" \
     FM_STATE_OVERRIDE="$remote_child/state" \
     "$PROMOTE" promote-remote --mode local-only --yolo off 2>&1) \

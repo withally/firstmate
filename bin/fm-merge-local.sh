@@ -2,11 +2,12 @@
 # Perform the approved local merge for a local-only ship task: fast-forward the
 # project's default branch to the crewmate's fm/<id> branch.
 #
-# This is firstmate's merge gate-action (the captain's merge authority applied
-# locally instead of via a GitHub PR). It is the one sanctioned exception to hard
-# rule #1 "never run state-changing git in projects/", and it is narrow: it only
-# runs for mode=local-only tasks, only after the captain approves (or yolo=on
-# auto-approves), and only as a clean fast-forward - it refuses a diverged branch
+# This is firstmate's local merge gate-action, applying the task's configured
+# merge-authority tier instead of using a GitHub PR. It is the one sanctioned
+# exception to hard rule #1 "never run state-changing git in projects/", and it is
+# narrow: it only runs for mode=local-only tasks, only after the configured tier
+# approves (or self/yolo=on authorizes), and only as a clean fast-forward - it
+# refuses a diverged branch
 # and tells you to have the crewmate rebase. See AGENTS.md prime directives,
 # project management, and task lifecycle.
 # Usage: fm-merge-local.sh <task-id>
@@ -30,6 +31,11 @@ META="$STATE/$ID.meta"
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+
+FM_MERGE_AUTHORITY_SCRIPT_DIR=$SCRIPT_DIR
+# shellcheck source=bin/fm-merge-authority-lib.sh
+. "$SCRIPT_DIR/fm-merge-authority-lib.sh"
+fm_merge_authority_require_landing "$FM_HOME" "$ID" "$META" || exit 1
 
 default_branch() {
   local ref branch

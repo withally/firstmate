@@ -12,6 +12,9 @@
 #     bin/fm-inactive-reconcile.sh's report_to_parent already uses, in the same
 #     "<state> [key=<slug>]: <note>" shape the charter contract defines;
 #   - a main home reports to the captain through the durable wake queue.
+# A local secondmate report is written upward only after the parent registry
+# binding is validated; an unusable binding returns a refusal instead of routing
+# the outcome into a guessed parent home.
 # A poll observed in a secondmate home also receives a local durable wake after
 # the upward write, so the mate can handle its own poll observation.
 # No new state file and no new transport are involved.
@@ -31,6 +34,8 @@ _FM_MERGE_OUTCOME_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$_FM_MERGE_OUTCOME_LIB_DIR/fm-secondmate-registry-lib.sh"
 
 # The secondmate identity of the home reporting, or non-zero when this home is
 # a main home (1) or carries an unusable identity marker (2). Mirrors
@@ -80,6 +85,7 @@ FM_MERGE_OUTCOME_ALREADY_RECORDED=false
 fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   local home=$1 state=$2 id=$3 url=$4 origin=$5
   local self='' self_rc=0 destination='' line lock status=0
+  local parent_registry_lock='' parent_registry_lock_held=0
   local provider host path number
   # shellcheck disable=SC2034 # Sourced wake helpers consume these scoped globals.
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
@@ -92,12 +98,31 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   path=$FM_PR_PATH
   number=$FM_PR_NUMBER
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  STATE=$state
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-wake-lib.sh"
 
   if self=$(fm_merge_outcome_home_id "$home"); then
     fm_secondmate_parent_record_parse "$home/.fm-secondmate-parent" || return 3
     case "$FM_SECONDMATE_PARENT_ROUTE" in
       local)
         [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 3
+        parent_registry_lock=$(secondmate_registry_lock_path \
+          "$FM_SECONDMATE_PARENT_HOME/state") || return 3
+        fm_lock_acquire_wait "$parent_registry_lock" || return 3
+        parent_registry_lock_held=1
+        if ! secondmate_registry_validate_bindings \
+          "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
+          secondmate_registry_path_key "$self" "$home"; then
+          fm_lock_release "$parent_registry_lock"
+          parent_registry_lock_held=0
+          return 3
+        fi
+        if [ "$SECONDMATE_REGISTRY_MATCH_REMOTE" -ne 0 ]; then
+          fm_lock_release "$parent_registry_lock"
+          parent_registry_lock_held=0
+          return 3
+        fi
         destination="$FM_SECONDMATE_PARENT_HOME/state/$self.status"
         ;;
       remote) destination="$state/parent-replies.status" ;;
@@ -109,16 +134,23 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
     [ "$self_rc" -eq 1 ] || return 3
   fi
 
-  STATE=$state
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-wake-lib.sh"
   lock="$state/$id.pr-poll-merge-notified.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  if ! fm_lock_acquire_wait "$lock"; then
+    if [ "$parent_registry_lock_held" -eq 1 ]; then
+      fm_lock_release "$parent_registry_lock"
+      parent_registry_lock_held=0
+    fi
+    return 1
+  fi
   if fm_pr_poll_merge_already_notified "$state" "$id" \
     "$provider" "$host" "$path" "$number"; then
     # shellcheck disable=SC2034 # Public result consumed by sourcing callers.
     FM_MERGE_OUTCOME_ALREADY_RECORDED=true
     fm_lock_release "$lock"
+    if [ "$parent_registry_lock_held" -eq 1 ]; then
+      fm_lock_release "$parent_registry_lock"
+      parent_registry_lock_held=0
+    fi
     return 0
   fi
 
@@ -134,5 +166,9 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
       "$provider" "$host" "$path" "$number" || status=1
   fi
   fm_lock_release "$lock"
+  if [ "$parent_registry_lock_held" -eq 1 ]; then
+    fm_lock_release "$parent_registry_lock"
+    parent_registry_lock_held=0
+  fi
   return "$status"
 }

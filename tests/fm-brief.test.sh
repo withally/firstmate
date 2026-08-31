@@ -356,6 +356,54 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
+# firstmate authority is a durable routing contract, not prose inferred by the
+# worker. Both ship briefs and persistent charters expose the resolved tier and
+# the same four keyed parent check-ins.
+test_firstmate_merge_authority_renders_keyed_checkins() {
+  local home ship charter key
+  home="$TMP_ROOT/firstmate-authority-home"
+  mkdir -p "$home/data"
+  printf '%s\n' \
+    '- alpha [no-mistakes merge-authority=firstmate] - fixture (added 2026-08-30)' \
+    > "$home/data/projects.md"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" authority-ship alpha \
+    --mode no-mistakes --merge-authority firstmate >/dev/null 2>&1 \
+    || fail "firstmate-authority ship brief did not scaffold"
+  ship="$home/data/authority-ship/brief.md"
+  grep -qx 'Merge authority: firstmate' "$ship" \
+    || fail "ship brief did not record its machine-readable merge authority"
+  for key in before-dispatch before-landing twice-failed-blocker worker-finish; do
+    if [ "$key" = before-landing ]; then
+      assert_grep "needs-decision [key=$key-authority-ship-<spawn_gen>]" "$ship" \
+        "ship brief lost the $key parent check-in"
+    else
+      assert_grep "needs-decision [key=$key-authority-ship]" "$ship" \
+        "ship brief lost the $key parent check-in"
+    fi
+  done
+  # shellcheck disable=SC2016 # Backticks are literal brief prose.
+  assert_grep 'answers through `bin/fm-send.sh <task> --resolve-key <key>`' "$ship" \
+    "ship brief did not bind parent answers to fm-send --resolve-key"
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise alpha.' \
+    "$ROOT/bin/fm-brief.sh" authority-mate --secondmate alpha >/dev/null 2>&1 \
+    || fail "firstmate-authority secondmate charter did not scaffold"
+  charter="$home/data/authority-mate/brief.md"
+  assert_grep 'alpha: merge-authority=firstmate' "$charter" \
+    "secondmate charter did not render alpha's inherited authority"
+  for key in before-dispatch before-landing twice-failed-blocker worker-finish; do
+    if [ "$key" = before-landing ]; then
+      assert_grep "needs-decision [key=$key-<task-id>-<spawn_gen>]" "$charter" \
+        "secondmate charter lost the reusable $key parent check-in"
+    else
+      assert_grep "needs-decision [key=$key-<task-id>]" "$charter" \
+        "secondmate charter lost the reusable $key parent check-in"
+    fi
+  done
+  pass "fm-brief.sh: firstmate authority renders the tier and four keyed parent check-ins"
+}
+
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
@@ -797,6 +845,7 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_firstmate_merge_authority_renders_keyed_checkins
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete

@@ -9,8 +9,10 @@
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
-# read the scout's report (AGENTS.md section 7); data/projects.md holds the
-# captain's standing posture as context, and this script never looks it up.
+# read the scout's report (AGENTS.md section 7), and re-resolves merge authority
+# through the current data/projects.md registry: yolo=on selects self, while yolo=off
+# uses the registered tier or the parser's captain fallback when the project is absent
+# or its registry entry is invalid.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
 set -eu
@@ -19,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -86,9 +89,11 @@ CONTROL_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
+BRIEF_TMP=
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
+  [ -z "$BRIEF_TMP" ] || rm -f -- "$BRIEF_TMP" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -114,12 +119,89 @@ META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
+PROJECT_PATH=$(awk -F= '$1 == "project" { value=substr($0, index($0, "=") + 1) } END { print value }' "$META")
+PROJECT_NAME=${PROJECT_PATH##*/}
+[ -n "$PROJECT_NAME" ] || {
+  echo "error: task $ID has no recorded project; refusing to promote without a registered project authority" >&2
+  exit 1
+}
+REGISTERED_AUTHORITY=$(FM_DATA_OVERRIDE="$DATA" \
+  FM_HOME="$FM_HOME" \
+  "$FM_ROOT/bin/fm-project-mode.sh" --authority "$PROJECT_NAME") || {
+  echo "error: could not resolve merge authority for project $PROJECT_NAME; refusing promotion" >&2
+  exit 1
+}
+if [ "$YOLO" = on ]; then
+  MERGE_AUTHORITY=self
+else
+  MERGE_AUTHORITY=$REGISTERED_AUTHORITY
+fi
+case "$MERGE_AUTHORITY:$YOLO" in
+  captain:off|firstmate:off|self:on) ;;
+  *)
+    echo "error: resolved merge authority $MERGE_AUTHORITY conflicts with --yolo $YOLO for task $ID" >&2
+    exit 1
+    ;;
+esac
+
+BRIEF="$DATA/$ID/brief.md"
+BRIEF_TMP="$DATA/$ID/.brief.promote.${BASHPID:-$$}"
+mkdir -p "$DATA/$ID"
+FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_STATE_OVERRIDE="$STATE" \
+  FM_BRIEF_OUTPUT_OVERRIDE="$BRIEF_TMP" \
+  "$FM_ROOT/bin/fm-brief.sh" "$ID" "$PROJECT_PATH" --mode "$MODE" \
+  --merge-authority "$MERGE_AUTHORITY" >/dev/null || {
+    echo "error: could not render the ship brief for task $ID; refusing promotion" >&2
+    exit 1
+  }
+PROMOTE_BRIEF_AUTHORITY=$(awk '
+  $0 == "<!-- fm-merge-authority-contract:start -->" {
+    starts++
+    if (in_section) invalid=1
+    in_section=1
+    next
+  }
+  $0 == "<!-- fm-merge-authority-contract:end -->" {
+    if (!in_section) invalid=1
+    ends++
+    in_section=0
+    next
+  }
+  in_section && $0 ~ /^Merge authority: / {
+    authorities++
+    if ($0 !~ /^Merge authority: (captain|firstmate|self)$/) {
+      invalid=1
+    } else {
+      value=$0
+      sub(/^Merge authority: /, "", value)
+    }
+  }
+  END {
+    if (starts != 1 || ends != 1 || in_section || authorities != 1 || invalid) exit 1
+    print value
+  }
+' "$BRIEF_TMP") || {
+  echo "error: rendered ship brief for task $ID has no valid merge-authority contract; refusing promotion" >&2
+  exit 1
+}
+[ "$PROMOTE_BRIEF_AUTHORITY" = "$MERGE_AUTHORITY" ] || {
+  echo "error: rendered ship brief for task $ID disagrees with merge authority $MERGE_AUTHORITY; refusing promotion" >&2
+  exit 1
+}
+grep -qx "Delivery contract: mode=$MODE" "$BRIEF_TMP" || {
+  echo "error: rendered ship brief for task $ID has no delivery contract; refusing promotion" >&2
+  exit 1
+}
+mv -f -- "$BRIEF_TMP" "$BRIEF"
+BRIEF_TMP=
+
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^merge_authority=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  echo "merge_authority=$MERGE_AUTHORITY"
 } >> "$TMP"
 mv "$TMP" "$META"
 TMP=

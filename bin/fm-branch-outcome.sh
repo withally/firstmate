@@ -58,9 +58,20 @@
 #     conversation memory.
 #
 # Usage:
-#   fm-branch-outcome.sh append --task <id> --verdict routine|captain \
+#   fm-branch-outcome.sh append --task <id> --verdict routine|captain|firstmate-action \
 #       --summary <text> [--wake <text>] [--silent true|false]
 #     Append one outcome record; prints the assigned seq.
+#   fm-branch-outcome.sh append-action --task <id> --wake-seq <seq> \
+#       --summary <text> [--wake <text>]
+#     Append or recover one firstmate-action row and its per-wake marker.
+#   fm-branch-outcome.sh action-prepare --seq <seq>
+#     Ensure the firstmate-action marker exists and print pending|started.
+#   fm-branch-outcome.sh action-status --seq <seq>
+#     Print pending|started|none for a firstmate-action row.
+#   fm-branch-outcome.sh action-started --seq <seq>
+#     Mark the hidden main turn as started.
+#   fm-branch-outcome.sh render --seq <seq>
+#     Render a main-bound outcome as its operational input envelope.
 #   fm-branch-outcome.sh unread
 #     Print every unread record (raw JSONL). Exit 0 with no output when none.
 #   fm-branch-outcome.sh mark-read --through <seq>
@@ -296,6 +307,197 @@ EOF
   publish_outcome_index_ready "$(last_seq)"
 }
 
+canonical_positive_sequence() { # <digit-string>
+  local raw=$1 canonical
+  case "$raw" in ''|*[!0-9]*) return 1 ;; esac
+  canonical=$(printf '%s\n' "$raw" | sed 's/^0*//')
+  [ -n "$canonical" ] || return 1
+  printf '%s\n' "$canonical"
+}
+
+record_for_seq() { # <seq>
+  local wanted=$1 line seq
+  [ -s "$STORE" ] || return 1
+  while IFS= read -r line; do
+    seq=$(record_seq "$line")
+    [ "$seq" = "$wanted" ] || continue
+    printf '%s\n' "$line"
+    return 0
+  done < "$STORE"
+  return 1
+}
+
+append_record_locked() { # <task> <verdict> <summary> <wake> <silent> <seq> [<wake-seq>]
+  local task=$1 verdict=$2 summary=$3 wake=$4 silent=$5 seq=$6 wake_seq=${7:-}
+  if [ "$verdict" = firstmate-action ] && [ -n "$wake_seq" ]; then
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"wake_seq":%s}\n' \
+      "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
+      "$verdict" "$(json_escape "$summary")" "$silent" "$wake_seq" >> "$STORE"
+  else
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s}\n' \
+      "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
+      "$verdict" "$(json_escape "$summary")" "$silent" >> "$STORE"
+  fi
+}
+
+action_marker_path_for_wake() { # <wake-seq>
+  local wake_seq candidate
+  wake_seq=$(canonical_positive_sequence "$1") || return 1
+  candidate="$ACTION_DIR/wake-$wake_seq.json"
+  if [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  for candidate in "$ACTION_DIR"/wake-*.json; do
+    [ -f "$candidate" ] || continue
+    if jq -e --arg wake_seq "$wake_seq" \
+      'type == "object" and .wake_seq == ($wake_seq|tonumber)' "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s/wake-%s.json\n' "$ACTION_DIR" "$wake_seq"
+}
+
+action_marker_path_for_outcome() { # <outcome-seq>
+  local outcome=$1 candidate
+  [ -d "$ACTION_DIR" ] || return 1
+  for candidate in "$ACTION_DIR"/wake-*.json "$ACTION_DIR"/outcome-*.json; do
+    [ -f "$candidate" ] || continue
+    if jq -e --argjson seq "$outcome" 'type == "object" and .outcome_seq == $seq' "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+write_action_marker() { # <path> <wake-seq-or-empty> <outcome-seq-or-empty> <state> <task> <summary> <wake>
+  local path=$1 wake_seq=$2 outcome_seq=$3 marker_state=$4 task=$5 summary=$6 wake=$7 tmp
+  mkdir -p "$ACTION_DIR"
+  tmp=$(mktemp "$ACTION_DIR/.marker.tmp.XXXXXX")
+  if [ -n "$wake_seq" ]; then
+    jq -cn \
+      --arg wake_seq "$wake_seq" \
+      --arg task "$task" \
+      --arg summary "$summary" \
+      --arg wake "$wake" \
+      --arg state "$marker_state" \
+      --arg outcome_seq "$outcome_seq" \
+      '{version:"fm-branch-action-v1",wake_seq:($wake_seq|tonumber),outcome_seq:(if $outcome_seq == "" then null else ($outcome_seq|tonumber) end),state:$state,task:$task,verdict:"firstmate-action",summary:$summary,wake:$wake,silent:false}' > "$tmp"
+  else
+    jq -cn \
+      --arg task "$task" \
+      --arg summary "$summary" \
+      --arg wake "$wake" \
+      --arg state "$marker_state" \
+      --arg outcome_seq "$outcome_seq" \
+      '{version:"fm-branch-action-v1",wake_seq:null,outcome_seq:(if $outcome_seq == "" then null else ($outcome_seq|tonumber) end),state:$state,task:$task,verdict:"firstmate-action",summary:$summary,wake:$wake,silent:false}' > "$tmp"
+  fi
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$path"
+}
+
+update_action_marker() { # <path> <jq-filter>
+  local path=$1 filter=$2 tmp
+  tmp=$(mktemp "$ACTION_DIR/.marker.tmp.XXXXXX")
+  jq "$filter" "$path" > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$path"
+}
+
+action_marker_state() { # <path>
+  jq -er 'select(type == "object" and .version == "fm-branch-action-v1" and (.state == "pending" or .state == "started")) | .state' "$1"
+}
+
+find_action_record_by_wake_seq() { # <wake-seq>
+  local wake_seq=$1 line seq
+  [ -s "$STORE" ] || return 1
+  while IFS= read -r line; do
+    if printf '%s\n' "$line" | jq -e \
+      --arg wake_seq "$wake_seq" \
+      'type == "object" and .verdict == "firstmate-action" and .wake_seq == ($wake_seq|tonumber)' \
+      >/dev/null 2>&1; then
+      seq=$(record_seq "$line")
+      [ -n "$seq" ] || return 1
+      printf '%s\n' "$seq"
+      return 0
+    fi
+  done < "$STORE"
+  return 1
+}
+
+action_marker_for_seq() { # <outcome-seq>
+  local outcome=$1 path
+  path=$(action_marker_path_for_outcome "$outcome" 2>/dev/null || true)
+  if [ -n "$path" ]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
+}
+
+ensure_action_marker_for_record_locked() { # <record-line>
+  local line=$1 seq task summary wake path
+  seq=$(record_seq "$line") || return 1
+  task=$(printf '%s\n' "$line" | jq -er '.task') || return 1
+  summary=$(printf '%s\n' "$line" | jq -er '.summary') || return 1
+  wake=$(printf '%s\n' "$line" | jq -er '.wake') || return 1
+  path=$(action_marker_for_seq "$seq" 2>/dev/null || true)
+  if [ -z "$path" ]; then
+    path="$ACTION_DIR/outcome-$seq.json"
+    write_action_marker "$path" "" "$seq" pending "$task" "$summary" "$wake" || return 1
+  fi
+  printf '%s\n' "$path"
+}
+
+reconcile_action_markers_locked() {
+  local path task summary wake wake_seq seq existing
+  [ -d "$ACTION_DIR" ] || return 0
+  for path in "$ACTION_DIR"/wake-*.json; do
+    [ -f "$path" ] || continue
+    jq -e 'type == "object" and .version == "fm-branch-action-v1" and (.state == "pending" or .state == "started") and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor) and (.outcome_seq == null or ((.outcome_seq | type == "number") and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor))) and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string") and (.wake | type == "string")' "$path" >/dev/null 2>&1 || return 1
+    wake_seq=$(jq -er '.wake_seq | tostring' "$path") || return 1
+    seq=$(jq -r '.outcome_seq // empty' "$path") || return 1
+    if [ -z "$seq" ]; then
+      task=$(jq -er '.task' "$path") || return 1
+      summary=$(jq -er '.summary' "$path") || return 1
+      wake=$(jq -er '.wake' "$path") || return 1
+      existing=$(find_action_record_by_wake_seq "$wake_seq" 2>/dev/null || true)
+      if [ -z "$existing" ]; then
+        if ! LAST_SEQ=$(last_seq); then return 1; fi
+        existing=$(( LAST_SEQ + 1 ))
+        append_record_locked "$task" firstmate-action "$summary" "$wake" false "$existing" "$wake_seq" || return 1
+      fi
+      update_action_marker "$path" ".outcome_seq = $existing" || return 1
+    fi
+  done
+}
+
+render_record() { # <record-line>
+  local line=$1 verdict task summary body encoded encoder
+  verdict=$(printf '%s\n' "$line" | jq -er '.verdict') || return 1
+  case "$verdict" in
+    captain)
+      body='This is a supervision outcome delivered automatically by the supervision branch. It was not typed by the captain. The fleet event is already handled: do not re-drain, re-run, or acknowledge it. Do not take another fleet action from this delivery. This outcome is captain-facing: give the captain a visible response now. Use your judgment over the wording and how to incorporate it, not whether to surface it. An outcome that directly answers an explicit captain request is captain-facing, regardless of whether it is healthy, routine, measured, actionable, or requires a decision.'
+      ;;
+    firstmate-action)
+      body='This is a supervision outcome delivered automatically by the supervision branch. It was not typed by the captain. The wake is already acknowledged: do not re-drain, re-run, or acknowledge it. The downstream authorized action is not done. Perform that action now, then report the result. Do not merely relay this worker outcome. Use the standing authority and contracted next step already in fleet context; stop only if the action reaches a genuine captain-only boundary.'
+      ;;
+    *) return 1 ;;
+  esac
+  task=$(printf '%s\n' "$line" | jq -er '.task') || return 1
+  summary=$(printf '%s\n' "$line" | jq -er '.summary') || return 1
+  body=$(printf '%s\n\n%s: %s' "$body" "$task" "$summary")
+  encoder=${FM_OPERATIONAL_INPUT_SCRIPT-}
+  [ -n "$encoder" ] || encoder="$SCRIPT_DIR/fm-operational-input.sh"
+  if encoded=$(printf '%s' "$body" | "$encoder" encode branch-outcome 2>/dev/null); then
+    printf '%s\n' "$encoded"
+  else
+    printf '%s\n' "$body"
+  fi
+}
+
 print_unread() {
   local cursor last
   cursor=$(read_cursor)
@@ -440,7 +642,7 @@ case "$CMD" in
     [ -n "$TASK" ] || usage
     outcome_index_path "$TASK" >/dev/null || usage
     [ -n "$SUMMARY" ] || usage
-    case "$VERDICT" in routine|captain) ;; *) usage ;; esac
+    case "$VERDICT" in routine|captain|firstmate-action) ;; *) usage ;; esac
     case "$SILENT" in true|false) ;; *) usage ;; esac
     if [ "$SILENT" = true ] && { [ "$TASK" != fleet ] || [ "$VERDICT" != routine ]; }; then
       echo "error: silent outcomes must be routine fleet outcomes" >&2
@@ -482,9 +684,191 @@ case "$CMD" in
     fm_lock_release "$LOCK"
     printf '%s\n' "$SEQ"
     ;;
+  append-action)
+    TASK=''
+    SUMMARY=''
+    WAKE=''
+    WAKE_SEQ=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --task) TASK=${2:-}; shift 2 || usage ;;
+        --summary) SUMMARY=${2:-}; shift 2 || usage ;;
+        --wake) WAKE=${2:-}; shift 2 || usage ;;
+        --wake-seq) WAKE_SEQ=${2:-}; shift 2 || usage ;;
+        *) usage ;;
+      esac
+    done
+    [ -n "$TASK" ] || usage
+    [ -n "$SUMMARY" ] || usage
+    WAKE_SEQ=$(canonical_positive_sequence "$WAKE_SEQ") || usage
+    fm_lock_acquire_wait "$LOCK"
+    mkdir -p "$ACTION_DIR"
+    MARKER=$(action_marker_path_for_wake "$WAKE_SEQ")
+    if [ -f "$MARKER" ]; then
+      if ! jq -e \
+        --arg wake_seq "$WAKE_SEQ" \
+        'type == "object" and .version == "fm-branch-action-v1" and .wake_seq == ($wake_seq|tonumber) and .verdict == "firstmate-action" and (.state == "pending" or .state == "started")' \
+        "$MARKER" >/dev/null 2>&1; then
+        fm_lock_release "$LOCK"
+        echo "error: firstmate-action wake marker is invalid for the repeated wake sequence" >&2
+        exit 1
+      fi
+      SEQ=$(jq -r '.outcome_seq // empty' "$MARKER")
+      if [ -z "$SEQ" ]; then
+        SEQ=$(find_action_record_by_wake_seq "$WAKE_SEQ" 2>/dev/null || true)
+        if [ -z "$SEQ" ]; then
+          if ! LAST_SEQ=$(last_seq); then
+            fm_lock_release "$LOCK"
+            echo "error: refusing action append because the outcome store has a malformed final record" >&2
+            exit 1
+          fi
+          SEQ=$(( LAST_SEQ + 1 ))
+          if ! append_record_locked "$TASK" firstmate-action "$SUMMARY" "$WAKE" false "$SEQ" "$WAKE_SEQ"; then
+            fm_lock_release "$LOCK"
+            exit 1
+          fi
+        fi
+        if ! update_action_marker "$MARKER" ".outcome_seq = $SEQ"; then
+          fm_lock_release "$LOCK"
+          exit 1
+        fi
+      fi
+      fm_lock_release "$LOCK"
+      printf '%s\n' "$SEQ"
+    else
+      write_action_marker "$MARKER" "$WAKE_SEQ" "" pending "$TASK" "$SUMMARY" "$WAKE" || {
+        fm_lock_release "$LOCK"
+        exit 1
+      }
+      if ! LAST_SEQ=$(last_seq); then
+        fm_lock_release "$LOCK"
+        echo "error: refusing action append because the outcome store has a malformed final record" >&2
+        exit 1
+      fi
+      SEQ=$(( LAST_SEQ + 1 ))
+      if ! append_record_locked "$TASK" firstmate-action "$SUMMARY" "$WAKE" false "$SEQ" "$WAKE_SEQ"; then
+        fm_lock_release "$LOCK"
+        exit 1
+      fi
+      if ! update_action_marker "$MARKER" ".outcome_seq = $SEQ"; then
+        fm_lock_release "$LOCK"
+        exit 1
+      fi
+      fm_lock_release "$LOCK"
+      printf '%s\n' "$SEQ"
+    fi
+    ;;
+  action-prepare)
+    [ "${1:-}" = --seq ] || usage
+    SEQ=${2:-}
+    case "$SEQ" in ''|*[!0-9]*) usage ;; esac
+    [ "$#" -eq 2 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+    if [ -z "$RECORD" ] || ! printf '%s\n' "$RECORD" | jq -e '.verdict == "firstmate-action"' >/dev/null 2>&1; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    MARKER=$(ensure_action_marker_for_record_locked "$RECORD") || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    ACTION_STATE=$(action_marker_state "$MARKER" 2>/dev/null || true)
+    case "$ACTION_STATE" in pending|started) ;;
+      *) fm_lock_release "$LOCK"; exit 1 ;;
+    esac
+    fm_lock_release "$LOCK"
+    printf '%s\n' "$ACTION_STATE"
+    ;;
+  action-status)
+    [ "${1:-}" = --seq ] || usage
+    SEQ=${2:-}
+    case "$SEQ" in ''|*[!0-9]*) usage ;; esac
+    [ "$#" -eq 2 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    MARKER=$(action_marker_for_seq "$SEQ" 2>/dev/null || true)
+    if [ -z "$MARKER" ]; then
+      ACTION_STATE=none
+    else
+      ACTION_STATE=$(action_marker_state "$MARKER" 2>/dev/null || true)
+      [ -n "$ACTION_STATE" ] || { fm_lock_release "$LOCK"; exit 1; }
+    fi
+    fm_lock_release "$LOCK"
+    printf '%s\n' "$ACTION_STATE"
+    ;;
+  action-pending)
+    [ "$#" -eq 0 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    reconcile_action_markers_locked || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    if [ -d "$ACTION_DIR" ]; then
+      for MARKER in "$ACTION_DIR"/wake-*.json; do
+        [ -f "$MARKER" ] || continue
+        if jq -e 'type == "object" and .version == "fm-branch-action-v1" and .state == "pending" and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor) and (.outcome_seq | type == "number") and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor) and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string")' "$MARKER" >/dev/null 2>&1; then
+          jq -c '{outcome_seq, wake_seq, task, summary}' "$MARKER"
+        fi
+      done
+    fi
+    fm_lock_release "$LOCK"
+    ;;
+  action-started)
+    [ "${1:-}" = --seq ] || usage
+    SEQ=${2:-}
+    case "$SEQ" in ''|*[!0-9]*) usage ;; esac
+    [ "$#" -eq 2 ] || usage
+    if [ "${FM_SUPERVISION_ACTOR:-}" != main ]; then
+      echo "error: action-started requires the main supervision actor" >&2
+      exit 6
+    fi
+    fm_lock_acquire_wait "$LOCK"
+    RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+    if [ -z "$RECORD" ] || ! printf '%s\n' "$RECORD" | jq -e '.verdict == "firstmate-action"' >/dev/null 2>&1; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    MARKER=$(ensure_action_marker_for_record_locked "$RECORD") || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    ACTION_STATE=$(action_marker_state "$MARKER" 2>/dev/null || true)
+    if [ "$ACTION_STATE" = pending ]; then
+      update_action_marker "$MARKER" '.state = "started"' || {
+        fm_lock_release "$LOCK"
+        exit 1
+      }
+    elif [ "$ACTION_STATE" != started ]; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    fm_lock_release "$LOCK"
+    printf 'started\n'
+    ;;
+  render)
+    [ "${1:-}" = --seq ] || usage
+    SEQ=${2:-}
+    case "$SEQ" in ''|*[!0-9]*) usage ;; esac
+    [ "$#" -eq 2 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+    if [ -z "$RECORD" ]; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    if ! render_record "$RECORD"; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    fm_lock_release "$LOCK"
+    ;;
   unread)
     [ "$#" -eq 0 ] || usage
     fm_lock_acquire_wait "$LOCK"
+    reconcile_action_markers_locked || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
     print_unread
     fm_lock_release "$LOCK"
     ;;
@@ -616,6 +1000,10 @@ case "$CMD" in
   startup-replay)
     [ "$#" -eq 0 ] || usage
     fm_lock_acquire_wait "$LOCK"
+    reconcile_action_markers_locked || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
     UNREAD=$(print_unread)
     if [ -n "$UNREAD" ]; then
       REPLAYABLE=$(printf '%s\n' "$UNREAD" | jq -sc '

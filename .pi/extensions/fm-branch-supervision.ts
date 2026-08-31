@@ -28,7 +28,7 @@
 // the tool set is BRANCH_TOOL_NAMES in that fixed order on every spawn, and
 // one shared per-home prompt_cache_key is set for branch requests in a
 // before_provider_request hook - main keeps Pi's default per-session key.
-// Wakes, mirrored dialog, and captain outcome messages are all appends at a
+// Wakes, mirrored dialog, and main-bound outcome messages are all appends at a
 // tail.
 //
 // Session-lock ownership: every branch side-effect boundary re-evaluates the
@@ -193,7 +193,7 @@ const PROCESSING_INSTRUCTION =
   "Until that call the outcomes stay open and are presented again; an answer that does not make that call never counts as processing.";
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
-type Verdict = "routine" | "captain";
+type Verdict = "routine" | "captain" | "firstmate-action";
 type LockOwnership = "owned" | "other" | "missing";
 type OutcomeRow = {
   seq: number;
@@ -226,6 +226,12 @@ function positiveIntegerEnv(name: string, fallback: number): number {
   if (!raw || !/^[1-9][0-9]*$/.test(raw)) return fallback;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function canonicalWakeSequence(raw: string): string | null {
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const canonical = raw.replace(/^0+/, "");
+  return canonical || null;
 }
 
 function validatedSignalStatusPath(token: string): string | null {
@@ -669,6 +675,16 @@ export default function (pi: ExtensionAPI) {
   // extension plus its model_select event, because createBranch runs at wake
   // time with no context of its own. It is what "follow main" applies.
   let mainModel: { provider: string; id: string } | null = null;
+  type ActiveWakeContext = { generation: number; eligibleSeqs: readonly string[] };
+  type PendingActionDelivery = {
+    generation: number;
+    wakeSeq: string;
+    task: string;
+    summary: string;
+  };
+  let activeWakeContext: ActiveWakeContext | null = null;
+  const pendingActionDeliveries = new Map<string, PendingActionDelivery>();
+  let rehydratedActionGeneration = -1;
 
   // Main's own current effort needs no such tracking: Pi answers it directly
   // on demand, including at wake time. It throws only when the extension
@@ -854,12 +870,12 @@ export default function (pi: ExtensionAPI) {
     return generationOwnsLock(expectedGeneration);
   }
 
-  function runOutcomeScript(args: string[]): { ok: boolean; stdout: string; detail: string } {
+  function runOutcomeScript(args: string[], actor?: "main" | "branch"): { ok: boolean; stdout: string; detail: string } {
     try {
       const result = spawnSync("bash", [outcomeScript, ...args], {
         cwd: fmRoot,
         encoding: "utf8",
-        env: scriptEnv,
+        env: actor ? { ...scriptEnv, FM_SUPERVISION_ACTOR: actor } : scriptEnv,
       });
       if (result.status === 0) return { ok: true, stdout: (result.stdout || "").trim(), detail: "" };
       return {
@@ -1044,7 +1060,7 @@ export default function (pi: ExtensionAPI) {
         "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge it into the captain-facing main conversation. verdict captain persists an exact visible entry and opens one sequence-keyed processing turn on main that stays open until main acknowledges it; routine notes render unless silent marks a no-change heartbeat.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
-        verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
+        verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain"), Type.Literal("firstmate-action")], {
           description:
             "Use captain or routine exactly as the \"Verdict: routine or captain\" section of your system prompt decides; that section is the one owner of the rule.",
         }),
@@ -1053,8 +1069,11 @@ export default function (pi: ExtensionAPI) {
             "One or two sentences in captain outcome language; include the full https:// PR URL when a PR is involved",
         }),
         wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
+        wake_seq: Type.Optional(Type.String({
+          description: "For firstmate-action, the exact numeric queue sequence from the wake-drain row",
+        })),
         silent: Type.Optional(Type.Boolean({
-          description: "Accepted for compatibility; routine outcomes are always stored silently, and captain outcomes are never silent",
+          description: "Accepted for compatibility; routine outcomes are always stored silently, and main-turn outcomes are never silent",
         })),
       }),
       execute: async (_toolCallId, params) => {
@@ -1062,10 +1081,11 @@ export default function (pi: ExtensionAPI) {
         const verdictRaw = String((params as { verdict: unknown }).verdict || "");
         const summary = String((params as { summary: unknown }).summary || "").trim();
         const wake = String((params as { wake?: unknown }).wake ?? "").trim();
+        let wakeSeq = String((params as { wake_seq?: unknown }).wake_seq ?? "").trim();
         const silent = (params as { silent?: unknown }).silent === true;
-        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain") || (silent && verdictRaw !== "routine")) {
+        if (!task || !summary || !["routine", "captain", "firstmate-action"].includes(verdictRaw) || (silent && verdictRaw !== "routine")) {
           return {
-            content: [{ type: "text", text: "invalid report: task, verdict (routine|captain), and summary are required" }],
+            content: [{ type: "text", text: "invalid report: task, verdict (routine|captain|firstmate-action), and summary are required" }],
             details: undefined,
             isError: true,
           };
@@ -1330,6 +1350,11 @@ ${context.command}
         );
         if (grant === "main-owned") throw new Error("the wake rows are already claimed by main");
         if (grant !== "published") throw new Error("could not record the branch's eligible row snapshot");
+        const wakeContext: ActiveWakeContext = {
+          generation: acceptedGeneration,
+          eligibleSeqs: [...scope.eligibleSeqs],
+        };
+        activeWakeContext = wakeContext;
         // A row can still arrive between this re-check and the model starting
         // the drain; that residual is accepted by the confused-agent-grade boundary.
         const reportRevisionBeforePrompt = durableReportRevision;
@@ -1360,6 +1385,10 @@ ${context.command}
         if (!releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration))) {
           throw new Error("could not release the branch's settled wake-row grant");
         }
+        if (!releaseBranchLeases(acceptedGeneration)) {
+          throw new Error("could not release the branch's settled task leases");
+        }
+        deliverPendingActionDeliveries(acceptedGeneration, wakeContext.eligibleSeqs);
       })
       .catch((error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
@@ -1460,6 +1489,7 @@ ${context.command}
     // effects.
     if (!offerEligible(offer)) return;
     if (!actingAsOwner()) return; // cold start pre-lock, secondary session, or shutdown
+    activatePendingActionDeliveries(generation);
     if (afkActive()) return; // the away daemon owns supervision while afk
     const recoveryProbe = Boolean(
       branchBroken &&

@@ -383,6 +383,18 @@ const { pathToFileURL } = await import("node:url");
 const home = process.env.FM_HOME;
 const realRoot = process.env.FM_ROOT_OVERRIDE;
 const approvedProject = `${home}/projects/approved`;
+globalThis.__fmExecuteBranchBash = async (context) => {
+  const result = spawnSync("bash", ["-c", context.command], {
+    encoding: "utf8",
+    cwd: context.cwd,
+    env: context.env,
+  });
+  return {
+    content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
+    details: { stdout: result.stdout, stderr: result.stderr, exitCode: result.status },
+    isError: result.status !== 0,
+  };
+};
 mkdirSync(`${home}/state`, { recursive: true });
 mkdirSync(`${home}/config`, { recursive: true });
 mkdirSync(approvedProject, { recursive: true });
@@ -537,7 +549,19 @@ const pi = {
     activeMainSession.getEntries().push({ type: "custom", customType, data });
   },
   sendMessage(message, options) {
+    if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
+    if (globalThis.__fmAutoStartMainMessage !== false && message.customType === "fm-branch-merge") {
+      queueMicrotask(() => fire("message_end", {
+        message: {
+          role: "custom",
+          customType: message.customType,
+          content: message.content,
+          display: message.display,
+          details: message.details,
+        },
+      }));
+    }
   },
   sendUserMessage(content, options) {
     mainUserMessages.push({ content, options: options ?? {} });
@@ -725,12 +749,15 @@ if (captainRecord.summary !== "PR https://example.com/pr/9 checks green, ready f
   throw new Error(`captain entry changed the exact summary: ${captainRecord.summary}`);
 }
 
-// The store (the owned durable contract) holds all three outcomes in order,
+// The store (the owned durable contract) holds all four outcomes in order,
 // and each merged note advanced the read cursor.
 const rows = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-if (rows.length !== 3) throw new Error(`expected 3 store rows, got ${rows.length}`);
-if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain") throw new Error("store verdicts out of order");
+if (rows.length !== 4) throw new Error(`expected 4 store rows, got ${rows.length}`);
+if (rows[0].verdict !== "routine" || rows[2].verdict !== "firstmate-action" || rows[3].verdict !== "captain") {
+  throw new Error(`store verdicts out of order: ${JSON.stringify(rows)}`);
+}
 if (rows.some((row) => row.verdict === "routine" && row.silent !== true)) throw new Error("routine outcomes were not forced silent in the durable store");
+if (rows.some((row) => row.verdict !== "routine" && row.silent !== false)) throw new Error("main-turn outcomes became silent in the durable store");
 if (rows[0].wake !== "signal: working") throw new Error("store lost the wake reason");
 if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not marked read");
 
@@ -796,7 +823,7 @@ try {
 if (!exportCallFellBack || !exportResultFellBack) {
   throw new Error("fm_branch_outcomes replaced Pi stock export rendering");
 }
-const listed = await outcomesTool.execute("call-4", { recent: 2 }, undefined, undefined, {});
+const listed = await outcomesTool.execute("call-5", { recent: 2 }, undefined, undefined, {});
 const listedText = listed.content[0].text;
 if (listedText.split("\n").length !== 2 || !listedText.includes("checks green")) {
   throw new Error(`fm_branch_outcomes did not read the store: ${listedText}`);

@@ -49,7 +49,7 @@
         <path id="arc-cherry" d="M 620 221 C 645 300, 675 400, 700 479" fill="none" stroke="#FFB454" stroke-width="2.5" stroke-dasharray="2 8" stroke-linecap="round" opacity="0.8" marker-end="url(#ah-amber)"></path>
         <path id="arc-wake" d="M 940 479 C 975 410, 1015 300, 1038 226" fill="none" stroke="url(#merge-up)" stroke-width="4" stroke-linecap="round" marker-end="url(#ah-amber)"></path>
 
-        <!-- ================= CAPTAIN DELIVERY EXAMPLE ================= -->
+        <!-- ================= MAIN DELIVERY EXAMPLE ================= -->
         <g id="chip-cherry">
           <title>The captain's own instruction, cherry-picked down as context</title>
           <rect x="530" y="377" width="260" height="36" rx="6" fill="#0D1321" stroke="#FFB454" stroke-width="1.5" opacity="0.95"></rect>
@@ -58,7 +58,7 @@
         <g id="chip-wake">
           <title>The outcome the captain asked for: this exact entry persists visibly</title>
           <rect x="865" y="342" width="250" height="38" rx="6" fill="#0D1321" stroke="#FFB454" stroke-width="2"></rect>
-          <text x="990" y="367" text-anchor="middle" fill="#FFB454" font-size="17" font-weight="600">&#8220;merged: your fix is in&#8221;</text>
+          <text x="990" y="367" text-anchor="middle" fill="#FFB454" font-size="17" font-weight="600">&#8220;land now: fix is green&#8221;</text>
         </g>
 
         <!-- ================= MAIN COMMITS ================= -->

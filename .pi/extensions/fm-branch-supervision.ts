@@ -638,6 +638,10 @@ export default function (pi: ExtensionAPI) {
   let pendingWakeGeneration = -1;
   const pendingWakeMessages: string[] = [];
   const lastDeliveredStaleByWindow = new Map<string, string>();
+  // One same-text offer can arrive after the active turn's eligible-row
+  // snapshot. Remember only the newest signal per window and re-run the normal
+  // durable queue scan once the serialized turn has settled.
+  const deferredStaleRechecks = new Map<string, { message: string; generation: number }>();
   const pendingMirror: MirrorItem[] = [];
   const mirrorCollection: MirrorCollectionState = {
     collectAnchor: null,
@@ -1422,7 +1426,11 @@ ${context.command}
       flushPendingWakes();
     }
     const staleWindow = staleWakeWindow(message);
-    if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) return;
+    if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) {
+      deferredStaleRechecks.set(staleWindow, { message, generation: acceptedGeneration });
+      return;
+    }
+    if (staleWindow) deferredStaleRechecks.delete(staleWindow);
     pendingWakeGeneration = acceptedGeneration;
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
     if (urgentWake(message)) {

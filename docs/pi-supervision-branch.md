@@ -103,7 +103,7 @@ Main can read the durable outcome store on demand through its `fm_branch_outcome
 
 Before starting a branch prompt, the extension holds non-urgent offers for a bounded 250 millisecond window and combines their unique wake text into one turn.
 For a given window, the first `stale:` delivery is urgent and bypasses that delay.
-An identical same-text `stale:` repeat for that window is store-only while that text remains the last-delivered stale, so it opens no branch turn and causes no re-prompt.
+An identical same-text `stale:` repeat for that window opens no immediate branch turn while the text remains in flight, but it records one deferred normal durable-queue recheck after the active eligible-row snapshot settles; that recheck claims and acknowledges any remaining branch-owned row, while an already-consumed row is an empty no-op.
 Same-text idle repeats inside the bounded window therefore open at most one branch turn.
 Urgent status-tail bypass applies when the final nonblank line starts with `done:`, `needs-decision:`, `blocked:`, or `failed:`, or contains `login`, `credential`, `credentials`, `PR ready`, `ready for review`, or `checks green`.
 The status-tail check reads only a validated direct child of the home `state/` directory whose filename follows the shared task-id grammar, reads at most 4 KiB through a no-follow, nonblocking descriptor, and treats an unreadable or non-regular target as non-urgent.

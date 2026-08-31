@@ -213,12 +213,15 @@ The idle status footer visibly carried `1 shell · esc to interrupt`, so the his
 A real 150-second foreground Bash turn then produced repeated `rendered-busy` daemon deferrals carrying `native-state=working` and exact changing spinner rows such as `✽ Enchanting… (11s · ↓ 128 tokens)`.
 After the turn was interrupted, bright human composer text remained pending and unchanged with a `composer=pending` deferral.
 The colocated unit suites in `tests/fm-daemon.test.sh`, `tests/fm-backend-herdr.test.sh`, and `tests/fm-composer-lib.test.sh` pin the idle shell footer, agent-count and update footers, dim and dark-truecolor ghosts, real active-tool plus spinner context, exact matched-row logging, and the alarmed byte-stable false-busy recovery.
+The exact Incident-B ANSI row captured by the pre-PR-94 broad matcher was `  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage`.
+Incident C, observed on 2026-08-25, is treated as the same family by inference because it predates sub-cause logging and no contrary evidence is recorded here.
+The separately observed prompt-submit-to-spinner delivery race is excluded from this PR and filed as follow-up `fm-afk-prespinner-race-f1`.
 
 ```sh
-HERDR_LAB_HELPER=/Users/ivan/Projects/firstmate/bin/fm-herdr-lab.sh \
+HERDR_LAB_HELPER="$(git rev-parse --show-toplevel)/bin/fm-herdr-lab.sh" \
   FM_AFK_HERDR_CLAUDE_LIVE=1 \
   tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
-# verdict: idle-post-afk agent_status=working composer=empty pane_is_busy_rc=1 broad_match_rc=0 scoped_match_rc=1 subcause=idle native-state=working matched-row=none
+# verdict: idle-post-afk agent_status=working composer=empty pane_is_busy_rc=1 broad_match_rc=0 scoped_match_rc=1 subcause=idle native-state=working matched-row=  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage
 # ok - real Herdr 0.8.2 + Claude 2.1.251 (Claude Code): native working with rendered-idle empty composer submits once
 # verdict: active-foreground agent_status=working composer=empty pane_is_busy_rc=0 broad_match_rc=0 scoped_match_rc=0 subcause=rendered-busy native-state=working matched-row=· Moseying… (12s · ↓ 127 tokens)
 # verdict: pending-human-text agent_status=idle composer=pending pane_is_busy_rc=1 broad_match_rc=1 scoped_match_rc=1 subcause=idle native-state=idle matched-row=none

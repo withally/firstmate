@@ -2673,12 +2673,19 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
 # shared matcher uses its union of verified tokens, which is what the submit
 # core wants: it has no recorded harness for the pane.
 fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unknown
-  local target=$1 harness=${2:-} cap visible
-  cap=$(fm_backend_herdr_capture "$target" 40) || { printf 'unknown'; return 0; }
+  local target=$1 harness=${2:-} cap visible caps
+  if cap=$(fm_backend_herdr_capture_ansi "$target" 40 2>/dev/null) && [ -n "$cap" ]; then
+    caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+  elif cap=$(fm_backend_herdr_capture "$target" 40); then
+    caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+  else
+    printf 'unknown'
+    return 0
+  fi
   visible=$(printf '%s' "$cap" | grep -v '^[[:space:]]*$' | tail -12)
   [ -n "$visible" ] || { printf 'unknown'; return 0; }
   if [ "$harness" = claude ]; then
-    if printf '%s' "$visible" | fm_claude_current_footer_busy; then
+    if printf '%s' "$visible" | fm_claude_current_footer_busy "$caps"; then
       printf 'busy'
     else
       case "$?" in

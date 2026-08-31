@@ -126,10 +126,18 @@ composer_state() {
 }
 
 rendered_claude_busy() {
-  local capture
-  capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null) || return 1
+  local capture caps
+  if ! declare -F fm_backend_herdr_capture_ansi >/dev/null 2>&1; then
+    fm_backend_source herdr >/dev/null 2>&1 || return 1
+  fi
+  if capture=$(fm_backend_herdr_capture_ansi "$TARGET" 40 2>/dev/null) && [ -n "$capture" ]; then
+    caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+  else
+    caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+    capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null) || return 1
+  fi
   capture=$(printf '%s' "$capture" | grep -v '^[[:space:]]*$' | tail -12)
-  fm_claude_current_footer_busy <<< "$capture"
+  fm_claude_current_footer_busy "$caps" <<< "$capture"
 }
 
 claude_pane_is_busy() {
@@ -216,15 +224,21 @@ screen_ansi() {
 }
 
 emit_verdict_evidence() {
-  local label=$1 busy_rc=1 broad_rc=1 scoped_rc=1 capture
+  local label=$1 busy_rc=1 broad_rc=1 scoped_rc=1 capture caps
   claude_pane_is_busy && busy_rc=0
-  capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null | grep -v '^[[:space:]]*$' | tail -12)
+  if capture=$(fm_backend_herdr_capture_ansi "$TARGET" 40 2>/dev/null) && [ -n "$capture" ]; then
+    caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+  else
+    caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+    capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null)
+  fi
+  capture=$(printf '%s' "$capture" | grep -v '^[[:space:]]*$' | tail -12)
   fm_busy_lines_match claude <<< "$capture" && broad_rc=0
-  fm_claude_current_footer_busy <<< "$capture" && scoped_rc=0
+  fm_claude_current_footer_busy "$caps" <<< "$capture" && scoped_rc=0
   printf 'verdict: %s agent_status=%s composer=%s pane_is_busy_rc=%s broad_match_rc=%s scoped_match_rc=%s subcause=%s native-state=%s matched-row=%s\n' \
     "$label" "$(agent_status)" "$(composer_state)" "$busy_rc" "$broad_rc" "$scoped_rc" \
     "${FM_PANE_BUSY_REASON:-idle}" "${FM_PANE_NATIVE_BUSY_STATE:-unknown}" \
-    "${FM_PANE_BUSY_MATCHED_ROW:-none}"
+    "${FM_BUSY_MATCHED_ROW:-none}"
   printf 'ansi-rows-begin: %s\n' "$label"
   screen_ansi | tail -n 16
   printf 'ansi-rows-end: %s\n' "$label"

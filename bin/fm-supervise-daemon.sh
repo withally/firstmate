@@ -215,6 +215,7 @@ WEDGE_ALARM_LAST_EPOCH=0
 WEDGE_ALARM_NOTIFIER_PID=
 FM_RENDERED_BUSY_LAST_ROW=
 FM_RENDERED_BUSY_STREAK=0
+FM_RENDERED_BUSY_RECOVERY_SUBCAUSE=
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
@@ -604,7 +605,7 @@ fm_daemon_primary_harness() {
 }
 
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 visible harness claude_footer_rc
+  local target=$1 backend=${2:-tmux} native tail40 visible harness claude_footer_rc claude_capture_caps
   FM_PANE_BUSY_REASON=
   FM_PANE_NATIVE_BUSY_STATE=
   FM_PANE_BUSY_MATCHED_ROW=
@@ -621,16 +622,23 @@ pane_is_busy() {  # <target> [backend]
     # Herdr's native working state includes Claude's tracked away daemon shell.
     # For this pair, native state is diagnostic only and the rendered Claude
     # active-turn signature is the positive foreground-busy proof.
-    tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
-      FM_PANE_BUSY_REASON='unreadable'
-      return 1
-    }
+    if declare -F fm_backend_herdr_capture_ansi >/dev/null 2>&1 \
+      && tail40=$(fm_backend_herdr_capture_ansi "$target" 40 2>/dev/null) \
+      && [ -n "$tail40" ]; then
+      claude_capture_caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+    else
+      claude_capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+      tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+        FM_PANE_BUSY_REASON='unreadable'
+        return 1
+      }
+    fi
     visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
     [ -n "$visible" ] || {
       FM_PANE_BUSY_REASON='unreadable'
       return 1
     }
-    if fm_claude_current_footer_busy <<< "$visible"; then
+    if fm_claude_current_footer_busy "$claude_capture_caps" <<< "$visible"; then
       FM_PANE_BUSY_REASON='rendered-busy'
       FM_PANE_BUSY_MATCHED_ROW=${FM_CLAUDE_BUSY_MATCHED_ROW:-unknown}
       return 0
@@ -664,28 +672,36 @@ pane_is_busy() {  # <target> [backend]
 rendered_busy_recovery_ready() {  # <state> <backend> <harness> <native-state> <matched-row>
   local state=$1 backend=$2 harness=$3 native_state=$4 matched_row=$5 polls terminal_record composer
   FM_RENDERED_BUSY_RECOVERY_COMPOSER=
+  FM_RENDERED_BUSY_RECOVERY_SUBCAUSE=
   [ "$backend" = herdr ] && [ "$harness" = claude ] || return 1
   [ -s "$state/.subsuper-inject-wedged" ] || {
     FM_RENDERED_BUSY_LAST_ROW=
     FM_RENDERED_BUSY_STREAK=0
     return 1
   }
-  # A static bare `esc to interrupt` footer can belong to a real long-running
-  # turn. Recovery is limited to a byte-stable row carrying a frozen elapsed
-  # value, the exact stale-transcript shape from incident B.
+  case "$native_state" in
+    working)
+      terminal_record=$(cat "$state/.afk-daemon-terminal" 2>/dev/null || true)
+      [ "$terminal_record" = $'none\t-\tnative' ] || {
+        FM_RENDERED_BUSY_LAST_ROW=
+        FM_RENDERED_BUSY_STREAK=0
+        return 1
+      }
+      ;;
+    idle|done)
+      ;;
+    *)
+      FM_RENDERED_BUSY_RECOVERY_SUBCAUSE=native-unknown
+      FM_RENDERED_BUSY_LAST_ROW=
+      FM_RENDERED_BUSY_STREAK=0
+      return 1
+      ;;
+  esac
   printf '%s\n' "$matched_row" | grep -qE '\([0-9]+[smh]([[:space:]·•]|\))' || {
     FM_RENDERED_BUSY_LAST_ROW=
     FM_RENDERED_BUSY_STREAK=0
     return 1
   }
-  if [ "$native_state" = working ]; then
-    terminal_record=$(cat "$state/.afk-daemon-terminal" 2>/dev/null || true)
-    [ "$terminal_record" = $'none\t-\tnative' ] || {
-      FM_RENDERED_BUSY_LAST_ROW=
-      FM_RENDERED_BUSY_STREAK=0
-      return 1
-    }
-  fi
   polls=${FM_RENDERED_BUSY_RECOVERY_POLLS:-$RENDERED_BUSY_RECOVERY_POLLS_DEFAULT}
   case "$polls" in ''|*[!0-9]*|0) polls=$RENDERED_BUSY_RECOVERY_POLLS_DEFAULT ;; esac
   if [ "$matched_row" = "$FM_RENDERED_BUSY_LAST_ROW" ]; then
@@ -1442,7 +1458,9 @@ inject_msg() {  # <message> [state]
           FM_RENDERED_BUSY_LAST_ROW=
           FM_RENDERED_BUSY_STREAK=0
         else
-          if [ -n "${FM_RENDERED_BUSY_RECOVERY_COMPOSER:-}" ]; then
+          if [ -n "${FM_RENDERED_BUSY_RECOVERY_SUBCAUSE:-}" ]; then
+            log "inject deferred: supervisor pane busy (native state not proven safe; subcause=${FM_RENDERED_BUSY_RECOVERY_SUBCAUSE}; recovery-from=rendered-busy; native-state=$native_state; matched-row=$matched_row)"
+          elif [ -n "${FM_RENDERED_BUSY_RECOVERY_COMPOSER:-}" ]; then
             log "inject deferred: supervisor composer not confirmed-empty (state=${FM_RENDERED_BUSY_RECOVERY_COMPOSER}: pending input, dead-shell prompt, or unreadable pane; subcause=composer=${FM_RENDERED_BUSY_RECOVERY_COMPOSER}; recovery-from=rendered-busy; native-state=$native_state; matched-row=$matched_row)"
           else
             log "inject deferred: supervisor pane busy (agent mid-turn; subcause=rendered-busy; native-state=$native_state; matched-row=$matched_row)"

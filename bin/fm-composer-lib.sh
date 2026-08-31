@@ -363,8 +363,10 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local lines plain footer footer_row composer caps verdict active_rows preceding screen_caps screen_verdict
+  local capture_caps=${1:-} lines plain footer footer_row composer caps verdict active_rows preceding screen_verdict
+  local active_hint=0 active_tool=0
   FM_CLAUDE_BUSY_MATCHED_ROW=
+  [ -n "$capture_caps" ] || capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
@@ -379,21 +381,20 @@ fm_claude_current_footer_busy() {
   ')
   _fm_composer_scan_screen "$composer" ''
   _fm_composer_select_cursorless "$composer" || return 2
-  screen_caps=$(printf '%s\n' 'styled=1' 'cursor=0' 'identity=0' 'rows=12')
-  screen_verdict=$(fm_composer_classify_screen "$screen_caps" "$lines")
-  case "$screen_verdict" in
-    pending|pending-unproven) return 1 ;;
-  esac
+  screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$lines")
   active_rows=$(printf '%s\n' "$composer" | awk \
     -v first="$FM_COMPOSER_SELECTED_FIRST" -v last="$FM_COMPOSER_SELECTED_LAST" \
     'NR - 1 >= first && NR - 1 <= last { print }')
   preceding=$(printf '%s\n' "$composer" | awk \
     -v first="$FM_COMPOSER_SELECTED_FIRST" 'NR <= first { print }' \
     | grep -v '^[[:space:]]*$' | tail -8)
-  if [ "$screen_verdict" = empty ] \
-     && { printf '%s\n' "$active_rows" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX" \
-     || { printf '%s\n' "$preceding" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX" \
-          && printf '%s\n' "$preceding" | grep -Fq '(ctrl+b to run in background)'; }; }; then
+  printf '%s\n' "$active_rows" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX" && active_hint=1
+  printf '%s\n' "$preceding" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX" && active_tool=1
+  if { [ "$screen_verdict" = empty ] \
+       || { [ "$screen_verdict" = pending ] && [ "$active_hint" = 1 ]; }; } \
+     && { [ "$active_hint" = 1 ] \
+          || { [ "$active_tool" = 1 ] \
+               && printf '%s\n' "$preceding" | grep -Fq '(ctrl+b to run in background)'; }; }; then
     if fm_busy_lines_match claude <<< "$preceding"; then
       # shellcheck disable=SC2034 # Output read by sourcing callers after this function returns.
       FM_CLAUDE_BUSY_MATCHED_ROW=${FM_BUSY_MATCHED_ROW:-unknown}
@@ -401,6 +402,9 @@ fm_claude_current_footer_busy() {
     fi
     return 2
   fi
+  case "$screen_verdict" in
+    pending|pending-unproven) return 1 ;;
+  esac
   caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
   verdict=$(fm_composer_classify_screen "$caps" "$composer")
   [ "$verdict" = empty ] || return 2

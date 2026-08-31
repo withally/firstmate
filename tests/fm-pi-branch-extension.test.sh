@@ -1183,8 +1183,9 @@ test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
   home="$TMP_ROOT/coalesced-dispatch-home"
   mkdir -p "$home/state" "$home/config"
   install_pi_branch_extension_fixture "$repo"
-  out=$(PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_TEST_BRANCH_WAKE_COALESCE_MS=1000 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module 2>&1 <<'EOF'
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_TEST_BRANCH_WAKE_COALESCE_MS=1000 DRIVER_PRELUDE="$DRIVER_PRELUDE" \
+    node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, fire, mainUserMessages, home }; })()`);
 const { dispatch, settle, fire, mainUserMessages, home } = globalThis.__t;
@@ -1208,6 +1209,13 @@ if ((globalThis.__fmPrompts ?? []).length !== 1) {
 }
 
 const repeated = "stale: assets waiting-for-merge";
+// This presentation-only probe does not run the branch's real drain loop.
+// Consume its synthetic row when the prompt starts so the deferred durable-row
+// recheck remains an empty no-op; the actor-scoped acknowledgement behavior is
+// exercised below through the real wake-drain script.
+globalThis.__fmOnBranchPrompt = async () => {
+  writeFileSync(`${home}/state/.wake-queue`, "");
+};
 const staleStarted = Date.now();
 for (let index = 0; index < 3; index += 1) {
   const offer = dispatch(repeated);
@@ -1221,6 +1229,7 @@ await new Promise((resolve) => setTimeout(resolve, 450));
 if ((globalThis.__fmPrompts ?? []).length !== 2) {
   throw new Error(`same-text repeats opened ${globalThis.__fmPrompts.length} branch turns`);
 }
+delete globalThis.__fmOnBranchPrompt;
 
 const statusPath = `${home}/state/branch-driver.status`;
 const urgentStatusLines = [
@@ -1318,11 +1327,116 @@ if (!readFileSync(`${home}/state/.wake-queue`, "utf8").includes("branch-driver.s
   throw new Error("shutdown cleared the durable wake instead of leaving it queued");
 }
 EOF
-  )
   status=$?
+  out=$(cat "$TMP_ROOT/node-output")
   expect_code 0 "$status" "Pi branch must coalesce same-text routine floods and bypass the delay for urgent work: $out"
   [ -z "$out" ] || fail "Pi branch wake-coalescing test printed output: $out"
-  pass "Pi branch coalesces same-text routine floods and bypasses the delay for urgent work"
+
+  home="$TMP_ROOT/coalesced-routine-ack-home"
+  mkdir -p "$home/state" "$home/config"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_TEST_BRANCH_WAKE_COALESCE_MS=1000 DRIVER_PRELUDE="$DRIVER_PRELUDE" \
+    node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { bus, makeOffer, settle, home, realRoot }; })()`);
+const { bus, makeOffer, settle, home, realRoot } = globalThis.__t;
+import { appendFileSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+
+const queue = `${home}/state/.wake-queue`;
+const repeated = "stale: assets waiting-for-merge";
+let promptCount = 0;
+let ackCount = 0;
+let appendAfterSnapshot = false;
+
+globalThis.__fmExecuteBranchBash = async (context) => {
+  const actor = spawnSync(
+    "bash",
+    ["-c", '. "$1"; fm_lease_actor', "_", `${realRoot}/bin/fm-lease-lib.sh`],
+    { encoding: "utf8", cwd: context.cwd, env: context.env },
+  );
+  if (actor.status !== 0 || actor.stdout.trim() !== "branch") {
+    throw new Error(`branch bash actor resolution failed: ${actor.stdout}${actor.stderr}`);
+  }
+  const result = spawnSync("bash", ["-c", context.command], {
+    encoding: "utf8",
+    cwd: context.cwd,
+    env: context.env,
+  });
+  return {
+    content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
+    details: { stdout: result.stdout, stderr: result.stderr, exitCode: result.status },
+    isError: result.status !== 0,
+  };
+};
+
+function appendStale(seq) {
+  appendFileSync(queue, `${seq}\t${seq}\tstale\tbranch-driver\t${repeated}\n`);
+  const offer = makeOffer(repeated);
+  bus.emit("fm-branch-supervision:dispatch", offer);
+  if (!offer.accepted) throw new Error(`stale row ${seq} was not accepted`);
+}
+
+async function runWakeDrain(session, args) {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const result = await bash.execute(
+    `routine-ack-${promptCount}-${ackCount}`,
+    { command: ["bin/fm-wake-drain.sh", ...args].join(" ") },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error(`wake drain failed: ${JSON.stringify(result)}`);
+  return result.details;
+}
+
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  if (appendAfterSnapshot) {
+    appendAfterSnapshot = false;
+    appendStale(5);
+  }
+  const drained = await runWakeDrain(session, []);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stderr}`);
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    `routine-${promptCount}`,
+    { task: "branch-driver", verdict: "routine", summary: "routine stale classification", wake: repeated },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error(`routine report failed: ${JSON.stringify(result)}`);
+  await runWakeDrain(session, ["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+  ackCount += 1;
+};
+
+// All three rows exist before the first serialized pre-drain scan. The
+// repeated offers must collapse to one prompt whose one acknowledgement owns
+// the complete snapshot.
+appendStale(1);
+appendStale(2);
+appendStale(3);
+await settle(() => ackCount === 1, "one acknowledgement for the pre-scan duplicates");
+if (promptCount !== 1) throw new Error(`pre-scan duplicates opened ${promptCount} prompts`);
+if (readFileSync(queue, "utf8") !== "") throw new Error("pre-scan duplicate rows remained queued after acknowledgement");
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (promptCount !== 1 || ackCount !== 1) throw new Error("an already-consumed pre-scan duplicate opened another turn");
+
+// Row 5 arrives only after row 4's eligible-row snapshot has been published.
+// It therefore needs one deferred normal recheck after row 4 settles.
+appendAfterSnapshot = true;
+appendStale(4);
+await settle(() => ackCount === 3, "deferred acknowledgement for the post-snapshot duplicate");
+if (promptCount !== 3) throw new Error(`post-snapshot duplicate produced ${promptCount - 1} prompts instead of two`);
+if (readFileSync(queue, "utf8") !== "") throw new Error("post-snapshot duplicate remained in the durable wake queue");
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "Pi branch must recheck an accepted identical stale row after the current snapshot settles: $out"
+  [ -z "$out" ] || fail "Pi branch routine acknowledgement regression printed output: $out"
+  pass "Pi branch coalesces routine floods, bypasses urgent delay, and rechecks post-snapshot stale rows"
 }
 
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {

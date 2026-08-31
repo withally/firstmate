@@ -1,0 +1,57 @@
+== registry resolution ==
+primary: firstmate
+legacy yolo-on fallback: self
+== ship brief ==
+scaffolded: /tmp/fm-authority-e2e.vcpGb7/main/data/spawn-e2e/brief.md (ship, mode=direct-PR; replace {TASK})
+Merge authority: firstmate
+For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through `bin/fm-send.sh <task> --resolve-key <key>`:
+Delivery contract: mode=direct-PR
+== secondmate charter ==
+scaffolded: /tmp/fm-authority-e2e.vcpGb7/main/data/charter-e2e/brief.md (secondmate charter)
+# Merge authority
+- primary: merge-authority=firstmate
+- legacy: merge-authority=self
+
+For this tier, the supervising home must check in with its parent at all four boundaries by appending the exact keyed event shown, then stop until the parent answers through `bin/fm-send.sh <task> --resolve-key <key>`:
+
+- Before dispatch: `needs-decision [key=before-dispatch-<task-id>]: parent firstmate approval required before dispatch`.
+- Before landing: `needs-decision [key=before-landing-<task-id>]: parent firstmate approval required before landing`.
+- Twice-failed blocker: `needs-decision [key=twice-failed-blocker-<task-id>]: parent firstmate direction required after the same blocker fails twice`.
+- Worker finish: `needs-decision [key=worker-finish-<task-id>]: parent firstmate review required when the worker finishes`.
+
+The parent firstmate may approve green, in-scope engine work.
+Product, destructive, device, irreversible, and security-sensitive calls still go to the captain, and no authority tier permits a red merge.
+
+== fm-spawn durable task record ==
+rc=0
+spawned spawn-e2e harness=true kind=ship mode=direct-PR yolo=off window=firstmate:fm-spawn-e2e worktree=/tmp/fm-authority-e2e.vcpGb7/worktree merge_authority=firstmate
+mode=direct-PR
+yolo=off
+merge_authority=firstmate
+spawn_gen=s1788142808.8487.10228
+== parent answer through fm-send --resolve-key ==
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+needs-decision [key=before-landing-local-e2e]: approve local landing
+resolved [key=before-landing-local-e2e]: answered: approve green local landing
+== approved local landing ==
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+merged fm/local-e2e into local main (d09e06c -> 910d579) in /tmp/fm-authority-e2e.vcpGb7/primary
+main head: 910d579
+== approved but red GitHub PR is refused ==
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+rc=1
+error: GitHub PR checks are not green; refusing before merge
+forge calls (no merge expected):
+pr checks 99 -R example/repo

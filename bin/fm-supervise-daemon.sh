@@ -117,6 +117,11 @@
 #                                   absent file/var means auto: on macOS that is
 #                                   an OS-level notification, so the alarm is
 #                                   never silent. See wedge_alarm_notify below
+#          FM_RENDERED_BUSY_RECOVERY_POLLS
+#                                   identical Claude rendered-busy polls needed
+#                                   after a max-defer alarm before the daemon may
+#                                   re-check an elapsed footer against an empty
+#                                   composer (default 3)
 #                                   and docs/configuration.md.
 #          FM_WEDGE_ALARM_EXEC      notifier seam: when set, every notifier
 #                                   channel routes through this command as
@@ -153,7 +158,7 @@ FM_DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$FM_DAEMON_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
-# Shared tmux pane primitives for supervisor injection (busy/composer detection
+# Shared pane primitives for supervisor injection (busy/composer detection
 # + verify-retry submit). Sourced at top level so BOTH the executed daemon and
 # the unit tests (which source this file for its pure functions) get the
 # corrected composer detection. Stale task rechecks use fm-backend.sh below.
@@ -204,9 +209,13 @@ HOUSEKEEPING_TICK_DEFAULT=15
 # the normal flush path and, if that cannot confirm a submit, raises a loud wedge
 # alarm. The escape hatch makes a guard false-positive visible instead of silent.
 MAX_DEFER_SECS_DEFAULT=300
+RENDERED_BUSY_RECOVERY_POLLS_DEFAULT=3
 WEDGE_ALARM_TIMEOUT_SECS_DEFAULT=10
 WEDGE_ALARM_LAST_EPOCH=0
 WEDGE_ALARM_NOTIFIER_PID=
+FM_RENDERED_BUSY_LAST_ROW=
+FM_RENDERED_BUSY_STREAK=0
+FM_RENDERED_BUSY_RECOVERY_SUBCAUSE=
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
@@ -596,9 +605,10 @@ fm_daemon_primary_harness() {
 }
 
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 visible harness claude_footer_rc
+  local target=$1 backend=${2:-tmux} native tail40 visible harness claude_footer_rc claude_capture_caps
   FM_PANE_BUSY_REASON=
   FM_PANE_NATIVE_BUSY_STATE=
+  FM_PANE_BUSY_MATCHED_ROW=
   fm_daemon_primary_harness >/dev/null
   harness=${FM_DAEMON_PRIMARY_HARNESS:-unknown}
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
@@ -612,17 +622,25 @@ pane_is_busy() {  # <target> [backend]
     # Herdr's native working state includes Claude's tracked away daemon shell.
     # For this pair, native state is diagnostic only and the rendered Claude
     # active-turn signature is the positive foreground-busy proof.
-    tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
-      FM_PANE_BUSY_REASON='unreadable'
-      return 1
-    }
+    if declare -F fm_backend_herdr_capture_ansi >/dev/null 2>&1 \
+      && tail40=$(fm_backend_herdr_capture_ansi "$target" 40 2>/dev/null) \
+      && [ -n "$tail40" ]; then
+      claude_capture_caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+    else
+      claude_capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+      tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+        FM_PANE_BUSY_REASON='unreadable'
+        return 1
+      }
+    fi
     visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
     [ -n "$visible" ] || {
       FM_PANE_BUSY_REASON='unreadable'
       return 1
     }
-    if printf '%s' "$visible" | fm_claude_current_footer_busy; then
+    if fm_claude_current_footer_busy "$claude_capture_caps" <<< "$visible"; then
       FM_PANE_BUSY_REASON='rendered-busy'
+      FM_PANE_BUSY_MATCHED_ROW=${FM_CLAUDE_BUSY_MATCHED_ROW:-unknown}
       return 0
     else
       claude_footer_rc=$?
@@ -642,9 +660,61 @@ pane_is_busy() {  # <target> [backend]
   if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
     | fm_busy_lines_match "$harness"; then
     FM_PANE_BUSY_REASON='rendered-busy'
+    visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
+    if fm_busy_lines_match "$harness" <<< "$visible"; then
+      FM_PANE_BUSY_MATCHED_ROW=${FM_BUSY_MATCHED_ROW:-unknown}
+    fi
     return 0
   fi
   return 1
+}
+
+rendered_busy_recovery_ready() {  # <state> <backend> <harness> <native-state> <matched-row>
+  local state=$1 backend=$2 harness=$3 native_state=$4 matched_row=$5 polls terminal_record composer
+  FM_RENDERED_BUSY_RECOVERY_COMPOSER=
+  FM_RENDERED_BUSY_RECOVERY_SUBCAUSE=
+  [ "$backend" = herdr ] && [ "$harness" = claude ] || return 1
+  [ -s "$state/.subsuper-inject-wedged" ] || {
+    FM_RENDERED_BUSY_LAST_ROW=
+    FM_RENDERED_BUSY_STREAK=0
+    return 1
+  }
+  case "$native_state" in
+    working)
+      terminal_record=$(cat "$state/.afk-daemon-terminal" 2>/dev/null || true)
+      [ "$terminal_record" = $'none\t-\tnative' ] || {
+        FM_RENDERED_BUSY_LAST_ROW=
+        FM_RENDERED_BUSY_STREAK=0
+        return 1
+      }
+      ;;
+    idle|done)
+      ;;
+    *)
+      FM_RENDERED_BUSY_RECOVERY_SUBCAUSE='native-unknown'
+      FM_RENDERED_BUSY_LAST_ROW=
+      FM_RENDERED_BUSY_STREAK=0
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$matched_row" | grep -qE '\([0-9]+[smh]([[:space:]·•]|\))' || {
+    FM_RENDERED_BUSY_LAST_ROW=
+    FM_RENDERED_BUSY_STREAK=0
+    return 1
+  }
+  polls=${FM_RENDERED_BUSY_RECOVERY_POLLS:-$RENDERED_BUSY_RECOVERY_POLLS_DEFAULT}
+  case "$polls" in ''|*[!0-9]*|0) polls=$RENDERED_BUSY_RECOVERY_POLLS_DEFAULT ;; esac
+  if [ "$matched_row" = "$FM_RENDERED_BUSY_LAST_ROW" ]; then
+    FM_RENDERED_BUSY_STREAK=$((FM_RENDERED_BUSY_STREAK + 1))
+  else
+    FM_RENDERED_BUSY_LAST_ROW=$matched_row
+    FM_RENDERED_BUSY_STREAK=1
+  fi
+  [ "$FM_RENDERED_BUSY_STREAK" -ge "$polls" ] || return 1
+  composer=$(fm_backend_composer_state "$backend" "${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}" 2>/dev/null)
+  FM_RENDERED_BUSY_RECOVERY_COMPOSER=${composer:-unknown}
+  [ "$composer" = empty ] || return 1
+  return 0
 }
 
 # pane_input_pending dispatches through fm_backend_composer_state and treats
@@ -1348,7 +1418,7 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target backend harness retries sleep_s verdict composer encoded native_state busy_rc
+  local msg=$1 state target backend harness retries sleep_s verdict composer encoded native_state busy_rc matched_row recovery_polls
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -1378,15 +1448,38 @@ inject_msg() {  # <message> [state]
   native_state=${FM_PANE_NATIVE_BUSY_STATE:-unknown}
   if [ "$busy_rc" -eq 0 ] || [ "${FM_PANE_BUSY_REASON:-}" = unreadable ]; then
     case "${FM_PANE_BUSY_REASON:-native-busy}" in
-      native-busy|rendered-busy)
+      rendered-busy)
+        matched_row=${FM_PANE_BUSY_MATCHED_ROW:-unknown}
+        harness=$(fm_daemon_primary_harness)
+        if rendered_busy_recovery_ready "$state" "$backend" "$harness" "$native_state" "$matched_row"; then
+          recovery_polls=${FM_RENDERED_BUSY_RECOVERY_POLLS:-$RENDERED_BUSY_RECOVERY_POLLS_DEFAULT}
+          composer=empty
+          log "inject recovery: alarm-fired stable rendered-busy row for ${recovery_polls} polls; native-state=$native_state; composer=empty; matched-row=$matched_row"
+          FM_RENDERED_BUSY_LAST_ROW=
+          FM_RENDERED_BUSY_STREAK=0
+        else
+          if [ -n "${FM_RENDERED_BUSY_RECOVERY_SUBCAUSE:-}" ]; then
+            log "inject deferred: supervisor pane busy (native state not proven safe; subcause=${FM_RENDERED_BUSY_RECOVERY_SUBCAUSE}; recovery-from=rendered-busy; native-state=$native_state; matched-row=$matched_row)"
+          elif [ -n "${FM_RENDERED_BUSY_RECOVERY_COMPOSER:-}" ]; then
+            log "inject deferred: supervisor composer not confirmed-empty (state=${FM_RENDERED_BUSY_RECOVERY_COMPOSER}: pending input, dead-shell prompt, or unreadable pane; subcause=composer=${FM_RENDERED_BUSY_RECOVERY_COMPOSER}; recovery-from=rendered-busy; native-state=$native_state; matched-row=$matched_row)"
+          else
+            log "inject deferred: supervisor pane busy (agent mid-turn; subcause=rendered-busy; native-state=$native_state; matched-row=$matched_row)"
+          fi
+          return 1
+        fi
+        ;;
+      native-busy)
         log "inject deferred: supervisor pane busy (agent mid-turn; subcause=${FM_PANE_BUSY_REASON:-native-busy}; native-state=$native_state)"
+        return 1
         ;;
       *)
         log "inject deferred: supervisor pane unreadable (subcause=${FM_PANE_BUSY_REASON:-unknown}; native-state=$native_state)"
+        return 1
         ;;
     esac
-    return 1
   fi
+  FM_RENDERED_BUSY_LAST_ROW=
+  FM_RENDERED_BUSY_STREAK=0
   #   b) Composer-guard: inject ONLY into a confirmed-empty GENUINE agent
   #      composer. The shared classifier (fm_backend_composer_state ->
   #      fm_composer_classify_content, bin/fm-composer-lib.sh) reports 'pending'
@@ -1396,7 +1489,9 @@ inject_msg() {  # <message> [state]
   #      target - typing the escalation into a shell could execute it - so defer
   #      on anything that is not affirmatively 'empty'. A deferred escalation
   #      stays buffered for the next cycle or the catch-up flush.
-  composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
+  if [ "${composer:-}" != empty ]; then
+    composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
+  fi
   if [ "$composer" != empty ]; then
     log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input, dead-shell prompt, or unreadable pane; subcause=composer=${composer:-unknown}; native-state=$native_state)"
     return 1

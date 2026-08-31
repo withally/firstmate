@@ -93,9 +93,10 @@ injection, dispatched through `bin/fm-backend.sh` for the supervisor's own
 backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 
 - **Primary-pane busy guard** - `pane_is_busy` keeps the Herdr native-busy fast path except for a Herdr primary detected as Claude, where native `working` is diagnostic only because the tracked away daemon shell can keep it set after the foreground turn ends.
-  For that pair, the shared position- and shape-aware current-footer predicate is the rendered busy proof used before injection and around submit confirmation; rendered idle falls through to the affirmative `empty` composer guard, and unreadable or structurally ambiguous capture still defers.
+  For that pair, the shared position- and shape-aware current-context predicate is the rendered busy proof used before injection and around submit confirmation; styled capture capabilities keep dim and dark truecolor ghosts out of the typed-input verdict, rendered idle falls through to the affirmative `empty` composer guard, and unreadable or structurally ambiguous capture still defers.
   Submit confirmation for the same pair requires that predicate to transition from idle across the queued Enter or requires the composer to clear; native `working` alone never proves delivery.
-  Busy or composer deferrals name `native-busy`, `rendered-busy`, or `composer=<verdict>` in the daemon log, while an unreadable busy-guard capture is named `unreadable`; Herdr's semantic `busy` diagnostic is recorded as native `working`.
+  Busy or composer deferrals name `native-busy`, `rendered-busy`, or `composer=<verdict>` in the daemon log, while an unreadable busy-guard capture is named `unreadable`; every `rendered-busy` deferral includes the exact matched row, and Herdr's semantic `busy` diagnostic is recorded as native `working`.
+  The post-alarm Herdr+Claude recovery exception is the byte-stable elapsed-row gate described in `docs/herdr-backend.md`; it never overrides a pending or unknown composer verdict.
   The full contract is in `docs/herdr-backend.md` under “Away-mode supervisor support”.
 - **Composer-state guard** - `inject_msg` reads the full `empty`/`pending`/`pending-unproven`/`unknown` verdict from `fm_backend_composer_state` and injects only when it is affirmatively `empty`.
   Every other or future verdict defers, including an unreadable pane, ambiguous geometry, a blank unidentified row, and a bare shell prompt left after the agent exits.
@@ -115,6 +116,7 @@ an ERROR in the daemon log, a durable
 `state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
 catch-up if present), a tmux status-line flash when applicable, and a configurable backend-independent active alert.
 `docs/wedge-alarm.md` owns the alert channel setup, and `docs/verification/supervision.md` "Wedge-alarm channels" owns active evidence.
+After that alarm, only the documented Herdr+Claude byte-stable rendered-row recovery may recheck the composer, and it still requires exact `empty`.
 So a guard false-positive becomes a visible stall, never an unbounded silent no-op.
 
 ## Submit model

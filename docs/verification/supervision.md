@@ -205,16 +205,30 @@ tests/fm-busy-adapter-wiring.test.sh
 tests/fm-crew-state.test.sh
 ```
 
-### Herdr+Claude away-mode busy guard, 2026-08-28
+### Herdr+Claude away-mode busy guard, 2026-08-31
 
-The final Herdr-lab regression passed with Herdr 0.8.2 and Claude Code 2.1.248.
-Native `agent_status=working` with a rendered-idle Claude pane and an `empty` composer delivered one queued escalation and cleared the buffer, a genuine foreground turn produced a `rendered-busy` deferral carrying `native-state=working`, and bright human composer text remained pending and unchanged with a `composer=pending` deferral.
-The colocated unit suites in `tests/fm-daemon.test.sh` and `tests/fm-backend-herdr.test.sh` also prove that Claude native working plus rendered-idle pending text is not confirmed, accept rendered active-turn proof, hard-defer unreadable capture, and preserve the `native-busy` fast path for every non-Herdr+Claude combination.
+The final guarded Herdr-lab regression passed on 2026-08-31 with Herdr 0.8.2 and Claude Code 2.1.251.
+Native `agent_status=working` with an idle Claude pane and an `empty` composer delivered one queued escalation and cleared the buffer exactly once.
+The idle status footer visibly carried `1 shell · esc to interrupt`, so the historical broad matcher returned busy while the scoped matcher correctly returned idle.
+A real 150-second foreground Bash turn then produced repeated `rendered-busy` daemon deferrals carrying `native-state=working` and exact changing spinner rows such as `✽ Enchanting… (11s · ↓ 128 tokens)`.
+After the turn was interrupted, bright human composer text remained pending and unchanged with a `composer=pending` deferral.
+The colocated unit suites in `tests/fm-daemon.test.sh`, `tests/fm-backend-herdr.test.sh`, and `tests/fm-composer-lib.test.sh` pin the idle shell footer, agent-count and update footers, dim and dark-truecolor ghosts, real active-tool plus spinner context, exact matched-row logging, and the alarmed byte-stable false-busy recovery.
+The reconstructed failure separates trigger, masking condition, and symptom: `/afk` left Claude's tracked background Bash visible to Herdr as native `working`; the pre-PR-94 unanchored last-12-row matcher treated the exact status-footer token as rendered busy before the composer guard; and the daemon retained the digest until the max-defer alarm.
+The exact Incident-B ANSI row captured by the pre-PR-94 broad matcher was `  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage`.
+Replacing only `esc to interrupt` in that row with `turn finished` flipped the broad matcher to idle while the scoped matcher stayed idle, proving the smallest footer-token counterfactual.
+The recovery matrix admits three identical `• Working (4s • esc to interrupt)` rows only with the tracked daemon-terminal condition and an `empty` composer; a durationless row, a pending composer, and unknown native state remain deferred.
+Incident C, observed on 2026-08-25, is treated as the same family by inference because it predates sub-cause logging and no contrary evidence is recorded here.
+The separately observed prompt-submit-to-spinner delivery race is excluded from this PR and filed as follow-up `fm-afk-prespinner-race-f1`.
 
 ```sh
-FM_AFK_HERDR_CLAUDE_LIVE=1 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
-# ok - real Herdr 0.8.2 + Claude 2.1.248 (Claude Code): native working with rendered-idle empty composer submits once
-# ok - real Herdr 0.8.2 + Claude 2.1.248 (Claude Code): rendered-busy and pending-composer deferrals preserve human text
+HERDR_LAB_HELPER="$(git rev-parse --show-toplevel)/bin/fm-herdr-lab.sh" \
+  FM_AFK_HERDR_CLAUDE_LIVE=1 \
+  tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
+# verdict: idle-post-afk agent_status=working composer=empty pane_is_busy_rc=1 broad_match_rc=0 scoped_match_rc=1 subcause=idle native-state=working matched-row=  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage
+# ok - real Herdr 0.8.2 + Claude 2.1.251 (Claude Code): native working with rendered-idle empty composer submits once
+# verdict: active-foreground agent_status=working composer=empty pane_is_busy_rc=0 broad_match_rc=0 scoped_match_rc=0 subcause=rendered-busy native-state=working matched-row=· Moseying… (12s · ↓ 127 tokens)
+# verdict: pending-human-text agent_status=idle composer=pending pane_is_busy_rc=1 broad_match_rc=1 scoped_match_rc=1 subcause=idle native-state=idle matched-row=none
+# ok - real Herdr 0.8.2 + Claude 2.1.251 (Claude Code): rendered-busy and pending-composer deferrals preserve human text
 # evidence: native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1
 ```
 

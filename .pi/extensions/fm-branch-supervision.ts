@@ -199,6 +199,12 @@ function positiveIntegerEnv(name: string, fallback: number): number {
   return Number.isSafeInteger(parsed) ? parsed : fallback;
 }
 
+function canonicalWakeSequence(raw: string): string | null {
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const canonical = raw.replace(/^0+/, "");
+  return canonical || null;
+}
+
 function validatedSignalStatusPath(token: string): string | null {
   const stateRoot = resolve(state);
   if (!isAbsolute(token) && token !== basename(token)) return null;
@@ -547,10 +553,10 @@ export default function (pi: ExtensionAPI) {
     wakeSeq: string;
     task: string;
     summary: string;
-    deliveryIssued: boolean;
   };
   let activeWakeContext: ActiveWakeContext | null = null;
   const pendingActionDeliveries = new Map<string, PendingActionDelivery>();
+  let rehydratedActionGeneration = -1;
 
   // Main's own current effort needs no such tracking: Pi answers it directly
   // on demand, including at wake time. It throws only when the extension
@@ -694,12 +700,12 @@ export default function (pi: ExtensionAPI) {
     return generationOwnsLock(expectedGeneration);
   }
 
-  function runOutcomeScript(args: string[]): { ok: boolean; stdout: string; detail: string } {
+  function runOutcomeScript(args: string[], actor?: "main" | "branch"): { ok: boolean; stdout: string; detail: string } {
     try {
       const result = spawnSync("bash", [outcomeScript, ...args], {
         cwd: fmRoot,
         encoding: "utf8",
-        env: scriptEnv,
+        env: actor ? { ...scriptEnv, FM_SUPERVISION_ACTOR: actor } : scriptEnv,
       });
       if (result.status === 0) return { ok: true, stdout: (result.stdout || "").trim(), detail: "" };
       return {
@@ -763,7 +769,8 @@ export default function (pi: ExtensionAPI) {
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
     if (verdict === "firstmate-action") {
-      if (!/^[0-9]+$/.test(wakeSeq)) return false;
+      const canonicalWakeSeq = canonicalWakeSequence(wakeSeq);
+      if (!canonicalWakeSeq) return false;
       const prepared = runOutcomeScript(["action-prepare", "--seq", seq]);
       if (!prepared.ok || !["pending", "started"].includes(prepared.stdout)) return false;
       if (prepared.stdout === "started") {
@@ -773,8 +780,9 @@ export default function (pi: ExtensionAPI) {
       const pending = pendingActionDeliveries.get(seq);
       if (pending) {
         pending.generation = expectedGeneration;
+        pending.wakeSeq = canonicalWakeSeq;
       } else {
-        pendingActionDeliveries.set(seq, { generation: expectedGeneration, wakeSeq, task, summary, deliveryIssued: false });
+        pendingActionDeliveries.set(seq, { generation: expectedGeneration, wakeSeq: canonicalWakeSeq, task, summary });
       }
       return true;
     }
@@ -810,14 +818,55 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function rehydratePendingActionDeliveries(expectedGeneration: number): boolean {
+    const result = runOutcomeScript(["action-pending"]);
+    if (!result.ok) return false;
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line) as {
+          outcome_seq?: unknown;
+          wake_seq?: unknown;
+          task?: unknown;
+          summary?: unknown;
+        };
+        const seq = String(record.outcome_seq ?? "");
+        const wakeSeq = canonicalWakeSequence(String(record.wake_seq ?? ""));
+        if (!/^[1-9][0-9]*$/.test(seq) || !wakeSeq || typeof record.task !== "string" || typeof record.summary !== "string") continue;
+        pendingActionDeliveries.set(seq, {
+          generation: expectedGeneration,
+          wakeSeq,
+          task: record.task,
+          summary: record.summary,
+        });
+      } catch {}
+    }
+    return true;
+  }
+
+  function activatePendingActionDeliveries(expectedGeneration: number): void {
+    if (rehydratedActionGeneration === expectedGeneration) return;
+    if (!rehydratePendingActionDeliveries(expectedGeneration)) return;
+    rehydratedActionGeneration = expectedGeneration;
+    const acknowledgedWakeSeqs = [...new Set(
+      [...pendingActionDeliveries.values()]
+        .filter((pending) => pending.generation === expectedGeneration && wakeRowsAcknowledged([pending.wakeSeq]))
+        .map((pending) => pending.wakeSeq),
+    )];
+    if (acknowledgedWakeSeqs.length > 0) deliverPendingActionDeliveries(expectedGeneration, acknowledgedWakeSeqs);
+  }
+
   function deliverPendingActionDeliveries(
     expectedGeneration: number,
     eligibleWakeSeqs: readonly string[],
   ): void {
-    const eligible = new Set(eligibleWakeSeqs);
+    const eligible = new Set(
+      eligibleWakeSeqs
+        .map((wakeSeq) => canonicalWakeSequence(wakeSeq))
+        .filter((wakeSeq): wakeSeq is string => wakeSeq !== null),
+    );
     for (const [seq, pending] of pendingActionDeliveries) {
       if (pending.generation !== expectedGeneration || !eligible.has(pending.wakeSeq)) continue;
-      if (pending.deliveryIssued) continue;
       if (!actingAsOwner(expectedGeneration)) return;
       const status = runOutcomeScript(["action-status", "--seq", seq]);
       if (!status.ok) continue;
@@ -837,7 +886,6 @@ export default function (pi: ExtensionAPI) {
       try {
         if (!actingAsOwner(expectedGeneration)) return;
         pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
-        pending.deliveryIssued = true;
       } catch {}
     }
   }
@@ -885,11 +933,12 @@ export default function (pi: ExtensionAPI) {
           if (!wakeSeq && activeWakeContext?.generation === toolGeneration && activeWakeContext.eligibleSeqs.length === 1) {
             wakeSeq = activeWakeContext.eligibleSeqs[0];
           }
+          const canonicalWakeSeq = canonicalWakeSequence(wakeSeq);
           if (
-            !/^[0-9]+$/.test(wakeSeq) ||
+            !canonicalWakeSeq ||
             !activeWakeContext ||
             activeWakeContext.generation !== toolGeneration ||
-            !activeWakeContext.eligibleSeqs.includes(wakeSeq)
+            !activeWakeContext.eligibleSeqs.some((candidate) => canonicalWakeSequence(candidate) === canonicalWakeSeq)
           ) {
             return {
               content: [{ type: "text", text: "invalid firstmate-action report: wake_seq must name the current wake-drain row" }],
@@ -897,6 +946,7 @@ export default function (pi: ExtensionAPI) {
               isError: true,
             };
           }
+          wakeSeq = canonicalWakeSeq;
         }
         const appendArgs = verdict === "firstmate-action"
           ? ["append-action", "--task", task, "--wake-seq", wakeSeq, "--summary", summary]
@@ -1117,7 +1167,7 @@ ${context.command}
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
   }
 
-  pi.on?.("message_start", (event) => {
+  pi.on?.("message_end", (event) => {
     const message = (event as { message?: { customType?: unknown; details?: unknown } }).message;
     if (!message || message.customType !== "fm-branch-merge") return;
     const details = message.details as { outcomeSeq?: unknown; verdict?: unknown } | undefined;
@@ -1125,9 +1175,10 @@ ${context.command}
     const seq = String(details.outcomeSeq ?? "");
     const pending = pendingActionDeliveries.get(seq);
     if (!pending || pending.generation !== generation) return;
-    if (String((details as { wakeSeq?: unknown }).wakeSeq ?? "") !== pending.wakeSeq) return;
+    const wakeSeq = canonicalWakeSequence(String((details as { wakeSeq?: unknown }).wakeSeq ?? ""));
+    if (!wakeSeq || wakeSeq !== pending.wakeSeq) return;
     if (!actingAsOwner(generation)) return;
-    if (!runOutcomeScript(["action-started", "--seq", seq]).ok) return;
+    if (!runOutcomeScript(["action-started", "--seq", seq], "main").ok) return;
     if (!runOutcomeScript(["mark-read", "--through", seq]).ok) return;
     pendingActionDeliveries.delete(seq);
   });
@@ -1183,7 +1234,7 @@ ${context.command}
           if (activeWakeContext === wakeContext) activeWakeContext = null;
         }
         const pendingForWake = [...pendingActionDeliveries.values()]
-          .some((pending) => pending.generation === acceptedGeneration && wakeContext.eligibleSeqs.includes(pending.wakeSeq));
+          .some((pending) => pending.generation === acceptedGeneration && wakeContext.eligibleSeqs.some((candidate) => canonicalWakeSequence(candidate) === pending.wakeSeq));
         if (pendingForWake && !wakeRowsAcknowledged(wakeContext.eligibleSeqs)) {
           throw new Error("firstmate-action delivery requires the branch wake to be acknowledged");
         }
@@ -1291,6 +1342,7 @@ ${context.command}
     // effects.
     if (!offerEligible(offer)) return;
     if (!actingAsOwner()) return; // cold start pre-lock, secondary session, or shutdown
+    activatePendingActionDeliveries(generation);
     if (afkActive()) return; // the away daemon owns supervision while afk
     if (branchBroken) return; // fail back to today's wake-to-main path
     if (!collectCurrentMainDialog()) return;
@@ -1343,7 +1395,7 @@ ${context.command}
     branchBroken = "";
     generation += 1;
     lastDeliveredStaleByWindow.clear();
-    actingAsOwner(generation);
+    if (actingAsOwner(generation)) activatePendingActionDeliveries(generation);
   });
 
   // Pi emits this for /model, Ctrl+P cycling, and session restore, so it is
@@ -1382,6 +1434,8 @@ ${context.command}
     }
     pendingWakeMessages.length = 0;
     pendingWakeGeneration = -1;
+    pendingActionDeliveries.clear();
+    rehydratedActionGeneration = -1;
     lastDeliveredStaleByWindow.clear();
     pendingMirror.length = 0;
     currentMainSession = null;

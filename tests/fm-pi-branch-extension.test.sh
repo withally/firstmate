@@ -501,7 +501,7 @@ const pi = {
     if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
     if (globalThis.__fmAutoStartMainMessage !== false && message.customType === "fm-branch-merge") {
-      queueMicrotask(() => fire("message_start", {
+      queueMicrotask(() => fire("message_end", {
         message: {
           role: "custom",
           customType: message.customType,

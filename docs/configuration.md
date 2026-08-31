@@ -49,7 +49,7 @@ Away mode still declines every wake offer, and a broken current-generation branc
 The branch's role stays bounded exactly as the captain-approved architecture set it: it cannot merge a PR, land local work, or freshly spawn, and every existing captain gate remains unchanged.
 Homes on any other primary harness never load this feature and are entirely unaffected.
 `AGENTS.md`'s `state/` inventory routes the branch's runtime files to their format and lifecycle owners.
-The authoritative outcome-delivery contract, including store-only routine outcomes and the single captain follow-up, lives in [docs/pi-supervision-branch.md](pi-supervision-branch.md#two-stage-noise-filter).
+The authoritative three-verdict outcome-delivery contract, including store-only routine outcomes and the distinct captain and firstmate-action follow-ups, lives in [docs/pi-supervision-branch.md](pi-supervision-branch.md#two-stage-noise-filter).
 
 ## Pi supervision branch model and effort (config/supervision-branch-model, config/supervision-branch-effort)
 

@@ -5,7 +5,8 @@
 // actionable wake here (lib/fm-branch-dispatch.ts); the branch handles it with
 // real tools and reports through the fm_branch_report custom tool, which
 // writes every outcome to the durable store FIRST (bin/fm-branch-outcome.sh)
-// and sends only captain outcomes to main. Main's captain/assistant dialog
+// and sends captain and firstmate-action outcomes to main. Main's
+// captain/assistant dialog
 // is mirrored into the branch as read-only fm-main-mirror context from Pi's
 // before_agent_start prompt and at main's turn_end. Pi-only by construction:
 // this file lives in .pi/extensions, so no other harness ever loads it.
@@ -20,7 +21,7 @@
 // the tool set is BRANCH_TOOL_NAMES in that fixed order on every spawn, and
 // one shared per-home prompt_cache_key is set for branch requests in a
 // before_provider_request hook - main keeps Pi's default per-session key.
-// Wakes, mirrored dialog, and captain outcome messages are all appends at a
+// Wakes, mirrored dialog, and main-bound outcome messages are all appends at a
 // tail.
 //
 // Session-lock ownership: every branch side-effect boundary re-evaluates the
@@ -151,8 +152,8 @@ const MIRROR_MESSAGE_CAP = 4000;
 // Historical persisted routine notes can still appear in an existing main
 // transcript even though new routine outcomes are store-only.
 const MERGE_NOTE_BOAT = "⛵";
-// Carried inside the captain outcome message's own text because that text is the only
-// part of a custom message Pi gives the model (see mergeIntoMain).
+// Carried inside a main-bound outcome message's own text because that text is
+// the only part of a custom message Pi gives the model (see mergeIntoMain).
 //
 // The note still needs to identify itself so main cannot mistake an incoming
 // outcome for its own earlier answer and silently lose the outcome. Event
@@ -162,12 +163,21 @@ const CAPTAIN_OUTCOME_INSTRUCTION =
   "This is a supervision outcome delivered automatically by the supervision branch. " +
   "It was not typed by the captain. " +
   "The fleet event is already handled: do not re-drain, re-run, or acknowledge it. " +
+  "Do not take another fleet action from this delivery. " +
   "This outcome is captain-facing: give the captain a visible response now. " +
   "Use your judgment over the wording and how to incorporate it, not whether to surface it. " +
   "An outcome that directly answers an explicit captain request is captain-facing, regardless of whether it is healthy, routine, measured, actionable, or requires a decision.";
+const FIRSTMATE_ACTION_OUTCOME_INSTRUCTION =
+  "This is a supervision outcome delivered automatically by the supervision branch. " +
+  "It was not typed by the captain. " +
+  "The wake is already acknowledged: do not re-drain, re-run, or acknowledge it. " +
+  "The downstream authorized action is not done. " +
+  "Perform that action now, then report the result. " +
+  "Do not merely relay this worker outcome. " +
+  "Use the standing authority and contracted next step already in fleet context; stop only if the action reaches a genuine captain-only boundary.";
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
-type Verdict = "routine" | "captain";
+type Verdict = "routine" | "captain" | "firstmate-action";
 type LockOwnership = "owned" | "other" | "missing";
 
 const scriptEnv = {
@@ -187,6 +197,12 @@ function positiveIntegerEnv(name: string, fallback: number): number {
   if (!raw || !/^[1-9][0-9]*$/.test(raw)) return fallback;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function canonicalWakeSequence(raw: string): string | null {
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const canonical = raw.replace(/^0+/, "");
+  return canonical || null;
 }
 
 function validatedSignalStatusPath(token: string): string | null {
@@ -531,6 +547,16 @@ export default function (pi: ExtensionAPI) {
   // extension plus its model_select event, because createBranch runs at wake
   // time with no context of its own. It is what "follow main" applies.
   let mainModel: { provider: string; id: string } | null = null;
+  type ActiveWakeContext = { generation: number; eligibleSeqs: readonly string[] };
+  type PendingActionDelivery = {
+    generation: number;
+    wakeSeq: string;
+    task: string;
+    summary: string;
+  };
+  let activeWakeContext: ActiveWakeContext | null = null;
+  const pendingActionDeliveries = new Map<string, PendingActionDelivery>();
+  let rehydratedActionGeneration = -1;
 
   // Main's own current effort needs no such tracking: Pi answers it directly
   // on demand, including at wake time. It throws only when the extension
@@ -674,12 +700,12 @@ export default function (pi: ExtensionAPI) {
     return generationOwnsLock(expectedGeneration);
   }
 
-  function runOutcomeScript(args: string[]): { ok: boolean; stdout: string; detail: string } {
+  function runOutcomeScript(args: string[], actor?: "main" | "branch"): { ok: boolean; stdout: string; detail: string } {
     try {
       const result = spawnSync("bash", [outcomeScript, ...args], {
         cwd: fmRoot,
         encoding: "utf8",
-        env: scriptEnv,
+        env: actor ? { ...scriptEnv, FM_SUPERVISION_ACTOR: actor } : scriptEnv,
       });
       if (result.status === 0) return { ok: true, stdout: (result.stdout || "").trim(), detail: "" };
       return {
@@ -693,31 +719,39 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Outcome delivery after the store row is durable. Routine outcomes stay in
-  // the store and advance its read cursor without entering main. A captain
-  // outcome triggers exactly one follow-up turn; that turn is itself the
-  // captain-visible outcome, so the delivery message uses display: false.
+  // the store and advance its read cursor without entering main. Captain and
+  // firstmate-action outcomes trigger exactly one follow-up turn with distinct
+  // operational instructions; the delivery message uses display: false.
   // A crash inside Pi's delivery window leaves the outcome durable for main's
   // fm_branch_outcomes tool to read on demand.
   //
   // Pi keeps only `content` when it converts a custom message for the model:
-  // customType, display, and details never reach the provider. A captain outcome
-  // therefore has to carry its own identity inside `content`, or main receives
-  // an unattributed user message written in main's own captain-facing voice
-  // and cannot tell an incoming outcome from its own earlier answer. When that
-  // happens main can re-emit its previous answer instead of relaying the outcome,
-  // and lose the outcome while deciding how to handle it. The typed operational
-  // envelope makes the delivery message self-describing; it stays invisible to
-  // the captain because the message is never rendered. The instruction
-  // preserves the event-ownership boundary while requiring the captain-facing
-  // response and leaving its wording to main.
+  // customType, display, and details never reach the provider. A main-bound
+  // outcome therefore has to carry its own identity inside `content`, or main
+  // receives an unattributed user message written in main's own captain-facing
+  // voice and cannot tell an incoming outcome from its own earlier answer.
+  // The typed operational envelope makes the delivery message self-describing;
+  // it stays invisible to the captain because the message is never rendered.
+  // The instruction preserves the event-ownership boundary while telling main
+  // whether to surface a captain-only result or take the already-authorized
+  // next action.
   //
   // Encoding shells out, so it can fail on a broken checkout. This file's
   // failure direction applies: an outcome that cannot be typed is still
   // delivered, carrying the same instruction as plain text, because an
-  // untyped outcome main can still read beats an outcome the captain never
-  // sees.
-  function captainOutcomeInput(task: string, summary: string): string {
-    const body = `${CAPTAIN_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
+  // untyped outcome main can still read beats an outcome main never receives.
+  function mainOutcomeInput(
+    seq: string,
+    verdict: Exclude<Verdict, "routine">,
+    task: string,
+    summary: string,
+  ): string {
+    const rendered = runOutcomeScript(["render", "--seq", seq]);
+    if (rendered.ok && rendered.stdout) return rendered.stdout;
+    const instruction = verdict === "captain"
+      ? CAPTAIN_OUTCOME_INSTRUCTION
+      : FIRSTMATE_ACTION_OUTCOME_INSTRUCTION;
+    const body = `${instruction}\n\n${task}: ${summary}`;
     try {
       return encodeFirstmateOperationalInput("branch-outcome", body);
     } catch {
@@ -731,12 +765,31 @@ export default function (pi: ExtensionAPI) {
     task: string,
     verdict: Verdict,
     summary: string,
+    wakeSeq: string,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
+    if (verdict === "firstmate-action") {
+      const canonicalWakeSeq = canonicalWakeSequence(wakeSeq);
+      if (!canonicalWakeSeq) return false;
+      const prepared = runOutcomeScript(["action-prepare", "--seq", seq]);
+      if (!prepared.ok || !["pending", "started"].includes(prepared.stdout)) return false;
+      if (prepared.stdout === "started") {
+        if (!actingAsOwner(expectedGeneration)) return false;
+        return runOutcomeScript(["mark-read", "--through", seq]).ok;
+      }
+      const pending = pendingActionDeliveries.get(seq);
+      if (pending) {
+        pending.generation = expectedGeneration;
+        pending.wakeSeq = canonicalWakeSeq;
+      } else {
+        pendingActionDeliveries.set(seq, { generation: expectedGeneration, wakeSeq: canonicalWakeSeq, task, summary });
+      }
+      return true;
+    }
     if (verdict === "captain") {
       const message = {
         customType: "fm-branch-merge",
-        content: captainOutcomeInput(task, summary),
+        content: mainOutcomeInput(seq, verdict, task, summary),
         display: false,
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
@@ -748,25 +801,117 @@ export default function (pi: ExtensionAPI) {
     return true;
   }
 
+  function wakeRowsAcknowledged(seqs: readonly string[]): boolean {
+    if (seqs.length === 0) return true;
+    try {
+      const queue = readFileSync(join(state, ".wake-queue"), "utf8");
+      const pending = new Set(seqs);
+      return queue
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0)
+        .every((line) => {
+          const fields = line.split("\t");
+          return fields.length < 2 || !pending.has(fields[1]);
+        });
+    } catch {
+      return false;
+    }
+  }
+
+  function rehydratePendingActionDeliveries(expectedGeneration: number): boolean {
+    const result = runOutcomeScript(["action-pending"]);
+    if (!result.ok) return false;
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line) as {
+          outcome_seq?: unknown;
+          wake_seq?: unknown;
+          task?: unknown;
+          summary?: unknown;
+        };
+        const seq = String(record.outcome_seq ?? "");
+        const wakeSeq = canonicalWakeSequence(String(record.wake_seq ?? ""));
+        if (!/^[1-9][0-9]*$/.test(seq) || !wakeSeq || typeof record.task !== "string" || typeof record.summary !== "string") continue;
+        pendingActionDeliveries.set(seq, {
+          generation: expectedGeneration,
+          wakeSeq,
+          task: record.task,
+          summary: record.summary,
+        });
+      } catch {}
+    }
+    return true;
+  }
+
+  function activatePendingActionDeliveries(expectedGeneration: number): void {
+    if (rehydratedActionGeneration === expectedGeneration) return;
+    if (!rehydratePendingActionDeliveries(expectedGeneration)) return;
+    rehydratedActionGeneration = expectedGeneration;
+    const acknowledgedWakeSeqs = [...new Set(
+      [...pendingActionDeliveries.values()]
+        .filter((pending) => pending.generation === expectedGeneration && wakeRowsAcknowledged([pending.wakeSeq]))
+        .map((pending) => pending.wakeSeq),
+    )];
+    if (acknowledgedWakeSeqs.length > 0) deliverPendingActionDeliveries(expectedGeneration, acknowledgedWakeSeqs);
+  }
+
+  function deliverPendingActionDeliveries(
+    expectedGeneration: number,
+    eligibleWakeSeqs: readonly string[],
+  ): void {
+    const eligible = new Set(
+      eligibleWakeSeqs
+        .map((wakeSeq) => canonicalWakeSequence(wakeSeq))
+        .filter((wakeSeq): wakeSeq is string => wakeSeq !== null),
+    );
+    for (const [seq, pending] of pendingActionDeliveries) {
+      if (pending.generation !== expectedGeneration || !eligible.has(pending.wakeSeq)) continue;
+      if (!actingAsOwner(expectedGeneration)) return;
+      const status = runOutcomeScript(["action-status", "--seq", seq]);
+      if (!status.ok) continue;
+      if (status.stdout === "started") {
+        if (runOutcomeScript(["mark-read", "--through", seq]).ok) {
+          pendingActionDeliveries.delete(seq);
+        }
+        continue;
+      }
+      if (status.stdout !== "pending") continue;
+      const message = {
+        customType: "fm-branch-merge",
+        content: mainOutcomeInput(seq, "firstmate-action", pending.task, pending.summary),
+        display: false,
+        details: { outcomeSeq: seq, wakeSeq: pending.wakeSeq, verdict: "firstmate-action" },
+      };
+      try {
+        if (!actingAsOwner(expectedGeneration)) return;
+        pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+      } catch {}
+    }
+  }
+
   function createReportTool(toolGeneration: number): ToolDefinition {
     return {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write every outcome durably to the store, keep routine outcomes out of main, and surface verdict captain to the captain in one turn.",
+        "Record the outcome of one handled fleet event: write every outcome durably to the store, keep routine outcomes out of main, surface captain-only outcomes, and hand already-authorized downstream work to main with firstmate-action.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
-        verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
+        verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain"), Type.Literal("firstmate-action")], {
           description:
-            "Use captain unconditionally for an outcome that directly answers an explicit captain request, regardless of whether it is healthy, routine, measured, actionable, or requires a decision. Also use captain for work ready for review, captain-only decisions, blockers or failures after recovery is exhausted, needed credentials, and destructive, irreversible, or security-sensitive actions; use routine otherwise.",
+            "Use captain unconditionally for an outcome that directly answers an explicit captain request, regardless of whether it is healthy, routine, measured, actionable, or requires a decision. An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains. Use firstmate-action for a green worker result on a local-only branch under standing auto-land or continue authority, a worker waiting on a local merge that main owns, or a worker done: whose contracted next step needs no captain call. Only a genuine captain call uses captain: an explicit captain request, work ready for captain review, a captain-only decision, an exhausted blocker or failure, a needed credential, or a destructive, irreversible, or security-sensitive boundary. Use routine only when no main action or captain call remains.",
         }),
         summary: Type.String({
           description:
             "One or two sentences in captain outcome language; include the full https:// PR URL when a PR is involved",
         }),
         wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
+        wake_seq: Type.Optional(Type.String({
+          description: "For firstmate-action, the exact numeric queue sequence from the wake-drain row",
+        })),
         silent: Type.Optional(Type.Boolean({
-          description: "Accepted for compatibility; routine outcomes are always stored silently, and captain outcomes are never silent",
+          description: "Accepted for compatibility; routine outcomes are always stored silently, and main-turn outcomes are never silent",
         })),
       }),
       execute: async (_toolCallId, params) => {
@@ -774,16 +919,38 @@ export default function (pi: ExtensionAPI) {
         const verdictRaw = String((params as { verdict: unknown }).verdict || "");
         const summary = String((params as { summary: unknown }).summary || "").trim();
         const wake = String((params as { wake?: unknown }).wake ?? "").trim();
+        let wakeSeq = String((params as { wake_seq?: unknown }).wake_seq ?? "").trim();
         const silent = (params as { silent?: unknown }).silent === true;
-        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain") || (silent && verdictRaw !== "routine")) {
+        if (!task || !summary || !["routine", "captain", "firstmate-action"].includes(verdictRaw) || (silent && verdictRaw !== "routine")) {
           return {
-            content: [{ type: "text", text: "invalid report: task, verdict (routine|captain), and summary are required" }],
+            content: [{ type: "text", text: "invalid report: task, verdict (routine|captain|firstmate-action), and summary are required" }],
             details: undefined,
             isError: true,
           };
         }
         const verdict = verdictRaw as Verdict;
-        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
+        if (verdict === "firstmate-action") {
+          if (!wakeSeq && activeWakeContext?.generation === toolGeneration && activeWakeContext.eligibleSeqs.length === 1) {
+            wakeSeq = activeWakeContext.eligibleSeqs[0];
+          }
+          const canonicalWakeSeq = canonicalWakeSequence(wakeSeq);
+          if (
+            !canonicalWakeSeq ||
+            !activeWakeContext ||
+            activeWakeContext.generation !== toolGeneration ||
+            !activeWakeContext.eligibleSeqs.some((candidate) => canonicalWakeSequence(candidate) === canonicalWakeSeq)
+          ) {
+            return {
+              content: [{ type: "text", text: "invalid firstmate-action report: wake_seq must name the current wake-drain row" }],
+              details: undefined,
+              isError: true,
+            };
+          }
+          wakeSeq = canonicalWakeSeq;
+        }
+        const appendArgs = verdict === "firstmate-action"
+          ? ["append-action", "--task", task, "--wake-seq", wakeSeq, "--summary", summary]
+          : ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
         if (wake) appendArgs.push("--wake", wake);
         if (!actingAsOwner(toolGeneration)) {
           return {
@@ -800,7 +967,7 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary)) {
+        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, wakeSeq)) {
           return {
             content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
             details: undefined,
@@ -810,7 +977,9 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: verdict === "captain"
             ? `recorded seq ${appended.stdout} and merged [captain] into main`
-            : `recorded seq ${appended.stdout} [routine] store-only` }],
+            : verdict === "firstmate-action"
+              ? `recorded seq ${appended.stdout} and queued [firstmate-action] for main after wake acknowledgement`
+              : `recorded seq ${appended.stdout} [routine] store-only` }],
           details: undefined,
         };
       },
@@ -998,6 +1167,22 @@ ${context.command}
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
   }
 
+  pi.on?.("message_end", (event) => {
+    const message = (event as { message?: { customType?: unknown; details?: unknown } }).message;
+    if (!message || message.customType !== "fm-branch-merge") return;
+    const details = message.details as { outcomeSeq?: unknown; verdict?: unknown } | undefined;
+    if (details?.verdict !== "firstmate-action") return;
+    const seq = String(details.outcomeSeq ?? "");
+    const pending = pendingActionDeliveries.get(seq);
+    if (!pending || pending.generation !== generation) return;
+    const wakeSeq = canonicalWakeSequence(String((details as { wakeSeq?: unknown }).wakeSeq ?? ""));
+    if (!wakeSeq || wakeSeq !== pending.wakeSeq) return;
+    if (!actingAsOwner(generation)) return;
+    if (!runOutcomeScript(["action-started", "--seq", seq], "main").ok) return;
+    if (!runOutcomeScript(["mark-read", "--through", seq]).ok) return;
+    pendingActionDeliveries.delete(seq);
+  });
+
   function enqueueWake(messages: readonly string[], acceptedGeneration: number): void {
     const message = wakeBatchMessage(messages);
     branchChain = branchChain
@@ -1034,17 +1219,36 @@ ${context.command}
         );
         if (grant === "main-owned") throw new Error("the wake rows are already claimed by main");
         if (grant !== "published") throw new Error("could not record the branch's eligible row snapshot");
+        const wakeContext: ActiveWakeContext = {
+          generation: acceptedGeneration,
+          eligibleSeqs: [...scope.eligibleSeqs],
+        };
+        activeWakeContext = wakeContext;
         // A row can still arrive between this re-check and the model starting
         // the drain; that residual is accepted by the confused-agent-grade boundary.
-        await session.prompt(
+        try {
+          await session.prompt(
           `FIRSTMATE SUPERVISION WAKE: ${message}\n\nHandle this per your operating procedure and finish with fm_branch_report.`,
         );
+        } finally {
+          if (activeWakeContext === wakeContext) activeWakeContext = null;
+        }
+        const pendingForWake = [...pendingActionDeliveries.values()]
+          .some((pending) => pending.generation === acceptedGeneration && wakeContext.eligibleSeqs.some((candidate) => canonicalWakeSequence(candidate) === pending.wakeSeq));
+        if (pendingForWake && !wakeRowsAcknowledged(wakeContext.eligibleSeqs)) {
+          throw new Error("firstmate-action delivery requires the branch wake to be acknowledged");
+        }
         if (!releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration))) {
           throw new Error("could not release the branch's settled wake-row grant");
         }
+        if (!releaseBranchLeases(acceptedGeneration)) {
+          throw new Error("could not release the branch's settled task leases");
+        }
+        deliverPendingActionDeliveries(acceptedGeneration, wakeContext.eligibleSeqs);
       })
       .catch(async (error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
+        releaseBranchLeases(acceptedGeneration);
         try {
           await fallbackToMain(message, error instanceof Error ? error.message : String(error), acceptedGeneration);
         } catch {}
@@ -1138,6 +1342,7 @@ ${context.command}
     // effects.
     if (!offerEligible(offer)) return;
     if (!actingAsOwner()) return; // cold start pre-lock, secondary session, or shutdown
+    activatePendingActionDeliveries(generation);
     if (afkActive()) return; // the away daemon owns supervision while afk
     if (branchBroken) return; // fail back to today's wake-to-main path
     if (!collectCurrentMainDialog()) return;
@@ -1190,7 +1395,7 @@ ${context.command}
     branchBroken = "";
     generation += 1;
     lastDeliveredStaleByWindow.clear();
-    actingAsOwner(generation);
+    if (actingAsOwner(generation)) activatePendingActionDeliveries(generation);
   });
 
   // Pi emits this for /model, Ctrl+P cycling, and session restore, so it is
@@ -1229,6 +1434,8 @@ ${context.command}
     }
     pendingWakeMessages.length = 0;
     pendingWakeGeneration = -1;
+    pendingActionDeliveries.clear();
+    rehydratedActionGeneration = -1;
     lastDeliveredStaleByWindow.clear();
     pendingMirror.length = 0;
     currentMainSession = null;
@@ -1594,7 +1801,7 @@ ${context.command}
   });
 
   // Existing transcripts can contain rendered routine notes written by older
-  // versions. New routine outcomes are store-only, and captain-facing outcome messages
+  // versions. New routine outcomes are store-only, and main-bound outcome messages
   // are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
     const note = textOfContent(message.content);

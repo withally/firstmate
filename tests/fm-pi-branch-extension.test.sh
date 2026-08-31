@@ -346,6 +346,18 @@ const { pathToFileURL } = await import("node:url");
 const home = process.env.FM_HOME;
 const realRoot = process.env.FM_ROOT_OVERRIDE;
 const approvedProject = `${home}/projects/approved`;
+globalThis.__fmExecuteBranchBash = async (context) => {
+  const result = spawnSync("bash", ["-c", context.command], {
+    encoding: "utf8",
+    cwd: context.cwd,
+    env: context.env,
+  });
+  return {
+    content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
+    details: { stdout: result.stdout, stderr: result.stderr, exitCode: result.status },
+    isError: result.status !== 0,
+  };
+};
 mkdirSync(`${home}/state`, { recursive: true });
 mkdirSync(`${home}/config`, { recursive: true });
 mkdirSync(approvedProject, { recursive: true });
@@ -486,7 +498,19 @@ const pi = {
     renderers.set(customType, renderer);
   },
   sendMessage(message, options) {
+    if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
+    if (globalThis.__fmAutoStartMainMessage !== false && message.customType === "fm-branch-merge") {
+      queueMicrotask(() => fire("message_end", {
+        message: {
+          role: "custom",
+          customType: message.customType,
+          content: message.content,
+          display: message.display,
+          details: message.details,
+        },
+      }));
+    }
   },
   sendUserMessage(content, options) {
     mainUserMessages.push({ content, options: options ?? {} });
@@ -605,9 +629,38 @@ if (untouched !== undefined) throw new Error("cache-key hook rewrote a provider 
 console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 
 // 4. Two-stage filter, stage 2: unsolicited routine outcomes stay durable but
-// never enter main, while captain-relevant outcomes trigger exactly one turn.
+// never enter main, while captain-only and firstmate-action outcomes each
+// trigger exactly one semantically distinct turn.
 // Store rows are written BEFORE delivery and marked read after it.
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+const verdictChoices = report.parameters.properties.verdict.anyOf.map((choice) => choice.const);
+if (JSON.stringify(verdictChoices) !== JSON.stringify(["routine", "captain", "firstmate-action"])) {
+  throw new Error(`report tool did not expose the three verdicts: ${JSON.stringify(verdictChoices)}`);
+}
+const verdictDescription = report.parameters.properties.verdict.description;
+for (const requiredRule of [
+  "green worker result on a local-only branch under standing auto-land or continue authority",
+  "worker waiting on a local merge that main owns",
+  "contracted next step needs no captain call",
+  "Only a genuine captain call uses captain",
+  "An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains",
+]) {
+  if (!verdictDescription.includes(requiredRule)) {
+    throw new Error(`report tool lost the firstmate-action classification rule '${requiredRule}': ${verdictDescription}`);
+  }
+}
+for (const requiredPromptRule of [
+  "# Verdict: routine, captain, or firstmate-action",
+  "A green worker result on a local-only branch under standing auto-land or continue authority",
+  "A worker waiting on a local merge that MAIN owns",
+  "A worker `done:` whose contracted next step needs no captain call",
+  "Only a genuine captain call is verdict captain",
+  "An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains",
+]) {
+  if (!loader.options.systemPrompt.includes(requiredPromptRule)) {
+    throw new Error(`branch prompt lost the three-way classification rule '${requiredPromptRule}'`);
+  }
+}
 const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
 if (sentToMain.length !== 0) throw new Error("routine report entered main instead of remaining store-only");
@@ -615,27 +668,64 @@ fire("agent_start", {});
 await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy", silent: true }, undefined, undefined, {});
 if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
-await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
-if (sentToMain.length !== 1) throw new Error(`captain report did not merge exactly one note: ${sentToMain.length}`);
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-wake", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error(`fleet command failed: ${JSON.stringify(result)}`);
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stderr}`);
+  const action = await report.execute(
+    "call-3",
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result is ready for its standing auto-land and then the next plan task",
+      wake: "signal: action result",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (action.isError) throw new Error(`firstmate-action report failed: ${JSON.stringify(action)}`);
+  if (sentToMain.length !== 0) throw new Error("firstmate-action opened main before wake acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+const actionOffer = dispatch("signal: action result");
+if (!actionOffer.accepted) throw new Error("firstmate-action wake was not accepted");
+await settle(() => sentToMain.length === 1, "firstmate-action delivery after wake acknowledgement");
 if (sentToMain[0].options.triggerTurn !== true || sentToMain[0].options.deliverAs !== "followUp") {
-  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
+  throw new Error(`firstmate-action merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
+}
+if (sentToMain[0].message.display !== false) {
+  throw new Error(`firstmate-action note must never be printed or rendered: display=${sentToMain[0].message.display}`);
+}
+writeFileSync(`${home}/state/delivered-firstmate-action-note`, sentToMain[0].message.content);
+await report.execute("call-4", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
+if (sentToMain.length !== 2) throw new Error(`captain report did not merge exactly one additional note: ${sentToMain.length}`);
+if (sentToMain[1].options.triggerTurn !== true || sentToMain[1].options.deliverAs !== "followUp") {
+  throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[1].options)}`);
 }
 // A captain-facing note must never be printed or rendered at all - the
 // follow-up turn triggered above is itself the captain-visible outcome.
 // display: false is the exact flag
 // Pi's own chat renderer and HTML export both gate on before ever calling a
 // customType renderer, so this is the authoritative "never printed" proof.
-if (sentToMain[0].message.display !== false) {
-  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[0].message.display}`);
+if (sentToMain[1].message.display !== false) {
+  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[1].message.display}`);
 }
-if (typeof sentToMain[0].message.content !== "string" || sentToMain[0].message.content.includes("⚓")) {
-  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[0].message.content}`);
+if (typeof sentToMain[1].message.content !== "string" || sentToMain[1].message.content.includes("⚓")) {
+  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[1].message.content}`);
 }
-if (!sentToMain[0].message.content.includes("task-9: PR https://example.com/pr/9")) {
-  throw new Error(`captain note lost its outcome: ${sentToMain[0].message.content}`);
+if (!sentToMain[1].message.content.includes("task-9: PR https://example.com/pr/9")) {
+  throw new Error(`captain note lost its outcome: ${sentToMain[1].message.content}`);
 }
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
-  throw new Error(`captain note still has boilerplate: ${sentToMain[0].message.content}`);
+if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[1].message.content)) {
+  throw new Error(`captain note still has boilerplate: ${sentToMain[1].message.content}`);
 }
 // What main's model actually receives. Pi keeps only `content` when it turns a
 // custom message into a provider message - customType, display, and details are
@@ -644,17 +734,20 @@ if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content))
 // the REAL bin/fm-operational-input.sh so the protocol's own executable, not a
 // pattern in this test, decides what was delivered. Pi's half of that contract
 // is proven separately against the real SDK in fm-pi-branch-live-e2e.test.sh.
-writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[0].message.content);
-if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
-  throw new Error("one captain outcome must open exactly one turn on main");
+writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[1].message.content);
+if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 2) {
+  throw new Error("captain and firstmate-action outcomes must each open exactly one turn on main");
 }
 
-// The store (the owned durable contract) holds all three outcomes in order,
+// The store (the owned durable contract) holds all four outcomes in order,
 // and each merged note advanced the read cursor.
 const rows = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-if (rows.length !== 3) throw new Error(`expected 3 store rows, got ${rows.length}`);
-if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain") throw new Error("store verdicts out of order");
+if (rows.length !== 4) throw new Error(`expected 4 store rows, got ${rows.length}`);
+if (rows[0].verdict !== "routine" || rows[2].verdict !== "firstmate-action" || rows[3].verdict !== "captain") {
+  throw new Error(`store verdicts out of order: ${JSON.stringify(rows)}`);
+}
 if (rows.some((row) => row.verdict === "routine" && row.silent !== true)) throw new Error("routine outcomes were not forced silent in the durable store");
+if (rows.some((row) => row.verdict !== "routine" && row.silent !== false)) throw new Error("main-turn outcomes became silent in the durable store");
 if (rows[0].wake !== "signal: working") throw new Error("store lost the wake reason");
 if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not marked read");
 
@@ -703,7 +796,7 @@ try {
 if (!exportCallFellBack || !exportResultFellBack) {
   throw new Error("fm_branch_outcomes replaced Pi stock export rendering");
 }
-const listed = await outcomesTool.execute("call-4", { recent: 2 }, undefined, undefined, {});
+const listed = await outcomesTool.execute("call-5", { recent: 2 }, undefined, undefined, {});
 const listedText = listed.content[0].text;
 if (listedText.split("\n").length !== 2 || !listedText.includes("checks green")) {
   throw new Error(`fm_branch_outcomes did not read the store: ${listedText}`);
@@ -758,7 +851,21 @@ EOF
   # it. The real protocol executable is the oracle here: it decides the kind and
   # extracts the body, so this asserts delivered behavior rather than a shape
   # this test already knows.
-  local kind body
+  local kind body action_kind action_body
+  action_kind=$(./bin/fm-operational-input.sh kind < "$home/state/delivered-firstmate-action-note") \
+    || fail "firstmate-action outcome reaches main's model as unattributed text"
+  [ "$action_kind" = branch-outcome ] \
+    || fail "firstmate-action outcome delivered as kind '$action_kind', not branch-outcome"
+  action_body=$(./bin/fm-operational-input.sh body < "$home/state/delivered-firstmate-action-note") \
+    || fail "firstmate-action outcome envelope carries no readable body"
+  case "$action_body" in
+    *"The wake is already acknowledged: do not re-drain, re-run, or acknowledge it."*"The downstream authorized action is not done."*"Perform that action now, then report the result."*) ;;
+    *) fail "firstmate-action envelope did not separate wake ownership from the next authorized action: $action_body" ;;
+  esac
+  case "$action_body" in
+    *"Do not merely relay this worker outcome."*"green local-only worker result is ready for its standing auto-land and then the next plan task"*) ;;
+    *) fail "firstmate-action envelope still limited main to relaying or lost its outcome: $action_body" ;;
+  esac
   kind=$(./bin/fm-operational-input.sh kind < "$home/state/delivered-captain-note") \
     || fail "captain outcome reaches main's model as unattributed text the model cannot tell from its own answer"
   [ "$kind" = branch-outcome ] \
@@ -773,7 +880,7 @@ EOF
   # delivered instruction forbids reprocessing the fleet event but leaves main
   # free to decide how the outcome belongs in the captain conversation.
   case "$body" in
-    *"The fleet event is already handled: do not re-drain, re-run, or acknowledge it."*) ;;
+    *"The fleet event is already handled: do not re-drain, re-run, or acknowledge it."*"Do not take another fleet action from this delivery."*) ;;
     *) fail "captain outcome body lost the event-ownership boundary: $body" ;;
   esac
   case "$body" in
@@ -784,7 +891,290 @@ EOF
     *"An outcome that directly answers an explicit captain request is captain-facing"*"regardless of whether it is healthy, routine, measured, actionable, or requires a decision."*) ;;
     *) fail "captain outcome body lost the unconditional explicit-request rule: $body" ;;
   esac
-  pass "a captain outcome reaches main's model as typed, self-describing input while routine outcomes stay store-only"
+  pass "captain and firstmate-action outcomes reach main with distinct typed instructions while routine outcomes stay store-only"
+}
+
+test_firstmate_action_replays_after_crash_before_ack() {
+  local repo home out status
+  repo="$TMP_ROOT/action-replay-root"
+  home="$TMP_ROOT/action-replay-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval("(async () => { " + prelude + "; globalThis.__t = { dispatch, settle, outcomeScript, sentToMain, mainUserMessages, home, realRoot }; })()");
+const { dispatch, settle, outcomeScript, sentToMain, mainUserMessages, home, realRoot } = globalThis.__t;
+import { spawnSync } from "node:child_process";
+
+let promptCount = 0;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-replay", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error("fleet command failed: " + JSON.stringify(result));
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error("drain did not return its acknowledgement command: " + drained.stderr);
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    "action-replay-" + promptCount,
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result still needs its authorized landing",
+      wake: "signal: local-only green result",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error("firstmate-action report failed: " + JSON.stringify(result));
+  if (sentToMain.length !== 0) throw new Error("action was delivered before the wake was acknowledged");
+  if (promptCount === 1) throw new Error("simulated crash before wake acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+
+const offer = dispatch("signal: local-only green result");
+if (!offer.accepted) throw new Error("action-replay wake was not accepted");
+await settle(() => mainUserMessages.length === 1, "fallback after crash-before-ack");
+if (sentToMain.length !== 0) throw new Error("crash-before-ack delivered an action turn");
+const replayResult = spawnSync(
+  "bash",
+  [realRoot + "/bin/fm-branch-outcome.sh", "startup-replay"],
+  { encoding: "utf8", env: { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: home + "/state" } },
+);
+if (replayResult.status !== 0) throw new Error("startup replay failed: " + replayResult.stderr);
+const replay = replayResult.stdout.trim();
+const header = "BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):\n";
+if (!replay.startsWith(header)) throw new Error("startup replay lost its outcome header: " + replay);
+const envelope = replay.slice(header.length);
+if (envelope.includes('"seq"')) throw new Error("startup replay emitted raw action JSON: " + envelope);
+const kind = spawnSync(
+  "bash",
+  [realRoot + "/bin/fm-operational-input.sh", "kind"],
+  { encoding: "utf8", input: envelope },
+);
+if (kind.status !== 0 || kind.stdout.trim() !== "branch-outcome") {
+  throw new Error("startup replay did not emit a branch-outcome envelope: " + kind.stdout + kind.stderr);
+}
+const body = spawnSync(
+  "bash",
+  [realRoot + "/bin/fm-operational-input.sh", "body"],
+  { encoding: "utf8", input: envelope },
+);
+if (body.status !== 0 ||
+    !body.stdout.includes("The downstream authorized action is not done.") ||
+    !body.stdout.includes("Perform that action now, then report the result.")) {
+  throw new Error("startup replay lost the action instruction: " + body.stdout);
+}
+if (outcomeScript(["unread"]) !== "") throw new Error("startup replay left the action unread");
+if (outcomeScript(["action-status", "--seq", "1"]) !== "started") {
+  throw new Error("startup replay did not complete the pending action marker");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "firstmate-action crash replay must preserve its envelope: $out"
+  [ -z "$out" ] || fail "firstmate-action crash replay test printed output: $out"
+  pass "firstmate-action crash-before-ack replays one operational action envelope"
+}
+
+test_firstmate_action_duplicate_handoff_is_deduplicated() {
+  local repo home out status
+  repo="$TMP_ROOT/action-dedup-root"
+  home="$TMP_ROOT/action-dedup-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval("(async () => { " + prelude + "; globalThis.__t = { dispatch, settle, outcomeScript, sentToMain, mainUserMessages }; })()");
+const { dispatch, settle, outcomeScript, sentToMain, mainUserMessages } = globalThis.__t;
+
+let promptCount = 0;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-dedup", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error("fleet command failed: " + JSON.stringify(result));
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error("drain did not return its acknowledgement command: " + drained.stderr);
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    "action-dedup-" + promptCount,
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "the same authorized downstream action is still pending",
+      wake: "signal: repeated wake",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error("duplicate firstmate-action report failed: " + JSON.stringify(result));
+  if (promptCount === 1) {
+    if (sentToMain.length !== 0) throw new Error("duplicate probe delivered before acknowledgement");
+    throw new Error("simulated crash before acknowledgement");
+  }
+  if (sentToMain.length !== 0) throw new Error("duplicate handoff opened a second turn before acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+
+const first = dispatch("signal: repeated wake");
+if (!first.accepted) throw new Error("first duplicate-probe wake was not accepted");
+await settle(() => mainUserMessages.length === 1, "first duplicate-probe fallback");
+const second = dispatch("signal: repeated wake");
+if (!second.accepted) throw new Error("re-presented wake was not accepted");
+await settle(() => sentToMain.length === 1, "deduplicated action delivery");
+if (promptCount !== 2) throw new Error("re-presented wake did not run exactly one recovery prompt");
+const rows = outcomeScript(["list", "--recent", "10"]).split("\n").filter(Boolean);
+if (rows.length !== 1) throw new Error("duplicate wake appended another outcome row: " + rows.join("\n"));
+if (outcomeScript(["unread"]) !== "") throw new Error("deduplicated action remained unread");
+if (outcomeScript(["action-status", "--seq", "1"]) !== "started") {
+  throw new Error("deduplicated action did not reach the started marker");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "firstmate-action duplicate handoff must stay one-shot: $out"
+  [ -z "$out" ] || fail "firstmate-action duplicate handoff test printed output: $out"
+  pass "firstmate-action duplicate wake reports reuse one durable handoff"
+}
+
+test_firstmate_action_delivery_waits_for_branch_lease_release() {
+  local repo home out status
+  repo="$TMP_ROOT/action-lease-root"
+  home="$TMP_ROOT/action-lease-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval("(async () => { " + prelude + "; globalThis.__t = { dispatch, settle, outcomeScript, sentToMain, realRoot, home }; })()");
+const { dispatch, settle, outcomeScript, sentToMain, realRoot, home } = globalThis.__t;
+import { spawnSync } from "node:child_process";
+
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runBranchCommand = async (command) => {
+    const result = await bash.execute("action-lease", { command });
+    if (result.isError) throw new Error("branch command failed: " + JSON.stringify(result));
+    return result.details;
+  };
+  const drained = await runBranchCommand("bin/fm-wake-drain.sh");
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error("drain did not return its acknowledgement command: " + drained.stderr);
+  await runBranchCommand("bin/fm-lease.sh claim task-9");
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute(
+    "action-lease",
+    {
+      task: "task-9",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result requires the authorized landing",
+      wake: "signal: lease ordering",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (result.isError) throw new Error("lease-order action report failed: " + JSON.stringify(result));
+  if (sentToMain.length !== 0) throw new Error("action delivery raced the branch lease");
+  await runBranchCommand("bin/fm-wake-drain.sh --ack-through " + ack[1] + " --recovery-generation " + ack[2]);
+};
+
+const offer = dispatch("signal: lease ordering");
+if (!offer.accepted) throw new Error("lease-order wake was not accepted");
+await settle(() => sentToMain.length === 1, "lease-safe action delivery");
+const mainEnv = {
+  ...process.env,
+  FM_HOME: home,
+  FM_STATE_OVERRIDE: home + "/state",
+  FM_SUPERVISION_ACTOR: "main",
+};
+const claim = spawnSync("bash", [realRoot + "/bin/fm-lease.sh", "claim", "task-9"], {
+  encoding: "utf8",
+  env: mainEnv,
+});
+if (claim.status !== 0) throw new Error("main could not claim the task after action delivery: " + claim.stderr);
+const release = spawnSync("bash", [realRoot + "/bin/fm-lease.sh", "release", "task-9"], {
+  encoding: "utf8",
+  env: mainEnv,
+});
+if (release.status !== 0) throw new Error("main lease cleanup failed: " + release.stderr);
+if (outcomeScript(["unread"]) !== "") throw new Error("lease-ordered action remained unread");
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "firstmate-action delivery must wait for branch lease release: $out"
+  [ -z "$out" ] || fail "firstmate-action lease-order test printed output: $out"
+  pass "firstmate-action delivery waits for wake acknowledgement and branch lease release"
+}
+
+test_firstmate_action_replay_uses_wake_sequence_idempotency() {
+  local home seq1 replay1 seq2 replay2 rows marker
+  home="$TMP_ROOT/action-wake-sequence-idempotency"
+  mkdir -p "$home/state" "$home/config"
+
+  seq1=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 41 --summary "original action summary" --wake "original wake")
+  replay1=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 41 --summary "reworded replay summary") \
+    || fail "a reworded replay of wake sequence 41 was rejected"
+  [ "$replay1" = "$seq1" ] || fail "wake sequence 41 replay allocated a new outcome: $seq1 versus $replay1"
+
+  seq2=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 42 --summary "same action summary" --wake "same wake")
+  marker="$home/state/branch-action/wake-42.json"
+  jq '.outcome_seq = null' "$marker" > "$home/state/branch-action/replay-marker.json" \
+    || fail "could not build the crash-window marker fixture"
+  mv -f "$home/state/branch-action/replay-marker.json" "$marker"
+  replay2=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append-action --task task-9 --wake-seq 42 --summary "reworded crash replay" --wake "reworded wake") \
+    || fail "a crash-window replay of wake sequence 42 was rejected"
+  [ "$replay2" = "$seq2" ] || fail "wake sequence 42 replay bound to the wrong outcome: expected $seq2, got $replay2"
+
+  rows=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" list --recent 10 | jq -s 'length')
+  [ "$rows" -eq 2 ] || fail "wake-sequence replays appended duplicate rows: $rows"
+  [ "$(jq -r '.wake_seq' "$home/state/branch-action/wake-41.json")" = 41 ] || fail "wake 41 lost its durable sequence binding"
+  [ "$(jq -r '.wake_seq' "$home/state/branch-action/wake-42.json")" = 42 ] || fail "wake 42 lost its durable sequence binding"
+  pass "firstmate-action replay uses wake sequence as its durable idempotency key"
+}
+
+test_main_bound_outcome_cannot_be_silenced_at_format_boundary() {
+  local home store replay
+  home="$TMP_ROOT/main-bound-format-boundary"
+  store="$home/state/branch-outcomes.jsonl"
+  mkdir -p "$home/state"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" \
+    append --task task-captain --verdict captain --summary "captain-only result" --silent true \
+    >/dev/null || fail "captain append was rejected at the format boundary"
+  [ "$(jq -r '.silent' "$store")" = false ] \
+    || fail "the format boundary persisted a main-bound outcome as silent"
+
+  replay=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) \
+    || fail "main-bound startup replay failed"
+  case "$replay" in
+    *"captain-only result"*) ;;
+    *) fail "a main-bound outcome escaped startup replay: $replay" ;;
+  esac
+  pass "the outcome format boundary keeps main-bound rows deliverable"
 }
 
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work() {
@@ -2645,9 +3035,13 @@ fire("turn_end", {}, {
 });
 unlinkSync(`${home}/state/.lock`);
 releasePrompt();
-await settle(() => mainUserMessages.length === 1, "lost-ownership fallback");
-if (!mainUserMessages[0].content.includes("FIRSTMATE WATCHER WAKE: signal: queued wake")) {
-  throw new Error(`queued wake did not fall back to main: ${mainUserMessages[0].content}`);
+await settle(() => mainUserMessages.length === 2, "lost-ownership fallbacks");
+const fallbackBodies = mainUserMessages.map((message) => message.content);
+if (!fallbackBodies.some((content) => content.includes("FIRSTMATE WATCHER WAKE: signal: active wake"))) {
+  throw new Error(`in-flight wake did not fall back to main: ${fallbackBodies.join(" | ")}`);
+}
+if (!fallbackBodies.some((content) => content.includes("FIRSTMATE WATCHER WAKE: signal: queued wake"))) {
+  throw new Error(`queued wake did not fall back to main: ${fallbackBodies.join(" | ")}`);
 }
 await new Promise((resolve) => setTimeout(resolve, 25));
 const session = globalThis.__fmSessions[0];
@@ -3215,6 +3609,11 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
+test_firstmate_action_replays_after_crash_before_ack
+test_firstmate_action_duplicate_handoff_is_deduplicated
+test_firstmate_action_delivery_waits_for_branch_lease_release
+test_firstmate_action_replay_uses_wake_sequence_idempotency
+test_main_bound_outcome_cannot_be_silenced_at_format_boundary
 test_branch_coalesces_repeat_wakes_and_bypasses_for_urgent_work
 test_captain_outcome_encoding_failure_delivers_plain_instruction
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot

@@ -76,7 +76,7 @@ fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
     echo "error: task $id has an invalid merge_authority record" >&2
     return 1
   }
-  FM_MERGE_AUTHORITY=$authority
+  export FM_MERGE_AUTHORITY=$authority
   [ "$authority" = firstmate ] || return 0
 
   if ! mate=$(fm_merge_outcome_home_id "$home"); then
@@ -120,7 +120,7 @@ fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
 
 fm_merge_authority_github_green() {  # <owner/repo> <number>
   local repo=$1 number=$2 checks
-  FM_MERGE_AUTHORITY_CHECKED_HEAD=
+  export FM_MERGE_AUTHORITY_CHECKED_HEAD=
   FM_MERGE_AUTHORITY_CHECKED_HEAD=$(fm_merge_authority_github_head "$repo" "$number") || {
     echo "error: GitHub PR head is not readable; refusing before merge" >&2
     return 1

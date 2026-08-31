@@ -2044,6 +2044,7 @@ test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed() {
   local case_dir rc
   case_dir=$(make_case green-gate-help-suffix)
   add_gh_mocks "$case_dir" 8585858585858585858585858585858585858585
+  # shellcheck disable=SC2016 # backticks are literal help-fixture bytes.
   printf '%s\n' \
     'summary: "2 passed, 0 failed, 2 total"' \
     'checks[2]{name,conclusion}:' \
@@ -2062,6 +2063,7 @@ test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed() {
 
   case_dir=$(make_case green-gate-no-ci)
   add_gh_mocks "$case_dir" 8686868686868686868686868686868686868686
+  # shellcheck disable=SC2016 # backticks are literal help-fixture bytes.
   printf '%s\n' \
     'help[3]:' \
     '  Run `gh-axi pr checks --help` for more information' > "$case_dir/github-checks"

@@ -124,8 +124,8 @@ PROJECT_NAME=${PROJECT_PATH##*/}
   echo "error: task $ID has no recorded project; refusing to promote without a registered project authority" >&2
   exit 1
 }
-REGISTERED_AUTHORITY=$(FM_HOME="$FM_HOME" \
-  FM_DATA_OVERRIDE="${FM_DATA_OVERRIDE:-$FM_HOME/data}" \
+REGISTERED_AUTHORITY=$(FM_DATA_OVERRIDE="$DATA" \
+  FM_HOME="$FM_HOME" \
   "$FM_ROOT/bin/fm-project-mode.sh" --authority "$PROJECT_NAME") || {
   echo "error: could not resolve merge authority for project $PROJECT_NAME; refusing promotion" >&2
   exit 1

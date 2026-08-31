@@ -6,14 +6,12 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-# shellcheck source=bin/fm-remote-job-lib.sh
-. "$ROOT/bin/fm-remote-job-lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-on)
 # The helper is called in command substitution, so recreate the registered path
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then fm_remote_job_stop_worker_tree "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -57,8 +55,7 @@ case "\${1:-}:\${2:-}" in
 esac
 SH
 cp "$ROOT/bin/fm-remote-doctor.sh" "$ROOT/bin/fm-tasks-axi-lib.sh" \
-  "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-composer-lib.sh" \
-  "$ROOT/bin/fm-transition-lib.sh" "$REMOTE_ROOT/bin/"
+  "$ROOT/bin/fm-backend.sh" "$REMOTE_ROOT/bin/"
 mkdir -p "$REMOTE_ROOT/bin/backends"
 cp "$ROOT/bin/backends/herdr.sh" "$REMOTE_ROOT/bin/backends/herdr.sh"
 cat > "$REMOTE_ROOT/bin/fm-mutate.sh" <<'SH'
@@ -242,9 +239,7 @@ expect_dir "$REMOTE_ROOT/bin"
 if [ -d "$ACCOUNT_HOME/.local/bin" ] && [ ! -L "$ACCOUNT_HOME/.local/bin" ]; then
   expect_dir "$ACCOUNT_HOME/.local/bin"
 fi
-if [ "${#NVM_CHILD_DIRS[@]}" -gt 0 ]; then
-  for candidate in "${NVM_CHILD_DIRS[@]}"; do expect_dir "$candidate"; done
-fi
+for candidate in "${NVM_CHILD_DIRS[@]}"; do expect_dir "$candidate"; done
 for candidate in "${MANAGER_DIRS[@]}"; do
   [ -d "$candidate" ] && [ ! -L "$candidate" ] && expect_dir "$candidate"
 done
@@ -280,8 +275,7 @@ done
 pass "the entrypoint composes a deduplicated discovered child PATH (kept $PRESENT_CHECKED existing, omitted $ABSENT_CHECKED absent)"
 
 WORKER_PID=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
-fm_remote_job_stop_worker_tree "$WORKER_PID" \
-  || fail "the remote worker tree did not stop cleanly"
+kill -TERM "$WORKER_PID"
 for _ in $(seq 1 100); do
   [ ! -f "$TMP_ROOT/remote-jobs/worker.pid" ] && break
   sleep 0.05

@@ -141,6 +141,7 @@ PF_TEMP_FILES=()
 PF_REGISTRY_LOCK_IDS=()
 pf_registry_lock_held() {
   local wanted=$1 held
+  [ "${#PF_REGISTRY_LOCK_IDS[@]}" -gt 0 ] || return 1
   for held in "${PF_REGISTRY_LOCK_IDS[@]}"; do
     [ "$held" = "$wanted" ] && return 0
   done
@@ -160,7 +161,11 @@ pf_registry_lock_release() {
   for held in "${PF_REGISTRY_LOCK_IDS[@]}"; do
     [ "$held" = "$id" ] || remaining+=("$held")
   done
-  PF_REGISTRY_LOCK_IDS=("${remaining[@]}")
+  if [ "${#remaining[@]}" -eq 0 ]; then
+    PF_REGISTRY_LOCK_IDS=()
+  else
+    PF_REGISTRY_LOCK_IDS=("${remaining[@]}")
+  fi
 }
 pf_cleanup() {
   local i

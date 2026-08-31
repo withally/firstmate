@@ -103,6 +103,11 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks")
+    printf '%s\n' \
+      'summary: "0 passed, 0 failed, 0 total"' \
+      'checks[0]{name,conclusion}:'
+    ;;
   "pr view")
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"

@@ -1,0 +1,75 @@
+verdict: idle-post-afk agent_status=working composer=empty pane_is_busy_rc=1 broad_match_rc=0 scoped_match_rc=1 subcause=idle native-state=working matched-row=  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage       /rc
+ansi-rows-begin: idle-post-afk
+[0m[38;2;255;255;255m⏺[0m Captain, entering away mode now.
+
+[0m[38;2;78;186;101m⏺ [0m[1mBash[0m(bin/fm-afk-launch.sh start-native 2>&1; echo "exit=$?")
+[0m[38;2;153;153;153m  ⎿  [0mexit=0
+     
+[0m[38;2;78;186;101m⏺ [0m[1mBash[0m(FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh)
+[0m[38;2;153;153;153m  ⎿  Running in the background (↓ to manage)[0m
+  
+[0m[38;2;215;119;87m✳ Schlepping… [0m[38;2;153;153;153m(11s · ↓[0m [0m[38;2;153;153;153m443 tokens)[0m
+[0m[38;2;153;153;153m  ⎿  Tip: Running multiple Claude sessions? Use /color and /rename to tell them apart at a [0m
+     [0m[38;2;153;153;153mglance.[0m
+
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m❯ [0m
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;2;255;107;128m⏵⏵ bypass permissions on[0m[38;2;153;153;153m · [0m[38;2;0;204;204m1 shell[0m[38;2;153;153;153m · esc to interrupt · ← 1 agent · ↓ to manage       [0m[38;2;78;186;101m/rc[0mansi-rows-end: idle-post-afk
+ok - real Herdr 0.8.2 + Claude 2.1.251 (Claude Code): native working with rendered-idle empty composer submits once
+verdict: active-foreground-before-escalation agent_status=working composer=empty pane_is_busy_rc=0 broad_match_rc=0 scoped_match_rc=0 subcause=rendered-busy native-state=working matched-row=✻ Tempering… (7s · ↓ 128 tokens)
+ansi-rows-begin: active-foreground-before-escalation
+
+[0m[38;2;80;80;80m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse Bash to run python3 -c 'import time; time.sleep(150)' and then reply exactly [0m[48;2;55;55;55m          [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mFM_AFK_CLAUDE_GUARD_FOREGROUND_86734 and nothing else.[0m[48;2;55;55;55m                                     [0m
+  
+[0m[38;2;153;153;153m [0m [0m[1mBash[0m(python3 -c 'import time; time.sleep(150)')
+[0m[38;2;153;153;153m  ⎿  Running… (5s · timeout 3m 20s)[0m
+     [0m[38;2;153;153;153m(ctrl+b to run in background)[0m
+
+[0m[38;2;215;119;87m✢[0m [0m[38;2;218;124;92mTempering…[0m[38;2;215;119;87m [0m[38;2;153;153;153m(7s · ↓[0m [0m[38;2;153;153;153m128 tokens)[0m
+[0m[38;2;153;153;153m  ⎿  Tip: Dynamic workflows let Claude write a script that orchestrates many agents for you. [0m
+     [0m[38;2;153;153;153mMention the keyword [0m[38;2;177;185;249multracode[0m[38;2;153;153;153m or ask Claude to use a workflow directly.[0m
+
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m❯ [0m
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;2;255;107;128m⏵⏵ bypass permissions on[0m[38;2;153;153;153m · [0m[38;2;0;204;204m1 shell[0m[38;2;153;153;153m · esc to interrupt · ← 1 agent · ↓ to manage       [0m[38;2;78;186;101m/rc[0mansi-rows-end: active-foreground-before-escalation
+verdict: active-foreground agent_status=working composer=empty pane_is_busy_rc=0 broad_match_rc=0 scoped_match_rc=0 subcause=rendered-busy native-state=working matched-row=✶ Tempering… (14s · ↓ 128 tokens)
+ansi-rows-begin: active-foreground
+
+[0m[38;2;80;80;80m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse Bash to run python3 -c 'import time; time.sleep(150)' and then reply exactly [0m[48;2;55;55;55m          [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mFM_AFK_CLAUDE_GUARD_FOREGROUND_86734 and nothing else.[0m[48;2;55;55;55m                                     [0m
+  
+[0m[38;2;153;153;153m⏺[0m [0m[1mBash[0m(python3 -c 'import time; time.sleep(150)')
+[0m[38;2;153;153;153m  ⎿  Running… (12s · timeout 3m 20s)[0m
+     [0m[38;2;153;153;153m(ctrl+b to run in background)[0m
+
+[0m[38;2;215;119;87m✽[0m [0m[38;2;220;129;97mTempering…[0m[38;2;215;119;87m [0m[38;2;153;153;153m(14s · ↓[0m [0m[38;2;153;153;153m128 tokens)[0m
+[0m[38;2;153;153;153m  ⎿  Tip: Dynamic workflows let Claude write a script that orchestrates many agents for you. [0m
+     [0m[38;2;153;153;153mMention the keyword [0m[38;2;177;185;249multracode[0m[38;2;153;153;153m or ask Claude to use a workflow directly.[0m
+
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m❯ [0m
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;2;255;107;128m⏵⏵ bypass permissions on[0m[38;2;153;153;153m · [0m[38;2;0;204;204m1 shell[0m[38;2;153;153;153m · esc to interrupt · ← 1 agent · ↓ to manage       [0m[38;2;78;186;101m/rc[0mansi-rows-end: active-foreground
+verdict: pending-human-text agent_status=idle composer=pending pane_is_busy_rc=1 broad_match_rc=1 scoped_match_rc=1 subcause=idle native-state=idle matched-row=none
+ansi-rows-begin: pending-human-text
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m(pre-read; re-arm not needed — watcher daemon-managed)[0m[48;2;55;55;55m                                     [0m
+
+[0m[38;2;255;255;255m⏺ [0mFM_AFK_CLAUDE_GUARD_ACK_86734
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mWorked for 19s · done 9:48 AM · 1 shell still running[0m
+
+[0m[38;2;80;80;80m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse Bash to run python3 -c 'import time; time.sleep(150)' and then reply exactly [0m[48;2;55;55;55m          [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mFM_AFK_CLAUDE_GUARD_FOREGROUND_86734 and nothing else.[0m[48;2;55;55;55m                                     [0m
+  
+[0m[38;2;255;107;128m⏺[0m [0m[1mBash[0m(python3 -c 'import time; time.sleep(150)')
+[0m[38;2;153;153;153m  ⎿  Interrupted · What should Claude do instead?[0m
+
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+❯ bright-human-draft-86734
+[0m[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;2;255;107;128m⏵⏵ bypass permissions on[0m[38;2;153;153;153m · [0m[38;2;0;204;204m1 shell[0m                                                    [0m[38;2;78;186;101m/rc[0mansi-rows-end: pending-human-text
+ok - real Herdr 0.8.2 + Claude 2.1.251 (Claude Code): rendered-busy and pending-composer deferrals preserve human text
+evidence: session=fm-lab-fm-afk-inject-we-86841-4718 native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1

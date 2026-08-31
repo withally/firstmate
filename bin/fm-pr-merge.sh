@@ -5,6 +5,8 @@
 # addressed through gh-axi by the derived owner and repository; a GitLab merge
 # request is addressed through glab by the project URL rebuilt from the parsed
 # host and path, so any instance works and no host is hardcoded.
+# The shared merge-authority gate is checked before any provider merge and owns
+# the configured tier, landing approval, parent binding, and green-head refusal.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
 # --squash, --merge, --rebase, or --method after the optional -- separator.

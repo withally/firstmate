@@ -40,6 +40,7 @@ The legacy `+yolo` token remains accepted.
 When `merge-authority=` is absent, `+yolo` maps to `self` and its absence maps to `captain`, preserving existing registry semantics and the default two-field `<mode> <yolo>` output.
 An explicit `merge-authority=self` pairs with yolo on, while `captain` and `firstmate` pair with yolo off; conflicting or unknown annotations fail safe to captain authority with a warning.
 Use `bin/fm-project-mode.sh --authority <project>` to print the resolved tier without changing the compatibility output used by existing mechanical callers.
+Scout promotion re-resolves a fresh tier through `bin/fm-project-mode.sh`: `yolo=on` selects `self`, while `yolo=off` uses the registered tier and therefore the parser's `captain` fallback only when the project is unregistered, so a stale seeded authority is not retained.
 
 The tiers mean:
 
@@ -53,7 +54,8 @@ The landing guards accept `before-landing-<task-id>` only when the latest event 
 Remote `route=remote` firstmate-authority landings remain fail-closed until a parent approval-record transport exists; track that transport as a PR follow-up.
 No tier authorizes a red merge.
 
-Ship briefs record `Merge authority: <tier>` beside their delivery contract, and `state/<id>.meta` records the same tier as `merge_authority=<tier>` beside `mode=` and `yolo=`.
+When supplied, ship briefs record `Merge authority: <tier>` beside their delivery contract; a legacy brief without that line lets `fm-spawn.sh` derive the same tier from `yolo`.
+`state/<id>.meta` records the resolved tier as `merge_authority=<tier>` beside `mode=` and `yolo=`, including across relaunch.
 Secondmate charters resolve every listed project's tier from the primary registry, and `bin/fm-home-seed.sh` copies those exact registry lines into the secondmate home, so the tier survives normal relaunch and convergence.
 
 ## Pi Calm preference (config/calm)

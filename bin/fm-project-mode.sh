@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Resolve a project's REGISTERED delivery posture from the data/projects.md registry.
+# Resolve a project's REGISTERED delivery and merge-authority posture from the data/projects.md registry.
 # Prints two words to stdout: "<mode> <yolo>" where mode is one of
 # no-mistakes|direct-PR|local-only and yolo is on|off.
 # --authority prints the resolved merge-authority tier instead: captain,
-# firstmate, or self. An explicit registry field wins; when absent, legacy
-# +yolo maps to self and yolo-off maps to captain.
+# firstmate, or self. An explicit non-conflicting registry field wins; when
+# absent, legacy +yolo maps to self and yolo-off maps to captain. A conflicting
+# field and +yolo posture fail safe to captain.
 #
 # MECHANICAL CONSUMERS ONLY. This answers "what posture did the captain register
 # for this project", never "how does this task ship". A task's delivery mode and
 # yolo are resolved by firstmate at intake and passed explicitly to
 # bin/fm-brief.sh, bin/fm-spawn.sh, and bin/fm-promote.sh (AGENTS.md section 7).
-# The consumers are bin/fm-fleet-sync.sh (skip local-only clones),
-# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init), and
-# bin/fm-spawn.sh's advisory registry-deviation notice.
+# The consumers are bin/fm-brief.sh (secondmate charter authority lines),
+# bin/fm-promote.sh (fresh scout authority), bin/fm-fleet-sync.sh (skip local-only
+# clones), bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init),
+# and bin/fm-spawn.sh's advisory registry-deviation notice.
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off / captain

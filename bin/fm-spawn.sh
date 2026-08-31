@@ -8,7 +8,7 @@
 #   for every ship spawn and refused on --scout and --secondmate spawns.
 #   --merge-authority records the resolved tier; when omitted for a legacy caller,
 #   yolo=on derives self and yolo=off derives captain. Firstmate resolves these
-#   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
+#   per task at intake (AGENTS.md section 7); data/projects.md holds the registered
 #   standing posture as context, not as this task's answer, so a spawn never looks
 #   the mode up. A ship spawn additionally reads the brief's recorded
 #   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
@@ -153,7 +153,7 @@
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
 #   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
-#   applies to every pair. A ship batch therefore carries one delivery contract, and each
+#   and ship-only --merge-authority apply to every pair. A ship batch therefore carries one delivery contract, and each
 #   pair still checks it against its own brief; a batch spanning modes is two invocations.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
@@ -188,7 +188,7 @@
 # the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
 # park owns that home's supervision (docs/supervision-protocols/cursor.md).
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [merge_authority=<tier>]
-# A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
+# A ship task records its resolved mode/yolo/merge_authority; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
 # Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
@@ -1770,7 +1770,7 @@ if [ "$KIND" = ship ]; then
     echo "error: merge-authority mismatch for $ID: the brief says $BRIEF_MERGE_AUTHORITY but this spawn resolved $MERGE_AUTHORITY; correct the flag or re-scaffold the brief" >&2
     exit 1
   fi
-  # The registry holds the captain's standing posture, so dropping below it is
+  # The registry holds the registered standing posture, so dropping below it is
   # allowed (a current explicit captain instruction wins) but never silent. An
   # unregistered project resolves to the same no-mistakes standing default, which
   # is why the notice names the standing posture rather than the registry line. A
@@ -2724,9 +2724,9 @@ EOF
   esac
 fi
 
-# Delivery posture recorded in meta so fm-teardown's safety check and the
-# validate/merge stages can branch on it. A ship task carries the explicit
-# per-task decision validated above; a secondmate's posture is fixed; a scout
+# Delivery posture and merge authority are recorded in meta so fm-teardown's
+# safety check and the validate/merge stages can branch on them. A ship task carries
+# the per-task decisions validated above; a secondmate's posture is fixed; a scout
 # records none at all, because its deliverable is a report rather than a merge
 # (fm-teardown.sh defaults an absent mode to no-mistakes, and fm-promote.sh
 # requires an explicit mode when a scout is promoted to a ship task).

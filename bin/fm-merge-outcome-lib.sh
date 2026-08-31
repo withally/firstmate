@@ -12,6 +12,9 @@
 #     bin/fm-inactive-reconcile.sh's report_to_parent already uses, in the same
 #     "<state> [key=<slug>]: <note>" shape the charter contract defines;
 #   - a main home reports to the captain through the durable wake queue.
+# A local secondmate report is written upward only after the parent registry
+# binding is validated; an unusable binding returns a refusal instead of routing
+# the outcome into a guessed parent home.
 # A poll observed in a secondmate home also receives a local durable wake after
 # the upward write, so the mate can handle its own poll observation.
 # No new state file and no new transport are involved.

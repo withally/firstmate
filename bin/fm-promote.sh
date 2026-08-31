@@ -9,8 +9,9 @@
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
-# read the scout's report (AGENTS.md section 7); merge authority is resolved
-# from the project's registered posture in data/projects.md.
+# read the scout's report (AGENTS.md section 7), and re-resolves merge authority
+# through the current data/projects.md registry: yolo=on selects self, while yolo=off
+# uses the registered tier and the parser's captain fallback for an unregistered project.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
 set -eu

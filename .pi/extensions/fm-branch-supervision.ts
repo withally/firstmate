@@ -533,6 +533,10 @@ export default function (pi: ExtensionAPI) {
   let pendingWakeGeneration = -1;
   const pendingWakeMessages: string[] = [];
   const lastDeliveredStaleByWindow = new Map<string, string>();
+  // One same-text offer can arrive after the active turn's eligible-row
+  // snapshot. Remember only the newest signal per window and re-run the normal
+  // durable queue scan once the serialized turn has settled.
+  const deferredStaleRechecks = new Map<string, { message: string; generation: number }>();
   const pendingMirror: MirrorItem[] = [];
   const mirrorCollection: MirrorCollectionState = {
     collectAnchor: null,
@@ -1246,7 +1250,29 @@ ${context.command}
         }
         deliverPendingActionDeliveries(acceptedGeneration, wakeContext.eligibleSeqs);
       })
+      .then(() => {
+        if (shuttingDown || acceptedGeneration !== generation) return;
+        const recheck: string[] = [];
+        for (const candidate of messages) {
+          const window = staleWakeWindow(candidate);
+          if (!window || lastDeliveredStaleByWindow.get(window) !== candidate) continue;
+          const deferred = deferredStaleRechecks.get(window);
+          if (deferred?.generation === acceptedGeneration && deferred.message === candidate) {
+            deferredStaleRechecks.delete(window);
+            recheck.push(candidate);
+          } else {
+            lastDeliveredStaleByWindow.delete(window);
+          }
+        }
+        if (recheck.length > 0) enqueueWake(recheck, acceptedGeneration);
+      })
       .catch(async (error: unknown) => {
+        for (const candidate of messages) {
+          const window = staleWakeWindow(candidate);
+          if (!window || lastDeliveredStaleByWindow.get(window) !== candidate) continue;
+          lastDeliveredStaleByWindow.delete(window);
+          deferredStaleRechecks.delete(window);
+        }
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
         releaseBranchLeases(acceptedGeneration);
         try {
@@ -1276,7 +1302,11 @@ ${context.command}
       flushPendingWakes();
     }
     const staleWindow = staleWakeWindow(message);
-    if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) return;
+    if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) {
+      deferredStaleRechecks.set(staleWindow, { message, generation: acceptedGeneration });
+      return;
+    }
+    if (staleWindow) deferredStaleRechecks.delete(staleWindow);
     pendingWakeGeneration = acceptedGeneration;
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
     if (urgentWake(message)) {
@@ -1395,6 +1425,7 @@ ${context.command}
     branchBroken = "";
     generation += 1;
     lastDeliveredStaleByWindow.clear();
+    deferredStaleRechecks.clear();
     if (actingAsOwner(generation)) activatePendingActionDeliveries(generation);
   });
 
@@ -1437,6 +1468,7 @@ ${context.command}
     pendingActionDeliveries.clear();
     rehydratedActionGeneration = -1;
     lastDeliveredStaleByWindow.clear();
+    deferredStaleRechecks.clear();
     pendingMirror.length = 0;
     currentMainSession = null;
     mirrorCollection.collectAnchor = null;

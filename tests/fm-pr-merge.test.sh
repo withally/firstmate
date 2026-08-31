@@ -2016,6 +2016,46 @@ test_github_authority_tiers_refuse_red_work() {
   pass "captain and self authority refuse red GitHub PRs before the forge"
 }
 
+test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed() {
+  local case_dir rc
+  case_dir=$(make_case green-gate-help-suffix)
+  add_gh_mocks "$case_dir" 8585858585858585858585858585858585858585
+  printf '%s\n' \
+    'summary: "2 passed, 0 failed, 2 total"' \
+    'checks[2]{name,conclusion}:' \
+    '  lint,pass' \
+    '  tests,pass' \
+    'help[3]:' \
+    '  Run `gh-axi pr checks --help` for more information' > "$case_dir/github-checks"
+  : > "$case_dir/gh-axi.log"
+
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/85 \
+    > "$case_dir/stdout-help" 2> "$case_dir/stderr-help" \
+    || fail "GitHub green checks with a trailing help block should merge"
+  assert_grep 'pr merge 85 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    "a trailing help block prevented a green PR from reaching the forge"
+
+  case_dir=$(make_case green-gate-no-ci)
+  add_gh_mocks "$case_dir" 8686868686868686868686868686868686868686
+  printf '%s\n' \
+    'help[3]:' \
+    '  Run `gh-axi pr checks --help` for more information' > "$case_dir/github-checks"
+  : > "$case_dir/gh-axi.log"
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/86 \
+    > "$case_dir/stdout-no-ci" 2> "$case_dir/stderr-no-ci"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a no-CI GitHub response should refuse before merge"
+  assert_grep 'checks are not green' "$case_dir/stderr-no-ci" \
+    "a no-CI GitHub response did not fail the green gate"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "a no-CI GitHub response still reached the forge merge"
+  pass "GitHub green checks accept owned help trailers but reject no-CI output"
+}
+
 test_github_green_gate_rejects_malformed_summaries_and_rows() {
   local name case_dir rc
   for name in malformed-summary pending-row; do
@@ -2329,6 +2369,7 @@ test_queued_gitlab_merge_leaves_the_poll_armed
 test_failed_merge_reports_nothing
 test_firstmate_authority_requires_parent_resolution_and_green_checks
 test_github_authority_tiers_refuse_red_work
+test_github_green_gate_handles_help_suffix_and_no_ci_fail_closed
 test_github_green_gate_rejects_malformed_summaries_and_rows
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake

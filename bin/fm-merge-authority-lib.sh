@@ -125,8 +125,15 @@ fm_merge_authority_github_green() {  # <owner/repo> <number>
       sub(/\].*$/, "", header)
       if (is_uint(header)) expected=header+0; else invalid=1
       in_checks=1
+      in_help=0
       next
     }
+    /^help\[[0-9][0-9]*\]:$/ {
+      in_checks=0
+      in_help=1
+      next
+    }
+    in_help { next }
     in_checks {
       if ($0 !~ /^  .+$/) { invalid=1; next }
       line=$0

@@ -9,8 +9,8 @@
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
-# read the scout's report (AGENTS.md section 7); data/projects.md holds the
-# captain's standing posture as context, and this script never looks it up.
+# read the scout's report (AGENTS.md section 7); merge authority is resolved
+# from the project's registered posture in data/projects.md.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
 set -eu
@@ -114,18 +114,30 @@ META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
-PRIOR_AUTHORITY=$(awk -F= '$1 == "merge_authority" { value=substr($0, index($0, "=") + 1) } END { print value }' "$META")
-case "$PRIOR_AUTHORITY" in
-  ''|captain|firstmate|self) ;;
-  *) echo "error: task $ID has an invalid merge_authority record" >&2; exit 1 ;;
-esac
+PROJECT_PATH=$(awk -F= '$1 == "project" { value=substr($0, index($0, "=") + 1) } END { print value }' "$META")
+PROJECT_NAME=${PROJECT_PATH##*/}
+[ -n "$PROJECT_NAME" ] || {
+  echo "error: task $ID has no recorded project; refusing to promote without a registered project authority" >&2
+  exit 1
+}
+REGISTERED_AUTHORITY=$(FM_HOME="$FM_HOME" \
+  FM_DATA_OVERRIDE="${FM_DATA_OVERRIDE:-$FM_HOME/data}" \
+  "$FM_ROOT/bin/fm-project-mode.sh" --authority "$PROJECT_NAME") || {
+  echo "error: could not resolve merge authority for project $PROJECT_NAME; refusing promotion" >&2
+  exit 1
+}
 if [ "$YOLO" = on ]; then
   MERGE_AUTHORITY=self
-elif [ "$PRIOR_AUTHORITY" = firstmate ]; then
-  MERGE_AUTHORITY=firstmate
 else
-  MERGE_AUTHORITY=captain
+  MERGE_AUTHORITY=$REGISTERED_AUTHORITY
 fi
+case "$MERGE_AUTHORITY:$YOLO" in
+  captain:off|firstmate:off|self:on) ;;
+  *)
+    echo "error: resolved merge authority $MERGE_AUTHORITY conflicts with --yolo $YOLO for task $ID" >&2
+    exit 1
+    ;;
+esac
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^merge_authority=' "$META" > "$TMP"

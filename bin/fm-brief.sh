@@ -45,9 +45,9 @@
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
-# Ship callers may pass the resolved --merge-authority tier; a missing value
-# retains the legacy captain default, while secondmate charters resolve each
-# listed project directly from their inherited registry.
+# Ship callers may pass the resolved --merge-authority tier; when omitted, the
+# generated brief leaves that line out so spawn preserves legacy yolo derivation,
+# while secondmate charters resolve each listed project directly from their inherited registry.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
@@ -161,13 +161,12 @@ if [ "$KIND" = ship ]; then
       exit 1 ;;
     *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
   esac
-  if [ "$MERGE_AUTHORITY_SET" -eq 0 ]; then
-    MERGE_AUTHORITY=captain
+  if [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
+    case "$MERGE_AUTHORITY" in
+      captain|firstmate|self) ;;
+      *) echo "error: --merge-authority must be one of captain, firstmate, self (got '$MERGE_AUTHORITY')" >&2; exit 1 ;;
+    esac
   fi
-  case "$MERGE_AUTHORITY" in
-    captain|firstmate|self) ;;
-    *) echo "error: --merge-authority must be one of captain, firstmate, self (got '$MERGE_AUTHORITY')" >&2; exit 1 ;;
-  esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
@@ -340,8 +339,11 @@ fi
 
 REPO=${POS[1]}
 
-MERGE_AUTHORITY_SECTION="Merge authority: $MERGE_AUTHORITY"
-if [ "$MERGE_AUTHORITY" = firstmate ]; then
+MERGE_AUTHORITY_SECTION=
+if [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
+  MERGE_AUTHORITY_SECTION="Merge authority: $MERGE_AUTHORITY"
+fi
+if [ "$MERGE_AUTHORITY" = firstmate ] && [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
   MERGE_AUTHORITY_SECTION="$MERGE_AUTHORITY_SECTION
 
 $(firstmate_authority_checkins "$ID")"

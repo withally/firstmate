@@ -65,21 +65,49 @@ fi
 
 # awk emits "<mode> <yolo> <explicit-authority>" or nothing if absent.
 parsed=$(awk -v n="$NAME" '
+  function invalid(kind, value) {
+    print kind (value == "" ? "" : " " value)
+    exit
+  }
   $1=="-" && $2==n {
     mode="no-mistakes"; yolo="off"; authority="";
-    if ($3 ~ /^\[/) {
-      s="";
-      for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
-      gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
-      k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo") mode = a[1];
-      for (j=1; j<=k; j++) {
-        if (a[j]=="+yolo") yolo="on";
-        if (a[j] ~ /^merge-authority=/) {
-          authority=a[j]; sub(/^merge-authority=/, "", authority)
-        }
+    if (NF < 3) invalid("__malformed_annotation__", "")
+    if ($3 == "-") {
+      print mode, yolo, authority; exit
+    }
+    if ($3 !~ /^\[/) invalid("__malformed_annotation__", "")
+    s=""; closed=0;
+    for (i=3; i<=NF; i++) {
+      s = s (s==""?"":" ") $i
+      if ($i ~ /\]$/) { closed=1; break }
+    }
+    closed || invalid("__malformed_annotation__", "")
+    sub(/^\[/, "", s); sub(/\]$/, "", s)
+    k = split(s, a, " ")
+    if (a[1] == "") invalid("__malformed_annotation__", "")
+    if (a[1] == "+yolo") {
+      yolo="on"; seen_yolo=1
+    } else if (a[1] ~ /^merge-authority=/) {
+      invalid("__malformed_annotation__", "")
+    } else {
+      mode=a[1]
+    }
+    for (j=2; j<=k; j++) {
+      if (a[j] == "+yolo") {
+        seen_yolo++
+        if (seen_yolo > 1) invalid("__duplicate_annotation__", "yolo")
+        yolo="on"
+      } else if (a[j] ~ /^merge-authority=/) {
+        seen_authority++
+        if (seen_authority > 1) invalid("__duplicate_annotation__", "merge-authority")
+        authority=a[j]; sub(/^merge-authority=/, "", authority)
+        if (authority !~ /^(captain|firstmate|self)$/) invalid("__unknown_annotation__", "merge-authority")
+      } else {
+        invalid("__unknown_annotation__", a[j])
       }
     }
+    if (mode !~ /^(no-mistakes|direct-PR|local-only|no-mistakes-prod-only)$/)
+      invalid("__unknown_mode__", mode)
     print mode, yolo, authority; exit
   }
 ' "$REG")
@@ -89,6 +117,18 @@ if [ -z "$parsed" ]; then
   if [ "$AUTHORITY_ONLY" -eq 1 ]; then echo captain; else echo "no-mistakes off"; fi
   exit 0
 fi
+
+case "$parsed" in
+  __malformed_annotation__|__duplicate_annotation__*|__unknown_annotation__*)
+    echo "warn: malformed registry annotation for $NAME; defaulting to no-mistakes off with captain authority" >&2
+    parsed="no-mistakes off captain"
+    ;;
+  __unknown_mode__\ *)
+    mode=${parsed#__unknown_mode__ }
+    echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2
+    parsed="no-mistakes off captain"
+    ;;
+esac
 
 mode=${parsed%% *}
 rest=${parsed#* }

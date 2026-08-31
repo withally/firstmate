@@ -367,6 +367,21 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
+validate_ship_merge_authority() {
+  case "$YOLO" in
+    on|off) ;;
+    *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; return 1 ;;
+  esac
+  case "$MERGE_AUTHORITY" in
+    captain|firstmate|self) ;;
+    *) echo "error: --merge-authority must be one of captain, firstmate, self (got '$MERGE_AUTHORITY')" >&2; return 1 ;;
+  esac
+  case "$MERGE_AUTHORITY:$YOLO" in
+    captain:off|firstmate:off|self:on) ;;
+    *) echo "error: --merge-authority $MERGE_AUTHORITY conflicts with --yolo $YOLO (captain/firstmate require off; self requires on)" >&2; return 1 ;;
+  esac
+}
+
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
 # task's own durable record below. Contradicting it on the command line is a
@@ -398,21 +413,10 @@ else
         exit 1 ;;
       *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
     esac
-    case "$YOLO" in
-      on|off) ;;
-      *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
-    esac
     if [ "$MERGE_AUTHORITY_SET" -eq 0 ]; then
       if [ "$YOLO" = on ]; then MERGE_AUTHORITY=self; else MERGE_AUTHORITY=captain; fi
     fi
-    case "$MERGE_AUTHORITY" in
-      captain|firstmate|self) ;;
-      *) echo "error: --merge-authority must be one of captain, firstmate, self (got '$MERGE_AUTHORITY')" >&2; exit 1 ;;
-    esac
-    case "$MERGE_AUTHORITY:$YOLO" in
-      captain:off|firstmate:off|self:on) ;;
-      *) echo "error: --merge-authority $MERGE_AUTHORITY conflicts with --yolo $YOLO (captain/firstmate require off; self requires on)" >&2; exit 1 ;;
-    esac
+    validate_ship_merge_authority || exit 1
   else
     [ "$MODE_SET" -eq 0 ] || {
       echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
@@ -1062,8 +1066,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
   MERGE_AUTHORITY=$(fm_meta_get "$RELAUNCH_META" merge_authority)
-  if [ "$KIND" = ship ] && [ -z "$MERGE_AUTHORITY" ]; then
-    if [ "$YOLO" = on ]; then MERGE_AUTHORITY=self; else MERGE_AUTHORITY=captain; fi
+  if [ "$KIND" = ship ]; then
+    [ -n "$YOLO" ] || YOLO=off
+    if [ -z "$MERGE_AUTHORITY" ]; then
+      if [ "$YOLO" = on ]; then MERGE_AUTHORITY=self; else MERGE_AUTHORITY=captain; fi
+    fi
+    validate_ship_merge_authority || exit 1
   fi
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
   [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {

@@ -179,6 +179,18 @@ EOF
     "a legacy brief did not announce its yolo-derived merge authority"
   assert_not_contains "$out" "merge-authority mismatch" \
     "a legacy brief was treated as a merge-authority mismatch"
+
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-brief.sh" \
+    delivery-authority-generated-b7 "$proj" --mode no-mistakes >/dev/null 2>&1 \
+    || fail "the executable brief generator did not scaffold a legacy-compatible brief"
+  assert_no_grep 'Merge authority:' "$home/data/delivery-authority-generated-b7/brief.md" \
+    "an omitted --merge-authority rendered a line into the generated brief"
+  out=$(run_spawn "$home" "$fakebin" delivery-authority-generated-b7 "$proj" claude \
+    --mode no-mistakes --yolo on)
+  assert_contains "$out" "records no merge authority line" \
+    "a generated legacy yolo-on brief did not reach spawn's derivation path"
+  assert_not_contains "$out" "merge-authority mismatch" \
+    "a generated legacy yolo-on brief was rejected as a mismatch"
   pass "fm-spawn: the brief and explicit merge authority agree while legacy yolo remains compatible"
 }
 
@@ -239,11 +251,13 @@ EOF
 test_promote_requires_and_records_the_delivery_contract() {
   local home meta out status
   home="$TMP_ROOT/promote/home"
-  mkdir -p "$home/state"
+  mkdir -p "$home/state" "$home/data" "$home/projects/proj"
+  printf '%s\n' '- proj [direct-PR] - fixture (added 2026-01-01)' > "$home/data/projects.md"
   meta="$home/state/promote-d1.meta"
 
   write_scout_meta() {
-    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\nproject=%s\n' \
+      "$home/projects/proj" > "$meta"
   }
 
   write_scout_meta
@@ -275,29 +289,32 @@ test_promote_requires_and_records_the_delivery_contract() {
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
-test_promote_preserves_explicit_firstmate_authority() {
+test_promote_resolves_registered_firstmate_authority() {
   local home meta out status
   home="$TMP_ROOT/promote-firstmate/home"
-  mkdir -p "$home/state"
+  mkdir -p "$home/state" "$home/data" "$home/projects/routed"
+  printf '%s\n' \
+    '- routed [direct-PR merge-authority=firstmate] - fixture (added 2026-01-01)' \
+    > "$home/data/projects.md"
   meta="$home/state/promote-f1.meta"
   printf '%s\n' \
     'window=fm-promote-f1' \
     'kind=scout' \
     'worktree=/tmp/wt' \
-    'yolo=off' \
-    'merge_authority=firstmate' > "$meta"
+    "project=$home/projects/routed" \
+    'yolo=off' > "$meta"
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" \
     promote-f1 --mode direct-PR --yolo off 2>&1)
   status=$?
-  expect_code 0 "$status" "explicit firstmate promotion should succeed"
+  expect_code 0 "$status" "registered firstmate promotion should succeed"
   assert_grep 'merge_authority=firstmate' "$meta" \
-    "promotion dropped the explicit firstmate authority"
+    "promotion dropped the registered firstmate authority"
   [ "$(grep -c '^merge_authority=' "$meta")" = 1 ] \
     || fail "promotion wrote more than one merge authority line"
   assert_contains "$out" 'promoted promote-f1 to ship mode=direct-PR yolo=off' \
-    "explicit firstmate promotion did not report success"
-  pass "fm-promote: an explicit firstmate authority survives scout promotion"
+    "registered firstmate promotion did not report success"
+  pass "fm-promote: registered firstmate authority survives scout promotion"
 }
 
 # The registry parser survives for the mechanical consumers only. It accepts the
@@ -316,6 +333,10 @@ test_project_mode_maps_the_conditional_policy() {
 - captainproj [direct-PR] - fixture (added 2026-01-01)
 - selfproj [direct-PR +yolo] - fixture (added 2026-01-01)
 - explicitself [direct-PR merge-authority=self] - fixture (added 2026-01-01)
+- unknown-token [direct-PR mystery] - fixture (added 2026-01-01)
+- duplicate-authority [direct-PR merge-authority=firstmate merge-authority=self] - fixture (added 2026-01-01)
+- duplicate-yolo [direct-PR +yolo +yolo] - fixture (added 2026-01-01)
+- unclosed [direct-PR merge-authority=firstmate - fixture (added 2026-01-01)
 EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" prodproj 2>/dev/null)
   [ "$out" = "no-mistakes off" ] || fail "conditional policy did not map to its most rigorous leg (got '$out')"
@@ -348,7 +369,15 @@ EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" explicitself 2>/dev/null)
   [ "$out" = "direct-PR on" ] \
     || fail "explicit self authority did not project to yolo on (got '$out')"
-  pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
+  local invalid
+  for invalid in unknown-token duplicate-authority duplicate-yolo unclosed; do
+    out=$(FM_HOME="$home" "$PROJECT_MODE" --authority "$invalid" 2>/dev/null)
+    [ "$out" = captain ] || fail "$invalid did not fail safe to captain authority (got '$out')"
+    err=$(FM_HOME="$home" "$PROJECT_MODE" --authority "$invalid" 2>&1 >/dev/null)
+    assert_contains "$err" "malformed registry annotation" \
+      "$invalid did not report its malformed registry annotation"
+  done
+  pass "fm-project-mode: valid policy resolves and malformed annotations fail safe"
 }
 
 test_ship_spawn_requires_a_valid_delivery_contract
@@ -358,6 +387,6 @@ test_spawn_refuses_a_brief_merge_authority_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
-test_promote_preserves_explicit_firstmate_authority
+test_promote_resolves_registered_firstmate_authority
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"

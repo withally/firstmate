@@ -124,7 +124,7 @@ test_signal_annotation_surfaces_every_unread_note_not_only_the_newest() {
 }
 
 test_pending_reply_resolution_surfaces_once() {
-  local dir state out status
+  local dir state out status count
   dir=$(make_case pending-reply-resolution)
   state="$dir/state"
   out="$dir/drain.out"
@@ -143,8 +143,12 @@ test_pending_reply_resolution_surfaces_once() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a pending-reply resolution"
 
-  grep -F 'pending-reply-resolved: task=task5 pending-reply-id=abcdef0123456789 via=status' "$out" >/dev/null \
-    || fail "the pending-reply resolution was buried under the later note: $(cat "$out")"
+  count=$(grep -F 'pending-reply-resolved: task=task5 pending-reply-id=abcdef0123456789 via=status' "$out" | wc -l | tr -d '[:space:]')
+  [ "$count" -eq 1 ] \
+    || fail "an open-key pending-reply resolution was presented $count times: $(cat "$out")"
+  if grep -F 'UNREAD STATUS' "$out" | grep -F 'pending-reply-resolved:' >/dev/null; then
+    fail "an open-key pending-reply resolution was retained under UNREAD STATUS: $(cat "$out")"
+  fi
   grep -F 'task5 note: re-read acknowledgement' "$out" >/dev/null \
     || fail "the trailing note was not surfaced with the pending-reply resolution: $(cat "$out")"
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
@@ -155,7 +159,7 @@ test_pending_reply_resolution_surfaces_once() {
   if grep -F 'pending-reply-resolved:' "$out" >/dev/null; then
     fail "an already-presented pending-reply resolution was replayed: $(cat "$out")"
   fi
-  pass "a pending-reply resolution buried under a later note surfaces once and closes OPEN DECISIONS"
+  pass "an open-key pending-reply resolution is excluded while a trailing note surfaces"
 }
 
 test_unread_output_over_cap_remains_recoverable() {

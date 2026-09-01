@@ -842,17 +842,35 @@ scan_signals() {
 # its last surfaced-or-absorbed size.
 # The fold-aware event predicate is owned by fm-classify-lib.sh; this wrapper only
 # supplies each scan row's persisted prior size.
+FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN=${BASHPID:-$$}
+
 pending_signal_is_actionable() {  # reads scan_signals rows on stdin
-  local sf sig f prior_sig prior_size captured_size
+  local sf sig f prior_sig prior_size captured_size candidate actionable=1
   while IFS=$(printf '\t') read -r sf sig f; do
     [ -n "$sf" ] || continue
     case "$f" in *.status) ;; *) continue ;; esac
     prior_sig=$(cat "$sf" 2>/dev/null || true)
     prior_size=${prior_sig%%:*}
     captured_size=${sig%%:*}
-    status_append_is_captain_relevant "$f" "$prior_size" "$captured_size" && return 0
+    candidate=$(_fm_signal_open_keys_pending_path "$f" "$FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN")
+    if status_append_is_captain_relevant "$f" "$prior_size" "$captured_size" "$candidate"; then
+      actionable=0
+    fi
   done
-  return 1
+  [ "$actionable" -eq 0 ]
+}
+
+commit_signal_open_keys() {  # reads scan_signals rows on stdin
+  local sf sig f candidate state_file
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in *.status) ;; *) continue ;; esac
+    state_file=$(_fm_signal_open_keys_path "$f")
+    candidate=$(_fm_signal_open_keys_pending_path "$f" "$FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN")
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+    mv -f "$candidate" "$state_file" || return 1
+  done
+  return 0
 }
 
 # Deliver a durably queued process-event result to firstmate. Publication is
@@ -1384,7 +1402,7 @@ EOF
     # Attended mode surfaces only newly appended captain-relevant events; an
     # all-nonterminal status append or bare turn-ended marker advances its seen
     # marker, enters the triage log, and leaves the status bytes for the next drain.
-    if afk_present || printf '%s\n' "$pending" | pending_signal_is_actionable; then
+    if afk_present; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
@@ -1399,13 +1417,30 @@ EOF
 $pending
 EOF
       wake "$reason"
-    else
+    elif pending_signal_is_actionable <<< "$pending"; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
-        printf '%s' "$sig" > "$sf"
+        fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
       done <<EOF
 $pending
 EOF
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        printf '%s' "$sig" > "$sf" || exit 1
+        mark_surfaced "$f"
+      done <<EOF
+$pending
+EOF
+      commit_signal_open_keys <<< "$pending" || exit 1
+      wake "$reason"
+    else
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        printf '%s' "$sig" > "$sf" || exit 1
+      done <<EOF
+$pending
+EOF
+      commit_signal_open_keys <<< "$pending" || exit 1
       triage_log "absorbed benign $reason"
     fi
   fi

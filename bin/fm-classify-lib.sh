@@ -604,6 +604,18 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
+_fm_signal_open_keys_path() {  # <status-file>
+  local f=$1 dir base
+  dir=$(dirname "$f")
+  base=$(basename "$f")
+  printf '%s/.%s.signal-open-keys' "$dir" "${base%.status}"
+}
+
+_fm_signal_open_keys_pending_path() {  # <status-file> [<token>]
+  local f=$1 token=${2:-${FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN:-$$}}
+  printf '%s.pending.%s' "$(_fm_signal_open_keys_path "$f")" "$token"
+}
+
 # 4: verb parsing ends at the first "[name=value]" tag rather than only at a
 # "[key=...]" one, so lines carrying another bracketed tag first became opens
 # and closes.
@@ -850,9 +862,16 @@ EOF
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0
+  local signal_state signal_pending pending_found=0
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
+  signal_state="$state/.$task.signal-open-keys"
+  for signal_pending in "$signal_state.pending."*; do
+    [ -e "$signal_pending" ] || continue
+    pending_found=1
+    break
+  done
 
   # A remote-home teardown can legitimately retire an endpoint ID that has no
   # status log in that home. Do not contend with that home's unrelated status
@@ -861,7 +880,9 @@ status_retire_presentation_task() {  # <state> <task-id>
   # durable proof that there is nothing to retire.
   if [ ! -e "$state/$task.status" ] && [ ! -L "$state/$task.status" ] \
     && [ ! -e "$state/.$task.open-decisions-cursor" ] \
-    && [ ! -L "$state/.$task.open-decisions-cursor" ]; then
+    && [ ! -L "$state/.$task.open-decisions-cursor" ] \
+    && [ ! -e "$signal_state" ] && [ ! -L "$signal_state" ] \
+    && [ "$pending_found" -eq 0 ]; then
     if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
       return 0
     fi
@@ -905,7 +926,11 @@ EOF
     fi
   fi
   if [ "$rc" -eq 0 ]; then
-    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" || rc=1
+    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" "$signal_state" || rc=1
+    for signal_pending in "$signal_state.pending."*; do
+      [ -e "$signal_pending" ] || continue
+      rm -f -- "$signal_pending" || rc=1
+    done
   fi
   fm_lock_release "$lock" || rc=1
   return "$rc"
@@ -1118,7 +1143,7 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 
 # 0 when a status line is nonterminal progress retained for the next drain.
 status_line_is_unread_surface() {  # <status-line>
-  local line=$1 open=${2-} direct=${3:-false} verb resolve held paused key
+  local line=$1 open=${2-} verb resolve held paused key
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
@@ -1129,8 +1154,7 @@ status_line_is_unread_surface() {  # <status-line>
     "$resolve") ;;
     *) return 1 ;;
   esac
-  if [ "$direct" = true ] \
-    && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+  if { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
     key=$(_fm_decision_key "$line") || return 0
     if _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
       && _fm_open_set_has "$open" "$key"; then
@@ -1145,14 +1169,10 @@ status_line_is_unread_surface() {  # <status-line>
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
-  local state=$1 fully_presented=${2:-} f task lines line offset open='' resolve held direct
+  local state=$1 f task lines line offset open='' resolve held
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
-    direct=false
-    case "
-$fully_presented
-" in *$'\n'"$task"$'\n'*) direct=true ;; esac
     offset=$(status_presentation_cursor_offset "$f") || return 1
     lines=$(status_new_lines_since_cursor "$f") || return 1
     [ -n "$lines" ] || continue
@@ -1161,7 +1181,7 @@ $fully_presented
     held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      if status_line_is_unread_surface "$line" "$open" "$direct"; then
+      if status_line_is_unread_surface "$line" "$open"; then
         printf '%s\t%s\n' "$task" "$line"
       fi
       open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
@@ -1173,14 +1193,10 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f lines line offset open='' resolve held direct
+  local state=$1 snapshot=$2 task endpoint ident f lines line offset open='' resolve held
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
-    direct=false
-    case "
-$fully_presented
-" in *$'\n'"$task"$'\n'*) direct=true ;; esac
     offset=$(status_presentation_cursor_offset "$f") || return 1
     lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
     [ -n "$lines" ] || continue
@@ -1189,7 +1205,7 @@ $fully_presented
     held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      if status_line_is_unread_surface "$line" "$open" "$direct"; then
+      if status_line_is_unread_surface "$line" "$open"; then
         printf '%s\t%s\n' "$task" "$line"
       fi
       open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
@@ -1272,32 +1288,79 @@ window_to_task() {
 # keyed resolved line is relevant only when it closes a key open before that
 # line.
 status_append_is_captain_relevant() {  # <status-file> <prior-size> [<captured-size>]
-  local f=$1 prior=$2 size=${3:-} delta='' open='' line verb key resolve held needs_fold=0
+  local f=$1 prior=$2 size=${3:-} candidate=${4:-} state_file state_data state_first
+  local state_rest state_offset_line state_ident_line state_offset=0 state_ident='' state_open='' state_valid=0
+  local actual_size cur_ident seed_offset=0 seed_chunk delta_chunk open='' line verb key resolve held actionable=1 tmp
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
-  if [ -z "$size" ]; then size=$(_fm_status_file_size "$f") || return 0; fi
+  actual_size=$(_fm_status_file_size "$f") || return 0
+  actual_size=${actual_size//[[:space:]]/}
+  case "$actual_size" in ''|*[!0-9]*) return 0 ;; esac
+  if [ -z "$size" ]; then size=$actual_size; fi
   size=${size//[[:space:]]/}
   case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$actual_size" ] || return 0
   case "$prior" in ''|*[!0-9]*) prior=0 ;; esac
   [ "$prior" -le "$size" ] || prior=0
   [ "$size" -gt "$prior" ] || return 1
-  delta=$(_fm_status_read_span "$f" "$prior" "$((size - prior))") || return 0
-  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
-    status_is_captain_relevant "$line" && return 0
-    verb=$(status_line_verb "$line")
-    if [ "$verb" = "$resolve" ] \
-      && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
-      needs_fold=1
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || return 0
+  [ -n "$cur_ident" ] || return 0
+  state_file=$(_fm_signal_open_keys_path "$f")
+  if [ -e "$state_file" ] || [ -L "$state_file" ]; then
+    [ -f "$state_file" ] && [ -r "$state_file" ] && [ ! -L "$state_file" ] || return 0
+    state_data=$(LC_ALL=C command cat "$state_file" 2>/dev/null) || return 0
+    state_first=${state_data%%$'\n'*}
+    if [ "$state_first" = "version=$FM_OPEN_DECISIONS_FOLD_VERSION" ]; then
+      state_rest=${state_data#*$'\n'}
+      state_offset_line=${state_rest%%$'\n'*}
+      case "$state_offset_line" in
+        offset=*) state_offset=${state_offset_line#offset=} ;;
+        *) state_offset=0; state_rest=invalid ;;
+      esac
+      case "$state_offset" in
+        ''|*[!0-9]*) state_rest=invalid ;;
+      esac
+      case "$state_rest" in
+        invalid) ;;
+        *$'\n'*)
+          state_rest=${state_rest#*$'\n'}
+          state_ident_line=${state_rest%%$'\n'*}
+          case "$state_ident_line" in
+            ident=*) state_ident=${state_ident_line#ident=} ;;
+            *) state_rest=invalid ;;
+          esac
+          case "$state_rest" in
+            invalid) ;;
+            *$'\n'*) state_open=${state_rest#*$'\n'}; state_valid=1 ;;
+            *) state_open=''; state_valid=1 ;;
+          esac
+          ;;
+        *) ;;
+      esac
     fi
-  done <<EOF
-$delta
-EOF
-  [ "$needs_fold" -eq 1 ] || return 1
+  fi
+  if [ "$state_valid" -eq 1 ] && [ "$state_ident" = "$cur_ident" ] \
+    && [ "$state_offset" -le "$prior" ]; then
+    seed_offset=$state_offset
+    open=$state_open
+  fi
 
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  open=$(status_open_decisions_incremental "$f" "$prior") || return 0
+  if [ "$seed_offset" -lt "$prior" ]; then
+    seed_chunk=$(mktemp "${state_file}.read.XXXXXX") || return 0
+    _fm_status_read_span "$f" "$seed_offset" "$((prior - seed_offset))" > "$seed_chunk" 2>/dev/null \
+      || { rm -f "$seed_chunk"; return 0; }
+    while IFS= read -r line || [ -n "$line" ]; do
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    done < "$seed_chunk"
+    rm -f "$seed_chunk"
+  fi
 
+  delta_chunk=$(mktemp "${state_file}.read.XXXXXX") || return 0
+  _fm_status_read_span "$f" "$prior" "$((size - prior))" > "$delta_chunk" 2>/dev/null \
+    || { rm -f "$delta_chunk"; return 0; }
   while IFS= read -r line || [ -n "$line" ]; do
+    status_is_captain_relevant "$line" && actionable=0
     verb=$(status_line_verb "$line")
     if [ "$verb" = "$resolve" ] \
       && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
@@ -1305,14 +1368,24 @@ EOF
       if [ -n "$key" ] \
         && _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
         && _fm_open_set_has "$open" "$key"; then
-        return 0
+        actionable=0
       fi
     fi
     open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
-  done <<EOF
-$delta
-EOF
-  return 1
+  done < "$delta_chunk"
+  rm -f "$delta_chunk"
+
+  if [ -n "$candidate" ]; then
+    tmp="$candidate.tmp.$$"
+    {
+      printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
+      printf 'offset=%s\n' "$size"
+      printf 'ident=%s\n' "$cur_ident"
+      printf '%s' "$open"
+    } > "$tmp" || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$candidate" || { rm -f "$tmp"; return 0; }
+  fi
+  [ "$actionable" -eq 0 ]
 }
 
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,

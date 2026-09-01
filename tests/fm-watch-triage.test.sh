@@ -665,6 +665,28 @@ test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
   pass "keyed resolved wakes only when it closes a currently open key"
 }
 
+test_keyed_resolved_survives_interleaved_drain_cursor_advance() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case resolved-interleaved-drain); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/task.status"
+  printf 'needs-decision [key=answer]: choose one\n' > "$status_file"
+  prime_status_seen "$state" "$status_file" || fail "could not prime interleaved-resolution baseline"
+  printf 'resolved [key=answer]: captain chose one\n' >> "$status_file"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain could not advance its open-decision cursor"
+  [ -s "$state/.task.open-decisions-cursor" ] \
+    || fail "interleaved drain did not persist its open-decision cursor"
+  [ "$(cat "$state/.seen-task_status")" != "$(seen_sig "$status_file")" ] \
+    || fail "interleaved drain unexpectedly advanced the signal suppressor"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle worker'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "interleaved keyed resolution was absorbed"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "interleaved keyed resolution did not surface its signal wake"
+  pass "a keyed resolution still wakes after an interleaved drain advances its cursor"
+}
+
 test_absorbed_status_remains_unread_for_next_drain() {
   local dir state fakebin out drain_out status_file pid
   dir=$(make_case absorbed-status-unread); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2990,6 +3012,7 @@ test_turn_ended_without_status_is_absorbed
 test_nonterminal_status_absorbed_without_working_evidence
 test_secondmate_nonterminal_status_absorbed
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key
+test_keyed_resolved_survives_interleaved_drain_cursor_advance
 test_absorbed_status_remains_unread_for_next_drain
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced

@@ -939,8 +939,9 @@ EOF
   return "$rc"
 }
 
-status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe open resolve held
+status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>] [<preserve-unpresented>]
+  local state=$1 snapshot=$2 fully_presented=${3:-} preserve_unpresented=${4:-0}
+  local task endpoint ident f offset lines line safe open resolve held
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
@@ -950,28 +951,36 @@ $fully_presented
     if [ "$safe" = false ]; then
       f="$state/$task.status"
       offset=$(status_presentation_cursor_offset "$f") || return 1
-      lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
-      if [ -n "$lines" ]; then
-        open=$(status_open_decisions_incremental "$f" "$offset") || return 1
-        resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
-        held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-      fi
-      # Once any unread-surface line in this span is presented fleet-wide, the
-      # contiguous cursor may advance through the captured endpoint. Routine
-      # lines remain unacknowledged only while they are the sole unread content,
-      # preserving delayed signal annotations without replaying a handled note
-      # that happened to follow a routine line.
-      while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in
-          *[![:space:]]*)
-            if status_line_is_unread_surface "$line" "$open"; then safe=true; break; fi
-            open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
-            ;;
-        esac
-      done <<EOF
+      if [ "$preserve_unpresented" = 1 ]; then
+        # A bounded startup digest presents status tails separately. Leave
+        # every status span without a direct wake annotation unread for the
+        # next ordinary drain, while direct annotations still acknowledge
+        # their own task through the captured endpoint.
+        endpoint=$offset
+      else
+        lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
+        if [ -n "$lines" ]; then
+          open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+          resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+          held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+        fi
+        # Once any unread-surface line in this span is presented fleet-wide, the
+        # contiguous cursor may advance through the captured endpoint. Routine
+        # lines remain unacknowledged only while they are the sole unread content,
+        # preserving delayed signal annotations without replaying a handled note
+        # that happened to follow a routine line.
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in
+            *[![:space:]]*)
+              if status_line_is_unread_surface "$line" "$open"; then safe=true; break; fi
+              open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+              ;;
+          esac
+        done <<EOF
 $lines
 EOF
-      if [ "$safe" = false ]; then endpoint=$offset; fi
+        if [ "$safe" = false ]; then endpoint=$offset; fi
+      fi
     fi
     printf '%s\t%s\t%s\n' "$task" "$endpoint" "$ident" || return 1
   done <<EOF

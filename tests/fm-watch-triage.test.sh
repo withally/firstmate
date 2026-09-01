@@ -643,7 +643,7 @@ test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
   drain_out="$dir/drain.out"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
     || fail "drain after an open-key resolution failed"
-  count=$(grep -F 'resolved [key=answer]: captain chose one' "$drain_out" | wc -l | tr -d '[:space:]')
+  count=$(grep -F -c 'resolved [key=answer]: captain chose one' "$drain_out" || true)
   [ "$count" -eq 1 ] \
     || fail "an actionable resolved line was presented $count times instead of once: $(cat "$drain_out")"
   if grep -F 'UNREAD STATUS' "$drain_out" >/dev/null; then

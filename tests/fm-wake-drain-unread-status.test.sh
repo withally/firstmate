@@ -143,7 +143,7 @@ test_pending_reply_resolution_surfaces_once() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a pending-reply resolution"
 
-  count=$(grep -F 'pending-reply-resolved: task=task5 pending-reply-id=abcdef0123456789 via=status' "$out" | wc -l | tr -d '[:space:]')
+  count=$(grep -F -c 'pending-reply-resolved: task=task5 pending-reply-id=abcdef0123456789 via=status' "$out" || true)
   [ "$count" -eq 1 ] \
     || fail "an open-key pending-reply resolution was presented $count times: $(cat "$out")"
   if grep -F 'UNREAD STATUS' "$out" | grep -F 'pending-reply-resolved:' >/dev/null; then

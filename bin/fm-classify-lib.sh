@@ -865,11 +865,16 @@ EOF
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0
-  local signal_state signal_pending pending_found=0
+  local signal_state signal_pending pending_found=0 signal_marker signal_turnend_marker
+  local legacy_signal_marker legacy_signal_turnend_marker
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
   signal_state="$state/.$task.signal-open-keys"
+  signal_marker=$(fm_wake_signal_seen_path "$state" "$state/$task.status")
+  signal_turnend_marker=$(fm_wake_signal_seen_path "$state" "$state/$task.turn-ended")
+  legacy_signal_marker=$(fm_wake_signal_legacy_seen_path "$state" "$state/$task.status")
+  legacy_signal_turnend_marker=$(fm_wake_signal_legacy_seen_path "$state" "$state/$task.turn-ended")
   for signal_pending in "$signal_state.pending."*; do
     [ -e "$signal_pending" ] || continue
     pending_found=1
@@ -885,6 +890,10 @@ status_retire_presentation_task() {  # <state> <task-id>
     && [ ! -e "$state/.$task.open-decisions-cursor" ] \
     && [ ! -L "$state/.$task.open-decisions-cursor" ] \
     && [ ! -e "$signal_state" ] && [ ! -L "$signal_state" ] \
+    && [ ! -e "$signal_marker" ] && [ ! -L "$signal_marker" ] \
+    && [ ! -e "$signal_turnend_marker" ] && [ ! -L "$signal_turnend_marker" ] \
+    && [ ! -e "$legacy_signal_marker" ] && [ ! -L "$legacy_signal_marker" ] \
+    && [ ! -e "$legacy_signal_turnend_marker" ] && [ ! -L "$legacy_signal_turnend_marker" ] \
     && [ "$pending_found" -eq 0 ]; then
     if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
       return 0
@@ -929,7 +938,9 @@ EOF
     fi
   fi
   if [ "$rc" -eq 0 ]; then
-    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" "$signal_state" || rc=1
+    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" "$signal_state" \
+      "$signal_marker" "$signal_turnend_marker" "$legacy_signal_marker" \
+      "$legacy_signal_turnend_marker" || rc=1
     for signal_pending in "$signal_state.pending."*; do
       [ -e "$signal_pending" ] || continue
       rm -f -- "$signal_pending" || rc=1

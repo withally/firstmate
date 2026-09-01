@@ -70,6 +70,8 @@ If envelope encoding fails, the hidden delivery message degrades to the same run
 Routine outcomes never render in MAIN and never start a captain-facing turn.
 The branch prompt owns the classification criteria.
 In particular, a green local-only worker under standing auto-land or continue authority, a worker waiting on a local merge that MAIN owns, and a `done:` worker whose contracted next step needs no captain call are `firstmate-action`.
+A secondmate parent's dispatch-progress report is also `firstmate-action` while contracted child outcomes remain, including reports that children were spawned, will check in, are both live, or reached a post-dispatch `done corr=` milestone.
+MAIN inventories that mate's child status files before treating the parent report as complete, so report-ready, localhost-ready, blocked, and decision terminals cannot disappear behind a healthy parent progress line.
 An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains.
 Only a genuine captain call is `captain`, while outcomes needing neither a MAIN action nor a captain call are `routine` and unchanged fleet reviews remain silent.
 Both main-bound envelopes forbid re-draining, re-running, or acknowledging the same wake.
@@ -82,6 +84,9 @@ An identical same-text `stale:` repeat for that window opens no immediate branch
 Same-text idle repeats inside the bounded window therefore open at most one branch turn.
 Urgent status-tail bypass applies when the final nonblank line starts with `done:`, `needs-decision:`, `blocked:`, or `failed:`, or contains `login`, `credential`, `credentials`, `PR ready`, `ready for review`, or `checks green`.
 The status-tail check reads only a validated direct child of the home `state/` directory whose filename follows the shared task-id grammar, reads at most 4 KiB through a no-follow, nonblocking descriptor, and treats an unreadable or non-regular target as non-urgent.
+For a Pi primary only, the watcher also scans direct child status files in each locally recorded secondmate home and mirrors newly appended `done:`, `blocked:`, and `needs-decision:` events onto that mate's parent status path before ordinary signal classification.
+The mirror carries the child id, preserves existing status annotations, advances a per-child byte signature only after the captured append is processed, and never mirrors `working:` lines.
+This produces a branch-eligible parent signal instead of an unmapped child signal, while non-Pi primaries do not enable the scan and retain their existing watcher behavior.
 Direct wake text for destructive, irreversible, or security-sensitive work also bypasses the delay, and no watcher-boundary urgency metadata is used.
 An accepted wake remains in the durable wake queue until its drain acknowledgement; shutdown clears only in-memory coalescing state, and a stale generation never falls back into replacement MAIN.
 

@@ -826,6 +826,63 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
 # line per changed file. .seen-* is updated only after the wake is either
 # surfaced or intentionally absorbed, so a watcher killed mid-cycle never
 # swallows a signal.
+mirror_pi_secondmate_child_terminals() {
+  local meta mate home parent child child_id marker_key marker sig prior prior_size captured_size chunk line verb annotations body mirrored tmp
+  [ "${FM_PI_PRIMARY_WATCH:-}" = 1 ] || return 0
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    [ "$(sed -n 's/^kind=//p' "$meta" | tail -1)" = secondmate ] || continue
+    [ -z "$(sed -n 's/^remote_host=//p' "$meta" | tail -1)" ] || continue
+    mate=$(basename "$meta"); mate=${mate%.meta}
+    home=$(sed -n 's/^home=//p' "$meta" | tail -1)
+    case "$mate" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    case "$home" in *$'\t'*|*$'\n'*|*$'\r'*) continue ;; esac
+    case "$home" in /*) ;; *) continue ;; esac
+    parent="$STATE/$mate.status"
+    if [ -e "$parent" ] || [ -L "$parent" ]; then
+      [ -f "$parent" ] && [ ! -L "$parent" ] || continue
+    fi
+    [ -d "$home/state" ] && [ ! -L "$home/state" ] || continue
+    for child in "$home/state"/*.status; do
+      [ -f "$child" ] && [ -r "$child" ] && [ ! -L "$child" ] || continue
+      child_id=$(basename "$child"); child_id=${child_id%.status}
+      case "$child_id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      marker_key=$(printf '%s\0%s' "$mate" "$child_id" | LC_ALL=C od -An -tx1 | tr -d ' \n')
+      marker="$STATE/.secondmate-child-seen-$marker_key"
+      sig=$(fm_wake_signal_sig "$child") || continue
+      [ -n "$sig" ] || continue
+      prior=$(cat "$marker" 2>/dev/null || true)
+      [ "$prior" != "$sig" ] || continue
+      prior_size=$(fm_wake_signal_seen_offset "$prior")
+      captured_size=${sig%%:*}
+      [ "$prior_size" -le "$captured_size" ] || prior_size=0
+      chunk=$(mktemp "$STATE/.secondmate-child-read.XXXXXX") || return 1
+      if ! _fm_status_read_span "$child" "$prior_size" "$((captured_size - prior_size))" > "$chunk" 2>/dev/null; then
+        rm -f "$chunk"
+        continue
+      fi
+      # shellcheck disable=SC2094 # The private read chunk and validated parent status are distinct paths.
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^[[:space:]]*(done|blocked|needs-decision)(([[:space:]]+\[[^]]+\])*)[[:space:]]*:[[:space:]]*(.*)$ ]]; then
+          verb=${BASH_REMATCH[1]}
+          annotations=${BASH_REMATCH[2]}
+          body=${BASH_REMATCH[4]}
+          mirrored="$verb [secondmate-child=$child_id]$annotations: $body"
+          if ! grep -Fqx -- "$line" "$parent" 2>/dev/null \
+            && ! grep -Fqx -- "$mirrored" "$parent" 2>/dev/null; then
+            printf '%s\n' "$mirrored" >> "$parent" || { rm -f "$chunk"; return 1; }
+          fi
+        fi
+      done < "$chunk"
+      rm -f "$chunk"
+      tmp=$(mktemp "$STATE/.secondmate-child-seen.XXXXXX") || return 1
+      printf '%s' "$sig" > "$tmp" || { rm -f "$tmp"; return 1; }
+      mv -f "$tmp" "$marker" || { rm -f "$tmp"; return 1; }
+    done
+  done
+  return 0
+}
+
 scan_signals() {
   local f sig sf
   for f in "$STATE"/*.status "$STATE"/*.turn-ended; do
@@ -1392,6 +1449,7 @@ while :; do
   # hook land seconds apart, and reporting them as separate actionable wakes
   # costs a full firstmate turn each. The re-scan also picks up a newer
   # signature for an already-pending file (last write wins below).
+  mirror_pi_secondmate_child_terminals || exit 1
   pending=$(scan_signals)
   if [ -n "$pending" ]; then
     sleep "$SIGNAL_GRACE"

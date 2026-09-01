@@ -78,6 +78,7 @@ Report verdict firstmate-action when MAIN has an already-authorized downstream a
 - A green worker result on a local-only branch under standing auto-land or continue authority.
 - A worker waiting on a local merge that MAIN owns.
 - A worker `done:` whose contracted next step needs no captain call, such as building a review board or dispatching the next plan task.
+- A secondmate parent reports dispatch progress while contracted child next steps remain, including "spawned", "will check in", "both tracks live", or a post-dispatch `done corr=`; MAIN must inventory that mate's child status files and surface their terminal results or blocks.
 These outcomes are not complete merely because the wake was handled; MAIN must take the next contracted action.
 Keep an unsolicited outcome as verdict routine only when it needs neither a MAIN action nor a captain call, including a healthy result with no contracted next step.
 Keep an unchanged fleet review silent as instructed above.

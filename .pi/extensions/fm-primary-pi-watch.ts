@@ -467,6 +467,7 @@ export default function (pi: ExtensionAPI) {
       FM_HOME: fmHome,
       FM_ROOT_OVERRIDE: fmRoot,
       FM_CONFIG_OVERRIDE: config,
+      FM_PI_PRIMARY_WATCH: "1",
       FM_WATCH_ARM_SCRIPT: armScript,
       FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
     };

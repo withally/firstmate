@@ -13,7 +13,7 @@
 # daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
 # signatures).
 #
-# There are three documented exceptions. The absorb classification
+# There are four documented exceptions. The absorb classification
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
 # to decide whether a crew that went stale is working, deliberately paused, or
@@ -22,7 +22,10 @@
 # open-decisions fold" below) also writes: it persists a per-status-file byte
 # cursor and folded open-set as a side effect, so a per-drain fleet-wide scan
 # stays bounded by new appends instead of re-reading each task's whole lifetime
-# log every time. crew_worktree_written_since reads the task's meta file and walks
+# log every time. status_append_is_captain_relevant can write a candidate
+# per-task signal open-key snapshot when its caller supplies one; signal triage
+# promotes that snapshot with the corresponding seen marker and never uses the
+# drain cursor. crew_worktree_written_since reads the task's meta file and walks
 # a bounded slice of its worktree instead of a status file, so callers run it only
 # at the moment they would otherwise escalate.
 
@@ -953,7 +956,7 @@ $fully_presented
         resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
         held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
       fi
-      # Once any informational line in this span is presented fleet-wide, the
+      # Once any unread-surface line in this span is presented fleet-wide, the
       # contiguous cursor may advance through the captured endpoint. Routine
       # lines remain unacknowledged only while they are the sole unread content,
       # preserving delayed signal annotations without replaying a handled note
@@ -1021,10 +1024,9 @@ EOF
 # --- unread status lines since the presentation cursor ----------------------
 #
 # The drain annotation historically printed only the newest status line, so a
-# substantive `note:` answer immediately followed by a routine `note:` (or a
-# pending-reply resolution buried under a later unrelated append) never reached
-# the supervisor. Those verbs also never enter the OPEN DECISIONS fold, so they
-# had no other surfacing path.
+# nonterminal append - including routine working, note, paused, or non-closing
+# resolved events - could be buried under a later unrelated append. These events
+# do not belong to the OPEN DECISIONS fold, so this surface owns their presentation.
 # These helpers are the ONE owner of "what is still unread since the last drain
 # presentation": one fleet manifest records each status identity and last-
 # presented byte offset, and one atomic replacement commits only the contiguous
@@ -1036,8 +1038,9 @@ EOF
 # prints nothing, so already-presented bytes are not replayed as new. Teardown
 # retires a task's manifest row with its status file, so reusing a task ID starts
 # the replacement log unread at byte 0. Nonterminal status lines are the
-# fleet-wide unread surface, so attended progress absorbed without a wake remains
-# visible at the next drain.
+# fleet-wide unread surface except a keyed resolution that closes an open
+# decision, so attended progress absorbed without a wake remains visible at the
+# next drain.
 
 # Read the legacy per-task open-decisions cursor used to seed the presentation
 # offset before the fleet manifest exists. A fold-version mismatch, identity
@@ -1142,7 +1145,9 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 }
 
 # 0 when a status line is nonterminal progress retained for the next drain.
-status_line_is_unread_surface() {  # <status-line>
+# A keyed resolution that closes an already-open key is excluded because its
+# signal annotation is the one presentation for that event.
+status_line_is_unread_surface() {  # <status-line> [<open-set>]
   local line=$1 open=${2-} verb resolve held paused key
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")

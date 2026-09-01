@@ -9,7 +9,8 @@
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when newly appended
-#                          status has a captain-relevant event, unless afk is active
+#                          status has a captain-relevant event or closes an open
+#                          decision by key, unless afk is active
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
@@ -20,7 +21,8 @@
 #                          never as a wedge, and that recheck reason names which
 #                          human the wait is on. Only when neither absorb class
 #                          applies does the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no verb),
+#                          terminal (captain-relevant) or non-terminal (not
+#                          captain-relevant),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
@@ -178,7 +180,7 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # debug log, and keeps blocking WITHOUT enqueuing or exiting. Attended signal
 # triage absorbs all-nonterminal appends regardless of current crew liveness; the
 # stale path owns stopped-crew detection. An ACTIONABLE wake (a captain-relevant
-# signal, any check, a stale
+# signal or a keyed resolution that closes an open decision, any check, a stale
 # pane whose crew is not provably working, a provably-working stale past the
 # threshold, or anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier

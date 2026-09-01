@@ -224,12 +224,16 @@ test_retired_task_id_starts_new_status_unread() {
   printf 'note: stable neighboring history\n' > "$state/neighbor.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null \
     || fail "drain failed while acknowledging pre-retirement histories"
+  prime_status_seen "$state" "$state/reused.status" \
+    || fail "could not prime the retired task's signal marker"
 
   FM_STATE_OVERRIDE="$state" bash -c '
     . "$1/bin/fm-wake-lib.sh"
     . "$1/bin/fm-classify-lib.sh"
     status_retire_presentation_task "$STATE" reused
   ' _ "$ROOT" || fail "retiring the reused task presentation state failed"
+  [ ! -e "$state/.seen-reused_status" ] \
+    || fail "retirement left the task's canonical signal marker behind"
   printf 'note: first event from reused task id\n' > "$state/reused.status"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \

@@ -140,8 +140,7 @@ set_mtime() {  # <epoch> <file>
 # Signature a primed .seen-* marker must hold so the per-poll signal scan does not
 # fire on a pre-existing status (mirrors fm-watch.sh's stat_sig exactly).
 seen_sig() {
-  FM_STATE_OVERRIDE="$(dirname "$1")" bash -c '. "$1"; fm_wake_signal_sig "$2"' \
-    _ "$ROOT/bin/fm-wake-lib.sh" "$1"
+  if [ "$(uname)" = Darwin ]; then stat -f '%z:%Fm' "$1" 2>/dev/null; else stat -c '%s:%Y' "$1" 2>/dev/null; fi
 }
 
 # Prime <file>'s .seen-* suppressor to its CURRENT signature, so the per-poll
@@ -152,7 +151,9 @@ seen_sig() {
 # fire an unrelated "signal:" wake and mask the busy-turn-age assertion under
 # test. Call again after any further touch/set_mtime on the same file.
 prime_turnend_seen() {  # <file>
-  prime_status_seen "$(dirname "$1")" "$1"
+  local f=$1 base
+  base=$(basename "$f" | tr '.' '_')
+  printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
 }
 
 record_pi_busy() {  # <state-dir> <id>

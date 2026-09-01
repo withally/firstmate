@@ -95,8 +95,11 @@ write_remote_delta() {  # <result-path> <status-line>
 }
 
 status_signature() {  # <status-path>
-  FM_STATE_OVERRIDE="$(dirname "$1")" bash -c '. "$1"; fm_wake_signal_sig "$2"' \
-    _ "$ROOT/bin/fm-wake-lib.sh" "$1"
+  if [ "$(uname)" = Darwin ]; then
+    stat -f '%z:%Fm' "$1"
+  else
+    stat -c '%s:%Y' "$1"
+  fi
 }
 
 wait_for_file_text() {  # <file> <fixed-text>

@@ -1790,30 +1790,20 @@ fm_wake_print_deduped() {
 # --- signal announcement signatures -----------------------------------------
 #
 # The watcher's per-file signal scan (bin/fm-watch.sh scan_signals) detects a
-# status or turn-ended change by comparing an identity-bound
-# size:mtime:device:inode:prefix-checksum signature against a persisted
-# state/.seen-* marker, and advances that marker only after the change has been
-# surfaced to firstmate or deliberately absorbed by the signal triage.
-# These helpers plus the guarded append below are the ONE owner of that
+# status or turn-ended change by comparing a size:mtime signature against a
+# persisted state/.seen-* marker, and advances that marker only after the change
+# has been surfaced to firstmate or deliberately absorbed by the signal triage.
+# These three helpers plus the guarded append below are the ONE owner of that
 # signature and marker format, shared by the scan itself, by the drain-time
 # historical-annotation staleness check, and by this home's own bookkeeping
 # writers.
 
-fm_wake_signal_sig() {  # <file> -> "size:mtime:device:inode:prefix-checksum:prefix-bytes"
-  local stat_sig prefix_sig
+fm_wake_signal_sig() {  # <file> -> "size:mtime"
   if [ "$_FM_UNAME" = Darwin ]; then
-    stat_sig=$(stat -f '%z:%Fm:%d:%i' "$1" 2>/dev/null) || return 1
+    stat -f '%z:%Fm' "$1" 2>/dev/null
   else
-    stat_sig=$(stat -c '%s:%Y:%d:%i' "$1" 2>/dev/null) || return 1
+    stat -c '%s:%Y' "$1" 2>/dev/null
   fi
-  prefix_sig=$(
-    set -o pipefail
-    LC_ALL=C head -c 64 "$1" 2>/dev/null |
-      LC_ALL=C cksum 2>/dev/null |
-      LC_ALL=C awk '{print $1 ":" $2}'
-  ) || return 1
-  [ -n "$stat_sig" ] && [ -n "$prefix_sig" ] || return 1
-  printf '%s:%s\n' "$stat_sig" "$prefix_sig"
 }
 
 fm_wake_signal_seen_path() {  # <state> <file>
@@ -1834,10 +1824,6 @@ fm_wake_signal_seen_path() {  # <state> <file>
   esac
 }
 
-fm_wake_signal_legacy_seen_path() {  # <state> <file>
-  printf '%s/.seen-%s' "$1" "$(basename "$2" | tr '.' '_')"
-}
-
 # 0 when <file>'s current signature exactly matches its recorded seen marker,
 # meaning every byte in it was already surfaced or deliberately absorbed.
 # A missing marker or unreadable signature is NOT a match, so uncertainty reads
@@ -1847,27 +1833,6 @@ fm_wake_signal_seen_current() {  # <state> <file>
   sig=$(fm_wake_signal_sig "$2") || return 1
   [ -n "$sig" ] || return 1
   [ "$(cat "$(fm_wake_signal_seen_path "$1" "$2")" 2>/dev/null)" = "$sig" ]
-}
-
-fm_wake_signal_seen_offset() {  # <state> <file>
-  local marker current
-  local marker_size='' marker_mtime='' marker_dev='' marker_inode='' marker_hash='' marker_bytes='' marker_extra=''
-  local current_size='' current_mtime='' current_dev='' current_inode='' current_hash='' current_bytes='' current_extra=''
-  marker=$(cat "$(fm_wake_signal_seen_path "$1" "$2")" 2>/dev/null) || return 1
-  [ -n "$marker" ] || return 1
-  current=$(fm_wake_signal_sig "$2") || return 1
-  IFS=: read -r marker_size marker_mtime marker_dev marker_inode marker_hash marker_bytes marker_extra <<< "$marker" || return 1
-  IFS=: read -r current_size current_mtime current_dev current_inode current_hash current_bytes current_extra <<< "$current" || return 1
-  [ -z "$marker_extra" ] && [ -z "$current_extra" ] || return 1
-  case "$marker_size$marker_mtime$marker_dev$marker_inode$marker_hash$marker_bytes$current_size$current_mtime$current_dev$current_inode$current_hash$current_bytes" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-  [ "$marker_dev" = "$current_dev" ] \
-    && [ "$marker_inode" = "$current_inode" ] \
-    && [ "$marker_hash" = "$current_hash" ] \
-    && [ "$marker_bytes" = "$current_bytes" ] \
-    || return 1
-  printf '%s' "$marker_size"
 }
 
 # Guarded self-announced status append - the one dedup primitive for a status

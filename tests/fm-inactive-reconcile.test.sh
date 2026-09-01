@@ -113,11 +113,9 @@ outcome_count() { # <home> <suffix>
 }
 
 prime_seen() { # <state> <status>
-  FM_STATE_OVERRIDE="$1" bash -c '
-    . "$1"
-    sig=$(fm_wake_signal_sig "$3") || exit 1
-    printf "%s" "$sig" > "$(fm_wake_signal_seen_path "$2" "$3")"
-  ' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$2"
+  local state=$1 status=$2 sig
+  if [ "$(uname)" = Darwin ]; then sig=$(stat -f '%z:%Fm' "$status"); else sig=$(stat -c '%s:%Y' "$status"); fi
+  printf '%s' "$sig" > "$state/.seen-$(basename "$status" | tr '.' '_')"
 }
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }

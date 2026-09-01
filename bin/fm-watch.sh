@@ -157,7 +157,7 @@ if [ "$(uname)" = Darwin ]; then
 else
   stat_mtime() { stat -c %Y "$1" 2>/dev/null; }
 fi
-# The identity-bound signal signature and .seen-* marker format are owned by
+# The size:mtime signal signature and .seen-* marker format are owned by
 # bin/fm-wake-lib.sh (fm_wake_signal_sig, fm_wake_signal_seen_path), shared
 # with the drain's annotation staleness check and this home's own bookkeeping
 # writers' guarded self-announced append.
@@ -819,7 +819,7 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
 }
 
 # Layer 2 + 3 signal scan: status files and turn-end markers. Each file is
-# compared against a persisted identity-bound signature (.seen-*) rather than
+# compared against a persisted size:mtime signature (.seen-*) rather than
 # mtime-vs-a-startup-touch, so signals that land while no watcher is running
 # are caught by the next one, and same-second writes cannot slip through a
 # strict -nt comparison. Pure read: prints one "<seen-file>\t<sig>\t<file>"
@@ -843,15 +843,16 @@ scan_signals() {
 # 0 when any changed status file has a captain-relevant event in the bytes after
 # its last surfaced-or-absorbed size.
 # The fold-aware event predicate is owned by fm-classify-lib.sh; this wrapper only
-# supplies each scan row's trusted persisted prior size.
+# supplies each scan row's persisted prior size.
 FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN=${BASHPID:-$$}
 
 pending_signal_is_actionable() {  # reads scan_signals rows on stdin
-  local sf sig f prior_size captured_size candidate actionable=1
+  local sf sig f prior_sig prior_size captured_size candidate actionable=1
   while IFS=$(printf '\t') read -r sf sig f; do
     [ -n "$sf" ] || continue
     case "$f" in *.status) ;; *) continue ;; esac
-    prior_size=$(fm_wake_signal_seen_offset "$STATE" "$f" 2>/dev/null || printf '0')
+    prior_sig=$(cat "$sf" 2>/dev/null || true)
+    prior_size=${prior_sig%%:*}
     captured_size=${sig%%:*}
     candidate=$(_fm_signal_open_keys_pending_path "$f" "$FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN")
     if status_append_is_captain_relevant "$f" "$prior_size" "$captured_size" "$candidate"; then

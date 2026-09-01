@@ -122,6 +122,36 @@ unit_relative_paths_are_absolute_before_daemon_launch() {
   rm -rf "$root"
 }
 
+unit_detector_miss_leaves_daemon_harness_unset() {
+  local st detector
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-detector-miss.XXXXXX")
+  detector="$st/detector"
+  mkdir -p "$st/state" "$detector"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$detector/fm-harness.sh"
+  chmod +x "$detector/fm-harness.sh"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    FM_AFK_LAUNCH_DIR="$2"
+    FM_AFK_LAUNCH_ENTRY=/bin/true
+    tmux() {
+      if [ "${1:-}" = new-session ]; then
+        printf "%s" "${5:-}" > "$FM_HOME/planned-command"
+        return 1
+      fi
+      return 1
+    }
+    [ -z "$(fm_afk_launch_primary_harness)" ]
+    ! fm_afk_launch_create_tmux captain:0 tmux
+  ' _ "$LAUNCH" "$detector" \
+    && [ -s "$st/planned-command" ] \
+    && ! grep -F 'FM_DAEMON_PRIMARY_HARNESS=' "$st/planned-command" >/dev/null; then
+    pass "launcher detector: a failed harness probe leaves daemon self-resolution enabled"
+  else
+    fail "launcher detector: a failed harness probe was exported as a harness"
+  fi
+  rm -rf "$st"
+}
+
 # ---------------------------------------------------------------------------
 # UNIT 2: a FRESH entry clears; a REFRESH (daemon already alive) preserves the
 # current session's buffered escalations.
@@ -964,6 +994,7 @@ e2e_tmux() {
 
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
+unit_detector_miss_leaves_daemon_harness_unset
 unit_fresh_vs_refresh
 unit_stop_ordering
 unit_stop_rejects_reused_pid

@@ -778,25 +778,42 @@ delivery_nonce_generate() {
 }
 
 DELIVERY_BUFFER_MARKER_PREFIX="__FIRSTMATE_DELIVERY_NONCE__="
+CHECK_BUFFER_MARKER_PREFIX="__FIRSTMATE_CHECK_NONCE__="
 
 delivery_buffer_marker() {  # <nonce>
   printf '%s%s' "$DELIVERY_BUFFER_MARKER_PREFIX" "$1"
+}
+
+check_buffer_marker() {  # <nonce>
+  printf '%s%s' "$CHECK_BUFFER_MARKER_PREFIX" "$1"
 }
 
 delivery_buffer_line_count() {  # <state>
   local state=$1 buf
   buf="$state/.subsuper-escalations"
   [ -f "$buf" ] || { printf '0'; return 0; }
-  awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
-    'index($0, prefix) != 1 { count++ } END { print count + 0 }' "$buf"
+  awk -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
+    function is_marker(line, prefix, suffix) {
+      if (index(line, prefix) != 1) return 0
+      suffix=substr(line, length(prefix) + 1)
+      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+    }
+    !is_marker($0, delivery_prefix) && !is_marker($0, check_prefix) { count++ }
+    END { print count + 0 }
+  ' "$buf"
 }
 
 delivery_buffer_line_at() {  # <state> <one-based-buffer-line>
   local state=$1 line_number=$2 buf
   buf="$state/.subsuper-escalations"
   case "$line_number" in ''|*[!0-9]*|0) return 1 ;; esac
-  awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" -v wanted="$line_number" '
-    index($0, prefix) != 1 {
+  awk -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v wanted="$line_number" '
+    function is_marker(line, prefix, suffix) {
+      if (index(line, prefix) != 1) return 0
+      suffix=substr(line, length(prefix) + 1)
+      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+    }
+    !is_marker($0, delivery_prefix) && !is_marker($0, check_prefix) {
       count++
       if (count == wanted) {
         print
@@ -821,13 +838,24 @@ delivery_buffer_strip_markers() {  # <state>
   buf="$state/.subsuper-escalations"
   [ -f "$buf" ] || return 0
   if ! awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
-    'index($0, prefix) == 1 { found=1; exit } END { exit(found ? 0 : 1) }' \
+    'function is_marker(line, suffix) {
+       if (index(line, prefix) != 1) return 0
+       suffix=substr(line, length(prefix) + 1)
+       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+     }
+     is_marker($0) { found=1; exit }
+     END { exit(found ? 0 : 1) }' \
     "$buf" >/dev/null 2>&1; then
     return 0
   fi
   tmp=$(mktemp "$state/.subsuper-escalations-clean.XXXXXX") || return 1
   if ! awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
-    'index($0, prefix) != 1 { print }' "$buf" > "$tmp" \
+    'function is_marker(line, suffix) {
+       if (index(line, prefix) != 1) return 0
+       suffix=substr(line, length(prefix) + 1)
+       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+     }
+     !is_marker($0) { print }' "$buf" > "$tmp" \
     || ! mv "$tmp" "$buf"; then
     rm -f "$tmp"
     return 1
@@ -841,8 +869,10 @@ delivery_buffer_mark_nonce() {  # <state> <nonce>
   [ -s "$buf" ] || return 1
   delivery_buffer_strip_markers "$state" || return 1
   tmp=$(mktemp "$state/.subsuper-escalations-mark.XXXXXX") || return 1
-  if ! cat "$buf" > "$tmp" \
-    || ! printf '%s\n' "$marker" >> "$tmp" \
+  if ! {
+    printf '%s\n' "$marker"
+    cat "$buf"
+  } > "$tmp" \
     || ! mv "$tmp" "$buf"; then
     rm -f "$tmp"
     return 1
@@ -856,17 +886,28 @@ delivery_buffer_retire() {  # <state> <nonce> <delivered-buffer-lines>
   case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
   delivery_buffer_has_nonce "$state" "$nonce" || return 1
   tmp=$(mktemp "$state/.subsuper-escalations-retire.XXXXXX") || return 1
-  if ! awk -v marker="$marker" -v delivered="$delivered_lines" '
+  if ! awk -v marker="$marker" -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
+    -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v delivered="$delivered_lines" '
+    function is_marker(line, prefix, suffix) {
+      if (index(line, prefix) != 1) return 0
+      suffix=substr(line, length(prefix) + 1)
+      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+    }
+    function is_internal_marker(line) {
+      return is_marker(line, delivery_prefix) || is_marker(line, check_prefix)
+    }
     BEGIN { raw=0; marker_seen=0 }
     {
       if ($0 == marker) {
         marker_seen=1
         next
       }
-      if (!marker_seen && raw < delivered) {
-        raw++
+      if (is_internal_marker($0)) {
+        if (raw < delivered) next
+        print
         next
       }
+      if (raw < delivered) { raw++; next }
       print
     }
     END { if (!marker_seen || raw != delivered) exit 1 }
@@ -1120,52 +1161,100 @@ check_ledger_state() {  # <state> <sequence-or-empty> <key> <payload>
   ' "$ledger"
 }
 
-check_ledger_append() {  # <state> <reserved|buffered|delivered> <sequence> <key> <payload> [buffer-lines]
-  local state=$1 status=$2 sequence=$3 key=$4 payload=$5 buffer_lines=${6:-} ledger
+check_ledger_append() {  # <state> <reserved|buffered|delivered> <sequence> <key> <payload> [reservation-nonce]
+  local state=$1 status=$2 sequence=$3 key=$4 payload=$5 reservation_nonce=${6:-} ledger
   case "$status" in reserved|buffered|delivered) ;; *) return 2 ;; esac
   case "$sequence" in ''|*[!0-9]*) return 2 ;; esac
   case "$key$payload" in *$'\t'*|*$'\r'*|*$'\n'*) return 2 ;; esac
   if [ "$status" = reserved ]; then
-    case "$buffer_lines" in ''|*[!0-9]*) return 2 ;; esac
+    case "$reservation_nonce" in
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+      *) return 2 ;;
+    esac
   else
-    buffer_lines=''
+    reservation_nonce=''
   fi
   ledger="$state/.subsuper-check-ledger"
   (umask 077; printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$status" "$sequence" "$key" "$payload" "$buffer_lines" >> "$ledger")
+    "$status" "$sequence" "$key" "$payload" "$reservation_nonce" >> "$ledger")
 }
 
 check_ledger_reserve() {  # <state> <sequence> <key> <payload>
-  local state=$1 sequence=$2 key=$3 payload=$4 exact buf buffer_lines
+  local state=$1 sequence=$2 key=$3 payload=$4 exact reservation_nonce
   exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
   [ -n "$exact" ] && return 0
+  reservation_nonce=$(delivery_nonce_generate) || return 1
+  check_ledger_append "$state" reserved "$sequence" "$key" "$payload" "$reservation_nonce"
+}
+
+check_ledger_reservation() {  # <state> <sequence-or-empty> <key> <payload> -> <sequence><TAB><key><TAB><payload><TAB><nonce>
+  local state=$1 sequence=$2 key=$3 payload=$4 ledger
+  ledger="$state/.subsuper-check-ledger"
+  [ -s "$ledger" ] || return 1
+  awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
+    $1 == "reserved" && $3 == key \
+      && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) {
+        reservation=$2 FS $3 FS $4 FS $5
+      }
+    END { if (reservation != "") print reservation }
+  ' "$ledger"
+}
+
+check_buffer_marker_present() {  # <state> <reservation-nonce>
+  local state=$1 reservation_nonce=$2 buf marker
   buf="$state/.subsuper-escalations"
-  buffer_lines=0
-  [ ! -e "$buf" ] || buffer_lines=$(delivery_buffer_line_count "$state")
-  check_ledger_append "$state" reserved "$sequence" "$key" "$payload" "$buffer_lines"
+  marker=$(check_buffer_marker "$reservation_nonce")
+  awk -v marker="$marker" '$0 == marker { found=1; exit } END { exit(found ? 0 : 1) }' \
+    "$buf" 2>/dev/null
+}
+
+check_buffer_marker_payload_present() {  # <state> <reservation-nonce> <payload> <distilled>
+  local state=$1 reservation_nonce=$2 payload=$3 distilled=$4 buf marker
+  buf="$state/.subsuper-escalations"
+  marker=$(check_buffer_marker "$reservation_nonce")
+  [ -s "$buf" ] || return 1
+  awk -v marker="$marker" -v payload="$payload" -v distilled="$distilled" '
+    $0 == marker { found=1; next }
+    found && !checked {
+      checked=1
+      if ($0 == payload || $0 == distilled) matched=1
+    }
+    END { exit(found && matched ? 0 : 1) }
+  ' "$buf" 2>/dev/null
+}
+
+check_buffer_append_marker_payload() {  # <state> <reservation-nonce> <distilled>
+  local state=$1 reservation_nonce=$2 distilled=$3 buf marker tmp
+  buf="$state/.subsuper-escalations"
+  marker=$(check_buffer_marker "$reservation_nonce")
+  case "$reservation_nonce" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) return 1 ;;
+  esac
+  case "$distilled" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  if check_buffer_marker_present "$state" "$reservation_nonce"; then
+    return 1
+  fi
+  tmp=$(mktemp "$state/.subsuper-check-buffer.XXXXXX") || return 1
+  if {
+    [ ! -f "$buf" ] || cat "$buf"
+    printf '%s\n%s\n' "$marker" "$distilled"
+  } > "$tmp" && mv "$tmp" "$buf"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
 }
 
 check_ledger_reserved_append_present() {  # <state> <sequence-or-empty> <key> <payload> <distilled>
-  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 ledger buf reservation before expected now line line_no
-  ledger="$state/.subsuper-check-ledger"
-  buf="$state/.subsuper-escalations"
-  [ -s "$ledger" ] && [ -s "$buf" ] || return 1
-  reservation=$(awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
-    $1 == "reserved" && $3 == key \
-      && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) {
-        lines=$5
-        original=$4
-      }
-    END { if (lines != "") print lines "\t" original }
-  ' "$ledger")
-  before=${reservation%%$'\t'*}
-  expected=${reservation#*$'\t'}
-  case "$before" in ''|*[!0-9]*) return 1 ;; esac
-  now=$(delivery_buffer_line_count "$state")
-  line_no=$((before + 1))
-  [ "$now" -ge "$line_no" ] || return 1
-  line=$(delivery_buffer_line_at "$state" "$line_no") || return 1
-  [ "$line" = "$expected" ] || [ "$line" = "$distilled" ]
+  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 reservation reservation_nonce
+  reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
+  reservation_nonce=${reservation##*$'\t'}
+  case "$reservation_nonce" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) return 1 ;;
+  esac
+  check_buffer_marker_payload_present "$state" "$reservation_nonce" "$payload" "$distilled"
 }
 
 # Append one durable check to the escalation buffer exactly once per away
@@ -1173,17 +1262,23 @@ check_ledger_reserved_append_present() {  # <state> <sequence-or-empty> <key> <p
 # A reservation is not a seen record: it lets replay finish a transaction that
 # died before the buffer append without suppressing the original event.
 check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
-  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 exact logical buf
-  buf="$state/.subsuper-escalations"
+  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 exact logical reservation reservation_sequence reservation_key reservation_payload reservation_nonce
   exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
   case "$exact" in
     buffered|delivered) return 2 ;;
     reserved)
       if check_ledger_reserved_append_present \
         "$state" "$sequence" "$key" "$payload" "$distilled"; then
-        check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+        reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
+        IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
+        check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
         return 2
       fi
+      reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
+      IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
+      check_buffer_append_marker_payload "$state" "$reservation_nonce" "$distilled" || return 1
+      check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
+      return 0
       ;;
   esac
 
@@ -1193,73 +1288,88 @@ check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
     reserved)
       if check_ledger_reserved_append_present \
         "$state" '' "$key" "$payload" "$distilled"; then
-        check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+        reservation=$(check_ledger_reservation "$state" '' "$key" "$payload") || return 1
+        IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
+        check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
         return 2
       fi
+      reservation=$(check_ledger_reservation "$state" '' "$key" "$payload") || return 1
+      IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
+      check_buffer_append_marker_payload "$state" "$reservation_nonce" "$distilled" || return 1
+      check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
+      return 0
       ;;
   esac
 
   check_ledger_reserve "$state" "$sequence" "$key" "$payload" || return 1
-  escalate_add "$state" "$distilled" || return 1
-  check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+  reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
+  IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
+  check_buffer_append_marker_payload "$state" "$reservation_nonce" "$distilled" || return 1
+  check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
   return 0
 }
 
+check_buffer_marker_in_prefix() {  # <state> <reservation-nonce> <delivered-buffer-lines> <payload>
+  local state=$1 reservation_nonce=$2 delivered_lines=$3 payload=$4 buf marker
+  buf="$state/.subsuper-escalations"
+  marker=$(check_buffer_marker "$reservation_nonce")
+  case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
+  awk -v marker="$marker" -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
+    -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v limit="$delivered_lines" -v payload="$payload" '
+    function is_marker(line, prefix, suffix) {
+      if (index(line, prefix) != 1) return 0
+      suffix=substr(line, length(prefix) + 1)
+      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+    }
+    function is_internal_marker(line) {
+      return is_marker(line, delivery_prefix) || is_marker(line, check_prefix)
+    }
+    {
+      if ($0 == marker) {
+        marker_seen=1
+        marker_in_prefix=(raw < limit)
+        after_marker=1
+        next
+      }
+      if (is_internal_marker($0)) {
+        if (after_marker) after_marker=0
+        next
+      }
+      if (after_marker) {
+        if (marker_in_prefix && $0 == payload) matched=1
+        after_marker=0
+      }
+      raw++
+    }
+    END {
+      if (matched) exit 0
+      if (marker_seen && marker_in_prefix) exit 2
+      if (marker_seen) exit 1
+      exit 3
+    }
+  ' "$buf" 2>/dev/null
+}
+
 check_ledger_mark_delivered() {  # <state> [delivered-buffer-lines]
-  local state=$1 delivered_lines=${2:-} ledger buf tmp reservations sequence key payload before line line_no
+  local state=$1 delivered_lines=${2:-} ledger tmp status sequence key payload reservation_nonce marker_status
   case "$delivered_lines" in ''|*[!0-9]*) [ -z "$delivered_lines" ] || return 2 ;; esac
   ledger="$state/.subsuper-check-ledger"
-  buf="$state/.subsuper-escalations"
   [ -s "$ledger" ] || return 0
   tmp=$(mktemp "$state/.subsuper-check-delivered.XXXXXX") || return 1
-  reservations=$(awk -F '\t' -v limit="$delivered_lines" '
+  if ! awk -F '\t' '
+    BEGIN { OFS="\t" }
     {
       id=$2 FS $3 FS $4
       status[id]=$1
       sequence[id]=$2
       key[id]=$3
       payload[id]=$4
-      if ($1 == "reserved") before[id]=$5
+      if ($1 == "reserved") reservation_nonce[id]=$5
     }
     END {
       for (id in status) {
-        if (status[id] == "reserved" && (limit == "" || before[id] < limit)) {
-          print sequence[id], key[id], payload[id], before[id]
-        }
-      }
-    }
-  ' OFS='\t' "$ledger") || { rm -f "$tmp"; return 1; }
-  while IFS=$'\t' read -r sequence key payload before; do
-    [ -n "$sequence$key$payload$before" ] || continue
-    case "$before" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
-    line_no=$((before + 1))
-    line=$(delivery_buffer_line_at "$state" "$line_no") \
-      || { rm -f "$tmp"; return 1; }
-    [ "$line" = "$payload" ] || { rm -f "$tmp"; return 1; }
-  done <<EOF
-$reservations
-EOF
-  while IFS=$'\t' read -r sequence key payload before; do
-    [ -n "$sequence$key$payload$before" ] || continue
-    check_ledger_append "$state" buffered "$sequence" "$key" "$payload" \
-      || { rm -f "$tmp"; return 1; }
-  done <<EOF
-$reservations
-EOF
-  if ! awk -F '\t' -v limit="$delivered_lines" '
-    BEGIN { OFS="\t" }
-    {
-      id=$2 OFS $3 OFS $4
-      status[id]=$1
-      sequence[id]=$2
-      key[id]=$3
-      payload[id]=$4
-      if ($1 == "reserved") before[id]=$5
-    }
-    END {
-      for (id in status) {
-        if (status[id] == "buffered" && (limit == "" || before[id] < limit)) {
-          print "delivered", sequence[id], key[id], payload[id]
+        if ((status[id] == "reserved" || status[id] == "buffered") && reservation_nonce[id] != "") {
+          print status[id], sequence[id], key[id], payload[id], reservation_nonce[id]
         }
       }
     }
@@ -1267,10 +1377,28 @@ EOF
     rm -f "$tmp"
     return 1
   fi
-  if [ -s "$tmp" ] && ! cat "$tmp" >> "$ledger"; then
-    rm -f "$tmp"
-    return 1
-  fi
+  while IFS=$'\t' read -r status sequence key payload reservation_nonce; do
+    marker_status=0
+    [ -n "$status$sequence$key$payload$reservation_nonce" ] || continue
+    case "$reservation_nonce" in
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+      *) rm -f "$tmp"; return 1 ;;
+    esac
+    [ -n "$delivered_lines" ] || { rm -f "$tmp"; return 2; }
+    check_buffer_marker_in_prefix "$state" "$reservation_nonce" "$delivered_lines" "$payload" \
+      || marker_status=$?
+    case "$marker_status" in
+      0) ;;
+      1) continue ;;
+      *) rm -f "$tmp"; return 1 ;;
+    esac
+    if [ "$status" = reserved ]; then
+      check_ledger_append "$state" buffered "$sequence" "$key" "$payload" \
+        || { rm -f "$tmp"; return 1; }
+    fi
+    check_ledger_append "$state" delivered "$sequence" "$key" "$payload" \
+      || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
   rm -f "$tmp"
 }
 
@@ -1392,7 +1520,22 @@ escalate_flush() {  # <state>
   case "$n" in ''|*[!0-9]*|0) return 1 ;; esac
   nonce=$(delivery_nonce_generate) || { log "inject stalled: could not generate a delivery nonce"; return 1; }
   # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk -v delivered="$n" 'NR <= delivered { if (seen++) printf " | "; printf "%s", $0 } END { print "" }' "$buf" 2>/dev/null)
+  msg=$(awk -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
+    -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
+    function is_marker(line, prefix, suffix) {
+      if (index(line, prefix) != 1) return 0
+      suffix=substr(line, length(prefix) + 1)
+      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
+    }
+    function is_internal_marker(line) {
+      return is_marker(line, delivery_prefix) || is_marker(line, check_prefix)
+    }
+    !is_internal_marker($0) {
+      if (seen++) printf " | "
+      printf "%s", $0
+    }
+    END { print "" }
+  ' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")

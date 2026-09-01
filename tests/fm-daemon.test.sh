@@ -966,35 +966,39 @@ test_check_wakes_dedupe_by_source_and_payload_within_one_session() {
     'check: mutated replay bytes for the same durable identity' \
     "$state" /state/weekly.check.sh 41
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/weekly.check.sh 42
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 2 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 2 ] \
     || fail "an exact identity replay or changed payload was not distinguished in the buffer"
 
   FM_STATE_OVERRIDE="$state" handle_wake \
     'check: /state/weekly.check.sh: weekly maintenance due with changed detail' \
     "$state" /state/weekly.check.sh 43
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/other.check.sh 44
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 4 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 4 ] \
     || fail "a changed payload or changed source was incorrectly deduplicated"
   pass "check wakes dedupe exact source-sequence-payload repeats while preserving changed observations"
 }
 
 test_check_wake_replay_recovers_after_buffer_append_before_seen_record() {
-  local dir state reason
+  local dir state reason reservation reservation_nonce
   dir=$(make_supercase check-crash-after-buffer)
   state="$dir/state"
   reason='check: /state/due.check.sh: still due'
 
   check_ledger_reserve "$state" 51 /state/due.check.sh "$reason" \
     || fail "could not stage the pre-crash check reservation"
-  escalate_add "$state" "$reason"
+  reservation=$(check_ledger_reservation "$state" 51 /state/due.check.sh "$reason") \
+    || fail "could not read the pre-crash check reservation"
+  reservation_nonce=${reservation##*$'\t'}
+  check_buffer_append_marker_payload "$state" "$reservation_nonce" "$reason" \
+    || fail "could not stage the pre-crash buffered check"
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/due.check.sh 51
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 1 ] \
     || fail "replay after buffer append but before seen recording appended a duplicate"
   pass "check replay recovers the buffered original after an interrupted routing transaction"
 }
 
 test_check_wake_flush_reconciles_reserved_append_before_clearing() {
-  local dir state reason
+  local dir state reason reservation reservation_nonce
   dir=$(make_supercase check-crash-before-ack-flush)
   state="$dir/state"
   reason='check: /state/flush.check.sh: still due'
@@ -1002,7 +1006,11 @@ test_check_wake_flush_reconciles_reserved_append_before_clearing() {
 
   check_ledger_reserve "$state" 52 /state/flush.check.sh "$reason" \
     || fail "could not stage the reserved check transaction"
-  escalate_add "$state" "$reason"
+  reservation=$(check_ledger_reservation "$state" 52 /state/flush.check.sh "$reason") \
+    || fail "could not read the reserved check transaction"
+  reservation_nonce=${reservation##*$'\t'}
+  check_buffer_append_marker_payload "$state" "$reservation_nonce" "$reason" \
+    || fail "could not stage the reserved appended check"
   escalate_add "$state" "an unrelated buffered event"
   (
     inject_msg() {
@@ -1022,6 +1030,50 @@ test_check_wake_flush_reconciles_reserved_append_before_clearing() {
   pass "check flush reconciles an appended reservation before clearing and replaying"
 }
 
+test_check_ledger_keys_delivery_by_nonce_after_prefix_retirement() {
+  local dir state reason_a reason_b nonce_a
+  dir=$(make_supercase check-ledger-prefix-retirement)
+  state="$dir/state"
+  reason_a='check: /state/first.check.sh: first due'
+  reason_b='check: /state/second.check.sh: second due'
+  afk_enter "$state"
+
+  check_escalate_once "$state" 70 /state/first.check.sh "$reason_a" "$reason_a" \
+    || fail "could not buffer the first check"
+  (
+    inject_msg() {
+      delivery_record_prepare "$2" "$3" "$4" - 0 0 || return 1
+      return 1
+    }
+    escalate_flush "$state"
+  ) || :
+  nonce_a=$(cut -f2 "$state/.subsuper-escalations.delivery" 2>/dev/null || true)
+  [ -n "$nonce_a" ] || fail "the first check did not publish a delivery nonce"
+
+  check_escalate_once "$state" 71 /state/second.check.sh "$reason_b" "$reason_b" \
+    || fail "could not append the second check while the first was in flight"
+  delivery_complete "$state" 1 "$nonce_a" \
+    || fail "could not retire the witnessed first check"
+  [ "$(check_ledger_state "$state" 70 /state/first.check.sh "$reason_a")" = delivered ] \
+    || fail "the first check was not marked delivered"
+  [ "$(check_ledger_state "$state" 71 /state/second.check.sh "$reason_b")" = buffered ] \
+    || fail "retiring the first check changed the second check's state"
+
+  (
+    inject_msg() {
+      delivery_record_prepare "$2" "$3" "$4" - 0 0 || return 1
+      return 0
+    }
+    escalate_flush "$state"
+  ) || fail "could not deliver the second check after prefix retirement"
+  [ "$(check_ledger_state "$state" 71 /state/second.check.sh "$reason_b")" = delivered ] \
+    || fail "the second check was not marked delivered after its own witness"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason_b" "$state" /state/second.check.sh 71
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a delivered second check was appended again after replay"
+  pass "check delivery follows nonce markers across prefix retirement"
+}
+
 test_check_wake_reservation_does_not_borrow_another_sources_buffer_line() {
   local dir state reason
   dir=$(make_supercase check-reservation-source-isolation)
@@ -1032,7 +1084,7 @@ test_check_wake_reservation_does_not_borrow_another_sources_buffer_line() {
   check_ledger_reserve "$state" 56 /state/second.check.sh "$reason" \
     || fail "could not stage the second source's pre-crash reservation"
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/second.check.sh 56
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 2 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 2 ] \
     || fail "a changed source borrowed another check's identical buffered line"
   pass "check reservation recovery keeps identical output from distinct sources separate"
 }
@@ -1054,7 +1106,7 @@ test_check_wake_failed_and_successful_flush_preserve_session_dedup() {
   [ "$(check_ledger_state "$state" 61 procevent:entitlement-reminder:1 "$reason")" = buffered ] \
     || fail "a failed flush marked the check delivered"
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" procevent:entitlement-reminder:1 62
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 1 ] \
     || fail "a failed flush lost pending dedup and appended a second check"
 
   (
@@ -1085,7 +1137,7 @@ test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk() {
   FM_STATE_OVERRIDE="$state" bash -c \
     '. "$1"; handle_wake "$2" "$3" /state/restart.check.sh 72' \
     _ "$DAEMON" "$reason" "$state"
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 1 ] \
     || fail "a daemon restart inside one away session lost check dedup state"
 
   FM_STATE_OVERRIDE="$state" bash -c \
@@ -1094,7 +1146,7 @@ test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk() {
   FM_STATE_OVERRIDE="$state" bash -c \
     '. "$1"; handle_wake "$2" "$3" /state/restart.check.sh 73' \
     _ "$DAEMON" "$reason" "$state"
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+  [ "$(delivery_buffer_line_count "$state")" -eq 1 ] \
     || fail "a fresh away session did not clear the prior session's check ledger"
   pass "check ledger survives daemon restart and resets only on fresh away entry"
 }
@@ -1957,6 +2009,22 @@ test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype() {
   [ -s "$state/.subsuper-escalations.delivery" ] \
     || fail "a legacy buffer's first attempt did not persist its delivered-once record"
   pass "a legacy buffer receives one nonced attempt and cannot be retyped"
+}
+
+test_legacy_delivery_marker_like_line_is_preserved() {
+  local dir state legacy_line
+  dir=$(make_supercase delivery-marker-collision)
+  state="$dir/state"
+  legacy_line='__FIRSTMATE_DELIVERY_NONCE__=user-data'
+  printf '%s\n' "$legacy_line" > "$state/.subsuper-escalations"
+
+  delivery_buffer_strip_markers "$state" \
+    || fail "stripping delivery markers rejected a legacy marker-like buffer"
+  [ "$(cat "$state/.subsuper-escalations")" = "$legacy_line" ] \
+    || fail "a legacy marker-like buffer line was stripped"
+  [ "$(delivery_buffer_line_count "$state")" = 1 ] \
+    || fail "a legacy marker-like buffer line was excluded from the digest"
+  pass "legacy marker-like escalation text remains buffered"
 }
 
 test_max_defer_empty_swallow_types_once_and_alarms() {
@@ -3065,6 +3133,7 @@ test_handle_wake_routes_self_and_escalate
 test_check_wakes_dedupe_by_source_and_payload_within_one_session
 test_check_wake_replay_recovers_after_buffer_append_before_seen_record
 test_check_wake_flush_reconciles_reserved_append_before_clearing
+test_check_ledger_keys_delivery_by_nonce_after_prefix_retirement
 test_check_wake_reservation_does_not_borrow_another_sources_buffer_line
 test_check_wake_failed_and_successful_flush_preserve_session_dedup
 test_check_wake_ledger_survives_daemon_restart_and_resets_on_fresh_afk
@@ -3104,6 +3173,7 @@ test_startup_reconcile_drops_orphaned_current_record
 test_startup_reconcile_after_retirement_preserves_appended_digest
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype
+test_legacy_delivery_marker_like_line_is_preserved
 test_max_defer_empty_swallow_types_once_and_alarms
 test_max_defer_flushes_empty_idle_pane
 test_max_defer_pending_composer_alarms_without_typing

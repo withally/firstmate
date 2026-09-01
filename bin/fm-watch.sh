@@ -1453,6 +1453,24 @@ EOF
 $pending
 EOF
         commit_signal_open_keys <<< "$pending" || exit 1
+        absorbed_logged=""
+        while IFS=$(printf '\t') read -r sf sig f; do
+          [ -n "$sf" ] || continue
+          case " $actionable_files " in
+            *" $f "*) ;;
+            *)
+              case " $absorbed_logged " in
+                *" $f "*) ;;
+                *)
+                  triage_log "absorbed benign signal: $f"
+                  absorbed_logged="$absorbed_logged $f"
+                  ;;
+              esac
+              ;;
+          esac
+        done <<EOF
+$pending
+EOF
         wake "$reason"
       else
         while IFS=$(printf '\t') read -r sf sig f; do

@@ -1818,12 +1818,20 @@ fm_wake_signal_seen_path() {  # <state> <file>
 # unsurfaced bytes before it and lose their wake. Any malformed marker yields 0,
 # so the reader rescans the file from the start (the safe direction).
 fm_wake_signal_seen_offset() {  # <marker-contents> -> byte offset (0 if malformed)
-  local marker=$1 size rest
+  local marker=$1 size rest integer fraction
   case "$marker" in *:*) ;; *) printf '0'; return 0 ;; esac
   size=${marker%%:*}
   rest=${marker#*:}
   case "$size" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
-  case "$rest" in ''|*[!0-9.]*) printf '0'; return 0 ;; esac
+  case "$rest" in
+    *.*)
+      integer=${rest%%.*}
+      fraction=${rest#*.}
+      case "$integer" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+      case "$fraction" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+      ;;
+    ''|*[!0-9]*) printf '0'; return 0 ;;
+  esac
   printf '%s' "$size"
 }
 

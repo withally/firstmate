@@ -208,6 +208,10 @@ test_signal_seen_offset_rejects_malformed_markers() {
     || fail "a complete size:mtime marker did not yield its size"
   [ "$(seen_offset '512:1699999999')" = 512 ] \
     || fail "an integer-mtime marker did not yield its size"
+  [ "$(seen_offset '14:1.')" = 0 ] \
+    || fail "a trailing decimal point was trusted as a valid mtime"
+  [ "$(seen_offset '14:1.2.3')" = 0 ] \
+    || fail "multiple decimal points were trusted as a valid mtime"
   [ "$(seen_offset '10')" = 0 ] \
     || fail "a bare numeric prefix was trusted as an offset instead of reset to 0"
   [ "$(seen_offset '')" = 0 ] \
@@ -771,6 +775,8 @@ test_mixed_pending_classifies_each_status_file() {
   [ -s "$state/.seen-shipped_status" ] || fail "the surfaced terminal status did not advance its suppressor"
   [ -s "$state/.hb-surfaced-shipped" ] || fail "the terminal status was not marked surfaced"
   [ ! -e "$state/.hb-surfaced-routine" ] || fail "the absorbed routine status was wrongly marked surfaced"
+  grep -F "absorbed benign signal: $routine_file" "$state/.watch-triage.log" >/dev/null \
+    || fail "the absorbed routine status was not recorded in the mixed-batch triage log"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the mixed batch failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "shipped.status" >/dev/null \
     || fail "the terminal status was not queued as a signal"

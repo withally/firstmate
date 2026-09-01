@@ -195,8 +195,8 @@ acknowledge_inactive_outcomes() { # <mode> <newline-separated-fingerprints>
   done <<< "$fingerprints"
 }
 
-# Print still-unread informational status lines (note: answers and pending-reply
-# resolutions) that the OPEN DECISIONS fold never carries. Uses the same
+# Print still-unread nonterminal status lines that the OPEN DECISIONS fold does
+# not itself present. Uses the same
 # cursor-backed unread span as the annotation path, and runs on every drain -
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is
@@ -232,8 +232,8 @@ EOF
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
 # scan_open_decisions_incremental wrapper) rather than from the annotations
 # above, so a decision buried under later unrelated appends cannot be silently
-# missed. Informational `note:` lines and pending-reply resolutions are not
-# decisions; print_unread_status_section owns their one-shot surface. Runs on
+# missed. Nonterminal status lines are not decisions;
+# print_unread_status_section owns their one-shot surface. Runs on
 # every drain - including the empty-queue fast path - because the decision can
 # still be open even when nothing new is queued for
 # its task this turn. The incremental wrapper bounds this scan's cost to bytes

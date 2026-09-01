@@ -2,19 +2,14 @@
 # Firstmate watcher.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
 # and keeps blocking; it queues and exits only for actionable wakes.
-# The no-verb signal and stale path is absorb-only-when-provably-working: a wake
-# is absorbed only when the crew shows POSITIVE evidence it is still working (an
-# actively-running no-mistakes step, or a backend busy signal), and surfaced
-# otherwise, so a crew that finishes (or stops and waits) without a current
-# working signal is never silently swallowed. A declared wait, either a paused:
-# external wait or a verified captain-held transfer, is the separate idle absorb
-# case and re-surfaces only on its long bounded cadence, although its initial
-# no-verb status signal still surfaces in normal mode.
+# In attended mode, a signal wakes only when its newly appended status lines meet
+# the shared captain-relevant predicate; all-nonterminal appends are absorbed.
+# The stale path alone owns bounded detection of a stopped crew whose latest
+# status remains nonterminal, while declared waits retain their long cadence.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
-#   signal: <file>...      status/turn-end signals, surfaced when a listed status
-#                          has a captain-relevant verb OR a no-verb signal's crew
-#                          is not provably working, unless afk is active
+#   signal: <file>...      status/turn-end signals, surfaced when newly appended
+#                          status has a captain-relevant event, unless afk is active
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
@@ -180,20 +175,16 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # working: note or turn-end while a pipeline runs, a no-change heartbeat). Rather
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
 # and ABSORBS the benign majority - it advances the suppression marker, logs to a
-# debug log, and keeps blocking WITHOUT enqueuing or exiting. The no-verb signal
-# / stale path is absorb-only-when-provably-working: such a wake is absorbed ONLY
-# while the crew shows positive evidence it is still working (an actively-running
-# no-mistakes step, or a busy pane, via crew_is_provably_working over
-# fm-crew-state.sh); a crew that stopped its turn with no running pipeline and no
-# busy pane is SURFACED, so a finish reported only through interactive pane menus
-# (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
-# signal, a no-verb signal whose crew is not provably working, any check, a stale
+# debug log, and keeps blocking WITHOUT enqueuing or exiting. Attended signal
+# triage absorbs all-nonterminal appends regardless of current crew liveness; the
+# stale path owns stopped-crew detection. An ACTIONABLE wake (a captain-relevant
+# signal, any check, a stale
 # pane whose crew is not provably working, a provably-working stale past the
 # threshold, or anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
-# wake) and never double-triages - and never runs the costly provably-working read.
+# wake) and never double-triages.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
@@ -847,6 +838,23 @@ scan_signals() {
   return 0
 }
 
+# 0 when any changed status file has a captain-relevant event in the bytes after
+# its last surfaced-or-absorbed size.
+# The fold-aware event predicate is owned by fm-classify-lib.sh; this wrapper only
+# supplies each scan row's persisted prior size.
+pending_signal_is_actionable() {  # reads scan_signals rows on stdin
+  local sf sig f prior_sig prior_size captured_size
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in *.status) ;; *) continue ;; esac
+    prior_sig=$(cat "$sf" 2>/dev/null || true)
+    prior_size=${prior_sig%%:*}
+    captured_size=${sig%%:*}
+    status_append_is_captain_relevant "$f" "$prior_size" "$captured_size" && return 0
+  done
+  return 1
+}
+
 # Deliver a durably queued process-event result to firstmate. Publication is
 # owned by bin/fm-procevent.sh - by the runner at capture time and by reconcile's
 # re-announcement - so this decides only whether a queued check record has been
@@ -1372,21 +1380,11 @@ while :; do
 $pending
 EOF
     reason="signal:$files"
-    # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
-    #   - the away-mode daemon owns triage (afk) and wants every wake;
-    #   - any status file carries a captain-relevant verb;
-    #   - or it is a no-verb wake (a bare turn-end, a working: note) whose crew is
-    #     NOT provably working - the crew stopped its turn with no actively-running
-    #     pipeline and no busy pane, so it may be done (even via an interactive menu
-    #     that wrote no done: status), waiting on a decision, or wedged. Absorbing
-    #     such a turn-end is exactly the swallowed-finish this change guards against.
-    # Actionable -> enqueue, advance .seen-* markers, exit. Benign (a no-verb wake
-    # whose crew IS provably working) in always-on mode -> advance the markers so it
-    # will not re-fire, log, and keep blocking without enqueuing. The provably-working
-    # check is the only costly one (it may run a bounded no-mistakes call), so the ||
-    # ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
-    # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if afk_present || signal_reason_is_actionable $files || ! signal_crew_provably_working $files; then
+    # Away mode still queues every signal for daemon-owned triage.
+    # Attended mode surfaces only newly appended captain-relevant events; an
+    # all-nonterminal status append or bare turn-ended marker advances its seen
+    # marker, enters the triage log, and leaves the status bytes for the next drain.
+    if afk_present || printf '%s\n' "$pending" | pending_signal_is_actionable; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1

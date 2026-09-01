@@ -288,7 +288,7 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
 
-test_routine_working_lines_stay_silent_on_the_empty_queue() {
+test_nonterminal_working_lines_surface_on_the_next_drain() {
   local dir state out
   dir=$(make_case silent-working)
   state="$dir/state"
@@ -298,14 +298,16 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with only routine working/done lines"
 
-  if grep -F 'UNREAD STATUS' "$out" >/dev/null; then
-    fail "routine working/done lines printed an UNREAD STATUS section: $(cat "$out")"
-  fi
+  grep -F 'UNREAD STATUS' "$out" >/dev/null \
+    || fail "nonterminal progress did not print an UNREAD STATUS section: $(cat "$out")"
+  grep -F 'task7 working: on it' "$out" >/dev/null \
+    || fail "the working line was lost before the next drain: $(cat "$out")"
+  grep -F 'done: shipped clean' "$out" >/dev/null \
+    && fail "a terminal line leaked into the nonterminal unread surface: $(cat "$out")"
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
     fail "routine working/done lines printed OPEN DECISIONS: $(cat "$out")"
   fi
-  [ ! -s "$out" ] || fail "the empty-queue routine case was not silent: $(cat "$out")"
-  pass "routine working/done lines still print nothing on an empty-queue drain"
+  pass "nonterminal working lines surface at the next drain while terminal lines stay out of UNREAD STATUS"
 }
 
 test_incident_note_answer_buried_under_routine_note_surfaces_both
@@ -318,4 +320,4 @@ test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
-test_routine_working_lines_stay_silent_on_the_empty_queue
+test_nonterminal_working_lines_surface_on_the_next_drain

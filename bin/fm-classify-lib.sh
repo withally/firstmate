@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared wake classifier: the common source of truth for captain-relevant status
-# tests, declared-external-wait vocabulary, and the working/paused absorb
-# classification that makes no-verb signal and stale-pane wakes safe to absorb.
+# tests, declared-external-wait vocabulary, and the working/paused classification
+# that makes stale-pane wakes safe to absorb.
 # Sourced by BOTH the always-on watcher
 # (bin/fm-watch.sh) and the away-mode daemon (bin/fm-supervise-daemon.sh) so the
 # overlapping triage policy lives in one place instead of two copies that can
@@ -16,9 +16,8 @@
 # There are three documented exceptions. The absorb classification
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
-# to decide whether a crew that just stopped its turn or went stale is working,
-# deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
-# and first sighting of a stale hash, never on every wake, so the per-wake triage
+# to decide whether a crew that went stale is working, deliberately paused, or
+# neither. Callers run it only on stale handling, never on every wake, so triage
 # stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
 # cursor and folded open-set as a side effect, so a per-drain fleet-wide scan
@@ -51,10 +50,10 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 unset _fm_classify_nounset
 
 # Captain-relevant status verbs. A status line carrying any of these is work
-# firstmate must see. Lines without these verbs are no-verb signals: the watcher
-# absorbs them only with positive provably-working evidence, while the daemon uses
-# its away-mode classification. FM_CAPTAIN_RE overrides the whole set when a home
-# needs a custom verb vocabulary; absent, this default applies.
+# firstmate must see. Attended triage absorbs appended lines outside this set,
+# while the daemon applies the same vocabulary in away mode. FM_CAPTAIN_RE
+# overrides the whole set when a home needs a custom verb vocabulary; absent,
+# this default applies.
 #
 # Free-text tokens (PR ready, checks green, ready in branch, merged) exist only for
 # legacy lines that lack a standard terminal verb. status_is_captain_relevant is
@@ -123,7 +122,7 @@ status_is_captain_relevant() {
   status_is_paused "$line" && return 1
   verb=$(status_line_verb "$line")
   case "$verb" in
-    working|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+    working|note|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
       return 1
       ;;
   esac
@@ -999,15 +998,15 @@ EOF
 # presentation": one fleet manifest records each status identity and last-
 # presented byte offset, and one atomic replacement commits only the contiguous
 # status spans that were successfully presented. A quiet fleet scan leaves
-# routine working/done bytes unacknowledged so a subsequently published signal
-# can still annotate them. A missing manifest row or changed file identity is
+# routine terminal bytes unacknowledged so a subsequently published signal can
+# still annotate them. A missing manifest row or changed file identity is
 # offset 0 for the current file, while malformed or unreadable cursor state
 # aborts presentation without advancing any offset. A trusted cursor at EOF
 # prints nothing, so already-presented bytes are not replayed as new. Teardown
 # retires a task's manifest row with its status file, so reusing a task ID starts
-# the replacement log unread at byte 0. Informational `note:` lines and
-# reserved-key pending-reply resolutions are the fleet-wide unread surface;
-# they are not open decisions and are not persisted in the folded open-set.
+# the replacement log unread at byte 0. Nonterminal status lines are the
+# fleet-wide unread surface, so attended progress absorbed without a wake remains
+# visible at the next drain.
 
 # Read the legacy per-task open-decisions cursor used to seed the presentation
 # offset before the fleet manifest exists. A fold-version mismatch, identity
@@ -1111,35 +1110,22 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   return "$rc"
 }
 
-# 0 when a status line is an informational `note:` or a reserved-key
-# pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
-# drain's unread-status surface is their only guaranteed presentation.
+# 0 when a status line is nonterminal progress retained for the next drain.
 status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb key note resolve held prefix
+  local line=$1 verb resolve held paused
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
-  [ "$verb" = note ] && return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   case "$verb" in
-    "$resolve"|"$held") ;;
+    working|note|"$resolve"|"$held"|"$paused") return 0 ;;
     *) return 1 ;;
   esac
-  key=$(_fm_decision_key "$line") || return 1
-  note=$(status_line_note "$line")
-  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
-    case "$key" in
-      "$prefix"*)
-        _fm_decision_key_transition_allowed "$key" "$note"
-        return
-        ;;
-    esac
-  done
-  return 1
 }
 
-# Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
-# still-unread `note:` or pending-reply resolution, in glob (task id) order.
+# Fleet-wide unread nonterminal lines: one "<task>\t<status-line>" row per
+# still-unread event, in glob (task id) order.
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
@@ -1243,21 +1229,60 @@ window_to_task() {
   t="${w##*:}"; t="${t#fm-}"; printf '%s' "$t"
 }
 
-# 0 (actionable) if ANY status file listed in a "signal:" wake carries a
-# captain-relevant last line; 1 otherwise. Pass the space-separated file list that
-# follows the "signal:" prefix. Non-.status arguments (e.g. .turn-ended markers,
-# which never carry a verb) are skipped. A 1 here is NOT "benign" on its own: a
-# no-verb signal (a bare turn-end, a working: note) is only benign when the crew is
-# also provably working (signal_crew_provably_working below); otherwise it surfaces.
-signal_reason_is_actionable() {  # <file> ...
-  local f last
-  for f in "$@"; do
-    [ -e "$f" ] || continue
-    case "$f" in *.status) ;; *) continue ;; esac
-    last=$(last_status_line "$f")
-    [ -n "$last" ] || continue
-    status_is_captain_relevant "$last" && return 0
-  done
+# 0 when bytes appended to <status-file> after <prior-size> contain a
+# captain-relevant status event.
+# The ordinary line predicate above remains the one owner of terminal verbs and
+# legacy bare tokens; this fold-aware wrapper adds the one contextual event: a
+# keyed resolved line is relevant only when it closes a key open before that
+# line.
+status_append_is_captain_relevant() {  # <status-file> <prior-size> [<captured-size>]
+  local f=$1 prior=$2 size=${3:-} prefix='' delta='' open='' line verb key resolve held needs_fold=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  if [ -z "$size" ]; then size=$(_fm_status_file_size "$f") || return 0; fi
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  case "$prior" in ''|*[!0-9]*) prior=0 ;; esac
+  [ "$prior" -le "$size" ] || prior=0
+  [ "$size" -gt "$prior" ] || return 1
+  delta=$(_fm_status_read_span "$f" "$prior" "$((size - prior))") || return 0
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  while IFS= read -r line || [ -n "$line" ]; do
+    status_is_captain_relevant "$line" && return 0
+    verb=$(status_line_verb "$line")
+    if [ "$verb" = "$resolve" ] \
+      && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+      needs_fold=1
+    fi
+  done <<EOF
+$delta
+EOF
+  [ "$needs_fold" -eq 1 ] || return 1
+
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  if [ "$prior" -gt 0 ]; then
+    prefix=$(_fm_status_read_span "$f" 0 "$prior") || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    done <<EOF
+$prefix
+EOF
+  fi
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    verb=$(status_line_verb "$line")
+    if [ "$verb" = "$resolve" ] \
+      && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+      key=$(_fm_decision_key "$line") || key=''
+      if [ -n "$key" ] \
+        && _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+        && _fm_open_set_has "$open" "$key"; then
+        return 0
+      fi
+    fi
+    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+  done <<EOF
+$delta
+EOF
   return 1
 }
 
@@ -1275,7 +1300,7 @@ signal_reason_is_actionable() {  # <file> ...
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
+# run it only on stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
   local id=$1 line state src
@@ -1292,12 +1317,9 @@ crew_absorb_class() {  # <id>
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class
-# reports `working`). This is the "provably working" predicate at the heart of
-# absorb-only-when-provably-working: a no-verb turn-end or stale wake is absorbed
-# ONLY when this returns 0, and SURFACED otherwise (the crew may be done, waiting
-# on a decision, or wedged). For stale panes it is checked before trusting the
-# status log so a pre-validation captain-relevant line does not override an active
-# run. See crew_absorb_class for the exact working/paused/none decision.
+# reports `working`). Stale triage checks this before trusting the status log so a
+# pre-validation captain-relevant line does not override an active run.
+# See crew_absorb_class for the exact working/paused/none decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
@@ -1396,44 +1418,6 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
       -type f -newer "$anchor" -print -quit 2>/dev/null || true)
   fi
   [ -n "$hit" ]
-}
-
-# 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
-# working; 1 (actionable/surface) if any is not, or no task can be resolved. Pass the
-# same space-separated file list as signal_reason_is_actionable. Files are mapped to
-# task ids by stripping the .status / .turn-ended suffix; a no-verb wake with nothing
-# provably working must surface, so an empty/unresolvable list returns 1.
-# A kind=secondmate task's .status signal is never absorbable here regardless of
-# busy evidence: that stream is the mate's routed-reply channel, so every append
-# is parent-directed content the supervisor must read (a routed reply, a newly
-# raised decision, a mirrored remote line), and a busy mate agent makes its note
-# more current, not less deliverable. Scoped to .status files - a mate's bare
-# turn-ended ping still uses the ordinary provably-working absorb.
-signal_crew_provably_working() {  # <file> ...
-  local f base dir task seen=""
-  for f in "$@"; do
-    base=${f##*/}
-    dir=${f%/*}
-    [ "$dir" != "$f" ] || dir=.
-    case "$base" in
-      *.status)     task=${base%.status} ;;
-      *.turn-ended) task=${base%.turn-ended} ;;
-      *)            continue ;;
-    esac
-    [ -n "$task" ] || continue
-    case "$base" in
-      *.status)
-        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
-          return 1
-        fi
-        ;;
-    esac
-    case " $seen " in *" $task "*) continue ;; esac
-    seen="$seen $task"
-    crew_is_provably_working "$task" || return 1
-  done
-  [ -n "$seen" ] || return 1
-  return 0
 }
 
 # 0 (terminal/actionable) if a stale window's last status line is

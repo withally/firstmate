@@ -49,6 +49,7 @@ unit_clear_stale() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
+  : > "$st/state/.subsuper-escalations.delivery"
   : > "$st/state/.subsuper-inject-wedged"
   : > "$st/state/.subsuper-check-ledger"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
@@ -58,6 +59,7 @@ unit_clear_stale() {
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
   if [ ! -e "$st/state/.subsuper-escalations" ] \
      && [ ! -e "$st/state/.subsuper-escalations.since" ] \
+     && [ ! -e "$st/state/.subsuper-escalations.delivery" ] \
      && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
      && [ ! -e "$st/state/.subsuper-check-ledger" ]; then
     pass "clear-stale: removes escalation delivery state and the check ledger"
@@ -129,6 +131,7 @@ unit_fresh_vs_refresh() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-refresh.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
+  : > "$st/state/.subsuper-escalations.delivery"
   : > "$st/state/.subsuper-inject-wedged"
   : > "$st/state/.subsuper-check-ledger"
   # A live "daemon": a real process whose identity the lock records, so
@@ -141,6 +144,7 @@ unit_fresh_vs_refresh() {
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleep_pid" > "$lock/pid-identity" 2>/dev/null ) || true
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
   if [ -e "$st/state/.subsuper-escalations" ] \
+    && [ -e "$st/state/.subsuper-escalations.delivery" ] \
     && [ -e "$st/state/.subsuper-inject-wedged" ] \
     && [ -e "$st/state/.subsuper-check-ledger" ]; then
     pass "refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)"
@@ -222,6 +226,7 @@ unit_failed_start_rolls_back_state() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-failed-start.XXXXXX")
   mkdir -p "$st/state"
   printf 'pending\n' > "$st/state/.subsuper-escalations"
+  printf 'v1\tabcdef123456\t1\tdeadbeef\n' > "$st/state/.subsuper-escalations.delivery"
   printf 'wedged\n' > "$st/state/.subsuper-inject-wedged"
   printf 'buffered\t1\tcheck\tpayload\t\n' > "$st/state/.subsuper-check-ledger"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
@@ -229,6 +234,7 @@ unit_failed_start_rolls_back_state() {
     fail "failed start: unsupported backend unexpectedly succeeded"
   elif [ ! -e "$st/state/.afk" ] \
     && [ "$(cat "$st/state/.subsuper-escalations")" = pending ] \
+    && [ -e "$st/state/.subsuper-escalations.delivery" ] \
     && [ "$(cat "$st/state/.subsuper-inject-wedged")" = wedged ] \
     && [ "$(cut -f1 "$st/state/.subsuper-check-ledger")" = buffered ]; then
     pass "failed start: away flag and delivery artifacts roll back"

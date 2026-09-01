@@ -1621,6 +1621,190 @@ test_submit_ack_reports_pending_on_persistent_swallow() {
   pass "submit-ACK reports pending on a persistently swallowed Enter (type-once)"
 }
 
+test_unknown_submit_uses_transcript_witness_without_retype() {
+  local harness dir state home user_home sent transcript slug transcript_dir
+  for harness in pi pi-signed claude; do
+    dir=$(make_supercase "delivery-witness-$harness")
+    state="$dir/state"
+    home="$dir/home"
+    user_home="$dir/user-home"
+    sent="$dir/sent.log"
+    mkdir -p "$home" "$user_home"
+    home=$(cd "$home" && pwd -P)
+    : > "$sent"
+
+    case "$harness" in
+      pi|pi-signed)
+        slug=${home#/}
+        slug=${slug//\//-}
+        transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+        transcript="$transcript_dir/session.jsonl"
+        mkdir -p "$transcript_dir"
+        jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
+        ;;
+      claude)
+        slug=$(printf '%s' "$home" | sed 's#[/.]#-#g')
+        transcript_dir="$user_home/.claude/projects/$slug"
+        transcript="$transcript_dir/session.jsonl"
+        mkdir -p "$transcript_dir"
+        : > "$transcript"
+        ;;
+    esac
+
+    escalate_add "$state" "done: witness case $harness"
+    afk_enter "$state"
+    (
+      fm_backend_target_exists() { return 0; }
+      pane_is_busy() { return 1; }
+      fm_backend_composer_state() { printf 'empty'; }
+      # Invoked indirectly by the daemon witness helper.
+      # shellcheck disable=SC2329
+      fm_backend_herdr_cli() { return 1; }
+      fm_backend_send_text_submit() {
+        printf '%s\n' "$3" >> "$sent"
+        case "$harness" in
+          pi|pi-signed)
+            jq -cn --arg text "$3" \
+              '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+              >> "$transcript"
+            ;;
+          claude)
+            jq -cn --arg cwd "$home" --arg text "$3" \
+              '{type:"user",cwd:$cwd,message:{role:"user",content:$text}}' \
+              >> "$transcript"
+            ;;
+        esac
+        printf 'unknown'
+      }
+      HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS="$harness" \
+        FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+        escalate_flush "$state" \
+        || fail "$harness transcript witness did not confirm an unknown rendered submit"
+    ) || fail "$harness transcript-witness subshell failed"
+
+    [ "$(wc -l < "$sent" | tr -d ' ')" -eq 1 ] \
+      || fail "$harness transcript witness allowed a digest retype"
+    grep -Eq '\[d:[0-9a-f]{12}\]' "$sent" \
+      || fail "$harness digest did not carry a 12-hex delivery nonce"
+    [ ! -s "$state/.subsuper-escalations" ] \
+      || fail "$harness transcript witness did not clear the delivered buffer"
+    [ ! -e "$state/.subsuper-escalations.delivery" ] \
+      || fail "$harness transcript witness left the completed delivery record behind"
+  done
+  pass "unknown Pi, pi-signed, and Claude submits use their user transcripts as delivered-once witnesses"
+}
+
+test_delivery_witness_prefers_herdr_agent_session_path() {
+  local dir user_home transcript nonce text fixture selected
+  dir=$(make_supercase delivery-witness-agent-session)
+  user_home="$dir/user-home"
+  nonce=abcdef123456
+  mkdir -p "$user_home/.pi/agent/sessions/direct"
+  transcript="$user_home/.pi/agent/sessions/direct/session.jsonl"
+  text="FIRSTMATE_OP: v1 away-supervisor: [d:$nonce] direct agent session"
+  jq -cn --arg text "$text" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    > "$transcript"
+  fixture=$(jq -cn --arg path "$transcript" \
+    '{result:{agent:{agent_status:"idle",agent_session:$path}}}')
+
+  selected=$(HOME="$user_home" delivery_transcript_path_from_agent_json pi "$fixture") \
+    || fail "Herdr agent_session fixture did not select the exact Pi transcript path"
+  [ "$selected" = "$transcript" ] \
+    || fail "Herdr agent_session fixture selected '$selected' instead of '$transcript'"
+  delivery_transcript_contains_nonce pi "$selected" "$nonce" \
+    || fail "selected Herdr agent_session transcript did not witness the nonce"
+  pass "delivery witness pure selector prefers the exact Herdr pane agent_session transcript"
+}
+
+test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
+  local dir state home user_home sent
+  dir=$(make_supercase delivery-witness-missing)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  sent="$dir/sent.log"
+  mkdir -p "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  : > "$sent"
+  escalate_add "$state" "needs-decision: witness absent"
+  echo $(( $(date +%s) - 600 )) > "$state/.subsuper-escalations.since"
+  afk_enter "$state"
+
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    # Invoked indirectly by the daemon witness helper.
+    # shellcheck disable=SC2329
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$sent"; printf 'unknown'; }
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+      FM_ESCALATE_BATCH_SECS=0 FM_MAX_DEFER_SECS=60 housekeeping "$state"
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+      FM_ESCALATE_BATCH_SECS=0 FM_MAX_DEFER_SECS=60 housekeeping "$state"
+  ) || fail "missing transcript-witness housekeeping subshell failed"
+
+  [ "$(wc -l < "$sent" | tr -d ' ')" -eq 1 ] \
+    || fail "an unconfirmed digest was retyped after its first bounded attempt"
+  [ -s "$state/.subsuper-escalations" ] \
+    || fail "an unconfirmed digest lost its escalation buffer"
+  [ -s "$state/.subsuper-escalations.delivery" ] \
+    || fail "an unconfirmed digest lost its delivered-once record"
+  [ -s "$state/.subsuper-inject-wedged" ] \
+    || fail "an unconfirmed delivered-once stall did not raise the existing wedge alarm"
+  pass "an unknown submit with no transcript witness stalls and alarms without retyping"
+}
+
+test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype() {
+  local dir state home user_home sent
+  dir=$(make_supercase delivery-witness-legacy-buffer)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  sent="$dir/sent.log"
+  mkdir -p "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  : > "$sent"
+  printf '%s\n' 'done: legacy buffer without a nonce sidecar' > "$state/.subsuper-escalations"
+  date +%s > "$state/.subsuper-escalations.since"
+  [ ! -e "$state/.subsuper-escalations.delivery" ] \
+    || fail "legacy fixture unexpectedly started with a delivery record"
+  afk_enter "$state"
+
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    # Invoked indirectly by the daemon witness helper.
+    # shellcheck disable=SC2329
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$sent"; printf 'unknown'; }
+    if HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+      escalate_flush "$state"; then
+      fail "legacy buffer unexpectedly confirmed without a witness"
+    fi
+    if HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+      escalate_flush "$state"; then
+      fail "legacy buffer unexpectedly confirmed on its second flush"
+    fi
+  ) || fail "legacy delivered-once subshell failed"
+
+  [ "$(wc -l < "$sent" | tr -d ' ')" -eq 1 ] \
+    || fail "a legacy buffer was typed more than once"
+  grep -Eq '\[d:[0-9a-f]{12}\]' "$sent" \
+    || fail "a legacy buffer's one allowed attempt did not gain a delivery nonce"
+  [ -s "$state/.subsuper-escalations" ] \
+    || fail "a legacy buffer was cleared without delivery evidence"
+  [ -s "$state/.subsuper-escalations.delivery" ] \
+    || fail "a legacy buffer's first attempt did not persist its delivered-once record"
+  pass "a legacy buffer receives one nonced attempt and cannot be retyped"
+}
+
 test_max_defer_empty_swallow_types_once_and_alarms() {
   local dir state fakebin sent
   dir=$(make_bordered_case maxdefer-stuck)
@@ -2759,6 +2943,10 @@ test_pane_input_pending_bordered_idle_not_pending
 test_pane_input_pending_bordered_with_text_is_pending
 test_submit_ack_confirms_on_bordered_empty_composer
 test_submit_ack_reports_pending_on_persistent_swallow
+test_unknown_submit_uses_transcript_witness_without_retype
+test_delivery_witness_prefers_herdr_agent_session_path
+test_unknown_submit_without_witness_stalls_and_alarms_without_retype
+test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype
 test_max_defer_empty_swallow_types_once_and_alarms
 test_max_defer_flushes_empty_idle_pane
 test_max_defer_pending_composer_alarms_without_typing

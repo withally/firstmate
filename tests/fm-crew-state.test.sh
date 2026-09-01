@@ -23,8 +23,8 @@
 #       fake fm-crew-state.sh verdict): cross-branch attribution via the runs
 #       list -> absorbed; genuinely no run anywhere + idle pane -> surfaced.
 #       This is the direct regression pair for the 2026-07-02 herdr incident,
-#       proving the watcher's own absorb-only-when-provably-working predicate
-#       benefits from the fix in both directions.
+#       proving the watcher's stale-path working predicate benefits from the fix
+#       in both directions.
 set -u
 
 # shellcheck source=tests/lib.sh

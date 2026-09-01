@@ -26,7 +26,8 @@
 #                          never as a wedge, and that recheck reason names which
 #                          human the wait is on. Only when neither absorb class
 #                          applies does the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no verb),
+#                          terminal (captain-relevant) or non-terminal (not
+#                          captain-relevant),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
@@ -202,7 +203,7 @@ TURNEND_CHURN_ABSORB_SECS=${FM_TURNEND_CHURN_ABSORB_SECS:-900}  # longest a task
 # completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
-# wake) and never double-triages - and never runs the costly provably-working read.
+# wake) and never double-triages.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
@@ -1091,6 +1092,45 @@ scan_signals() {
       *) [ "$sig" = "$(cat "$sf" 2>/dev/null)" ] && continue ;;
     esac
     printf '%s\t%s\t%s\n' "$sf" "$sig" "$f"
+  done
+  return 0
+}
+
+# Prints the path of each changed STATUS file whose bytes after its last
+# surfaced-or-absorbed offset carry a captain-relevant event, one per line.
+# The fold-aware event predicate is owned by fm-classify-lib.sh; this wrapper only
+# supplies each scan row's persisted prior offset. The verdict is tracked per
+# status file, never batch-wide, so a routine append on one task is absorbed even
+# when a second task appends a terminal line in the same grace window. As a side
+# effect it writes every classified status file's candidate open-key snapshot
+# (promoted later by commit_signal_open_keys) regardless of verdict, so the fold
+# advances for absorbed files too.
+FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN=${BASHPID:-$$}
+
+actionable_pending_status_files() {  # reads scan_signals rows on stdin
+  local sf sig f prior_sig prior_size captured_size candidate
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in *.status) ;; *) continue ;; esac
+    prior_sig=$(cat "$sf" 2>/dev/null || true)
+    prior_size=$(fm_wake_signal_seen_offset "$prior_sig")
+    captured_size=${sig%%:*}
+    candidate=$(_fm_signal_open_keys_pending_path "$f" "$FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN")
+    if status_append_is_captain_relevant "$f" "$prior_size" "$captured_size" "$candidate"; then
+      printf '%s\n' "$f"
+    fi
+  done
+}
+
+commit_signal_open_keys() {  # reads scan_signals rows on stdin
+  local sf sig f candidate state_file
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in *.status) ;; *) continue ;; esac
+    state_file=$(_fm_signal_open_keys_path "$f")
+    candidate=$(_fm_signal_open_keys_pending_path "$f" "$FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN")
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+    mv -f "$candidate" "$state_file" || return 1
   done
   return 0
 }

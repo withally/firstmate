@@ -735,7 +735,11 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  # The startup digest already prints bounded status tails. Keep direct wake
+  # annotations and OPEN DECISIONS, but defer the general UNREAD STATUS surface
+  # so absorbed progress remains available to the next ordinary drain.
+  DRAIN_OUT=$(FM_WAKE_DRAIN_PRESERVE_UNREAD_STATUS=1 \
+    "$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   else

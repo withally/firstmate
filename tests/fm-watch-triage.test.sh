@@ -5,8 +5,8 @@
 # wake, so firstmate's LLM re-arms once per actionable event instead of once per
 # wake. These tests cover the classifier predicates as pure functions, then drive
 # a real fm-watch.sh subprocess to assert the behavioral contract:
-# provably-working no-verb wakes absorbed (no exit, no queue entry, suppressor
-# advanced, beacon fresh), stopped-crew no-verb wakes surfaced (queue + exit),
+# attended nonterminal signals absorbed regardless of liveness (no exit, no queue
+# entry, suppressor advanced, beacon fresh), stopped crews surfaced by stale,
 # provably-working stale panes absorbed-then-escalated past the threshold,
 # terminal-looking stale status lines overridden by an active run, the heartbeat
 # backstop fail-safe, and afk coherence (no double-triage while the away-mode
@@ -41,8 +41,8 @@ ack_stopped_cycle() {  # <state>
 
 # Common watcher knobs: tight poll/grace, no check or heartbeat cadence unless a
 # test overrides them, so a test only exercises the path it targets. FM_CREW_STATE_BIN
-# points at the case's hermetic fake fm-crew-state.sh (installed by make_case) so the
-# absorb-only-when-provably-working triage reads a canned verdict; a test fixes that
+# points at the case's hermetic fake fm-crew-state.sh (installed by make_case) so
+# stale triage reads a canned verdict; a test fixes that
 # verdict via FM_FAKE_CREW_STATE in its environment before calling watch_bg.
 watch_bg() {  # <state> <fakebin> <out> [extra env assignments...]
   local state=$1 fakebin=$2 out=$3
@@ -330,6 +330,8 @@ test_classifier_primitives() {
   status_is_terminal_verb "working: rebased onto merged #76" \
     && fail "working: wrongly classed as terminal verb"
   status_is_captain_relevant "merged" || fail "legacy bare merged free-text not captain-relevant"
+  status_is_captain_relevant "note: merged receipt recorded" \
+    || fail "legacy free-text in a note line stopped being captain-relevant"
   status_is_captain_relevant "PR ready https://x/pull/2" \
     || fail "legacy bare PR ready free-text not captain-relevant"
   [ "$(window_to_task "sess:fm-fix-login-k3")" = "fix-login-k3" ] || fail "window_to_task did not strip session+fm- prefix"
@@ -376,8 +378,8 @@ EOF
   pass "classifier primitives: keyed decisions and activity phases, captain relevance, window-to-task, and overrides"
 }
 
-# crew_is_provably_working: the absorb-only-when-provably-working predicate. It is
-# benign (absorb) ONLY when fm-crew-state.sh reports the crew as working from an
+# crew_is_provably_working is true only when fm-crew-state.sh reports the crew as
+# working from an
 # actively-running pipeline step (source run-step) or a busy pane (source pane);
 # everything else - a stale working: status-log line, a finished/parked/failed run,
 # an unknown/torn-down crew, or an empty id - is NOT provable, so it surfaces. The
@@ -639,75 +641,26 @@ SH
   pass "the worktree write probe is wall-clock bounded, and hitting the bound reads as no write evidence"
 }
 
-# signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
-# task it references is provably working; if any crew has stopped, or no task can be
-# resolved, it surfaces. Files map to ids by stripping .status / .turn-ended.
-test_signal_crew_provably_working_classifier() {
-  local dir fakebin state
-  dir=$(make_case signal-provably-working); fakebin="$dir/fakebin"; state="$dir/state"
-  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
-  export FM_FAKE_CREW_STATE_a='state: working · source: run-step · running'
-  export FM_FAKE_CREW_STATE_b='state: done · source: run-step · run passed'
-  signal_crew_provably_working "$state/a.status" "$state/a.turn-ended" \
-    || fail "a single provably-working crew (status+turn-end) was not benign"
-  ! signal_crew_provably_working "$state/a.status" "$state/b.turn-ended" \
-    || fail "a coalesced batch including a stopped crew was treated as benign"
-  ! signal_crew_provably_working "$state/b.turn-ended" \
-    || fail "a stopped crew's bare turn-end was treated as benign"
-  ! signal_crew_provably_working "$state/a.meta" \
-    || fail "a non-signal file resolved to a benign verdict"
-  ! signal_crew_provably_working \
-    || fail "an empty signal file list was treated as benign"
-  unset FM_FAKE_CREW_STATE_a FM_FAKE_CREW_STATE_b
-  pass "signal_crew_provably_working: benign only when every referenced crew is provably working"
-}
+# --- benign attended signals are absorbed ------------------------------------
 
-test_secondmate_status_signal_never_absorbed_classifier() {
-  local dir fakebin state
-  dir=$(make_case secondmate-signal-classify); fakebin="$dir/fakebin"; state="$dir/state"
-  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
-  # Even PROVABLY working, a secondmate's .status signal is its routed-reply
-  # channel and must surface; its bare turn-ended keeps the ordinary absorb.
-  export FM_FAKE_CREW_STATE_sm='state: working · source: run-step · running'
-  printf 'kind=secondmate\n' > "$state/sm.meta"
-  printf 'working: routed reply for the parent\n' > "$state/sm.status"
-  ! signal_crew_provably_working "$state/sm.status" \
-    || fail "a working secondmate's status signal was treated as absorbable"
-  signal_crew_provably_working "$state/sm.turn-ended" \
-    || fail "a working secondmate's bare turn-end lost its ordinary absorb"
-  # An ordinary crewmate with the same verdict stays absorbable: the rule is
-  # keyed on recorded kind, not on task naming or content guessing.
-  export FM_FAKE_CREW_STATE_crew='state: working · source: run-step · running'
-  printf 'kind=ship\n' > "$state/crew.meta"
-  printf 'working: progress\n' > "$state/crew.status"
-  signal_crew_provably_working "$state/crew.status" \
-    || fail "the secondmate rule leaked onto an ordinary crewmate status"
-  unset FM_FAKE_CREW_STATE_sm FM_FAKE_CREW_STATE_crew
-  pass "a secondmate's status signal is never absorbed as provably working; crewmates are unaffected"
-}
-
-# --- benign wakes are absorbed ONLY when the crew is provably working ---------
-
-test_provably_working_signal_absorbed() {
+test_nonterminal_signal_absorbed() {
   local dir state fakebin out status_file pid
   dir=$(make_case provably-working-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   status_file="$state/task.status"
   printf 'working: compiling step 2\n' > "$status_file"
-  # The crew's pipeline is in an actively-running step: positive evidence it is
-  # still working, so a no-verb working: signal is absorbed (the original low-churn
-  # case during a long validation).
+  # A working line is nonterminal and therefore absorbed in attended mode.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
   if ! wait_poll_cycle "$state" "$pid"; then
-    reap "$pid"; fail "watcher exited for a working: signal whose crew is provably working (should absorb): $(cat "$out")"
+    reap "$pid"; fail "watcher exited for an attended nonterminal signal: $(cat "$out")"
   fi
-  [ ! -s "$out" ] || fail "provably-working signal printed a wake reason: $(cat "$out")"
-  [ ! -s "$state/.wake-queue" ] || fail "provably-working signal enqueued a durable wake record"
-  [ -s "$state/.seen-task_status" ] || fail "provably-working signal did not advance its .seen-* suppressor"
+  [ ! -s "$out" ] || fail "nonterminal signal printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "nonterminal signal enqueued a durable wake record"
+  [ -s "$state/.seen-task_status" ] || fail "nonterminal signal did not advance its .seen-* suppressor"
   [ -e "$state/.last-watcher-beat" ] || fail "watcher beacon was not touched while absorbing"
   reap "$pid"
-  pass "a no-verb signal whose crew is provably working is absorbed (no exit, no queue, suppressor advanced, beacon present)"
+  pass "an attended nonterminal signal is absorbed with no queue record"
 }
 
 test_turn_ended_provably_working_absorbed() {
@@ -728,26 +681,25 @@ test_turn_ended_provably_working_absorbed() {
   pass "a bare turn-end whose crew is provably working (busy pane) is absorbed"
 }
 
-# --- a no-verb signal whose crew is NOT provably working SURFACES -------------
-# This is the swallowed-finish fix: a crew that finished (or stopped and waits)
-# reports its final turn-end with no captain-relevant status and no running
-# pipeline, so the wake must surface instead of being absorbed.
+# --- attended nonterminal signals are absorbed -------------------------------
+# The stale path, not a routine status append or turn-ended marker, owns bounded
+# stopped-crew detection when no captain-relevant status line was written.
 
-test_turn_ended_not_working_surfaced() {
-  local dir state fakebin out drain_out pid
+test_turn_ended_without_status_is_absorbed() {
+  local dir state fakebin out pid
   dir=$(make_case turn-ended-stopped); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  out="$dir/watch.out"
   : > "$state/task.turn-ended"
-  # No running pipeline, no busy pane: the crew has stopped (e.g. it finished via
-  # an interactive menu and wrote no done: status). Default unknown verdict.
   export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 100 || fail "watcher did not surface a turn-end whose crew is not provably working"
-  grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "watcher did not print the surfaced turn-end signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced turn-end failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/task.turn-ended" >/dev/null || fail "surfaced turn-end was not queued"
-  pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a bare turn-ended marker woke attended supervision: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "absorbed turn-ended marker printed a wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "absorbed turn-ended marker queued a wake"; }
+  reap "$pid"
+  pass "a bare turn-ended marker does not wake attended supervision"
 }
 
 # --- bare turn-end, unverifiable harness: pane churn is the third proof --------
@@ -1436,27 +1388,28 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline() {
 test_working_note_not_working_surfaced() {
   local dir state fakebin out drain_out status_file pid
   dir=$(make_case working-note-stopped); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  out="$dir/watch.out"
   status_file="$state/task.status"
-  printf 'working: compiling step 2\n' > "$status_file"
-  # A non-no-mistakes crew (no run) whose pane went idle: fm-crew-state falls back
-  # to the stale working: status-log line. That is NOT positive evidence, so the
-  # wake must surface - these users must never be left hanging.
+  printf 'working [key=build]: compiling step 2\npaused: awaiting vendor window\nnote: routine receipt recorded\nresolved [key=not-open]: housekeeping only\n' > "$status_file"
   export FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling step 2'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 100 || fail "watcher did not surface a working: note whose crew has no running pipeline and an idle pane"
-  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the surfaced working: signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced working: note failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "surfaced working: note was not queued"
-  [ -s "$state/.seen-task_status" ] || fail "surfaced working: note did not advance its .seen-* suppressor"
-  pass "a no-verb working: note whose crew is idle with no running pipeline is surfaced"
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "nonterminal-only status lines woke attended supervision: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "absorbed nonterminal lines printed a wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "absorbed nonterminal lines queued a wake"; }
+  [ -s "$state/.seen-task_status" ] || { reap "$pid"; fail "absorbed nonterminal lines did not advance their suppressor"; }
+  grep -F 'absorbed benign signal:' "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; fail "absorbed nonterminal lines were not recorded in triage log"; }
+  reap "$pid"
+  pass "working, paused, note, and non-open resolved lines are absorbed without working evidence"
 }
 
-test_secondmate_status_note_surfaced_despite_busy_agent() {
-  local dir state fakebin out drain_out pid
-  dir=$(make_case secondmate-note-surfaced); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"
+test_secondmate_nonterminal_status_absorbed() {
+  local dir state fakebin out pid
+  dir=$(make_case secondmate-note-absorbed); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
   printf 'kind=secondmate\n' > "$state/mate.meta"
   printf 'working: routed reply landed in the parent stream\n' > "$state/mate.status"
   # Busy evidence that would absorb an ordinary crewmate's no-verb note must
@@ -1464,13 +1417,152 @@ test_secondmate_status_note_surfaced_despite_busy_agent() {
   export FM_FAKE_CREW_STATE='state: working · source: run-step · running'
   FM_CONFIG_OVERRIDE="$(churn_config "$dir")" watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_for_exit "$pid" 100 || fail "watcher absorbed a busy secondmate's routed status note"
-  grep -F "signal: $state/mate.status" "$out" >/dev/null \
-    || fail "watcher did not print the surfaced secondmate note"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced note failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/mate.status" >/dev/null \
-    || fail "surfaced secondmate note was not queued"
-  pass "a secondmate's status note surfaces even while its own agent is busy"
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "routine secondmate progress woke attended supervision: $(cat "$out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "routine secondmate progress queued a wake"; }
+  reap "$pid"
+  pass "routine secondmate progress is absorbed in attended supervision"
+}
+
+test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
+  local dir state fakebin out drain_out status_file pid count
+  dir=$(make_case resolved-open-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'needs-decision [key=answer]: choose one\n' > "$status_file"
+  prime_status_seen "$state" "$status_file" || fail "could not prime open-key baseline"
+  printf 'resolved [key=answer]: captain chose one\n' >> "$status_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a resolved line closing an open key was absorbed"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the open-key resolution did not print its signal wake"
+  drain_out="$dir/drain.out"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain after an open-key resolution failed"
+  count=$(grep -F -c 'resolved [key=answer]: captain chose one' "$drain_out" || true)
+  [ "$count" -eq 1 ] \
+    || fail "an actionable resolved line was presented $count times instead of once: $(cat "$drain_out")"
+  if grep -F 'UNREAD STATUS' "$drain_out" >/dev/null; then
+    fail "an actionable resolved line was duplicated under UNREAD STATUS: $(cat "$drain_out")"
+  fi
+
+  dir=$(make_case resolved-nonopen-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'needs-decision [key=still-open]: choose one\n' > "$status_file"
+  prime_status_seen "$state" "$status_file" || fail "could not prime non-open-key baseline"
+  printf 'resolved [key=housekeeping]: closes nothing\n' >> "$status_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a resolved line for a non-open key woke attended supervision: $(cat "$out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "non-open resolution queued a wake"; }
+  reap "$pid"
+  pass "keyed resolved wakes only when it closes a currently open key"
+}
+
+test_keyed_resolved_survives_interleaved_drain_cursor_advance() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case resolved-interleaved-drain); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/task.status"
+  printf 'needs-decision [key=answer]: choose one\n' > "$status_file"
+  prime_status_seen "$state" "$status_file" || fail "could not prime interleaved-resolution baseline"
+  printf 'resolved [key=answer]: captain chose one\n' >> "$status_file"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain could not advance its open-decision cursor"
+  [ -s "$state/.task.open-decisions-cursor" ] \
+    || fail "interleaved drain did not persist its open-decision cursor"
+  [ "$(cat "$state/.seen-task_status")" != "$(seen_sig "$status_file")" ] \
+    || fail "interleaved drain unexpectedly advanced the signal suppressor"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle worker'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "interleaved keyed resolution was absorbed"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "interleaved keyed resolution did not surface its signal wake"
+  pass "a keyed resolution still wakes after an interleaved drain advances its cursor"
+}
+
+test_absorbed_status_remains_unread_for_next_drain() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case absorbed-status-unread); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/task.status"
+  printf 'note: bootstrap cursor\n' > "$status_file"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>/dev/null || fail "could not prime unread-status cursor"
+  prime_status_seen "$state" "$status_file" || fail "could not prime signal baseline"
+  printf 'working: routine progress retained for drain\n' >> "$status_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "routine status woke before unread-status verification: $(cat "$out")"
+  fi
+  reap "$pid"
+  printf 'done: trigger the next attended drain\n' >> "$status_file"
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "terminal line did not trigger the next drain"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "next drain failed"
+  grep -F 'UNREAD STATUS' "$drain_out" >/dev/null || fail "next drain omitted UNREAD STATUS"
+  grep -F 'task working: routine progress retained for drain' "$drain_out" >/dev/null \
+    || fail "absorbed status line was lost before the next drain"
+  pass "absorbed nonterminal status remains available to the next drain"
+}
+
+# Two status files change in the same grace window: one appends only nonterminal
+# lines, the other appends a terminal line. The batch is actionable because of
+# the terminal file, but the routine file must be classified on its own and left
+# absorbed rather than dragged into the queue with its neighbour.
+test_mixed_pending_classifies_each_status_file() {
+  local dir state fakebin out drain_out routine_file terminal_file pid
+  dir=$(make_case mixed-pending); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  routine_file="$state/routine.status"; terminal_file="$state/shipped.status"
+  printf 'working: still compiling\n' > "$routine_file"
+  printf 'done: PR https://example.test/pr/7\n' > "$terminal_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for the terminal status in a mixed batch"
+  grep -F "shipped.status" "$out" >/dev/null || fail "the terminal status was not named in the wake reason"
+  grep -F "routine.status" "$out" >/dev/null && fail "the routine status was dragged into the mixed-batch wake reason"
+  [ -s "$state/.seen-routine_status" ] || fail "the absorbed routine status did not advance its suppressor"
+  [ -s "$state/.seen-shipped_status" ] || fail "the surfaced terminal status did not advance its suppressor"
+  [ -s "$state/.hb-surfaced-shipped" ] || fail "the terminal status was not marked surfaced"
+  [ ! -e "$state/.hb-surfaced-routine" ] || fail "the absorbed routine status was wrongly marked surfaced"
+  grep -F "absorbed benign signal: $routine_file" "$state/.watch-triage.log" >/dev/null \
+    || fail "the absorbed routine status was not recorded in the mixed-batch triage log"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the mixed batch failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "shipped.status" >/dev/null \
+    || fail "the terminal status was not queued as a signal"
+  if grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "routine.status" >/dev/null; then
+    fail "the routine status was queued as a signal in a mixed batch"
+  fi
+  grep -F 'UNREAD STATUS' "$drain_out" >/dev/null || fail "the mixed-batch drain omitted UNREAD STATUS"
+  grep -F 'routine working: still compiling' "$drain_out" >/dev/null \
+    || fail "the absorbed routine line was lost before the next drain"
+  pass "a mixed grace-window batch queues only the actionable status file and leaves the routine one for UNREAD STATUS"
+}
+
+# A captain-relevant line sits at the start of the log, followed by routine
+# bytes, under a truncated "10" seen marker. Trusting that bare number as a byte
+# offset would start the scan past the terminal line and see only the nonterminal
+# tail, losing the wake. The malformed marker must instead rescan from byte 0.
+test_malformed_seen_marker_rescans_and_preserves_wake() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case malformed-marker); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/task.status"
+  printf 'done: PR https://example.test/pr/9\nworking: routine tail\n' > "$status_file"
+  printf '10' > "$state/.seen-task_status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a truncated seen marker suppressed a captain-relevant wake"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the rescan-from-zero did not surface the captain-relevant signal"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the rescanned signal failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "task.status" >/dev/null \
+    || fail "the rescanned captain-relevant signal was not queued"
+  pass "a malformed seen marker rescans from byte 0 so an early captain-relevant line is never skipped"
 }
 
 test_self_announced_close_does_not_rewake_but_next_note_does() {
@@ -3513,8 +3605,7 @@ SH
   chmod +x "$fakebin/wc"
   status_file="$state/task.status"
   printf 'working: compiling step 2\n' > "$status_file"
-  # Provably working so the no-verb signal is absorbed (which is what writes the
-  # triage log line under test).
+  # The nonterminal signal is absorbed, which writes the triage log line under test.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_WATCH_TRIAGE_LOG_MAX_BYTES=1 "$WATCH" > "$out" &
@@ -3945,9 +4036,8 @@ test_afk_present_reverts_watcher_to_one_shot() {
   status_file="$state/task.status"
   printf 'working: routine note\n' > "$status_file"
   date '+%s' > "$state/.afk"   # away mode: the supervise-daemon owns triage
-  # Set a PROVABLY-WORKING verdict: if afk failed to bypass the provably-working
-  # check, this no-verb signal would be absorbed (not surfaced). The test asserting
-  # a surface therefore also proves afk reverts to one-shot and skips the costly read.
+  # Without AFK this nonterminal signal would be absorbed.
+  # Surfacing proves away mode reverts to daemon-owned one-shot behavior.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
@@ -4008,9 +4098,7 @@ test_crew_worktree_written_since_classifier
 test_empty_write_prune_widens_the_probe
 test_empty_write_prune_from_the_environment_widens_the_probe
 test_worktree_write_probe_is_wall_clock_bounded
-test_signal_crew_provably_working_classifier
-test_secondmate_status_signal_never_absorbed_classifier
-test_provably_working_signal_absorbed
+test_nonterminal_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_turn_ended_churning_pane_absorbed

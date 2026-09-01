@@ -134,7 +134,7 @@ No caching machinery beyond this exists, deliberately: any later dynamic content
 ## Away mode
 
 Away mode carries over unchanged: while `state/.afk` exists the away daemon owns supervision, and the branch declines every wake offer for the duration.
-What is new is only the attended path: outside away mode, the branch absorbs the routine majority that previously interrupted the captain's conversation, applying the same escalation etiquette the daemon applies while away.
+Outside away mode, the bash watcher absorbs routine status and bare turn-ended signals before the branch offer; the branch's three-way verdict remains for eligible wakes that reach it.
 
 ## Verification
 

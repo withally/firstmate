@@ -202,12 +202,12 @@ acknowledge_inactive_outcomes() { # <mode> <newline-separated-fingerprints>
 # when the fold later advances the cursor. Prints nothing when nothing is
 # unread, which is the common case.
 print_unread_status_section() {
-  local snapshot=${1:-} unread task line shown=0
+  local snapshot=${1:-} fully_presented=${2:-} unread task line shown=0
 
   if [ -n "$snapshot" ]; then
-    unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
+    unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   else
-    unread=$(scan_unread_surface_lines "$STATE") || return 1
+    unread=$(scan_unread_surface_lines "$STATE" "$fully_presented") || return 1
   fi
   [ -n "$unread" ] || return 0
 
@@ -354,7 +354,7 @@ print_status_sections() {
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
-  print_unread_status_section "$snapshot" || return 1
+  print_unread_status_section "$snapshot" "$fully_presented" || return 1
   print_open_decisions_section "$snapshot" || return 1
   print_record_divergence_section || return 1
   status_commit_presentation_snapshot "$STATE" "$acknowledged"

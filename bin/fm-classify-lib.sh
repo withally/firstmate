@@ -122,7 +122,7 @@ status_is_captain_relevant() {
   status_is_paused "$line" && return 1
   verb=$(status_line_verb "$line")
   case "$verb" in
-    working|note|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+    working|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
       return 1
       ;;
   esac
@@ -912,7 +912,7 @@ EOF
 }
 
 status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe
+  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe open resolve held
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
@@ -923,6 +923,11 @@ $fully_presented
       f="$state/$task.status"
       offset=$(status_presentation_cursor_offset "$f") || return 1
       lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
+      if [ -n "$lines" ]; then
+        open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+        resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+        held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+      fi
       # Once any informational line in this span is presented fleet-wide, the
       # contiguous cursor may advance through the captured endpoint. Routine
       # lines remain unacknowledged only while they are the sole unread content,
@@ -931,7 +936,8 @@ $fully_presented
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           *[![:space:]]*)
-            if status_line_is_unread_surface "$line"; then safe=true; break; fi
+            if status_line_is_unread_surface "$line" "$open"; then safe=true; break; fi
+            open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
             ;;
         esac
       done <<EOF
@@ -998,7 +1004,7 @@ EOF
 # presentation": one fleet manifest records each status identity and last-
 # presented byte offset, and one atomic replacement commits only the contiguous
 # status spans that were successfully presented. A quiet fleet scan leaves
-# routine terminal bytes unacknowledged so a subsequently published signal can
+# routine nonterminal bytes unacknowledged so a subsequently published signal can
 # still annotate them. A missing manifest row or changed file identity is
 # offset 0 for the current file, while malformed or unreadable cursor state
 # aborts presentation without advancing any offset. A trusted cursor at EOF
@@ -1112,16 +1118,26 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 
 # 0 when a status line is nonterminal progress retained for the next drain.
 status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb resolve held paused
+  local line=$1 open=${2-} direct=${3:-false} verb resolve held paused key
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   case "$verb" in
-    working|note|"$resolve"|"$held"|"$paused") return 0 ;;
+    working|note|"$held"|"$paused") return 0 ;;
+    "$resolve") ;;
     *) return 1 ;;
   esac
+  if [ "$direct" = true ] \
+    && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+    key=$(_fm_decision_key "$line") || return 0
+    if _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+      && _fm_open_set_has "$open" "$key"; then
+      return 1
+    fi
+  fi
+  return 0
 }
 
 # Fleet-wide unread nonterminal lines: one "<task>\t<status-line>" row per
@@ -1129,16 +1145,26 @@ status_line_is_unread_surface() {  # <status-line>
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
-  local state=$1 f task lines line
+  local state=$1 fully_presented=${2:-} f task lines line offset open='' resolve held direct
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
+    direct=false
+    case "
+$fully_presented
+" in *$'\n'"$task"$'\n'*) direct=true ;; esac
+    offset=$(status_presentation_cursor_offset "$f") || return 1
     lines=$(status_new_lines_since_cursor "$f") || return 1
     [ -n "$lines" ] || continue
+    open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+    resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+    held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      status_line_is_unread_surface "$line" || continue
-      printf '%s\t%s\n' "$task" "$line"
+      if status_line_is_unread_surface "$line" "$open" "$direct"; then
+        printf '%s\t%s\n' "$task" "$line"
+      fi
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
     done <<EOF
 $lines
 EOF
@@ -1147,16 +1173,26 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f lines line
+  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f lines line offset open='' resolve held direct
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
+    direct=false
+    case "
+$fully_presented
+" in *$'\n'"$task"$'\n'*) direct=true ;; esac
+    offset=$(status_presentation_cursor_offset "$f") || return 1
     lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
     [ -n "$lines" ] || continue
+    open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+    resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+    held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      status_line_is_unread_surface "$line" || continue
-      printf '%s\t%s\n' "$task" "$line"
+      if status_line_is_unread_surface "$line" "$open" "$direct"; then
+        printf '%s\t%s\n' "$task" "$line"
+      fi
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
     done <<EOF
 $lines
 EOF
@@ -1236,7 +1272,7 @@ window_to_task() {
 # keyed resolved line is relevant only when it closes a key open before that
 # line.
 status_append_is_captain_relevant() {  # <status-file> <prior-size> [<captured-size>]
-  local f=$1 prior=$2 size=${3:-} prefix='' delta='' open='' line verb key resolve held needs_fold=0
+  local f=$1 prior=$2 size=${3:-} delta='' open='' line verb key resolve held needs_fold=0
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   if [ -z "$size" ]; then size=$(_fm_status_file_size "$f") || return 0; fi
   size=${size//[[:space:]]/}
@@ -1259,14 +1295,7 @@ EOF
   [ "$needs_fold" -eq 1 ] || return 1
 
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  if [ "$prior" -gt 0 ]; then
-    prefix=$(_fm_status_read_span "$f" 0 "$prior") || return 0
-    while IFS= read -r line || [ -n "$line" ]; do
-      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
-    done <<EOF
-$prefix
-EOF
-  fi
+  open=$(status_open_decisions_incremental "$f" "$prior") || return 0
 
   while IFS= read -r line || [ -n "$line" ]; do
     verb=$(status_line_verb "$line")

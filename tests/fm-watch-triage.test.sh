@@ -218,6 +218,8 @@ test_classifier_primitives() {
   status_is_terminal_verb "working: rebased onto merged #76" \
     && fail "working: wrongly classed as terminal verb"
   status_is_captain_relevant "merged" || fail "legacy bare merged free-text not captain-relevant"
+  status_is_captain_relevant "note: merged receipt recorded" \
+    || fail "legacy free-text in a note line stopped being captain-relevant"
   status_is_captain_relevant "PR ready https://x/pull/2" \
     || fail "legacy bare PR ready free-text not captain-relevant"
   [ "$(window_to_task "sess:fm-fix-login-k3")" = "fix-login-k3" ] || fail "window_to_task did not strip session+fm- prefix"
@@ -593,7 +595,7 @@ test_nonterminal_status_absorbed_without_working_evidence() {
   dir=$(make_case working-note-stopped); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
   status_file="$state/task.status"
-  printf 'working [key=build]: compiling step 2\npaused: awaiting vendor window\nnote: merged receipt recorded\nresolved [key=not-open]: housekeeping only\n' > "$status_file"
+  printf 'working [key=build]: compiling step 2\npaused: awaiting vendor window\nnote: routine receipt recorded\nresolved [key=not-open]: housekeeping only\n' > "$status_file"
   export FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling step 2'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
@@ -627,7 +629,7 @@ test_secondmate_nonterminal_status_absorbed() {
 }
 
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
-  local dir state fakebin out status_file pid
+  local dir state fakebin out drain_out status_file pid count
   dir=$(make_case resolved-open-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   status_file="$state/task.status"
   printf 'needs-decision [key=answer]: choose one\n' > "$status_file"
@@ -638,6 +640,15 @@ test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
   wait_for_exit "$pid" 100 || fail "a resolved line closing an open key was absorbed"
   grep -F "signal: $status_file" "$out" >/dev/null \
     || fail "the open-key resolution did not print its signal wake"
+  drain_out="$dir/drain.out"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain after an open-key resolution failed"
+  count=$(grep -F 'resolved [key=answer]: captain chose one' "$drain_out" | wc -l | tr -d '[:space:]')
+  [ "$count" -eq 1 ] \
+    || fail "an actionable resolved line was presented $count times instead of once: $(cat "$drain_out")"
+  if grep -F 'UNREAD STATUS' "$drain_out" >/dev/null; then
+    fail "an actionable resolved line was duplicated under UNREAD STATUS: $(cat "$drain_out")"
+  fi
 
   dir=$(make_case resolved-nonopen-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   status_file="$state/task.status"

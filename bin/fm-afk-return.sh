@@ -124,6 +124,7 @@ clear_delivery_artifacts() {
     "$STATE/.subsuper-escalations" \
     "$STATE/.subsuper-escalations.since" \
     "$STATE/.subsuper-escalations.delivery" \
+    "$STATE/.subsuper-escalations.records" \
     "$STATE/.subsuper-inject-wedged" \
     "$STATE/.subsuper-check-ledger"
 }

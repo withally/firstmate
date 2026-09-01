@@ -164,15 +164,18 @@ fm_afk_launch_primary_harness() {
 }
 
 fm_afk_launch_daemon_cmd() {  # <captain-target> <captain-backend> <entry>
-  local captain_target=$1 captain_backend=$2 entry=$3 primary_harness
+  local captain_target=$1 captain_backend=$2 entry=$3 primary_harness pi_agent_dir daemon_env
   primary_harness=$(fm_afk_launch_primary_harness)
-  if [ -n "$primary_harness" ]; then
-    printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_DAEMON_PRIMARY_HARNESS=%q %q' \
-      "$FM_HOME" "$captain_target" "$captain_backend" "$primary_harness" "$entry"
-  else
-    printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
-      "$FM_HOME" "$captain_target" "$captain_backend" "$entry"
+  daemon_env=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q' \
+    "$FM_HOME" "$captain_target" "$captain_backend")
+  pi_agent_dir=${PI_CODING_AGENT_DIR:-}
+  if [ -n "$pi_agent_dir" ]; then
+    daemon_env+=" PI_CODING_AGENT_DIR=$(printf '%q' "$pi_agent_dir")"
   fi
+  if [ -n "$primary_harness" ]; then
+    daemon_env+=" FM_DAEMON_PRIMARY_HARNESS=$(printf '%q' "$primary_harness")"
+  fi
+  printf '%s %q' "$daemon_env" "$entry"
 }
 
 fm_afk_launch_record_write() {  # <backend> <target> <extra>
@@ -381,12 +384,13 @@ fm_afk_launch_restore_backup() {  # <backup> <had-afk>
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.since" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.delivery" \
+    "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.records" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-inject-wedged" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-check-ledger" || result=1
   if [ "$had_afk" -eq 1 ]; then
     cp "$backup/.afk" "$FM_AFK_LAUNCH_STATE/.afk" || result=1
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.delivery .subsuper-inject-wedged .subsuper-check-ledger; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.delivery .subsuper-escalations.records .subsuper-inject-wedged .subsuper-check-ledger; do
     if [ -e "$backup/$artifact" ]; then
       cp -p "$backup/$artifact" "$FM_AFK_LAUNCH_STATE/$artifact" || result=1
     fi
@@ -507,7 +511,7 @@ fm_afk_launch_start() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.delivery .subsuper-inject-wedged .subsuper-check-ledger; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.delivery .subsuper-escalations.records .subsuper-inject-wedged .subsuper-check-ledger; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -567,7 +571,7 @@ fm_afk_launch_start_native() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.delivery .subsuper-inject-wedged .subsuper-check-ledger; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-escalations.delivery .subsuper-escalations.records .subsuper-inject-wedged .subsuper-check-ledger; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi

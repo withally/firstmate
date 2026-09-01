@@ -989,7 +989,7 @@ test_check_wake_replay_recovers_after_buffer_append_before_seen_record() {
   reservation=$(check_ledger_reservation "$state" 51 /state/due.check.sh "$reason") \
     || fail "could not read the pre-crash check reservation"
   reservation_nonce=${reservation##*$'\t'}
-  check_buffer_append_marker_payload "$state" "$reservation_nonce" "$reason" \
+  check_buffer_append_record_payload "$state" "$reservation_nonce" "$reason" "$reason" \
     || fail "could not stage the pre-crash buffered check"
   FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state" /state/due.check.sh 51
   [ "$(delivery_buffer_line_count "$state")" -eq 1 ] \
@@ -1009,7 +1009,7 @@ test_check_wake_flush_reconciles_reserved_append_before_clearing() {
   reservation=$(check_ledger_reservation "$state" 52 /state/flush.check.sh "$reason") \
     || fail "could not read the reserved check transaction"
   reservation_nonce=${reservation##*$'\t'}
-  check_buffer_append_marker_payload "$state" "$reservation_nonce" "$reason" \
+  check_buffer_append_record_payload "$state" "$reservation_nonce" "$reason" "$reason" \
     || fail "could not stage the reserved appended check"
   escalate_add "$state" "an unrelated buffered event"
   (
@@ -1923,6 +1923,64 @@ test_startup_reconcile_after_retirement_preserves_appended_digest() {
   pass "startup reconciliation preserves an appended digest after retirement removal failure"
 }
 
+test_startup_reconcile_after_buffer_move_preserves_appended_digest() {
+  local dir state home user_home transcript nonce slug transcript_dir buf record records
+  dir=$(make_supercase delivery-reconcile-buffer-move)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  nonce=abcdef123456
+  buf="$state/.subsuper-escalations"
+  record="$state/.subsuper-escalations.delivery"
+  mkdir -p "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  slug=${home#/}
+  slug=${slug//\//-}
+  transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+  transcript="$transcript_dir/session.jsonl"
+  mkdir -p "$transcript_dir"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
+  jq -cn --arg text "${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] digest A" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  transcript=$(realpath "$transcript")
+  printf '%s\n' 'digest A' > "$buf"
+  delivery_record_prepare "$state" "$nonce" 1 "$transcript" 0 0 \
+    || fail "could not prepare the buffer-move crash fixture"
+  escalate_add "$state" 'digest B'
+  records=$(jq -s -c '.' "$state/.subsuper-escalations.records")
+
+  (
+    mv() {
+      case "$2" in
+        "$state/.subsuper-escalations.records") return 1 ;;
+        *) command mv "$@" ;;
+      esac
+    }
+    fm_backend_source() { return 1; }
+    HOME="$user_home" FM_HOME="$home" \
+      delivery_reconcile_startup "$state" herdr named:w1:p2 pi || true
+  ) || fail "buffer-move crash simulation failed"
+
+  [ "$(cat "$buf")" = 'digest B' ] \
+    || fail "the buffer move did not leave the appended digest in place"
+  [ -e "$record" ] || fail "the buffer-move crash did not preserve the delivery record"
+  [ "$(jq -s -c '.' "$state/.subsuper-escalations.records")" = "$records" ] \
+    || fail "the failed sidecar move unexpectedly changed record metadata"
+
+  HOME="$user_home" FM_HOME="$home" \
+    delivery_reconcile_startup "$state" herdr named:w1:p2 pi \
+    || fail "startup did not reconcile the stale record sidecar"
+  [ "$(cat "$buf")" = 'digest B' ] \
+    || fail "stale sidecar reconciliation changed the appended digest"
+  [ ! -e "$record" ] \
+    || fail "stale sidecar reconciliation left the retired delivery record"
+  [ "$(jq -s -c '.' "$state/.subsuper-escalations.records")" = \
+    "$(printf '%s' "$records" | jq -c '[.[1]]')" ] \
+    || fail "stale sidecar reconciliation changed the appended record metadata"
+  pass "startup reconciles a buffer-move crash without losing the appended digest"
+}
+
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
   local dir state home user_home sent
   dir=$(make_supercase delivery-witness-missing)
@@ -2012,75 +2070,87 @@ test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype() {
 }
 
 test_legacy_delivery_marker_like_line_is_preserved() {
-  local dir state legacy_line
+  local dir state legacy_line record
   dir=$(make_supercase delivery-marker-collision)
   state="$dir/state"
-  legacy_line='__FIRSTMATE_DELIVERY_NONCE__=user-data'
+  legacy_line='__FIRSTMATE_DELIVERY_NONCE__=0123456789ab'
   printf '%s\n' "$legacy_line" > "$state/.subsuper-escalations"
 
-  delivery_buffer_strip_markers "$state" \
-    || fail "stripping delivery markers rejected a legacy marker-like buffer"
   [ "$(cat "$state/.subsuper-escalations")" = "$legacy_line" ] \
     || fail "a legacy marker-like buffer line was stripped"
   [ "$(delivery_buffer_line_count "$state")" = 1 ] \
     || fail "a legacy marker-like buffer line was excluded from the digest"
+  record=$(jq -s -c '.[0]' "$state/.subsuper-escalations.records" 2>/dev/null || true)
+  [ "$(printf '%s' "$record" | jq -r '.nonce')" = '' ] \
+    || fail "a nonce-less legacy record gained metadata from its text"
+  [ "$(printf '%s' "$record" | jq -r '.lines')" = 1 ] \
+    || fail "the legacy record did not cover its complete buffer"
   pass "legacy marker-like escalation text remains buffered"
 }
 
-# AFK-012: the delivery marker is recognized ONLY as the record-pinned marker at
-# buffer line 1. A real escalation whose text is a valid 12-hex delivery-marker
-# grammar at any later position must stay counted and delivered, never mistaken
-# for the marker and dropped from a multi-line digest.
-test_delivery_marker_recognized_only_at_record_pinned_line_one() {
-  local dir state nonce collision
+test_delivery_record_retirement_preserves_following_record_metadata() {
+  local dir state delivery_nonce nonce_a nonce_b records
   dir=$(make_supercase delivery-marker-first-line-only)
   state="$dir/state"
-  nonce=abcdef123456
-  collision='__FIRSTMATE_DELIVERY_NONCE__=ffffffffffff'
 
   escalate_add "$state" "real event one"
-  escalate_add "$state" "$collision"
+  delivery_nonce=abcdef123456
+  delivery_record_prepare "$state" "$delivery_nonce" 1 - 0 0 \
+    || fail "could not pin the in-flight delivery record"
+  escalate_add "$state" "real event two"
   [ "$(delivery_buffer_line_count "$state")" -eq 2 ] \
-    || fail "a marker-grammar escalation line was excluded before any delivery record existed"
-
-  delivery_record_prepare "$state" "$nonce" 2 - 0 0 \
-    || fail "could not pin the in-flight delivery record and marker"
-  [ "$(head -1 "$state/.subsuper-escalations")" = "__FIRSTMATE_DELIVERY_NONCE__=$nonce" ] \
-    || fail "the delivery marker was not prepended as buffer line 1"
+    || fail "the two records were not represented by their line counts"
+  nonce_a=$(jq -s -r '.[0].nonce' "$state/.subsuper-escalations.records")
+  nonce_b=$(jq -s -r '.[1].nonce' "$state/.subsuper-escalations.records")
   [ "$(delivery_buffer_line_count "$state")" -eq 2 ] \
-    || fail "the record-pinned marker or the marker-grammar content line was miscounted"
+    || fail "the in-flight record changed the buffer line count"
   [ "$(delivery_buffer_line_at "$state" 1)" = "real event one" ] \
-    || fail "the first content line was not the first non-marker line"
-  [ "$(delivery_buffer_line_at "$state" 2)" = "$collision" ] \
-    || fail "a marker-grammar content line at position 2 was omitted from the digest"
+    || fail "the first record text changed before retirement"
+  [ "$(delivery_buffer_line_at "$state" 2)" = "real event two" ] \
+    || fail "the second record text changed before retirement"
 
-  delivery_buffer_retire "$state" "$nonce" 2 \
-    || fail "retiring the pinned digest failed when a marker-grammar content line was present"
-  [ ! -s "$state/.subsuper-escalations" ] \
-    || fail "retiring the two-line digest left buffered content behind"
-  pass "the delivery marker is bound to the record-pinned line 1; marker-grammar content survives"
+  delivery_buffer_retire "$state" "$delivery_nonce" 1 \
+    || fail "retiring the first record failed"
+  [ "$(cat "$state/.subsuper-escalations")" = "real event two" ] \
+    || fail "retiring the first record changed the following record text"
+  records=$(jq -s -c '.' "$state/.subsuper-escalations.records" 2>/dev/null || true)
+  [ "$(printf '%s' "$records" | jq 'length')" = 1 ] \
+    || fail "retiring the first record did not remove exactly one metadata record"
+  [ "$(printf '%s' "$records" | jq -r '.[0].nonce')" = "$nonce_b" ] \
+    || fail "retiring the first record changed the following record metadata"
+  [ "$(printf '%s' "$records" | jq -r '.[0].lines')" = 1 ] \
+    || fail "the following record's line count changed after retirement"
+  [ "$(printf '%s' "$records" | jq -r '.[0].delivery_nonce')" = '' ] \
+    || fail "the following record inherited the retired delivery nonce"
+  [ "$nonce_a" != "$nonce_b" ] || fail "the live record nonces were not unique"
+  pass "retiring a record preserves following text and sidecar metadata"
 }
 
-# AFK-012: a legacy nonce-less buffer (no delivery record) must never have any
-# line stripped or omitted, even a line that matches the marker grammar, as long
-# as it is not the record's first line.
-test_legacy_marker_grammar_line_preserved_in_multiline_buffer() {
-  local dir state buf collision
+test_legacy_marker_grammar_lines_preserved_by_sidecar_index() {
+  local dir state buf delivery_like check_like records
   dir=$(make_supercase delivery-marker-legacy-multiline)
   state="$dir/state"
   buf="$state/.subsuper-escalations"
-  collision='__FIRSTMATE_DELIVERY_NONCE__=0123456789ab'
-  printf '%s\n%s\n%s\n' "first legacy event" "$collision" "third legacy event" > "$buf"
+  delivery_like='__FIRSTMATE_DELIVERY_NONCE__=0123456789ab'
+  check_like='__FIRSTMATE_CHECK_NONCE__=abcdef123456'
+  printf '%s\n%s\n%s\n' "first legacy event" "$delivery_like" "$check_like" > "$buf"
 
-  delivery_buffer_strip_markers "$state" \
-    || fail "stripping a legacy multi-line buffer failed"
   [ "$(wc -l < "$buf" | tr -d ' ')" -eq 3 ] \
     || fail "a legacy nonce-less buffer line was stripped"
-  grep -qx "$collision" "$buf" \
+  grep -qx "$delivery_like" "$buf" \
     || fail "the legacy marker-grammar line did not survive verbatim"
+  grep -qx "$check_like" "$buf" \
+    || fail "the legacy check-marker-looking line did not survive verbatim"
   [ "$(delivery_buffer_line_count "$state")" -eq 3 ] \
     || fail "a legacy marker-grammar line was excluded from the digest count"
-  pass "a legacy marker-grammar escalation line is never stripped or omitted"
+  [ "$(delivery_buffer_line_at "$state" 2)" = "$delivery_like" ] \
+    || fail "the delivery-marker-looking body line was not indexed as text"
+  [ "$(delivery_buffer_line_at "$state" 3)" = "$check_like" ] \
+    || fail "the check-marker-looking body line was not indexed as text"
+  records=$(jq -s -c '.[0]' "$state/.subsuper-escalations.records" 2>/dev/null || true)
+  [ "$(printf '%s' "$records" | jq -r '.lines')" = 3 ] \
+    || fail "the legacy sidecar did not retain the complete record span"
+  pass "legacy marker-looking first and body lines remain text"
 }
 
 # AFK-013: the Pi transcript root honors a configured PI_CODING_AGENT_DIR (the
@@ -3277,11 +3347,12 @@ test_delivery_witness_prefers_herdr_agent_session_path
 test_delivery_witness_requires_exact_envelope_and_new_transcript_offset
 test_startup_reconcile_drops_orphaned_current_record
 test_startup_reconcile_after_retirement_preserves_appended_digest
+test_startup_reconcile_after_buffer_move_preserves_appended_digest
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype
 test_legacy_delivery_marker_like_line_is_preserved
-test_delivery_marker_recognized_only_at_record_pinned_line_one
-test_legacy_marker_grammar_line_preserved_in_multiline_buffer
+test_delivery_record_retirement_preserves_following_record_metadata
+test_legacy_marker_grammar_lines_preserved_by_sidecar_index
 test_delivery_transcript_root_honors_configured_pi_agent_dir
 test_max_defer_empty_swallow_types_once_and_alarms
 test_max_defer_flushes_empty_idle_pane

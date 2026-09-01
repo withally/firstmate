@@ -445,7 +445,9 @@ classify_unknown() {  # <reason>
 
 # --- stale marker + escalation buffer (stateful, but via explicit state dir) -
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
-# Buffer:   state/.subsuper-escalations    one distilled line per escalation.
+# Buffer:   state/.subsuper-escalations    digest text, one record per line.
+# Records:  state/.subsuper-escalations.records
+#           JSONL metadata in the same order as the buffer records.
 # Delivery: state/.subsuper-escalations.delivery
 #           one versioned nonce and buffered-line count, published immediately
 #           before the digest's only allowed type attempt.
@@ -759,13 +761,6 @@ stale_window_is_busy() {  # <window> <state>
   [ "${verdict%% *}" = busy ]
 }
 
-escalate_add() {  # <state> <distilled-item>
-  local state=$1 item=$2 buf
-  buf="$state/.subsuper-escalations"
-  [ -s "$buf" ] || _now > "${buf}.since"
-  printf '%s\n' "$item" >> "$buf"
-}
-
 delivery_nonce_generate() {
   local nonce
   nonce=$(LC_ALL=C od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
@@ -775,170 +770,6 @@ delivery_nonce_generate() {
       ;;
     *) return 1 ;;
   esac
-}
-
-DELIVERY_BUFFER_MARKER_PREFIX="__FIRSTMATE_DELIVERY_NONCE__="
-CHECK_BUFFER_MARKER_PREFIX="__FIRSTMATE_CHECK_NONCE__="
-
-delivery_buffer_marker() {  # <nonce>
-  printf '%s%s' "$DELIVERY_BUFFER_MARKER_PREFIX" "$1"
-}
-
-check_buffer_marker() {  # <nonce>
-  printf '%s%s' "$CHECK_BUFFER_MARKER_PREFIX" "$1"
-}
-
-# The delivery marker pins the in-flight digest to its delivered-once record. It
-# is only ever prepended as buffer line 1 (delivery_buffer_mark_nonce) and there
-# is at most one, so it is recognized ONLY as the exact record-pinned marker at
-# line 1. A real escalation line that coincidentally matches the marker grammar
-# at any other position - or in a legacy nonce-less buffer with no record at all
-# - is content, never a marker, so it is never stripped or omitted from a digest.
-# Prints the exact marker line for the current record's nonce; fails (printing
-# nothing) when no current record pins one.
-delivery_buffer_active_marker() {  # <state>
-  local state=$1 parsed nonce
-  parsed=$(delivery_record_read "$state" 2>/dev/null) || return 1
-  nonce=$(printf '%s' "$parsed" | cut -f2)
-  case "$nonce" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-    *) return 1 ;;
-  esac
-  printf '%s%s' "$DELIVERY_BUFFER_MARKER_PREFIX" "$nonce"
-}
-
-delivery_buffer_line_count() {  # <state>
-  local state=$1 buf active
-  buf="$state/.subsuper-escalations"
-  [ -f "$buf" ] || { printf '0'; return 0; }
-  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
-  awk -v active="$active" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
-    function is_check_marker(line, suffix) {
-      if (index(line, check_prefix) != 1) return 0
-      suffix=substr(line, length(check_prefix) + 1)
-      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-    }
-    NR == 1 && active != "" && $0 == active { next }
-    is_check_marker($0) { next }
-    { count++ }
-    END { print count + 0 }
-  ' "$buf"
-}
-
-delivery_buffer_line_at() {  # <state> <one-based-buffer-line>
-  local state=$1 line_number=$2 buf active
-  buf="$state/.subsuper-escalations"
-  case "$line_number" in ''|*[!0-9]*|0) return 1 ;; esac
-  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
-  awk -v active="$active" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v wanted="$line_number" '
-    function is_check_marker(line, suffix) {
-      if (index(line, check_prefix) != 1) return 0
-      suffix=substr(line, length(check_prefix) + 1)
-      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-    }
-    NR == 1 && active != "" && $0 == active { next }
-    is_check_marker($0) { next }
-    {
-      count++
-      if (count == wanted) {
-        print
-        found=1
-        exit
-      }
-    }
-    END { exit(found ? 0 : 1) }
-  ' "$buf" 2>/dev/null
-}
-
-delivery_buffer_has_nonce() {  # <state> <nonce>
-  local state=$1 nonce=$2 buf marker
-  buf="$state/.subsuper-escalations"
-  marker=$(delivery_buffer_marker "$nonce")
-  awk -v marker="$marker" '$0 == marker { found=1; exit } END { exit(found ? 0 : 1) }' \
-    "$buf" 2>/dev/null
-}
-
-# Clean up an ORPHANED delivery marker (its record lost to a crash between the
-# buffer mark and the record write). Because the marker is only ever prepended as
-# buffer line 1 and there is at most one, an orphan can only sit at line 1: strip
-# ONLY a line-1 marker-grammar line. A real escalation that coincidentally
-# matches the marker grammar at any later position - and every line of a legacy
-# nonce-less buffer past line 1 - is content and is preserved.
-delivery_buffer_strip_markers() {  # <state>
-  local state=$1 buf tmp
-  buf="$state/.subsuper-escalations"
-  [ -f "$buf" ] || return 0
-  if ! awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" '
-    NR == 1 {
-      if (index($0, prefix) != 1) exit 1
-      suffix=substr($0, length(prefix) + 1)
-      exit((length(suffix) == 12 && suffix !~ /[^0-9a-f]/) ? 0 : 1)
-    }
-    END { if (NR == 0) exit 1 }' \
-    "$buf" >/dev/null 2>&1; then
-    return 0
-  fi
-  tmp=$(mktemp "$state/.subsuper-escalations-clean.XXXXXX") || return 1
-  if ! awk 'NR > 1 { print }' "$buf" > "$tmp" \
-    || ! mv "$tmp" "$buf"; then
-    rm -f "$tmp"
-    return 1
-  fi
-}
-
-delivery_buffer_mark_nonce() {  # <state> <nonce>
-  local state=$1 nonce=$2 buf marker tmp
-  buf="$state/.subsuper-escalations"
-  marker=$(delivery_buffer_marker "$nonce")
-  [ -s "$buf" ] || return 1
-  delivery_buffer_strip_markers "$state" || return 1
-  tmp=$(mktemp "$state/.subsuper-escalations-mark.XXXXXX") || return 1
-  if ! {
-    printf '%s\n' "$marker"
-    cat "$buf"
-  } > "$tmp" \
-    || ! mv "$tmp" "$buf"; then
-    rm -f "$tmp"
-    return 1
-  fi
-}
-
-delivery_buffer_retire() {  # <state> <nonce> <delivered-buffer-lines>
-  local state=$1 nonce=$2 delivered_lines=$3 buf marker tmp
-  buf="$state/.subsuper-escalations"
-  marker=$(delivery_buffer_marker "$nonce")
-  case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
-  delivery_buffer_has_nonce "$state" "$nonce" || return 1
-  tmp=$(mktemp "$state/.subsuper-escalations-retire.XXXXXX") || return 1
-  if ! awk -v marker="$marker" \
-    -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v delivered="$delivered_lines" '
-    # Only the exact record-pinned delivery marker is a delivery marker (matched
-    # by $0 == marker below); a content line matching the delivery grammar is not.
-    # Check markers stay recognized by grammar because they are interior by design.
-    function is_check_marker(line, suffix) {
-      if (index(line, check_prefix) != 1) return 0
-      suffix=substr(line, length(check_prefix) + 1)
-      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-    }
-    BEGIN { raw=0; marker_seen=0 }
-    {
-      if ($0 == marker) {
-        marker_seen=1
-        next
-      }
-      if (is_check_marker($0)) {
-        if (raw < delivered) next
-        print
-        next
-      }
-      if (raw < delivered) { raw++; next }
-      print
-    }
-    END { if (!marker_seen || raw != delivered) exit 1 }
-  ' "$buf" > "$tmp" || ! mv "$tmp" "$buf"; then
-    rm -f "$tmp"
-    return 1
-  fi
 }
 
 delivery_record_read() {  # <state> -> <version><TAB><nonce><TAB><buffer-line-count><TAB><transcript><TAB><offset><TAB><buffered-at>
@@ -989,20 +820,398 @@ delivery_record_read() {  # <state> -> <version><TAB><nonce><TAB><buffer-line-co
     "$version" "$nonce" "$count" "$transcript" "$offset" "$buffered_at"
 }
 
+delivery_nonce_valid() {
+  case "$1" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+delivery_buffer_raw_line_count() {  # <state>
+  local buf="$1/.subsuper-escalations"
+  [ -f "$buf" ] || { printf '0'; return 0; }
+  awk 'END { print NR + 0 }' "$buf"
+}
+
+delivery_records_emit() {  # <output> <nonce> <delivery-nonce> <kind> <lines> <buffered-epoch> <origin>
+  local output=$1 nonce=$2 delivery_nonce=$3 kind=$4 lines=$5 buffered_epoch=$6 origin=$7
+  delivery_nonce_valid "$nonce" || [ -z "$nonce" ] || return 1
+  delivery_nonce_valid "$delivery_nonce" || [ -z "$delivery_nonce" ] || return 1
+  case "$kind" in escalation|check) ;; *) return 1 ;; esac
+  case "$lines" in ''|*[!0-9]*|0) return 1 ;; esac
+  case "$buffered_epoch" in ''|*[!0-9]*) return 1 ;; esac
+  case "$origin" in legacy|live) ;; *) return 1 ;; esac
+  jq -cn \
+    --arg nonce "$nonce" \
+    --arg delivery_nonce "$delivery_nonce" \
+    --arg kind "$kind" \
+    --argjson lines "$lines" \
+    --argjson buffered_epoch "$buffered_epoch" \
+    --arg origin "$origin" \
+    '{version:1,nonce:$nonce,delivery_nonce:$delivery_nonce,kind:$kind,lines:$lines,buffered_epoch:$buffered_epoch,origin:$origin}' \
+    >> "$output"
+}
+
+delivery_records_validate() {  # <state>
+  local records="$1/.subsuper-escalations.records"
+  [ -s "$records" ] || return 1
+  jq -e -s '
+    all(.[];
+      type == "object"
+      and .version == 1
+      and ((.nonce | type) == "string")
+      and ((.nonce == "") or (.nonce | test("^[0-9a-f]{12}$")))
+      and ((.delivery_nonce // "") | type == "string")
+      and (((.delivery_nonce // "") == "") or ((.delivery_nonce // "") | test("^[0-9a-f]{12}$")))
+      and (.kind == "escalation" or .kind == "check")
+      and ((.lines | type) == "number") and (.lines == (.lines | floor)) and (.lines >= 1)
+      and ((.buffered_epoch | type) == "number") and (.buffered_epoch == (.buffered_epoch | floor)) and (.buffered_epoch >= 0)
+      and (.origin == "legacy" or .origin == "live")
+    )
+  ' "$records" >/dev/null
+}
+
+delivery_records_sum_lines() {  # <state>
+  local records="$1/.subsuper-escalations.records"
+  jq -s 'map(.lines) | add // 0' "$records" 2>/dev/null
+}
+
+delivery_records_epoch() {  # <state>
+  local state=$1 epoch
+  epoch=$(cat "$state/.subsuper-escalations.since" 2>/dev/null || true)
+  case "$epoch" in ''|*[!0-9]*) epoch=$(_now) ;; esac
+  printf '%s' "$epoch"
+}
+
+delivery_records_has_reservation_nonce() {  # <state> <reservation-nonce>
+  local state=$1 nonce=$2 ledger="$1/.subsuper-check-ledger"
+  delivery_nonce_valid "$nonce" || return 1
+  [ -s "$ledger" ] || return 1
+  awk -F '\t' -v nonce="$nonce" '$1 == "reserved" && $5 == nonce { found=1; exit } END { exit(found ? 0 : 1) }' "$ledger"
+}
+
+delivery_records_migrate_legacy_markers() {  # <state>
+  local state=$1 buf="$1/.subsuper-escalations" records="$1/.subsuper-escalations.records" delivery="$1/.subsuper-escalations.delivery"
+  local parsed version rest delivery_nonce first line candidate pending_check= epoch text_tmp records_tmp marker_first=0
+  local content_seen=0 record_nonce record_delivery_nonce record_kind record_origin
+  [ ! -e "$records" ] || return 0
+  [ -s "$buf" ] && [ -s "$delivery" ] || return 0
+  parsed=$(delivery_record_read "$state" 2>/dev/null || true)
+  version=${parsed%%$'\t'*}
+  rest=${parsed#*$'\t'}
+  delivery_nonce=${rest%%$'\t'*}
+  [ "$version" = current ] && delivery_nonce_valid "$delivery_nonce" || return 0
+  IFS= read -r first < "$buf" || first=
+  [ "$first" = "__FIRSTMATE_DELIVERY_NONCE__=$delivery_nonce" ] || return 0
+  marker_first=1
+  epoch=$(delivery_records_epoch "$state") || return 1
+  text_tmp=$(mktemp "$state/.subsuper-escalations.migrate.XXXXXX") || return 1
+  records_tmp=$(mktemp "$state/.subsuper-escalations.records.migrate.XXXXXX") || { rm -f "$text_tmp"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$marker_first" -eq 1 ] && [ "$content_seen" -eq 0 ] && [ -z "$pending_check" ]; then
+      marker_first=0
+      continue
+    fi
+    if [ -n "$pending_check" ]; then
+      printf '%s\n' "$line" >> "$text_tmp" || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+      record_delivery_nonce=
+      record_origin=live
+      if [ "$content_seen" -eq 0 ]; then
+        record_delivery_nonce=$delivery_nonce
+      fi
+      delivery_records_emit "$records_tmp" "$pending_check" "$record_delivery_nonce" check 1 "$epoch" "$record_origin" \
+        || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+      pending_check=
+      content_seen=$((content_seen + 1))
+      continue
+    fi
+    candidate=
+    case "$line" in
+      __FIRSTMATE_CHECK_NONCE__=*) candidate=${line#__FIRSTMATE_CHECK_NONCE__=} ;;
+    esac
+    if [ -n "$candidate" ] && delivery_nonce_valid "$candidate" \
+      && delivery_records_has_reservation_nonce "$state" "$candidate"; then
+      pending_check=$candidate
+      continue
+    fi
+    printf '%s\n' "$line" >> "$text_tmp" || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+    record_nonce=
+    record_delivery_nonce=
+    record_kind=escalation
+    record_origin=legacy
+    if [ "$content_seen" -eq 0 ]; then
+      record_nonce=$delivery_nonce
+      record_delivery_nonce=$delivery_nonce
+      record_origin=live
+    fi
+    delivery_records_emit "$records_tmp" "$record_nonce" "$record_delivery_nonce" "$record_kind" 1 "$epoch" "$record_origin" \
+      || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+    content_seen=$((content_seen + 1))
+  done < "$buf"
+  if [ -n "$pending_check" ]; then
+    printf '%s\n' "__FIRSTMATE_CHECK_NONCE__=$pending_check" >> "$text_tmp" \
+      || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+    delivery_records_emit "$records_tmp" "" "" escalation 1 "$epoch" legacy \
+      || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+    content_seen=$((content_seen + 1))
+  fi
+  [ "$content_seen" -gt 0 ] || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+  mv "$text_tmp" "$buf" || { rm -f "$text_tmp" "$records_tmp"; return 1; }
+  mv "$records_tmp" "$records" || { rm -f "$records_tmp"; return 1; }
+}
+
+delivery_records_trim_to_lines() {  # <state> <line-count>
+  local state=$1 keep_lines=$2 records="$1/.subsuper-escalations.records" tmp
+  case "$keep_lines" in ''|*[!0-9]*) return 1 ;; esac
+  delivery_records_validate "$state" || return 1
+  tmp=$(mktemp "$state/.subsuper-escalations.records-trim.XXXXXX") || return 1
+  if jq -s -c --argjson keep "$keep_lines" '
+    reduce .[] as $record ({remaining:$keep,keep:[]};
+      if .remaining == 0 then .
+      elif $record.lines <= .remaining then .remaining -= $record.lines | .keep += [$record]
+      else error("line count splits a record")
+      end)
+    | if .remaining == 0 then .keep[]? else error("line count exceeds records") end
+    | .
+  ' "$records" > "$tmp"; then
+    mv "$tmp" "$records"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+delivery_records_drop_prefix_lines() {  # <state> <line-count>
+  local state=$1 drop_lines=$2 records="$1/.subsuper-escalations.records" tmp
+  case "$drop_lines" in ''|*[!0-9]*|0) return 1 ;; esac
+  delivery_records_validate "$state" || return 1
+  tmp=$(mktemp "$state/.subsuper-escalations.records-drop.XXXXXX") || return 1
+  if jq -s -c --argjson drop "$drop_lines" '
+    reduce .[] as $record ({remaining:$drop,keep:[]};
+      if .remaining == 0 then .keep += [$record]
+      elif $record.lines <= .remaining then .remaining -= $record.lines
+      else error("line count splits a record")
+      end)
+    | if .remaining == 0 then .keep[]? else error("line count exceeds records") end
+    | .
+  ' "$records" > "$tmp"; then
+    mv "$tmp" "$records"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+delivery_records_reconcile() {  # <state>
+  local state=$1 buf="$1/.subsuper-escalations" records="$1/.subsuper-escalations.records" delivery="$1/.subsuper-escalations.delivery" raw sum missing epoch tmp parsed record_version record_nonce record_lines first_delivery
+  delivery_records_migrate_legacy_markers "$state" || return 1
+  raw=$(delivery_buffer_raw_line_count "$state") || return 1
+  if [ "$raw" -eq 0 ]; then
+    rm -f "$records"
+    return 0
+  fi
+  if [ ! -e "$records" ] || [ ! -s "$records" ]; then
+    epoch=$(delivery_records_epoch "$state") || return 1
+    tmp=$(mktemp "$state/.subsuper-escalations.records-legacy.XXXXXX") || return 1
+    delivery_records_emit "$tmp" "" "" escalation "$raw" "$epoch" legacy \
+      || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$records"
+    return $?
+  fi
+  delivery_records_validate "$state" || return 1
+  sum=$(delivery_records_sum_lines "$state") || return 1
+  case "$sum" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$sum" -lt "$raw" ]; then
+    missing=$((raw - sum))
+    epoch=$(delivery_records_epoch "$state") || return 1
+    if [ -e "$state/.subsuper-escalations.delivery" ]; then
+      delivery_records_append "$state" "" escalation "$missing" "$epoch" live || return 1
+    else
+      delivery_records_append "$state" "" escalation "$missing" "$epoch" legacy || return 1
+    fi
+  elif [ "$sum" -gt "$raw" ]; then
+    if [ -s "$delivery" ]; then
+      parsed=$(delivery_record_read "$state" 2>/dev/null || true)
+      IFS=$'\t' read -r record_version record_nonce record_lines _ <<< "$parsed"
+      first_delivery=$(jq -s -r '.[0].delivery_nonce // empty' "$records" 2>/dev/null || true)
+      if [ "$record_version" = current ] && [ "$first_delivery" = "$record_nonce" ] \
+        && [ "$sum" -ge "$record_lines" ] && [ $((sum - record_lines)) -eq "$raw" ]; then
+        delivery_records_drop_prefix_lines "$state" "$record_lines" || return 1
+      else
+        return 1
+      fi
+    else
+      delivery_records_trim_to_lines "$state" "$raw" || return 1
+    fi
+  fi
+}
+
+delivery_records_append() {  # <state> <nonce> <kind> <lines> <buffered-epoch> <origin>
+  local state=$1 nonce=$2 kind=$3 lines=$4 buffered_epoch=$5 origin=${6:-live}
+  local records="$state/.subsuper-escalations.records" tmp
+  if [ -e "$records" ] && [ -s "$records" ]; then
+    delivery_records_validate "$state" || return 1
+  fi
+  tmp=$(mktemp "$state/.subsuper-escalations.records-append.XXXXXX") || return 1
+  if [ -s "$records" ] && ! cat "$records" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! delivery_records_emit "$tmp" "$nonce" "" "$kind" "$lines" "$buffered_epoch" "$origin" \
+    || ! mv "$tmp" "$records"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+delivery_records_ensure() {  # <state>
+  delivery_records_reconcile "$1"
+}
+
+delivery_records_first_delivery_nonce() {  # <state>
+  local records="$1/.subsuper-escalations.records"
+  delivery_records_ensure "$1" || return 1
+  [ -s "$records" ] || return 1
+  jq -s -r '.[0].delivery_nonce // empty' "$records" 2>/dev/null
+}
+
+delivery_records_first_origin() {  # <state>
+  local records="$1/.subsuper-escalations.records"
+  delivery_records_ensure "$1" || return 1
+  [ -s "$records" ] || return 1
+  jq -s -r '.[0].origin // empty' "$records" 2>/dev/null
+}
+
+delivery_records_nonce_position() {  # <state> <nonce> -> <start-line><TAB><end-line>
+  local state=$1 nonce=$2 records="$1/.subsuper-escalations.records"
+  delivery_nonce_valid "$nonce" || return 1
+  delivery_records_ensure "$state" || return 1
+  jq -s -r --arg nonce "$nonce" '
+    reduce .[] as $record ({offset:0,found:null};
+      if .found != null then .
+      elif $record.nonce == $nonce then .found={start:(.offset + 1),end:(.offset + $record.lines)}
+      else .offset += $record.lines
+      end)
+    | if .found == null then empty else "\(.found.start)\t\(.found.end)" end
+  ' "$records" 2>/dev/null
+}
+
+delivery_records_nonce_payload_present() {  # <state> <nonce> <payload>
+  local state=$1 nonce=$2 payload=$3 position start end
+  position=$(delivery_records_nonce_position "$state" "$nonce") || return 1
+  [ -n "$position" ] || return 1
+  IFS=$'\t' read -r start end <<< "$position"
+  [ "$start" = "$end" ] || return 1
+  [ "$(delivery_buffer_line_at "$state" "$start" 2>/dev/null || true)" = "$payload" ]
+}
+
+delivery_records_nonce_in_prefix() {  # <state> <nonce> <delivered-lines>
+  local state=$1 nonce=$2 delivered_lines=$3 position start end
+  case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
+  position=$(delivery_records_nonce_position "$state" "$nonce") || return 1
+  [ -n "$position" ] || return 1
+  IFS=$'\t' read -r start end <<< "$position"
+  [ "$end" -le "$delivered_lines" ]
+}
+
+delivery_records_set_delivery_nonce() {  # <state> <nonce>
+  local state=$1 nonce=$2 records="$1/.subsuper-escalations.records" tmp
+  delivery_nonce_valid "$nonce" || return 1
+  delivery_records_ensure "$state" || return 1
+  [ -s "$records" ] || return 1
+  tmp=$(mktemp "$state/.subsuper-escalations.records-delivery.XXXXXX") || return 1
+  if jq -s -c --arg nonce "$nonce" '
+    if length == 0 then error("empty records") else .[0].delivery_nonce=$nonce | if .[0].nonce == "" then .[0].nonce=$nonce else . end | .[0].origin="live" | .[] end
+  ' "$records" > "$tmp" && mv "$tmp" "$records"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+delivery_buffer_append_text() {  # <state> <text>
+  local state=$1 text=$2 buf="$1/.subsuper-escalations" tmp
+  case "$text" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  tmp=$(mktemp "$state/.subsuper-escalations-append.XXXXXX") || return 1
+  if {
+    [ ! -f "$buf" ] || cat "$buf"
+    printf '%s\n' "$text"
+  } > "$tmp" && mv "$tmp" "$buf"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+delivery_buffer_append_record() {  # <state> <text> <nonce> <kind> <buffered-epoch> <origin>
+  local state=$1 text=$2 nonce=$3 kind=$4 buffered_epoch=$5 origin=${6:-live}
+  delivery_records_ensure "$state" || return 1
+  delivery_records_append "$state" "$nonce" "$kind" 1 "$buffered_epoch" "$origin" || return 1
+  delivery_buffer_append_text "$state" "$text"
+}
+
+delivery_buffer_line_count() {  # <state>
+  delivery_records_ensure "$1" || return 1
+  delivery_buffer_raw_line_count "$1"
+}
+
+delivery_buffer_line_at() {  # <state> <one-based-buffer-line>
+  local state=$1 line_number=$2 buf="$1/.subsuper-escalations"
+  case "$line_number" in ''|*[!0-9]*|0) return 1 ;; esac
+  delivery_records_ensure "$state" || return 1
+  awk -v wanted="$line_number" 'NR == wanted { print; found=1; exit } END { exit(found ? 0 : 1) }' "$buf" 2>/dev/null
+}
+
+delivery_buffer_retire() {  # <state> <nonce> <delivered-buffer-lines>
+  local state=$1 nonce=$2 delivered_lines=$3 buf="$1/.subsuper-escalations" records="$1/.subsuper-escalations.records" total prefix tmp_buf tmp_records
+  case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
+  delivery_records_ensure "$state" || return 1
+  [ "$(delivery_records_first_delivery_nonce "$state" 2>/dev/null || true)" = "$nonce" ] || return 1
+  total=$(delivery_buffer_raw_line_count "$state") || return 1
+  [ "$total" -ge "$delivered_lines" ] || return 1
+  prefix=$(delivery_records_sum_lines "$state") || return 1
+  [ "$prefix" -ge "$delivered_lines" ] || return 1
+  tmp_buf=$(mktemp "$state/.subsuper-escalations-retire.XXXXXX") || return 1
+  tmp_records=$(mktemp "$state/.subsuper-escalations.records-retire.XXXXXX") || { rm -f "$tmp_buf"; return 1; }
+  if ! awk -v delivered="$delivered_lines" 'NR > delivered { print }' "$buf" > "$tmp_buf"; then
+    rm -f "$tmp_buf" "$tmp_records"
+    return 1
+  fi
+  if ! jq -s -c --argjson delivered "$delivered_lines" '
+    reduce .[] as $record ({remaining:$delivered,keep:[]};
+      if .remaining == 0 then .keep += [$record]
+      elif $record.lines <= .remaining then .remaining -= $record.lines
+      else error("line count splits a record")
+      end)
+    | if .remaining == 0 then .keep[]? else error("line count exceeds records") end
+    | .
+  ' "$records" > "$tmp_records"; then
+    rm -f "$tmp_buf" "$tmp_records"
+    return 1
+  fi
+  if ! mv "$tmp_buf" "$buf"; then
+    rm -f "$tmp_buf" "$tmp_records"
+    return 1
+  fi
+  if ! mv "$tmp_records" "$records"; then
+    rm -f "$tmp_records"
+    return 1
+  fi
+}
+
 delivery_record_prepare() {  # <state> <nonce> <buffer-line-count> <transcript> <offset> <buffered-at>
   local state=$1 nonce=$2 count=$3 transcript=${4:-} offset=${5:-} buffered_at=${6:-} record tmp
   record="$state/.subsuper-escalations.delivery"
   [ ! -e "$record" ] || return 1
-  case "$nonce" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-    *) return 1 ;;
-  esac
+  delivery_nonce_valid "$nonce" || return 1
   case "$count" in ''|*[!0-9]*|0) return 1 ;; esac
   [ -n "$transcript" ] || transcript=-
   case "$transcript" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
   case "$offset" in ''|*[!0-9]*) return 1 ;; esac
   case "$buffered_at" in ''|*[!0-9]*) return 1 ;; esac
-  delivery_buffer_mark_nonce "$state" "$nonce" || return 1
+  delivery_records_ensure "$state" || return 1
+  [ "$(delivery_buffer_raw_line_count "$state")" = "$count" ] || return 1
+  delivery_records_set_delivery_nonce "$state" "$nonce" || return 1
   tmp=$(mktemp "$state/.subsuper-delivery.XXXXXX") || return 1
   if ! (umask 077; printf 'v3\t%s\t%s\t%s\t%s\t%s\n' \
     "$nonce" "$count" "$transcript" "$offset" "$buffered_at" > "$tmp") \
@@ -1011,6 +1220,15 @@ delivery_record_prepare() {  # <state> <nonce> <buffer-line-count> <transcript> 
     return 1
   fi
 }
+
+escalate_add() {  # <state> <distilled-item>
+  local state=$1 item=$2 buf="$1/.subsuper-escalations" epoch nonce
+  [ -s "$buf" ] || _now > "${buf}.since"
+  epoch=$(delivery_records_epoch "$state") || return 1
+  nonce=$(delivery_nonce_generate) || return 1
+  delivery_buffer_append_record "$state" "$item" "$nonce" escalation "$epoch" live
+}
+
 
 # The Pi transcript root follows Pi's own agent-directory resolution: an explicit
 # PI_CODING_AGENT_DIR (the same variable a configured `--session-dir` launch sets)
@@ -1238,61 +1456,48 @@ check_ledger_reservation() {  # <state> <sequence-or-empty> <key> <payload> -> <
   ' "$ledger"
 }
 
-check_buffer_marker_present() {  # <state> <reservation-nonce>
-  local state=$1 reservation_nonce=$2 buf marker
-  buf="$state/.subsuper-escalations"
-  marker=$(check_buffer_marker "$reservation_nonce")
-  awk -v marker="$marker" '$0 == marker { found=1; exit } END { exit(found ? 0 : 1) }' \
-    "$buf" 2>/dev/null
+delivery_records_nonce_payload_present_any() {  # <state> <nonce> <payload> <distilled>
+  local state=$1 nonce=$2 payload=$3 distilled=$4
+  delivery_records_nonce_payload_present "$state" "$nonce" "$payload" && return 0
+  [ "$distilled" != "$payload" ] \
+    && delivery_records_nonce_payload_present "$state" "$nonce" "$distilled"
 }
 
-check_buffer_marker_payload_present() {  # <state> <reservation-nonce> <payload> <distilled>
-  local state=$1 reservation_nonce=$2 payload=$3 distilled=$4 buf marker
-  buf="$state/.subsuper-escalations"
-  marker=$(check_buffer_marker "$reservation_nonce")
-  [ -s "$buf" ] || return 1
-  awk -v marker="$marker" -v payload="$payload" -v distilled="$distilled" '
-    $0 == marker { found=1; next }
-    found && !checked {
-      checked=1
-      if ($0 == payload || $0 == distilled) matched=1
-    }
-    END { exit(found && matched ? 0 : 1) }
-  ' "$buf" 2>/dev/null
-}
-
-check_buffer_append_marker_payload() {  # <state> <reservation-nonce> <distilled>
-  local state=$1 reservation_nonce=$2 distilled=$3 buf marker tmp
-  buf="$state/.subsuper-escalations"
-  marker=$(check_buffer_marker "$reservation_nonce")
+check_buffer_append_record_payload() {  # <state> <reservation-nonce> <payload> <distilled>
+  local state=$1 reservation_nonce=$2 payload=$3 distilled=$4 position start end raw epoch
   case "$reservation_nonce" in
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
     *) return 1 ;;
   esac
-  case "$distilled" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
-  if check_buffer_marker_present "$state" "$reservation_nonce"; then
-    return 1
+  case "$payload$distilled" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  delivery_records_ensure "$state" || return 1
+  position=$(delivery_records_nonce_position "$state" "$reservation_nonce" 2>/dev/null || true)
+  if [ -n "$position" ]; then
+    IFS=$'\t' read -r start end <<< "$position"
+    [ "$start" = "$end" ] || return 1
+    raw=$(delivery_buffer_raw_line_count "$state") || return 1
+    if [ "$raw" -ge "$start" ]; then
+      [ "$(delivery_buffer_line_at "$state" "$start" 2>/dev/null || true)" = "$payload" ] \
+        || [ "$(delivery_buffer_line_at "$state" "$start" 2>/dev/null || true)" = "$distilled" ] \
+        || return 1
+      return 0
+    fi
+    [ "$raw" -eq $((start - 1)) ] || return 1
+    delivery_buffer_append_text "$state" "$distilled"
+    return $?
   fi
-  tmp=$(mktemp "$state/.subsuper-check-buffer.XXXXXX") || return 1
-  if {
-    [ ! -f "$buf" ] || cat "$buf"
-    printf '%s\n%s\n' "$marker" "$distilled"
-  } > "$tmp" && mv "$tmp" "$buf"; then
-    return 0
-  fi
-  rm -f "$tmp"
-  return 1
+  epoch=$(delivery_records_epoch "$state") || return 1
+  delivery_records_append "$state" "$reservation_nonce" check 1 "$epoch" live || return 1
+  delivery_buffer_append_text "$state" "$distilled"
 }
 
 check_ledger_reserved_append_present() {  # <state> <sequence-or-empty> <key> <payload> <distilled>
   local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 reservation reservation_nonce
   reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
   reservation_nonce=${reservation##*$'\t'}
-  case "$reservation_nonce" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-    *) return 1 ;;
-  esac
-  check_buffer_marker_payload_present "$state" "$reservation_nonce" "$payload" "$distilled"
+  delivery_nonce_valid "$reservation_nonce" || return 1
+  delivery_records_nonce_payload_present_any \
+    "$state" "$reservation_nonce" "$payload" "$distilled"
 }
 
 # Append one durable check to the escalation buffer exactly once per away
@@ -1304,96 +1509,32 @@ check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
   exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
   case "$exact" in
     buffered|delivered) return 2 ;;
-    reserved)
-      if check_ledger_reserved_append_present \
-        "$state" "$sequence" "$key" "$payload" "$distilled"; then
-        reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
-        IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
-        check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
-        return 2
-      fi
-      reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
-      IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
-      check_buffer_append_marker_payload "$state" "$reservation_nonce" "$distilled" || return 1
-      check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
-      return 0
+    reserved) reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1 ;;
+    *)
+      logical=$(check_ledger_state "$state" '' "$key" "$payload")
+      case "$logical" in
+        buffered|delivered) return 2 ;;
+        reserved) reservation=$(check_ledger_reservation "$state" '' "$key" "$payload") || return 1 ;;
+        *)
+          check_ledger_reserve "$state" "$sequence" "$key" "$payload" || return 1
+          reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
+          ;;
+      esac
       ;;
   esac
-
-  logical=$(check_ledger_state "$state" '' "$key" "$payload")
-  case "$logical" in
-    buffered|delivered) return 2 ;;
-    reserved)
-      if check_ledger_reserved_append_present \
-        "$state" '' "$key" "$payload" "$distilled"; then
-        reservation=$(check_ledger_reservation "$state" '' "$key" "$payload") || return 1
-        IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
-        check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
-        return 2
-      fi
-      reservation=$(check_ledger_reservation "$state" '' "$key" "$payload") || return 1
-      IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
-      check_buffer_append_marker_payload "$state" "$reservation_nonce" "$distilled" || return 1
-      check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
-      return 0
-      ;;
-  esac
-
-  check_ledger_reserve "$state" "$sequence" "$key" "$payload" || return 1
-  reservation=$(check_ledger_reservation "$state" "$sequence" "$key" "$payload") || return 1
   IFS=$'\t' read -r reservation_sequence reservation_key reservation_payload reservation_nonce <<< "$reservation"
-  check_buffer_append_marker_payload "$state" "$reservation_nonce" "$distilled" || return 1
+  if check_ledger_reserved_append_present \
+    "$state" "$reservation_sequence" "$reservation_key" "$reservation_payload" "$distilled"; then
+    check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
+    return 2
+  fi
+  check_buffer_append_record_payload "$state" "$reservation_nonce" "$reservation_payload" "$distilled" || return 1
   check_ledger_append "$state" buffered "$reservation_sequence" "$reservation_key" "$reservation_payload" || return 1
   return 0
 }
 
-check_buffer_marker_in_prefix() {  # <state> <reservation-nonce> <delivered-buffer-lines> <payload>
-  local state=$1 reservation_nonce=$2 delivered_lines=$3 payload=$4 buf marker active
-  buf="$state/.subsuper-escalations"
-  marker=$(check_buffer_marker "$reservation_nonce")
-  case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
-  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
-  awk -v marker="$marker" -v active="$active" \
-    -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v limit="$delivered_lines" -v payload="$payload" '
-    # A content line matching the delivery grammar is content, not a marker; only
-    # the exact record-pinned delivery marker at line 1 is skipped from the count.
-    function is_check_marker(line, suffix) {
-      if (index(line, check_prefix) != 1) return 0
-      suffix=substr(line, length(check_prefix) + 1)
-      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-    }
-    NR == 1 && active != "" && $0 == active {
-      if (after_marker) after_marker=0
-      next
-    }
-    {
-      if ($0 == marker) {
-        marker_seen=1
-        marker_in_prefix=(raw < limit)
-        after_marker=1
-        next
-      }
-      if (is_check_marker($0)) {
-        if (after_marker) after_marker=0
-        next
-      }
-      if (after_marker) {
-        if (marker_in_prefix && $0 == payload) matched=1
-        after_marker=0
-      }
-      raw++
-    }
-    END {
-      if (matched) exit 0
-      if (marker_seen && marker_in_prefix) exit 2
-      if (marker_seen) exit 1
-      exit 3
-    }
-  ' "$buf" 2>/dev/null
-}
-
 check_ledger_mark_delivered() {  # <state> [delivered-buffer-lines]
-  local state=$1 delivered_lines=${2:-} ledger pending status sequence key payload reservation_nonce marker_status
+  local state=$1 delivered_lines=${2:-} ledger pending status sequence key payload reservation_nonce
   case "$delivered_lines" in ''|*[!0-9]*) [ -z "$delivered_lines" ] || return 2 ;; esac
   ledger="$state/.subsuper-check-ledger"
   [ -s "$ledger" ] || return 0
@@ -1408,7 +1549,7 @@ check_ledger_mark_delivered() {  # <state> [delivered-buffer-lines]
       sequence[id]=$2
       key[id]=$3
       payload[id]=$4
-      if ($1 == "reserved") reservation_nonce[id]=$5
+      if ($5 != "") reservation_nonce[id]=$5
     }
     END {
       for (id in status) {
@@ -1420,20 +1561,10 @@ check_ledger_mark_delivered() {  # <state> [delivered-buffer-lines]
   ' "$ledger") || return 1
   [ -n "$pending" ] || return 0
   while IFS=$'\t' read -r status sequence key payload reservation_nonce; do
-    marker_status=0
     [ -n "$status$sequence$key$payload$reservation_nonce" ] || continue
-    case "$reservation_nonce" in
-      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-      *) return 1 ;;
-    esac
+    delivery_nonce_valid "$reservation_nonce" || return 1
     [ -n "$delivered_lines" ] || return 2
-    check_buffer_marker_in_prefix "$state" "$reservation_nonce" "$delivered_lines" "$payload" \
-      || marker_status=$?
-    case "$marker_status" in
-      0) ;;
-      1) continue ;;
-      *) return 1 ;;
-    esac
+    delivery_records_nonce_in_prefix "$state" "$reservation_nonce" "$delivered_lines" || continue
     if [ "$status" = reserved ]; then
       check_ledger_append "$state" buffered "$sequence" "$key" "$payload" \
         || return 1
@@ -1446,12 +1577,10 @@ EOF
 }
 
 delivery_reconcile_startup() {  # <state> <backend> <target> <harness>
-  local state=$1 backend=$2 target=$3 harness=$4 record parsed version rest nonce n transcript offset buffered_at
+  local state=$1 backend=$2 target=$3 harness=$4 record parsed version rest nonce n transcript offset buffered_at first_delivery first_origin
   record="$state/.subsuper-escalations.delivery"
-  if [ ! -e "$record" ]; then
-    delivery_buffer_strip_markers "$state" || return 1
-    return 0
-  fi
+  delivery_records_ensure "$state" || return 1
+  [ -e "$record" ] || return 0
   parsed=$(delivery_record_read "$state") || {
     log "startup: malformed delivered-once record; retype forbidden"
     return 1
@@ -1470,10 +1599,22 @@ delivery_reconcile_startup() {  # <state> <backend> <target> <harness>
     log "startup: legacy delivered-once record; retype forbidden"
     return 1
   }
-  if ! delivery_buffer_has_nonce "$state" "$nonce"; then
-    log "startup: delivered-once nonce [d:$nonce] is no longer buffered; dropping record"
+  if [ ! -s "$state/.subsuper-escalations" ]; then
+    log "startup: delivered-once nonce [d:$nonce] has no buffered digest; dropping record"
     rm -f "$record" "$state/.subsuper-inject-wedged" || return 1
+    rm -f "$state/.subsuper-escalations.records" || return 1
     return 0
+  fi
+  first_delivery=$(delivery_records_first_delivery_nonce "$state" 2>/dev/null || true)
+  if [ "$first_delivery" != "$nonce" ]; then
+    first_origin=$(delivery_records_first_origin "$state" 2>/dev/null || true)
+    if [ "$first_origin" = live ]; then
+      log "startup: delivered-once nonce [d:$nonce] is no longer buffered; dropping record"
+      rm -f "$record" "$state/.subsuper-inject-wedged" || return 1
+      return 0
+    fi
+    log "startup: delivered-once nonce [d:$nonce] has no matching record; retype forbidden"
+    return 1
   fi
   if [ "$transcript" != - ] \
     && delivery_witness_confirms "$backend" "$target" "$harness" "$nonce" \
@@ -1497,23 +1638,36 @@ delivery_complete() {  # <state> <delivered-buffer-lines> <nonce>
   [ "$version" = current ] || return 1
   [ "$recorded_nonce" = "$nonce" ] || return 1
   [ "$recorded_lines" = "$delivered_lines" ] || return 1
-  delivery_buffer_has_nonce "$state" "$nonce" || return 1
-  total=$(delivery_buffer_line_count "$state") || return 1
+  delivery_records_ensure "$state" || return 1
+  [ "$(delivery_records_first_delivery_nonce "$state" 2>/dev/null || true)" = "$nonce" ] || return 1
+  total=$(delivery_buffer_raw_line_count "$state") || return 1
   case "$total" in ''|*[!0-9]*) return 1 ;; esac
   [ "$total" -ge "$delivered_lines" ] || return 1
   check_ledger_mark_delivered "$state" "$delivered_lines" || return 1
   delivery_buffer_retire "$state" "$nonce" "$delivered_lines" || return 1
   rm -f "$record" "$state/.subsuper-inject-wedged" || return 1
-  [ -s "$buf" ] || rm -f "${buf}.since"
+  if [ -s "$buf" ]; then
+    :
+  else
+    rm -f "${buf}.since" "$state/.subsuper-escalations.records"
+  fi
 }
 
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for witness recheck / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf record record_status version nonce n target backend harness msg witness_transcript offset buffered_at rest active
+  local state=$1 buf record record_status version nonce n target backend harness msg witness_transcript offset buffered_at rest first_delivery first_origin
   buf="$state/.subsuper-escalations"
-  [ -s "$buf" ] || return 0
+  target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
+  backend="${FM_SUPERVISOR_BACKEND:-tmux}"
+  harness=$(fm_daemon_primary_harness)
+  delivery_records_ensure "$state" || return 1
+  if [ ! -s "$buf" ]; then
+    [ -e "$state/.subsuper-escalations.delivery" ] || return 0
+    delivery_reconcile_startup "$state" "$backend" "$target" "$harness"
+    return $?
+  fi
   record_status=1
   if [ -e "$state/.subsuper-escalations.delivery" ]; then
     record=$(delivery_record_read "$state") && record_status=0 || record_status=$?
@@ -1536,15 +1690,18 @@ escalate_flush() {  # <state>
       return 1
       ;;
     esac
-    if ! delivery_buffer_has_nonce "$state" "$nonce"; then
+    first_delivery=$(delivery_records_first_delivery_nonce "$state" 2>/dev/null || true)
+    if [ "$first_delivery" != "$nonce" ]; then
+      first_origin=$(delivery_records_first_origin "$state" 2>/dev/null || true)
+      [ "$first_origin" = live ] || {
+        log "inject stalled: delivered-once nonce [d:$nonce] has no matching record; retype forbidden"
+        return 1
+      }
       log "inject recovery: delivered-once nonce [d:$nonce] is no longer buffered; dropping record"
       rm -f "$state/.subsuper-escalations.delivery" "$state/.subsuper-inject-wedged" || return 1
-      delivery_buffer_strip_markers "$state" || return 1
+      delivery_records_ensure "$state" || return 1
       [ -s "$buf" ] || return 0
     else
-      target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
-      backend="${FM_SUPERVISOR_BACKEND:-tmux}"
-      harness=$(fm_daemon_primary_harness)
       if [ "$witness_transcript" != - ] \
         && delivery_witness_confirms "$backend" "$target" "$harness" "$nonce" \
           "$witness_transcript" "$offset" "$buffered_at"; then
@@ -1556,26 +1713,13 @@ escalate_flush() {  # <state>
       return 1
     fi
   else
-    delivery_buffer_strip_markers "$state" || return 1
     [ -s "$buf" ] || return 0
   fi
   n=$(delivery_buffer_line_count "$state")
   case "$n" in ''|*[!0-9]*|0) return 1 ;; esac
   nonce=$(delivery_nonce_generate) || { log "inject stalled: could not generate a delivery nonce"; return 1; }
-  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
   # Join buffered items with the literal " | " separator into one digest line.
-  # The content set MUST match delivery_buffer_line_count above: skip only the
-  # exact record-pinned delivery marker at line 1 and the interior check markers;
-  # a content line matching the delivery grammar is kept.
-  msg=$(awk -v active="$active" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
-    function is_check_marker(line, suffix) {
-      if (index(line, check_prefix) != 1) return 0
-      suffix=substr(line, length(check_prefix) + 1)
-      return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-    }
-    NR == 1 && active != "" && $0 == active { next }
-    is_check_marker($0) { next }
-    {
+  msg=$(awk '{
       if (seen++) printf " | "
       printf "%s", $0
     }

@@ -231,7 +231,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat `state/.subsuper-escalations`, its `.since` and `.delivery` sidecars, `state/.subsuper-inject-wedged`, and `state/.subsuper-check-ledger` as session-scoped delivery artifacts, not as the durable work record.
+Treat `state/.subsuper-escalations`, its `.since`, `.delivery`, and `.records` sidecars, `state/.subsuper-inject-wedged`, and `state/.subsuper-check-ledger` as session-scoped delivery artifacts, not as the durable work record.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry with no existing `state/.afk`, and preserves the current session's buffer on restart or refresh.
 Fresh entry clears prior delivery artifacts before publishing the new away flag, and a cleanup or flag-write failure stops before daemon startup.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.

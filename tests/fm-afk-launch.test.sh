@@ -50,6 +50,7 @@ unit_clear_stale() {
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
   : > "$st/state/.subsuper-escalations.delivery"
+  : > "$st/state/.subsuper-escalations.records"
   : > "$st/state/.subsuper-inject-wedged"
   : > "$st/state/.subsuper-check-ledger"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
@@ -60,6 +61,7 @@ unit_clear_stale() {
   if [ ! -e "$st/state/.subsuper-escalations" ] \
      && [ ! -e "$st/state/.subsuper-escalations.since" ] \
      && [ ! -e "$st/state/.subsuper-escalations.delivery" ] \
+     && [ ! -e "$st/state/.subsuper-escalations.records" ] \
      && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
      && [ ! -e "$st/state/.subsuper-check-ledger" ]; then
     pass "clear-stale: removes escalation delivery state and the check ledger"
@@ -152,6 +154,32 @@ unit_detector_miss_leaves_daemon_harness_unset() {
   rm -rf "$st"
 }
 
+unit_daemon_command_carries_configured_pi_agent_dir() {
+  local st detector entry custom output expected command
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-root.XXXXXX")
+  detector="$st/detector"
+  entry="$st/entry"
+  custom="$st/custom pi agent"
+  mkdir -p "$detector" "$custom"
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
+  chmod +x "$entry" "$detector/fm-harness.sh"
+  output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" PI_CODING_AGENT_DIR="$custom" \
+    bash -c '
+      . "$1"
+      FM_AFK_LAUNCH_DIR="$2"
+      command=$(fm_afk_launch_daemon_cmd named:w1:p2 herdr "$3")
+      eval "$command"
+    ' _ "$LAUNCH" "$detector" "$entry")
+  expected="$custom|$st|named:w1:p2|pi"
+  if [ "$output" = "$expected" ]; then
+    pass "launcher command: configured Pi agent root reaches the daemon pane"
+  else
+    fail "launcher command: configured Pi agent root was not propagated ($output)"
+  fi
+  rm -rf "$st"
+}
+
 # ---------------------------------------------------------------------------
 # UNIT 2: a FRESH entry clears; a REFRESH (daemon already alive) preserves the
 # current session's buffered escalations.
@@ -162,6 +190,7 @@ unit_fresh_vs_refresh() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.delivery"
+  : > "$st/state/.subsuper-escalations.records"
   : > "$st/state/.subsuper-inject-wedged"
   : > "$st/state/.subsuper-check-ledger"
   # A live "daemon": a real process whose identity the lock records, so
@@ -175,6 +204,7 @@ unit_fresh_vs_refresh() {
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
   if [ -e "$st/state/.subsuper-escalations" ] \
     && [ -e "$st/state/.subsuper-escalations.delivery" ] \
+    && [ -e "$st/state/.subsuper-escalations.records" ] \
     && [ -e "$st/state/.subsuper-inject-wedged" ] \
     && [ -e "$st/state/.subsuper-check-ledger" ]; then
     pass "refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)"
@@ -257,6 +287,7 @@ unit_failed_start_rolls_back_state() {
   mkdir -p "$st/state"
   printf 'pending\n' > "$st/state/.subsuper-escalations"
   printf 'v1\tabcdef123456\t1\tdeadbeef\n' > "$st/state/.subsuper-escalations.delivery"
+  printf '{"version":1,"nonce":"","delivery_nonce":"","kind":"escalation","lines":1,"buffered_epoch":0,"origin":"legacy"}\n' > "$st/state/.subsuper-escalations.records"
   printf 'wedged\n' > "$st/state/.subsuper-inject-wedged"
   printf 'buffered\t1\tcheck\tpayload\t\n' > "$st/state/.subsuper-check-ledger"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
@@ -265,6 +296,7 @@ unit_failed_start_rolls_back_state() {
   elif [ ! -e "$st/state/.afk" ] \
     && [ "$(cat "$st/state/.subsuper-escalations")" = pending ] \
     && [ -e "$st/state/.subsuper-escalations.delivery" ] \
+    && [ -e "$st/state/.subsuper-escalations.records" ] \
     && [ "$(cat "$st/state/.subsuper-inject-wedged")" = wedged ] \
     && [ "$(cut -f1 "$st/state/.subsuper-check-ledger")" = buffered ]; then
     pass "failed start: away flag and delivery artifacts roll back"
@@ -995,6 +1027,7 @@ e2e_tmux() {
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_detector_miss_leaves_daemon_harness_unset
+unit_daemon_command_carries_configured_pi_agent_dir
 unit_fresh_vs_refresh
 unit_stop_ordering
 unit_stop_rejects_reused_pid

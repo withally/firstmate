@@ -124,7 +124,7 @@ test_signal_annotation_surfaces_every_unread_note_not_only_the_newest() {
 }
 
 test_pending_reply_resolution_surfaces_once() {
-  local dir state out status
+  local dir state out status count
   dir=$(make_case pending-reply-resolution)
   state="$dir/state"
   out="$dir/drain.out"
@@ -143,8 +143,12 @@ test_pending_reply_resolution_surfaces_once() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a pending-reply resolution"
 
-  grep -F 'pending-reply-resolved: task=task5 pending-reply-id=abcdef0123456789 via=status' "$out" >/dev/null \
-    || fail "the pending-reply resolution was buried under the later note: $(cat "$out")"
+  count=$(grep -F -c 'pending-reply-resolved: task=task5 pending-reply-id=abcdef0123456789 via=status' "$out" || true)
+  [ "$count" -eq 1 ] \
+    || fail "an open-key pending-reply resolution was presented $count times: $(cat "$out")"
+  if grep -F 'UNREAD STATUS' "$out" | grep -F 'pending-reply-resolved:' >/dev/null; then
+    fail "an open-key pending-reply resolution was retained under UNREAD STATUS: $(cat "$out")"
+  fi
   grep -F 'task5 note: re-read acknowledgement' "$out" >/dev/null \
     || fail "the trailing note was not surfaced with the pending-reply resolution: $(cat "$out")"
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
@@ -155,7 +159,7 @@ test_pending_reply_resolution_surfaces_once() {
   if grep -F 'pending-reply-resolved:' "$out" >/dev/null; then
     fail "an already-presented pending-reply resolution was replayed: $(cat "$out")"
   fi
-  pass "a pending-reply resolution buried under a later note surfaces once and closes OPEN DECISIONS"
+  pass "an open-key pending-reply resolution is excluded while a trailing note surfaces"
 }
 
 test_unread_output_over_cap_remains_recoverable() {
@@ -220,12 +224,16 @@ test_retired_task_id_starts_new_status_unread() {
   printf 'note: stable neighboring history\n' > "$state/neighbor.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null \
     || fail "drain failed while acknowledging pre-retirement histories"
+  prime_status_seen "$state" "$state/reused.status" \
+    || fail "could not prime the retired task's signal marker"
 
   FM_STATE_OVERRIDE="$state" bash -c '
     . "$1/bin/fm-wake-lib.sh"
     . "$1/bin/fm-classify-lib.sh"
     status_retire_presentation_task "$STATE" reused
   ' _ "$ROOT" || fail "retiring the reused task presentation state failed"
+  [ ! -e "$state/.seen-reused_status" ] \
+    || fail "retirement left the task's canonical signal marker behind"
   printf 'note: first event from reused task id\n' > "$state/reused.status"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
@@ -288,7 +296,7 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
 
-test_routine_working_lines_stay_silent_on_the_empty_queue() {
+test_nonterminal_working_lines_surface_on_the_next_drain() {
   local dir state out
   dir=$(make_case silent-working)
   state="$dir/state"
@@ -298,14 +306,16 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with only routine working/done lines"
 
-  if grep -F 'UNREAD STATUS' "$out" >/dev/null; then
-    fail "routine working/done lines printed an UNREAD STATUS section: $(cat "$out")"
-  fi
+  grep -F 'UNREAD STATUS' "$out" >/dev/null \
+    || fail "nonterminal progress did not print an UNREAD STATUS section: $(cat "$out")"
+  grep -F 'task7 working: on it' "$out" >/dev/null \
+    || fail "the working line was lost before the next drain: $(cat "$out")"
+  grep -F 'done: shipped clean' "$out" >/dev/null \
+    && fail "a terminal line leaked into the nonterminal unread surface: $(cat "$out")"
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
     fail "routine working/done lines printed OPEN DECISIONS: $(cat "$out")"
   fi
-  [ ! -s "$out" ] || fail "the empty-queue routine case was not silent: $(cat "$out")"
-  pass "routine working/done lines still print nothing on an empty-queue drain"
+  pass "nonterminal working lines surface at the next drain while terminal lines stay out of UNREAD STATUS"
 }
 
 test_incident_note_answer_buried_under_routine_note_surfaces_both
@@ -318,4 +328,4 @@ test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
-test_routine_working_lines_stay_silent_on_the_empty_queue
+test_nonterminal_working_lines_surface_on_the_next_drain

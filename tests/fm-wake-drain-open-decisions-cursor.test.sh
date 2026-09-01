@@ -221,7 +221,7 @@ test_read_failure_preserves_state_for_retry() {
   pass "a failed presentation read preserves status state for retry"
 }
 
-test_cursor_cache_read_failure_refolds_without_replaying_unread_status() {
+test_cursor_cache_read_failure_refolds_without_replaying_handled_status() {
   local dir state fakebin statusfile cursor out probe real_cat status_bytes probe_bytes
   dir=$(make_case cursor-cache-read-failure)
   state="$dir/state"
@@ -262,15 +262,15 @@ SH
     || fail "wake drain failed instead of refolding after the cursor-cache read failure"
   grep -F 'task5' "$out" | grep -F '[key=cache]' | grep -F 'authoritative status' >/dev/null \
     || fail "the cursor-cache read failure hid the recurring open decision: $(command cat "$out")"
-  if grep -F 'UNREAD STATUS' "$out" >/dev/null \
-    || grep -F 'already handled informational status' "$out" >/dev/null; then
-    fail "the cursor-cache read failure replayed handled informational status as new: $(command cat "$out")"
-  fi
+  grep -F 'task5 working: appended before cache failure' "$out" >/dev/null \
+    || fail "the cursor-cache read failure lost new nonterminal status: $(command cat "$out")"
+  grep -F 'already handled informational status' "$out" >/dev/null \
+    && fail "the cursor-cache read failure replayed handled informational status as new: $(command cat "$out")"
   probe_bytes=$(last_probe_bytes "$probe" "$statusfile")
   [ "$probe_bytes" = "$status_bytes" ] \
     || fail "the cursor-cache read failure read $probe_bytes bytes, expected a full $status_bytes-byte authoritative refold"
 
-  pass "a cursor-cache read failure refolds decisions without replaying handled unread status"
+  pass "a cursor-cache read failure refolds decisions without replaying handled status"
 }
 
 test_pre_fix_cursor_refolds_corr_tagged_decision() {
@@ -350,7 +350,7 @@ test_previous_fold_cache_is_refolded_under_current_semantics() {
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
 test_same_size_rewrite_is_detected_via_inode_identity
 test_read_failure_preserves_state_for_retry
-test_cursor_cache_read_failure_refolds_without_replaying_unread_status
+test_cursor_cache_read_failure_refolds_without_replaying_handled_status
 test_pre_fix_cursor_refolds_corr_tagged_decision
 test_previous_fold_cache_is_refolded_under_current_semantics
 test_buried_decision_survives_many_growing_drains_and_resolution_clears_it

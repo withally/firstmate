@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared wake classifier: the common source of truth for captain-relevant status
-# tests, declared-external-wait vocabulary, and the working/paused absorb
-# classification that makes no-verb signal and stale-pane wakes safe to absorb.
+# tests, declared-external-wait vocabulary, and the working/paused classification
+# that makes stale-pane wakes safe to absorb.
 # Sourced by BOTH the always-on watcher
 # (bin/fm-watch.sh) and the away-mode daemon (bin/fm-supervise-daemon.sh) so the
 # overlapping triage policy lives in one place instead of two copies that can
@@ -13,17 +13,19 @@
 # daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
 # signatures).
 #
-# There are three documented exceptions. The absorb classification
+# There are four documented exceptions. The absorb classification
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
-# to decide whether a crew that just stopped its turn or went stale is working,
-# deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
-# and first sighting of a stale hash, never on every wake, so the per-wake triage
+# to decide whether a crew that went stale is working, deliberately paused, or
+# neither. Callers run it only on stale handling, never on every wake, so triage
 # stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
 # cursor and folded open-set as a side effect, so a per-drain fleet-wide scan
 # stays bounded by new appends instead of re-reading each task's whole lifetime
-# log every time. crew_worktree_written_since reads the task's meta file and walks
+# log every time. status_append_is_captain_relevant can write a candidate
+# per-task signal open-key snapshot when its caller supplies one; signal triage
+# promotes that snapshot with the corresponding seen marker and never uses the
+# drain cursor. crew_worktree_written_since reads the task's meta file and walks
 # a bounded slice of its worktree instead of a status file, so callers run it only
 # at the moment they would otherwise escalate.
 
@@ -51,10 +53,10 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 unset _fm_classify_nounset
 
 # Captain-relevant status verbs. A status line carrying any of these is work
-# firstmate must see. Lines without these verbs are no-verb signals: the watcher
-# absorbs them only with positive provably-working evidence, while the daemon uses
-# its away-mode classification. FM_CAPTAIN_RE overrides the whole set when a home
-# needs a custom verb vocabulary; absent, this default applies.
+# firstmate must see. Attended triage absorbs appended lines outside this set,
+# while the daemon applies the same vocabulary in away mode. FM_CAPTAIN_RE
+# overrides the whole set when a home needs a custom verb vocabulary; absent,
+# this default applies.
 #
 # Free-text tokens (PR ready, checks green, ready in branch, merged) exist only for
 # legacy lines that lack a standard terminal verb. status_is_captain_relevant is
@@ -605,6 +607,18 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
+_fm_signal_open_keys_path() {  # <status-file>
+  local f=$1 dir base
+  dir=$(dirname "$f")
+  base=$(basename "$f")
+  printf '%s/.%s.signal-open-keys' "$dir" "${base%.status}"
+}
+
+_fm_signal_open_keys_pending_path() {  # <status-file> [<token>]
+  local f=$1 token=${2:-${FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN:-$$}}
+  printf '%s.pending.%s' "$(_fm_signal_open_keys_path "$f")" "$token"
+}
+
 # 4: verb parsing ends at the first "[name=value]" tag rather than only at a
 # "[key=...]" one, so lines carrying another bracketed tag first became opens
 # and closes.
@@ -851,9 +865,17 @@ EOF
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0
+  local signal_state signal_pending pending_found=0 signal_marker
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
+  signal_state="$state/.$task.signal-open-keys"
+  signal_marker=$(fm_wake_signal_seen_path "$state" "$state/$task.status")
+  for signal_pending in "$signal_state.pending."*; do
+    [ -e "$signal_pending" ] || continue
+    pending_found=1
+    break
+  done
 
   # A remote-home teardown can legitimately retire an endpoint ID that has no
   # status log in that home. Do not contend with that home's unrelated status
@@ -862,7 +884,10 @@ status_retire_presentation_task() {  # <state> <task-id>
   # durable proof that there is nothing to retire.
   if [ ! -e "$state/$task.status" ] && [ ! -L "$state/$task.status" ] \
     && [ ! -e "$state/.$task.open-decisions-cursor" ] \
-    && [ ! -L "$state/.$task.open-decisions-cursor" ]; then
+    && [ ! -L "$state/.$task.open-decisions-cursor" ] \
+    && [ ! -e "$signal_state" ] && [ ! -L "$signal_state" ] \
+    && [ ! -e "$signal_marker" ] && [ ! -L "$signal_marker" ] \
+    && [ "$pending_found" -eq 0 ]; then
     if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
       return 0
     fi
@@ -906,14 +931,20 @@ EOF
     fi
   fi
   if [ "$rc" -eq 0 ]; then
-    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" || rc=1
+    rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" "$signal_state" \
+      "$signal_marker" || rc=1
+    for signal_pending in "$signal_state.pending."*; do
+      [ -e "$signal_pending" ] || continue
+      rm -f -- "$signal_pending" || rc=1
+    done
   fi
   fm_lock_release "$lock" || rc=1
   return "$rc"
 }
 
-status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe
+status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>] [<preserve-unpresented>]
+  local state=$1 snapshot=$2 fully_presented=${3:-} preserve_unpresented=${4:-0}
+  local task endpoint ident f offset lines line safe open resolve held
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
@@ -923,22 +954,36 @@ $fully_presented
     if [ "$safe" = false ]; then
       f="$state/$task.status"
       offset=$(status_presentation_cursor_offset "$f") || return 1
-      lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
-      # Once any informational line in this span is presented fleet-wide, the
-      # contiguous cursor may advance through the captured endpoint. Routine
-      # lines remain unacknowledged only while they are the sole unread content,
-      # preserving delayed signal annotations without replaying a handled note
-      # that happened to follow a routine line.
-      while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in
-          *[![:space:]]*)
-            if status_line_is_unread_surface "$line"; then safe=true; break; fi
-            ;;
-        esac
-      done <<EOF
+      if [ "$preserve_unpresented" = 1 ]; then
+        # A bounded startup digest presents status tails separately. Leave
+        # every status span without a direct wake annotation unread for the
+        # next ordinary drain, while direct annotations still acknowledge
+        # their own task through the captured endpoint.
+        endpoint=$offset
+      else
+        lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
+        if [ -n "$lines" ]; then
+          open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+          resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+          held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+        fi
+        # Once any unread-surface line in this span is presented fleet-wide, the
+        # contiguous cursor may advance through the captured endpoint. Routine
+        # lines remain unacknowledged only while they are the sole unread content,
+        # preserving delayed signal annotations without replaying a handled note
+        # that happened to follow a routine line.
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in
+            *[![:space:]]*)
+              if status_line_is_unread_surface "$line" "$open"; then safe=true; break; fi
+              open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+              ;;
+          esac
+        done <<EOF
 $lines
 EOF
-      if [ "$safe" = false ]; then endpoint=$offset; fi
+        if [ "$safe" = false ]; then endpoint=$offset; fi
+      fi
     fi
     printf '%s\t%s\t%s\n' "$task" "$endpoint" "$ident" || return 1
   done <<EOF
@@ -991,23 +1036,23 @@ EOF
 # --- unread status lines since the presentation cursor ----------------------
 #
 # The drain annotation historically printed only the newest status line, so a
-# substantive `note:` answer immediately followed by a routine `note:` (or a
-# pending-reply resolution buried under a later unrelated append) never reached
-# the supervisor. Those verbs also never enter the OPEN DECISIONS fold, so they
-# had no other surfacing path.
+# nonterminal append - including routine working, note, paused, or non-closing
+# resolved events - could be buried under a later unrelated append. These events
+# do not belong to the OPEN DECISIONS fold, so this surface owns their presentation.
 # These helpers are the ONE owner of "what is still unread since the last drain
 # presentation": one fleet manifest records each status identity and last-
 # presented byte offset, and one atomic replacement commits only the contiguous
 # status spans that were successfully presented. A quiet fleet scan leaves
-# routine working/done bytes unacknowledged so a subsequently published signal
-# can still annotate them. A missing manifest row or changed file identity is
+# routine nonterminal bytes unacknowledged so a subsequently published signal can
+# still annotate them. A missing manifest row or changed file identity is
 # offset 0 for the current file, while malformed or unreadable cursor state
 # aborts presentation without advancing any offset. A trusted cursor at EOF
 # prints nothing, so already-presented bytes are not replayed as new. Teardown
 # retires a task's manifest row with its status file, so reusing a task ID starts
-# the replacement log unread at byte 0. Informational `note:` lines and
-# reserved-key pending-reply resolutions are the fleet-wide unread surface;
-# they are not open decisions and are not persisted in the folded open-set.
+# the replacement log unread at byte 0. Nonterminal status lines are the
+# fleet-wide unread surface except a keyed resolution that closes an open
+# decision, so attended progress absorbed without a wake remains visible at the
+# next drain.
 
 # Read the legacy per-task open-decisions cursor used to seed the presentation
 # offset before the fleet manifest exists. A fold-version mismatch, identity
@@ -1111,48 +1156,52 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   return "$rc"
 }
 
-# 0 when a status line is an informational `note:` or a reserved-key
-# pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
-# drain's unread-status surface is their only guaranteed presentation.
-status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb key note resolve held prefix
+# 0 when a status line is nonterminal progress retained for the next drain.
+# A keyed resolution that closes an already-open key is excluded because its
+# signal annotation is the one presentation for that event.
+status_line_is_unread_surface() {  # <status-line> [<open-set>]
+  local line=$1 open=${2-} verb resolve held paused key
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
-  [ "$verb" = note ] && return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   case "$verb" in
-    "$resolve"|"$held") ;;
+    working|note|"$held"|"$paused") return 0 ;;
+    "$resolve") ;;
     *) return 1 ;;
   esac
-  key=$(_fm_decision_key "$line") || return 1
-  note=$(status_line_note "$line")
-  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
-    case "$key" in
-      "$prefix"*)
-        _fm_decision_key_transition_allowed "$key" "$note"
-        return
-        ;;
-    esac
-  done
-  return 1
+  if { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+    key=$(_fm_decision_key "$line") || return 0
+    if _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+      && _fm_open_set_has "$open" "$key"; then
+      return 1
+    fi
+  fi
+  return 0
 }
 
-# Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
-# still-unread `note:` or pending-reply resolution, in glob (task id) order.
+# Fleet-wide unread nonterminal lines: one "<task>\t<status-line>" row per
+# still-unread event, in glob (task id) order.
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
-  local state=$1 f task lines line
+  local state=$1 f task lines line offset open='' resolve held
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
+    offset=$(status_presentation_cursor_offset "$f") || return 1
     lines=$(status_new_lines_since_cursor "$f") || return 1
     [ -n "$lines" ] || continue
+    open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+    resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+    held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      status_line_is_unread_surface "$line" || continue
-      printf '%s\t%s\n' "$task" "$line"
+      if status_line_is_unread_surface "$line" "$open"; then
+        printf '%s\t%s\n' "$task" "$line"
+      fi
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
     done <<EOF
 $lines
 EOF
@@ -1161,16 +1210,22 @@ EOF
 }
 
 scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f lines line
+  local state=$1 snapshot=$2 task endpoint ident f lines line offset open='' resolve held
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     f="$state/$task.status"
+    offset=$(status_presentation_cursor_offset "$f") || return 1
     lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
     [ -n "$lines" ] || continue
+    open=$(status_open_decisions_incremental "$f" "$offset") || return 1
+    resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+    held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      status_line_is_unread_surface "$line" || continue
-      printf '%s\t%s\n' "$task" "$line"
+      if status_line_is_unread_surface "$line" "$open"; then
+        printf '%s\t%s\n' "$task" "$line"
+      fi
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
     done <<EOF
 $lines
 EOF
@@ -1243,22 +1298,111 @@ window_to_task() {
   t="${w##*:}"; t="${t#fm-}"; printf '%s' "$t"
 }
 
-# 0 (actionable) if ANY status file listed in a "signal:" wake carries a
-# captain-relevant last line; 1 otherwise. Pass the space-separated file list that
-# follows the "signal:" prefix. Non-.status arguments (e.g. .turn-ended markers,
-# which never carry a verb) are skipped. A 1 here is NOT "benign" on its own: a
-# no-verb signal (a bare turn-end, a working: note) is only benign when the crew is
-# also provably working (signal_crew_provably_working below); otherwise it surfaces.
-signal_reason_is_actionable() {  # <file> ...
-  local f last
-  for f in "$@"; do
-    [ -e "$f" ] || continue
-    case "$f" in *.status) ;; *) continue ;; esac
-    last=$(last_status_line "$f")
-    [ -n "$last" ] || continue
-    status_is_captain_relevant "$last" && return 0
-  done
-  return 1
+# 0 when bytes appended to <status-file> after <prior-size> contain a
+# captain-relevant status event.
+# The ordinary line predicate above remains the one owner of terminal verbs and
+# legacy bare tokens; this fold-aware wrapper adds the one contextual event: a
+# keyed resolved line is relevant only when it closes a key open before that
+# line.
+status_append_is_captain_relevant() {  # <status-file> <prior-size> [<captured-size>]
+  local f=$1 prior=$2 size=${3:-} candidate=${4:-} state_file state_data state_first
+  local state_rest state_offset_line state_ident_line state_offset=0 state_ident='' state_open='' state_valid=0
+  local actual_size cur_ident seed_offset=0 seed_chunk delta_chunk open='' line verb key resolve held actionable=1 tmp
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  actual_size=$(_fm_status_file_size "$f") || return 0
+  actual_size=${actual_size//[[:space:]]/}
+  case "$actual_size" in ''|*[!0-9]*) return 0 ;; esac
+  if [ -z "$size" ]; then size=$actual_size; fi
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$actual_size" ] || return 0
+  case "$prior" in ''|*[!0-9]*) prior=0 ;; esac
+  [ "$prior" -le "$size" ] || prior=0
+  [ "$size" -gt "$prior" ] || return 1
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || return 0
+  [ -n "$cur_ident" ] || return 0
+  state_file=$(_fm_signal_open_keys_path "$f")
+  if [ -e "$state_file" ] || [ -L "$state_file" ]; then
+    [ -f "$state_file" ] && [ -r "$state_file" ] && [ ! -L "$state_file" ] || return 0
+    state_data=$(LC_ALL=C command cat "$state_file" 2>/dev/null) || return 0
+    state_first=${state_data%%$'\n'*}
+    if [ "$state_first" = "version=$FM_OPEN_DECISIONS_FOLD_VERSION" ]; then
+      state_rest=${state_data#*$'\n'}
+      state_offset_line=${state_rest%%$'\n'*}
+      case "$state_offset_line" in
+        offset=*) state_offset=${state_offset_line#offset=} ;;
+        *) state_offset=0; state_rest=invalid ;;
+      esac
+      case "$state_offset" in
+        ''|*[!0-9]*) state_rest=invalid ;;
+      esac
+      case "$state_rest" in
+        invalid) ;;
+        *$'\n'*)
+          state_rest=${state_rest#*$'\n'}
+          state_ident_line=${state_rest%%$'\n'*}
+          case "$state_ident_line" in
+            ident=*) state_ident=${state_ident_line#ident=} ;;
+            *) state_rest=invalid ;;
+          esac
+          case "$state_rest" in
+            invalid) ;;
+            *$'\n'*) state_open=${state_rest#*$'\n'}; state_valid=1 ;;
+            *) state_open=''; state_valid=1 ;;
+          esac
+          ;;
+        *) ;;
+      esac
+    fi
+  fi
+  if [ "$state_valid" -eq 1 ] && [ "$state_ident" = "$cur_ident" ] \
+    && [ "$state_offset" -le "$prior" ]; then
+    seed_offset=$state_offset
+    open=$state_open
+  fi
+
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  if [ "$seed_offset" -lt "$prior" ]; then
+    seed_chunk=$(mktemp "${state_file}.read.XXXXXX") || return 0
+    _fm_status_read_span "$f" "$seed_offset" "$((prior - seed_offset))" > "$seed_chunk" 2>/dev/null \
+      || { rm -f "$seed_chunk"; return 0; }
+    while IFS= read -r line || [ -n "$line" ]; do
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    done < "$seed_chunk"
+    rm -f "$seed_chunk"
+  fi
+
+  delta_chunk=$(mktemp "${state_file}.read.XXXXXX") || return 0
+  _fm_status_read_span "$f" "$prior" "$((size - prior))" > "$delta_chunk" 2>/dev/null \
+    || { rm -f "$delta_chunk"; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    status_is_captain_relevant "$line" && actionable=0
+    verb=$(status_line_verb "$line")
+    if [ "$verb" = "$resolve" ] \
+      && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+      key=$(_fm_decision_key "$line") || key=''
+      if [ -n "$key" ] \
+        && _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+        && _fm_open_set_has "$open" "$key"; then
+        actionable=0
+      fi
+    fi
+    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+  done < "$delta_chunk"
+  rm -f "$delta_chunk"
+
+  if [ -n "$candidate" ]; then
+    tmp="$candidate.tmp.$$"
+    {
+      printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
+      printf 'offset=%s\n' "$size"
+      printf 'ident=%s\n' "$cur_ident"
+      printf '%s' "$open"
+    } > "$tmp" || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$candidate" || { rm -f "$tmp"; return 0; }
+  fi
+  [ "$actionable" -eq 0 ]
 }
 
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
@@ -1275,7 +1419,7 @@ signal_reason_is_actionable() {  # <file> ...
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
+# run it only on stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
   local id=$1 line state src
@@ -1292,12 +1436,9 @@ crew_absorb_class() {  # <id>
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class
-# reports `working`). This is the "provably working" predicate at the heart of
-# absorb-only-when-provably-working: a no-verb turn-end or stale wake is absorbed
-# ONLY when this returns 0, and SURFACED otherwise (the crew may be done, waiting
-# on a decision, or wedged). For stale panes it is checked before trusting the
-# status log so a pre-validation captain-relevant line does not override an active
-# run. See crew_absorb_class for the exact working/paused/none decision.
+# reports `working`). Stale triage checks this before trusting the status log so a
+# pre-validation captain-relevant line does not override an active run.
+# See crew_absorb_class for the exact working/paused/none decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
@@ -1396,44 +1537,6 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
       -type f -newer "$anchor" -print -quit 2>/dev/null || true)
   fi
   [ -n "$hit" ]
-}
-
-# 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
-# working; 1 (actionable/surface) if any is not, or no task can be resolved. Pass the
-# same space-separated file list as signal_reason_is_actionable. Files are mapped to
-# task ids by stripping the .status / .turn-ended suffix; a no-verb wake with nothing
-# provably working must surface, so an empty/unresolvable list returns 1.
-# A kind=secondmate task's .status signal is never absorbable here regardless of
-# busy evidence: that stream is the mate's routed-reply channel, so every append
-# is parent-directed content the supervisor must read (a routed reply, a newly
-# raised decision, a mirrored remote line), and a busy mate agent makes its note
-# more current, not less deliverable. Scoped to .status files - a mate's bare
-# turn-ended ping still uses the ordinary provably-working absorb.
-signal_crew_provably_working() {  # <file> ...
-  local f base dir task seen=""
-  for f in "$@"; do
-    base=${f##*/}
-    dir=${f%/*}
-    [ "$dir" != "$f" ] || dir=.
-    case "$base" in
-      *.status)     task=${base%.status} ;;
-      *.turn-ended) task=${base%.turn-ended} ;;
-      *)            continue ;;
-    esac
-    [ -n "$task" ] || continue
-    case "$base" in
-      *.status)
-        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
-          return 1
-        fi
-        ;;
-    esac
-    case " $seen " in *" $task "*) continue ;; esac
-    seen="$seen $task"
-    crew_is_provably_working "$task" || return 1
-  done
-  [ -n "$seen" ] || return 1
-  return 0
 }
 
 # 0 (terminal/actionable) if a stale window's last status line is

@@ -56,7 +56,7 @@ The branch prompt frames mirrored text as context for judgment, never as instruc
 
 ## Two-stage noise filter
 
-Stage one is unchanged: the bash watcher absorbs everything provably fine at zero token cost.
+Stage one is the zero-token bash watcher; its attended signal triage and away-mode ownership are defined in [Event-driven supervision](architecture.md#event-driven-supervision).
 Stage two is the branch's three-way verdict on each handled event, reported through its `fm_branch_report` tool.
 An unsolicited `routine` outcome remains only in the durable outcome store and opens no main turn.
 A `captain` outcome is a genuine captain-only result or question and sends one hidden delivery message that triggers exactly one follow-up turn for MAIN to surface it without replaying the fleet event.
@@ -109,7 +109,7 @@ No caching machinery beyond this exists, deliberately: any later dynamic content
 ## Away mode
 
 Away mode carries over unchanged: while `state/.afk` exists the away daemon owns supervision, and the branch declines every wake offer for the duration.
-What is new is only the attended path: outside away mode, the branch absorbs the routine majority that previously interrupted the captain's conversation, applying the same escalation etiquette the daemon applies while away.
+Outside away mode, the bash watcher absorbs routine status and bare turn-ended signals before the branch offer; the branch's three-way verdict remains for eligible wakes that reach it.
 
 ## Verification
 

@@ -86,9 +86,8 @@ SH
 }
 
 # Install a hermetic fake fm-crew-state.sh into <fakebin> and echo its path. The
-# watcher's absorb-only-when-provably-working triage calls this (via
-# FM_CREW_STATE_BIN) to read a crew's current state on no-verb signal and stale
-# paths; the fake returns a canned "state: <s> · source: <src> · <detail>"
+# watcher's stale triage calls this (via FM_CREW_STATE_BIN) to read a crew's
+# current state; the fake returns a canned "state: <s> · source: <src> · <detail>"
 # verdict line so a test can fix the provably-working decision without a real
 # worktree or no-mistakes.
 # A per-id override FM_FAKE_CREW_STATE_<sanitized-id> wins; otherwise the shared

@@ -1,0 +1,21 @@
+Target: 039e9be32eeefec1c623c6d64945777dd593c9d8
+Flow: production bin/fm-watch.sh -> durable wake queue -> bin/fm-wake-drain.sh
+Fixture: isolated temporary FM_HOME; no repository state used
+
+=== ABSORBED ROUTINE APPEND ===
+seen_matches_post_append_signature=yes
+watcher_after_routine=alive
+queue_after_routine=no
+watcher_stdout_after_routine=<empty>
+triage_log=[2026-09-01T19:41:36+0800] absorbed benign signal: <fixture>/state/task.status
+=== TERMINAL APPEND ===
+watcher_exit=0
+watcher_stdout=signal: <fixture>/state/task.status
+=== NEXT DRAIN ===
+1788262897\t2\tsignal\ttask.status\tsignal: <fixture>/state/task.status
+wake annotation: unread wake-EVENT since last drain, not current state: task.status: working: routine progress retained for next drain
+wake annotation: latest wake-EVENT observed at drain, not current state: task.status: done: shipped after routine progress
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+task working: routine progress retained for next drain
+=== DRAIN ACK HINT ===
+WAKE_ACK_REQUIRED: present

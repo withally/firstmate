@@ -1005,7 +1005,10 @@ test_check_wake_flush_reconciles_reserved_append_before_clearing() {
   escalate_add "$state" "$reason"
   escalate_add "$state" "an unrelated buffered event"
   (
-    inject_msg() { return 0; }
+    inject_msg() {
+      delivery_record_prepare "$2" "$3" "$4" - 0 0 || return 1
+      return 0
+    }
     escalate_flush "$state" || fail "flush could not reconcile the reserved appended check"
   ) || fail "reserved-append flush reconciliation subshell failed"
   [ ! -s "$state/.subsuper-escalations" ] \
@@ -1055,7 +1058,10 @@ test_check_wake_failed_and_successful_flush_preserve_session_dedup() {
     || fail "a failed flush lost pending dedup and appended a second check"
 
   (
-    inject_msg() { return 0; }
+    inject_msg() {
+      delivery_record_prepare "$2" "$3" "$4" - 0 0 || return 1
+      return 0
+    }
     escalate_flush "$state" || fail "synthetic successful flush failed"
   ) || fail "successful-flush check subshell failed"
   [ ! -s "$state/.subsuper-escalations" ] || fail "successful flush did not clear the buffer"
@@ -1138,7 +1144,10 @@ test_check_wake_flush_failure_retains_the_durable_wake() {
 
   if (
     # shellcheck disable=SC2329 # Invoked indirectly by escalate_flush.
-    inject_msg() { return 0; }
+    inject_msg() {
+      delivery_record_prepare "$2" "$3" "$4" - 0 0 || return 1
+      return 0
+    }
     # shellcheck disable=SC2329 # Invoked indirectly by escalate_flush.
     check_ledger_mark_delivered() { return 1; }
     FM_ESCALATE_BATCH_SECS=0 handle_durable_wakes "$reason" "$state"
@@ -1654,7 +1663,7 @@ SH
         transcript_dir="$user_home/.claude/projects/$slug"
         transcript="$transcript_dir/session.jsonl"
         mkdir -p "$transcript_dir"
-        : > "$transcript"
+        jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
         ;;
     esac
 
@@ -1703,26 +1712,53 @@ SH
 }
 
 test_delivery_witness_prefers_herdr_agent_session_path() {
-  local dir user_home transcript nonce text fixture selected
+  local dir home user_home transcript nonce text fixture selected slug transcript_dir foreign foreign_fixture escape_fixture
   dir=$(make_supercase delivery-witness-agent-session)
+  home="$dir/home"
   user_home="$dir/user-home"
   nonce=abcdef123456
-  mkdir -p "$user_home/.pi/agent/sessions/direct"
-  transcript="$user_home/.pi/agent/sessions/direct/session.jsonl"
+  mkdir -p "$home" "$user_home/.pi/agent/sessions"
+  home=$(cd "$home" && pwd -P)
+  slug=${home#/}
+  slug=${slug//\//-}
+  transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+  mkdir -p "$transcript_dir"
+  transcript="$transcript_dir/session.jsonl"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
   text="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] direct agent session"
   jq -cn --arg text "$text" \
     '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
-    > "$transcript"
+    >> "$transcript"
+  transcript=$(realpath "$transcript")
   fixture=$(jq -cn --arg path "$transcript" \
     '{result:{agent:{agent_status:"idle",agent_session:$path}}}')
 
-  selected=$(HOME="$user_home" delivery_transcript_path_from_agent_json pi "$fixture") \
+  selected=$(HOME="$user_home" FM_HOME="$home" delivery_transcript_path_from_agent_json pi "$fixture") \
     || fail "Herdr agent_session fixture did not select the exact Pi transcript path"
   [ "$selected" = "$transcript" ] \
     || fail "Herdr agent_session fixture selected '$selected' instead of '$transcript'"
   delivery_transcript_contains_nonce pi "$selected" "$nonce" 0 0 \
     || fail "selected Herdr agent_session transcript did not witness the nonce"
-  pass "delivery witness pure selector prefers the exact Herdr pane agent_session transcript"
+
+  foreign="$user_home/.pi/agent/sessions/foreign/session.jsonl"
+  mkdir -p "$(dirname "$foreign")"
+  cp "$transcript" "$foreign"
+  foreign_fixture=$(jq -cn --arg path "$foreign" \
+    '{result:{agent:{agent_status:"idle",agent_session:$path}}}')
+  if HOME="$user_home" FM_HOME="$home" \
+    delivery_transcript_path_from_agent_json pi "$foreign_fixture" >/dev/null; then
+    fail "Herdr agent_session selector accepted a transcript outside the FM_HOME session directory"
+  fi
+
+  escape_fixture="$transcript_dir/escape.jsonl"
+  ln -s "$foreign" "$escape_fixture"
+  if HOME="$user_home" FM_HOME="$home" \
+    delivery_transcript_path_from_agent_json pi \
+    "$(jq -cn --arg path "$escape_fixture" \
+      '{result:{agent:{agent_status:"idle",agent_session:$path}}}')" >/dev/null; then
+    fail "Herdr agent_session selector accepted a symlink escaping the FM_HOME session directory"
+  fi
+  pass "delivery witness selector binds Herdr agent_session to the canonical Pi session directory"
 }
 
 test_delivery_witness_requires_exact_envelope_and_new_transcript_offset() {
@@ -1751,9 +1787,9 @@ test_delivery_witness_requires_exact_envelope_and_new_transcript_offset() {
   pass "delivery witness requires the exact envelope after the recorded transcript offset"
 }
 
-test_startup_reconcile_drops_witnessed_retiring_record() {
-  local dir state home user_home transcript nonce hash slug transcript_dir
-  dir=$(make_supercase delivery-reconcile-retiring)
+test_startup_reconcile_drops_orphaned_current_record() {
+  local dir state home user_home transcript nonce slug transcript_dir
+  dir=$(make_supercase delivery-reconcile-orphan)
   state="$dir/state"
   home="$dir/home"
   user_home="$dir/user-home"
@@ -1766,24 +1802,73 @@ test_startup_reconcile_drops_witnessed_retiring_record() {
   transcript="$transcript_dir/session.jsonl"
   mkdir -p "$transcript_dir"
   jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
-  jq -cn --arg text "${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] retired" \
-    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
-    >> "$transcript"
-  hash=$(_hash_text "")
-  printf 'v2-retiring\t%s\t1\t%s\t%s\t0\t0\n' \
-    "$nonce" "$hash" "$transcript" > "$state/.subsuper-escalations.delivery"
+  printf 'v3\t%s\t1\t%s\t0\t0\n' \
+    "$nonce" "$transcript" > "$state/.subsuper-escalations.delivery"
   : > "$state/.subsuper-escalations"
   : > "$state/.subsuper-inject-wedged"
   (
     fm_backend_source() { return 1; }
     HOME="$user_home" FM_HOME="$home" \
       delivery_reconcile_startup "$state" herdr named:w1:p2 pi
-  ) || fail "startup retirement reconciliation subshell failed"
+  ) || fail "startup orphan reconciliation subshell failed"
   [ ! -e "$state/.subsuper-escalations.delivery" ] \
-    || fail "startup reconciliation left a witnessed retiring record behind"
+    || fail "startup reconciliation left an orphaned current record behind"
   [ ! -e "$state/.subsuper-inject-wedged" ] \
     || fail "startup reconciliation left a stale wedge marker behind"
-  pass "startup reconciliation drops a witnessed retiring record without retyping"
+  pass "startup reconciliation drops a current record whose nonce left the buffer"
+}
+
+test_startup_reconcile_after_retirement_preserves_appended_digest() {
+  local dir state home user_home transcript nonce slug transcript_dir buf record
+  dir=$(make_supercase delivery-reconcile-crash)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  nonce=abcdef123456
+  buf="$state/.subsuper-escalations"
+  record="$state/.subsuper-escalations.delivery"
+  mkdir -p "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  slug=${home#/}
+  slug=${slug//\//-}
+  transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+  transcript="$transcript_dir/session.jsonl"
+  mkdir -p "$transcript_dir"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
+  jq -cn --arg text "${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] digest A" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  transcript=$(realpath "$transcript")
+  printf '%s\n' 'digest A' > "$buf"
+  delivery_record_prepare "$state" "$nonce" 1 "$transcript" 0 0 \
+    || fail "could not prepare the crash-recovery delivery record"
+  printf '%s\n' 'digest B' >> "$buf"
+  : > "$state/.subsuper-inject-wedged"
+
+  (
+    fm_backend_source() { return 1; }
+    rm() {
+      case "$*" in
+        *".subsuper-escalations.delivery"*) return 1 ;;
+        *) command rm "$@" ;;
+      esac
+    }
+    HOME="$user_home" FM_HOME="$home" \
+      delivery_reconcile_startup "$state" herdr named:w1:p2 pi || true
+  ) || fail "crash-recovery reconciliation subshell failed"
+
+  [ "$(cat "$buf")" = "digest B" ] \
+    || fail "retirement did not atomically remove only the witnessed digest prefix"
+  [ -e "$record" ] || fail "crash fixture did not preserve the sidecar after simulated removal failure"
+
+  HOME="$user_home" FM_HOME="$home" \
+    delivery_reconcile_startup "$state" herdr named:w1:p2 pi \
+    || fail "startup did not reconcile the post-retirement sidecar"
+  [ "$(cat "$buf")" = "digest B" ] \
+    || fail "post-retirement reconciliation changed the appended digest"
+  [ ! -e "$record" ] \
+    || fail "post-retirement reconciliation left the completed sidecar behind"
+  pass "startup reconciliation preserves an appended digest after retirement removal failure"
 }
 
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
@@ -3015,7 +3100,8 @@ test_submit_ack_reports_pending_on_persistent_swallow
 test_unknown_submit_uses_transcript_witness_without_retype
 test_delivery_witness_prefers_herdr_agent_session_path
 test_delivery_witness_requires_exact_envelope_and_new_transcript_offset
-test_startup_reconcile_drops_witnessed_retiring_record
+test_startup_reconcile_drops_orphaned_current_record
+test_startup_reconcile_after_retirement_preserves_appended_digest
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype
 test_max_defer_empty_swallow_types_once_and_alarms

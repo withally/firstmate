@@ -110,7 +110,7 @@ printf '%s\n' "live delivered-once guard $TOKEN; reply with exactly $TOKEN" \
   > "$STATE/.subsuper-escalations"
 date +%s > "$STATE/.subsuper-escalations.since"
 hash=$(_hash_text "$(cat "$STATE/.subsuper-escalations")")
-delivery_record_prepare "$STATE" "$nonce" 1 "$hash" \
+delivery_record_prepare "$STATE" "$nonce" 1 "$hash" "$TRANSCRIPT" 0 0 \
   || fail "could not reconstruct the delivered-once recovery record"
 escalate_flush "$STATE" \
   || fail "the existing Pi transcript witness did not retire the recovery record"

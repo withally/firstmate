@@ -1622,16 +1622,23 @@ test_submit_ack_reports_pending_on_persistent_swallow() {
 }
 
 test_unknown_submit_uses_transcript_witness_without_retype() {
-  local harness dir state home user_home sent transcript slug transcript_dir
+  local harness dir state home user_home sent transcript slug transcript_dir fakebin
   for harness in pi pi-signed claude; do
     dir=$(make_supercase "delivery-witness-$harness")
     state="$dir/state"
     home="$dir/home"
     user_home="$dir/user-home"
     sent="$dir/sent.log"
+    fakebin="$dir/fakebin"
     mkdir -p "$home" "$user_home"
+    mkdir -p "$fakebin"
     home=$(cd "$home" && pwd -P)
     : > "$sent"
+    cat > "$fakebin/fm-harness.sh" <<SH
+#!/usr/bin/env bash
+printf '%s' '$harness'
+SH
+    chmod +x "$fakebin/fm-harness.sh"
 
     case "$harness" in
       pi|pi-signed)
@@ -1676,7 +1683,8 @@ test_unknown_submit_uses_transcript_witness_without_retype() {
         esac
         printf 'unknown'
       }
-      HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS="$harness" \
+      unset FM_DAEMON_PRIMARY_HARNESS
+      HOME="$user_home" FM_HOME="$home" FM_DAEMON_DIR="$fakebin" \
         FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
         escalate_flush "$state" \
         || fail "$harness transcript witness did not confirm an unknown rendered submit"
@@ -1701,7 +1709,7 @@ test_delivery_witness_prefers_herdr_agent_session_path() {
   nonce=abcdef123456
   mkdir -p "$user_home/.pi/agent/sessions/direct"
   transcript="$user_home/.pi/agent/sessions/direct/session.jsonl"
-  text="FIRSTMATE_OP: v1 away-supervisor: [d:$nonce] direct agent session"
+  text="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] direct agent session"
   jq -cn --arg text "$text" \
     '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
     > "$transcript"
@@ -1712,9 +1720,70 @@ test_delivery_witness_prefers_herdr_agent_session_path() {
     || fail "Herdr agent_session fixture did not select the exact Pi transcript path"
   [ "$selected" = "$transcript" ] \
     || fail "Herdr agent_session fixture selected '$selected' instead of '$transcript'"
-  delivery_transcript_contains_nonce pi "$selected" "$nonce" \
+  delivery_transcript_contains_nonce pi "$selected" "$nonce" 0 0 \
     || fail "selected Herdr agent_session transcript did not witness the nonce"
   pass "delivery witness pure selector prefers the exact Herdr pane agent_session transcript"
+}
+
+test_delivery_witness_requires_exact_envelope_and_new_transcript_offset() {
+  local dir transcript nonce offset old_text bare_text current_text
+  dir=$(make_supercase delivery-witness-boundary)
+  transcript="$dir/transcript.jsonl"
+  nonce=abcdef123456
+  old_text="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] old delivery"
+  bare_text="I saw [d:$nonce]"
+  current_text="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] current delivery"
+  jq -cn --arg text "$old_text" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    > "$transcript"
+  offset=$(wc -c < "$transcript" | tr -d ' ')
+  jq -cn --arg text "$bare_text" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  if delivery_transcript_contains_nonce pi "$transcript" "$nonce" "$offset" 0; then
+    fail "a bare nonce marker after the baseline was accepted as delivery"
+  fi
+  jq -cn --arg text "$current_text" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  delivery_transcript_contains_nonce pi "$transcript" "$nonce" "$offset" 0 \
+    || fail "the exact current away-supervisor envelope was not witnessed"
+  pass "delivery witness requires the exact envelope after the recorded transcript offset"
+}
+
+test_startup_reconcile_drops_witnessed_retiring_record() {
+  local dir state home user_home transcript nonce hash slug transcript_dir
+  dir=$(make_supercase delivery-reconcile-retiring)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  nonce=abcdef123456
+  mkdir -p "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  slug=${home#/}
+  slug=${slug//\//-}
+  transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+  transcript="$transcript_dir/session.jsonl"
+  mkdir -p "$transcript_dir"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
+  jq -cn --arg text "${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] retired" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  hash=$(_hash_text "")
+  printf 'v2-retiring\t%s\t1\t%s\t%s\t0\t0\n' \
+    "$nonce" "$hash" "$transcript" > "$state/.subsuper-escalations.delivery"
+  : > "$state/.subsuper-escalations"
+  : > "$state/.subsuper-inject-wedged"
+  (
+    fm_backend_source() { return 1; }
+    HOME="$user_home" FM_HOME="$home" \
+      delivery_reconcile_startup "$state" herdr named:w1:p2 pi
+  ) || fail "startup retirement reconciliation subshell failed"
+  [ ! -e "$state/.subsuper-escalations.delivery" ] \
+    || fail "startup reconciliation left a witnessed retiring record behind"
+  [ ! -e "$state/.subsuper-inject-wedged" ] \
+    || fail "startup reconciliation left a stale wedge marker behind"
+  pass "startup reconciliation drops a witnessed retiring record without retyping"
 }
 
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
@@ -2945,6 +3014,8 @@ test_submit_ack_confirms_on_bordered_empty_composer
 test_submit_ack_reports_pending_on_persistent_swallow
 test_unknown_submit_uses_transcript_witness_without_retype
 test_delivery_witness_prefers_herdr_agent_session_path
+test_delivery_witness_requires_exact_envelope_and_new_transcript_offset
+test_startup_reconcile_drops_witnessed_retiring_record
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype
 test_max_defer_empty_swallow_types_once_and_alarms

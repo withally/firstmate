@@ -1,0 +1,31 @@
+Manual end-to-end verification of bin/fm-watch.sh -> bin/fm-wake-drain.sh
+
+=== attended routine append ===
+watch_output=(empty)
+wake_queue=(empty)
+seen_advanced=yes
+triage_log=[2026-09-01T12:52:40+0800] absorbed benign signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-attended-e2e.1R2xDL/state/task.status
+
+=== terminal append ===
+watch_output=signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-attended-e2e.1R2xDL/state/task.status
+wake_queue_before_drain=1788238361\t1\tsignal\ttask.status\tsignal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-attended-e2e.1R2xDL/state/task.status | 1788238361\t2\tsignal\ttask.status\tsignal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-attended-e2e.1R2xDL/state/task.status
+
+=== next drain ===
+wake annotation: unread wake-EVENT since last drain, not current state: task.status: done: bootstrap
+wake annotation: unread wake-EVENT since last drain, not current state: task.status: working: routine progress retained
+wake annotation: latest wake-EVENT observed at drain, not current state: task.status: done: shipped
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+task working: routine progress retained
+drain_ack=required after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 18759.1788238361.Uk8i7a
+
+evidence_status=PASS
+
+=== non-open resolved append ===
+watch_output=(empty)
+wake_queue=(empty)
+seen_advanced=yes
+
+=== following drain ===
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+task resolved [key=housekeeping]: closes nothing
+evidence_status=PASS

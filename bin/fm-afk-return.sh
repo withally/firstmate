@@ -119,6 +119,27 @@ print_blockers() {  # <file>
   done < "$file"
 }
 
+return_delivery_journal_valid() {  # <journal-path>
+  local journal=$1
+  [ -f "$journal" ] && [ -r "$journal" ] && [ -s "$journal" ] || return 1
+  jq -e -s '
+    all(.[];
+      type == "object"
+      and ((.nonce | type) == "string")
+      and ((.nonce == "") or (.nonce | test("^[0-9a-f]{12}$")))
+      and (.kind == "escalation" or .kind == "check")
+      and ((.source_key | type) == "string")
+      and ((.text | type) == "string")
+      and (.state == "buffered" or .state == "typed" or .state == "delivered")
+      and ((.buffered_epoch | type) == "number")
+      and ((.typed_epoch | type) == "number")
+      and ((.delivered_epoch | type) == "number")
+      and ((.witness_transcript | type) == "string")
+      and ((.witness_offset | type) == "number")
+    )
+  ' "$journal" >/dev/null 2>&1
+}
+
 # Clear the away daemon's delivery store on return. The single journal and the
 # wedge alarm marker are the live artifacts; the pre-redesign multi-file names
 # are cleared too so a home that upgraded mid-away leaves nothing behind.
@@ -148,6 +169,7 @@ return_guard() {
 
 return_reconcile() {
   local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge escalations lifecycle_ok=1
+  local journal="$STATE/.subsuper-delivery.jsonl" undelivered_count empty_count
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
   drain_err=$(mktemp "$STATE/.afk-return-drain.XXXXXX") || { rm -f "$evidence" "$blockers"; return 1; }
@@ -183,9 +205,32 @@ return_reconcile() {
   # "while you were out" catch-up. A home that upgraded mid-away and has not yet
   # imported its legacy buffer also surfaces those raw lines.
   escalations=""
-  if [ -s "$STATE/.subsuper-delivery.jsonl" ]; then
-    escalations=$(jq -s -r 'map(select(.state!="delivered") | .text) | .[]' \
-      "$STATE/.subsuper-delivery.jsonl" 2>/dev/null || true)
+  if [ -e "$journal" ]; then
+    if ! return_delivery_journal_valid "$journal"; then
+      append_evidence lifecycle 'away-mode delivery journal is malformed; preserved for retry' "$evidence"
+      lifecycle_ok=0
+    else
+      undelivered_count=$(jq -s '[.[] | select(.state!="delivered")] | length' "$journal" 2>/dev/null) || {
+        append_evidence lifecycle 'away-mode delivery journal could not be read; preserved for retry' "$evidence"
+        lifecycle_ok=0
+        undelivered_count=0
+      }
+      empty_count=$(jq -s '[.[] | select(.state!="delivered" and .text=="")] | length' "$journal" 2>/dev/null) || {
+        append_evidence lifecycle 'away-mode delivery journal could not be read; preserved for retry' "$evidence"
+        lifecycle_ok=0
+        empty_count=0
+      }
+      if [ "$lifecycle_ok" -eq 1 ] && [ "$undelivered_count" -gt 0 ]; then
+        escalations=$(jq -s -r 'map(select(.state!="delivered" and .text!="") | .text) | .[]' "$journal") || {
+          append_evidence lifecycle 'away-mode delivery journal could not be read; preserved for retry' "$evidence"
+          lifecycle_ok=0
+          escalations=""
+        }
+        if [ "$empty_count" -gt 0 ]; then
+          append_evidence escalation "undelivered away-mode delivery record(s) with empty text: $empty_count" "$evidence"
+        fi
+      fi
+    fi
   fi
   if [ -z "$escalations" ] && [ -s "$STATE/.subsuper-escalations" ]; then
     escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)

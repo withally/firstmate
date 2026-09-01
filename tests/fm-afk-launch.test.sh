@@ -125,16 +125,18 @@ unit_relative_paths_are_absolute_before_daemon_launch() {
 }
 
 unit_detector_miss_leaves_daemon_harness_unset() {
-  local st detector
+  local st detector entry
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-detector-miss.XXXXXX")
   detector="$st/detector"
+  entry="$st/entry"
   mkdir -p "$st/state" "$detector"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$detector/fm-harness.sh"
-  chmod +x "$detector/fm-harness.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  chmod +x "$detector/fm-harness.sh" "$entry"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     FM_AFK_LAUNCH_DIR="$2"
-    FM_AFK_LAUNCH_ENTRY=/bin/true
+    FM_AFK_LAUNCH_ENTRY="$3"
     tmux() {
       if [ "${1:-}" = new-session ]; then
         printf "%s" "${5:-}" > "$FM_HOME/planned-command"
@@ -144,9 +146,9 @@ unit_detector_miss_leaves_daemon_harness_unset() {
     }
     [ -z "$(fm_afk_launch_primary_harness)" ]
     ! fm_afk_launch_create_tmux captain:0 tmux
-  ' _ "$LAUNCH" "$detector" \
-    && [ -s "$st/planned-command" ] \
-    && ! grep -F 'FM_DAEMON_PRIMARY_HARNESS=' "$st/planned-command" >/dev/null; then
+    output=$(FM_DAEMON_PRIMARY_HARNESS=claude eval "$(cat "$FM_HOME/planned-command")")
+    [ "$output" = unset ]
+  ' _ "$LAUNCH" "$detector" "$entry"; then
     pass "launcher detector: a failed harness probe leaves daemon self-resolution enabled"
   else
     fail "launcher detector: a failed harness probe was exported as a harness"

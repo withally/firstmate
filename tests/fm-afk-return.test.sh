@@ -281,9 +281,45 @@ test_check_retries_recorded_terminal_teardown() {
   pass "check retries recorded terminal teardown and keeps catch-up gated until success"
 }
 
+test_malformed_delivery_journal_blocks_return_and_preserves_state() {
+  local dir out rc journal gate
+  dir="$TMP_ROOT/malformed-delivery-journal"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  gate="$dir/home/state/.afk-return-catchup"
+  printf '%s\n' '{not-json' > "$journal"
+
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "malformed delivery journal did not block return (rc=$rc): $out"
+  [ -e "$journal" ] || fail "malformed delivery journal was cleared during return"
+  [ "$(cat "$journal")" = '{not-json' ] || fail "malformed delivery journal changed during return"
+  [ -s "$gate" ] || fail "malformed delivery journal did not leave a return gate"
+  assert_contains "$out" 'delivery journal is malformed' "return did not report the malformed delivery journal"
+  assert_contains "$out" 'preserved for retry' "return did not state that the journal was preserved"
+  pass "return catch-up fails closed and preserves a malformed delivery journal"
+}
+
+test_return_surfaces_empty_delivery_record() {
+  local dir out journal
+  dir="$TMP_ROOT/empty-delivery-record"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  jq -cn '{nonce:"",kind:"escalation",source_key:"",text:"",state:"buffered",buffered_epoch:1,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' > "$journal"
+
+  out=$(run_return "$dir" begin) || fail "return did not complete for an empty delivery record: $out"
+  assert_contains "$out" 'empty text: 1' "return silently omitted an empty delivery record"
+  [ ! -e "$journal" ] || fail "successful return left the caught-up empty delivery journal"
+  pass "return catch-up reports an empty delivery record before clearing it"
+}
+
 test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
+test_malformed_delivery_journal_blocks_return_and_preserves_state
+test_return_surfaces_empty_delivery_record

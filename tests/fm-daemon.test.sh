@@ -1724,32 +1724,144 @@ test_legacy_import_is_idempotent_when_journal_exists() {
   pass "legacy import is idempotent when a journal already exists"
 }
 
-test_legacy_marker_like_buffer_is_quarantined_not_guessed() {
+test_legacy_import_quarantines_uncommitted_journal_with_legacy_state() {
   local dir state qdir
-  dir=$(make_supercase delivery-legacy-quarantine)
+  dir=$(make_supercase delivery-legacy-uncommitted-journal)
   state="$dir/state"
   mkdir -p "$state"
-  # A pre-redesign structured marker line is ambiguous: the import must quarantine
-  # (preserve) rather than guess, and raise the existing wedge alarm.
-  printf '%s\n%s\n' 'first legacy event' '__FIRSTMATE_DELIVERY_NONCE__=0123456789ab' \
-    > "$state/.subsuper-escalations"
+  : > "$state/.subsuper-delivery.jsonl"
+  printf '%s\n' 'legacy state must survive' > "$state/.subsuper-escalations"
 
   FM_WEDGE_ALARM_EXEC=discard FM_STATE_OVERRIDE="$state" \
     delivery_import_legacy "$state" \
-    && fail "quarantining a marker-carrying legacy buffer should report non-zero"
+    && fail "an empty journal was treated as a committed import"
 
-  [ ! -e "$state/.subsuper-delivery.jsonl" ] \
-    || fail "a marker-carrying legacy buffer was guessed into the journal"
-  [ ! -e "$state/.subsuper-escalations" ] \
-    || fail "the quarantined legacy buffer was left in place"
-  [ -s "$state/.subsuper-inject-wedged" ] \
-    || fail "quarantine did not raise the existing wedge alarm"
+  [ ! -e "$state/.subsuper-delivery.jsonl" ] || fail "an uncommitted journal was left active"
+  [ ! -e "$state/.subsuper-escalations" ] || fail "legacy state was deleted with an uncommitted journal"
+  [ -s "$state/.subsuper-inject-wedged" ] || fail "uncommitted journal quarantine did not alarm"
   qdir=$(find "$state" -maxdepth 1 -type d -name '.subsuper-delivery.quarantine-*' | head -1)
-  [ -n "$qdir" ] && [ -e "$qdir/.subsuper-escalations" ] \
-    || fail "the legacy buffer was not preserved in a dated quarantine sibling"
-  grep -qx '__FIRSTMATE_DELIVERY_NONCE__=0123456789ab' "$qdir/.subsuper-escalations" \
-    || fail "the quarantined buffer did not preserve its content verbatim"
-  pass "a marker-carrying legacy buffer is quarantined and alarmed, never guessed"
+  [ -n "$qdir" ] && [ -e "$qdir/.subsuper-delivery.jsonl" ] && [ -e "$qdir/.subsuper-escalations" ] \
+    || fail "uncommitted journal and legacy state were not quarantined together"
+  pass "legacy state is quarantined when the journal is not committed"
+}
+
+test_legacy_marker_like_buffer_is_preserved_verbatim() {
+  local dir state line1 line2 texts
+  dir=$(make_supercase delivery-legacy-marker-text)
+  state="$dir/state"
+  mkdir -p "$state"
+  line1='__FIRSTMATE_DELIVERY_NONCE__=0123456789ab'
+  line2='body text __FIRSTMATE_CHECK_NONCE__=0123456789ab'
+  printf '%s\n%s\n' "$line1" "$line2" \
+    > "$state/.subsuper-escalations"
+
+  FM_STATE_OVERRIDE="$state" delivery_import_legacy "$state" \
+    || fail "marker-looking legacy text was not imported"
+
+  [ "$(jq -s -r '.[].text' "$state/.subsuper-delivery.jsonl")" = "$(printf '%s\n%s' "$line1" "$line2")" ] \
+    || fail "marker-looking legacy text was not preserved verbatim"
+  [ "$(jq -s -r 'all(.[]; .nonce=="" and .state=="buffered")' "$state/.subsuper-delivery.jsonl")" = true ] \
+    || fail "marker-looking legacy text was interpreted as delivery metadata"
+  [ ! -e "$state/.subsuper-escalations" ] \
+    || fail "the imported marker-looking legacy buffer was left behind"
+  [ ! -e "$state/.subsuper-inject-wedged" ] \
+    || fail "plain marker-looking legacy text raised a quarantine alarm"
+  pass "marker-looking legacy first and body lines remain verbatim buffer records"
+}
+
+test_legacy_import_preserves_delivery_and_check_history() {
+  local dir state typed_nonce typed_text check_text records ledger
+  dir=$(make_supercase delivery-legacy-history)
+  state="$dir/state"
+  mkdir -p "$state"
+  typed_nonce=abcdef123456
+  typed_text='done: typed before daemon upgrade'
+  check_text='check: old check already delivered'
+  printf '%s\n%s\n' "$typed_text" 'needs-decision: still buffered' > "$state/.subsuper-escalations"
+  printf '1700000000\n' > "$state/.subsuper-escalations.since"
+  printf 'v2\t%s\t1\tdeadbeef\t-\t0\t1700000001\n' "$typed_nonce" \
+    > "$state/.subsuper-escalations.delivery"
+  records=$(jq -cn --arg nonce "$typed_nonce" \
+    '{version:1,nonce:"",delivery_nonce:$nonce,kind:"escalation",lines:2,buffered_epoch:1700000000,origin:"legacy"}')
+  printf '%s\n' "$records" > "$state/.subsuper-escalations.records"
+  ledger=$(printf 'delivered\t7\t/state/weekly.check.sh\t%s\t\n' "$check_text")
+  printf '%s\n' "$ledger" > "$state/.subsuper-check-ledger"
+
+  FM_STATE_OVERRIDE="$state" delivery_import_legacy "$state" \
+    || fail "legacy delivery/check history import failed"
+
+  [ "$(jq -s 'length' "$state/.subsuper-delivery.jsonl")" -eq 3 ] \
+    || fail "legacy history import did not retain all delivery records"
+  [ "$(jq -s -r --arg nonce "$typed_nonce" 'any(.[]; .text=="done: typed before daemon upgrade" and .nonce==$nonce and .state=="typed" and .typed_epoch==1700000001)' "$state/.subsuper-delivery.jsonl")" = true ] \
+    || fail "the old typed delivery record was not restored as typed"
+  [ "$(jq -s -r --arg text "$check_text" 'any(.[]; .kind=="check" and .source_key=="/state/weekly.check.sh" and .text==$text and .state=="delivered")' "$state/.subsuper-delivery.jsonl")" = true ] \
+    || fail "the old delivered check was not restored as delivered"
+  check_escalate_once "$state" 8 /state/weekly.check.sh "$check_text" "$check_text"
+  [ "$?" -eq 2 ] || fail "an imported delivered check was not deduped"
+  [ ! -e "$state/.subsuper-escalations" ] && [ ! -e "$state/.subsuper-escalations.delivery" ] \
+    && [ ! -e "$state/.subsuper-escalations.records" ] && [ ! -e "$state/.subsuper-check-ledger" ] \
+    || fail "legacy delivery/check history files were not consumed after journal commit"
+  pass "legacy delivery and check history import preserves typed and delivered state"
+}
+
+test_legacy_imported_blank_record_types_once_without_retype() {
+  local dir state home user_home sent
+  dir=$(make_supercase delivery-legacy-blank)
+  state="$dir/state"; home="$dir/home"; user_home="$dir/user-home"; sent="$dir/sent.log"
+  mkdir -p "$home" "$user_home"
+  printf '\n' > "$state/.subsuper-escalations"
+  FM_STATE_OVERRIDE="$state" delivery_import_legacy "$state" \
+    || fail "blank legacy record import failed"
+  afk_enter "$state"
+  : > "$sent"
+
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$sent"; printf 'unknown'; }
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET='named:w1:p2' \
+      FM_INJECT_CONFIRM_RETRIES=1 FM_INJECT_CONFIRM_SLEEP=0 \
+      escalate_flush "$state" && fail "blank legacy record flush unexpectedly confirmed"
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET='named:w1:p2' \
+      FM_INJECT_CONFIRM_RETRIES=1 FM_INJECT_CONFIRM_SLEEP=0 \
+      escalate_flush "$state" && fail "typed blank legacy record was retyped or confirmed"
+  ) || true
+  [ "$(wc -l < "$sent" | tr -d ' ')" -eq 1 ] \
+    || fail "blank legacy record was typed more than once"
+  [ "$(jq -s -r 'map(select(.state=="typed")) | length' "$state/.subsuper-delivery.jsonl")" -eq 1 ] \
+    || fail "blank legacy record did not remain typed after unknown submission"
+  pass "a blank legacy record is typed once and never retyped after unknown submission"
+}
+
+test_delivery_mark_failure_preserves_typed_record() {
+  local dir state home user_home sent
+  dir=$(make_supercase delivery-mark-failure)
+  state="$dir/state"; home="$dir/home"; user_home="$dir/user-home"; sent="$dir/sent.log"
+  mkdir -p "$home" "$user_home"
+  : > "$sent"
+  escalate_add "$state" 'done: retirement persistence failure'
+  afk_enter "$state"
+
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$sent"; printf 'empty'; }
+    journal_mark_delivered() { return 1; }
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=claude \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET='named:w1:p2' \
+      FM_INJECT_CONFIRM_RETRIES=1 FM_INJECT_CONFIRM_SLEEP=0 \
+      escalate_flush "$state" && fail "flush succeeded after delivery retirement failed"
+  ) || true
+  [ "$(wc -l < "$sent" | tr -d ' ')" -eq 1 ] || fail "retirement failure prevented the confirmed send"
+  [ "$(jq -s -r 'map(select(.state=="typed")) | length' "$state/.subsuper-delivery.jsonl")" -eq 1 ] \
+    || fail "retirement failure lost the typed record"
+  pass "delivery retirement failure keeps the typed record durable"
 }
 
 test_journal_partial_apply_temp_is_ignored() {
@@ -3048,7 +3160,11 @@ test_delivery_witness_requires_exact_envelope_and_new_transcript_offset
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_import_preserves_every_line_verbatim
 test_legacy_import_is_idempotent_when_journal_exists
-test_legacy_marker_like_buffer_is_quarantined_not_guessed
+test_legacy_import_quarantines_uncommitted_journal_with_legacy_state
+test_legacy_marker_like_buffer_is_preserved_verbatim
+test_legacy_import_preserves_delivery_and_check_history
+test_legacy_imported_blank_record_types_once_without_retype
+test_delivery_mark_failure_preserves_typed_record
 test_journal_partial_apply_temp_is_ignored
 test_typed_record_retires_on_later_witness_without_retype
 test_delivery_transcript_root_honors_configured_pi_agent_dir

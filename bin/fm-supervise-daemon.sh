@@ -788,32 +788,57 @@ check_buffer_marker() {  # <nonce>
   printf '%s%s' "$CHECK_BUFFER_MARKER_PREFIX" "$1"
 }
 
+# The delivery marker pins the in-flight digest to its delivered-once record. It
+# is only ever prepended as buffer line 1 (delivery_buffer_mark_nonce) and there
+# is at most one, so it is recognized ONLY as the exact record-pinned marker at
+# line 1. A real escalation line that coincidentally matches the marker grammar
+# at any other position - or in a legacy nonce-less buffer with no record at all
+# - is content, never a marker, so it is never stripped or omitted from a digest.
+# Prints the exact marker line for the current record's nonce; fails (printing
+# nothing) when no current record pins one.
+delivery_buffer_active_marker() {  # <state>
+  local state=$1 parsed nonce
+  parsed=$(delivery_record_read "$state" 2>/dev/null) || return 1
+  nonce=$(printf '%s' "$parsed" | cut -f2)
+  case "$nonce" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) return 1 ;;
+  esac
+  printf '%s%s' "$DELIVERY_BUFFER_MARKER_PREFIX" "$nonce"
+}
+
 delivery_buffer_line_count() {  # <state>
-  local state=$1 buf
+  local state=$1 buf active
   buf="$state/.subsuper-escalations"
   [ -f "$buf" ] || { printf '0'; return 0; }
-  awk -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
-    function is_marker(line, prefix, suffix) {
-      if (index(line, prefix) != 1) return 0
-      suffix=substr(line, length(prefix) + 1)
+  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
+  awk -v active="$active" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
+    function is_check_marker(line, suffix) {
+      if (index(line, check_prefix) != 1) return 0
+      suffix=substr(line, length(check_prefix) + 1)
       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
     }
-    !is_marker($0, delivery_prefix) && !is_marker($0, check_prefix) { count++ }
+    NR == 1 && active != "" && $0 == active { next }
+    is_check_marker($0) { next }
+    { count++ }
     END { print count + 0 }
   ' "$buf"
 }
 
 delivery_buffer_line_at() {  # <state> <one-based-buffer-line>
-  local state=$1 line_number=$2 buf
+  local state=$1 line_number=$2 buf active
   buf="$state/.subsuper-escalations"
   case "$line_number" in ''|*[!0-9]*|0) return 1 ;; esac
-  awk -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v wanted="$line_number" '
-    function is_marker(line, prefix, suffix) {
-      if (index(line, prefix) != 1) return 0
-      suffix=substr(line, length(prefix) + 1)
+  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
+  awk -v active="$active" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v wanted="$line_number" '
+    function is_check_marker(line, suffix) {
+      if (index(line, check_prefix) != 1) return 0
+      suffix=substr(line, length(check_prefix) + 1)
       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
     }
-    !is_marker($0, delivery_prefix) && !is_marker($0, check_prefix) {
+    NR == 1 && active != "" && $0 == active { next }
+    is_check_marker($0) { next }
+    {
       count++
       if (count == wanted) {
         print
@@ -833,29 +858,28 @@ delivery_buffer_has_nonce() {  # <state> <nonce>
     "$buf" 2>/dev/null
 }
 
+# Clean up an ORPHANED delivery marker (its record lost to a crash between the
+# buffer mark and the record write). Because the marker is only ever prepended as
+# buffer line 1 and there is at most one, an orphan can only sit at line 1: strip
+# ONLY a line-1 marker-grammar line. A real escalation that coincidentally
+# matches the marker grammar at any later position - and every line of a legacy
+# nonce-less buffer past line 1 - is content and is preserved.
 delivery_buffer_strip_markers() {  # <state>
   local state=$1 buf tmp
   buf="$state/.subsuper-escalations"
   [ -f "$buf" ] || return 0
-  if ! awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
-    'function is_marker(line, suffix) {
-       if (index(line, prefix) != 1) return 0
-       suffix=substr(line, length(prefix) + 1)
-       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-     }
-     is_marker($0) { found=1; exit }
-     END { exit(found ? 0 : 1) }' \
+  if ! awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" '
+    NR == 1 {
+      if (index($0, prefix) != 1) exit 1
+      suffix=substr($0, length(prefix) + 1)
+      exit((length(suffix) == 12 && suffix !~ /[^0-9a-f]/) ? 0 : 1)
+    }
+    END { if (NR == 0) exit 1 }' \
     "$buf" >/dev/null 2>&1; then
     return 0
   fi
   tmp=$(mktemp "$state/.subsuper-escalations-clean.XXXXXX") || return 1
-  if ! awk -v prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
-    'function is_marker(line, suffix) {
-       if (index(line, prefix) != 1) return 0
-       suffix=substr(line, length(prefix) + 1)
-       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-     }
-     !is_marker($0) { print }' "$buf" > "$tmp" \
+  if ! awk 'NR > 1 { print }' "$buf" > "$tmp" \
     || ! mv "$tmp" "$buf"; then
     rm -f "$tmp"
     return 1
@@ -886,15 +910,15 @@ delivery_buffer_retire() {  # <state> <nonce> <delivered-buffer-lines>
   case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
   delivery_buffer_has_nonce "$state" "$nonce" || return 1
   tmp=$(mktemp "$state/.subsuper-escalations-retire.XXXXXX") || return 1
-  if ! awk -v marker="$marker" -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
+  if ! awk -v marker="$marker" \
     -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v delivered="$delivered_lines" '
-    function is_marker(line, prefix, suffix) {
-      if (index(line, prefix) != 1) return 0
-      suffix=substr(line, length(prefix) + 1)
+    # Only the exact record-pinned delivery marker is a delivery marker (matched
+    # by $0 == marker below); a content line matching the delivery grammar is not.
+    # Check markers stay recognized by grammar because they are interior by design.
+    function is_check_marker(line, suffix) {
+      if (index(line, check_prefix) != 1) return 0
+      suffix=substr(line, length(check_prefix) + 1)
       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
-    }
-    function is_internal_marker(line) {
-      return is_marker(line, delivery_prefix) || is_marker(line, check_prefix)
     }
     BEGIN { raw=0; marker_seen=0 }
     {
@@ -902,7 +926,7 @@ delivery_buffer_retire() {  # <state> <nonce> <delivered-buffer-lines>
         marker_seen=1
         next
       }
-      if (is_internal_marker($0)) {
+      if (is_check_marker($0)) {
         if (raw < delivered) next
         print
         next
@@ -988,9 +1012,23 @@ delivery_record_prepare() {  # <state> <nonce> <buffer-line-count> <transcript> 
   fi
 }
 
+# The Pi transcript root follows Pi's own agent-directory resolution: an explicit
+# PI_CODING_AGENT_DIR (the same variable a configured `--session-dir` launch sets)
+# overrides the default $HOME/.pi/agent, and sessions live under <agent-dir>/sessions.
+# Only an absolute configured value is honored; anything else falls back to the
+# default so a stray relative value cannot redirect the witness. The cwd-scoped
+# canonical check (delivery_transcript_expected_dir/_canonical_path) still binds the
+# accepted transcript to <root>/--<home-slug>--, so a foreign root is still rejected.
 delivery_transcript_root() {  # <harness>
+  local pi_agent_dir
   case "$1" in
-    pi|pi-signed) printf '%s' "$HOME/.pi/agent/sessions" ;;
+    pi|pi-signed)
+      pi_agent_dir=$HOME/.pi/agent
+      case "${PI_CODING_AGENT_DIR:-}" in
+        /*) pi_agent_dir=$PI_CODING_AGENT_DIR ;;
+      esac
+      printf '%s/sessions' "$pi_agent_dir"
+      ;;
     claude*) printf '%s' "$HOME/.claude/projects" ;;
     *) return 1 ;;
   esac
@@ -1310,19 +1348,23 @@ check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
 }
 
 check_buffer_marker_in_prefix() {  # <state> <reservation-nonce> <delivered-buffer-lines> <payload>
-  local state=$1 reservation_nonce=$2 delivered_lines=$3 payload=$4 buf marker
+  local state=$1 reservation_nonce=$2 delivered_lines=$3 payload=$4 buf marker active
   buf="$state/.subsuper-escalations"
   marker=$(check_buffer_marker "$reservation_nonce")
   case "$delivered_lines" in ''|*[!0-9]*|0) return 1 ;; esac
-  awk -v marker="$marker" -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
+  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
+  awk -v marker="$marker" -v active="$active" \
     -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" -v limit="$delivered_lines" -v payload="$payload" '
-    function is_marker(line, prefix, suffix) {
-      if (index(line, prefix) != 1) return 0
-      suffix=substr(line, length(prefix) + 1)
+    # A content line matching the delivery grammar is content, not a marker; only
+    # the exact record-pinned delivery marker at line 1 is skipped from the count.
+    function is_check_marker(line, suffix) {
+      if (index(line, check_prefix) != 1) return 0
+      suffix=substr(line, length(check_prefix) + 1)
       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
     }
-    function is_internal_marker(line) {
-      return is_marker(line, delivery_prefix) || is_marker(line, check_prefix)
+    NR == 1 && active != "" && $0 == active {
+      if (after_marker) after_marker=0
+      next
     }
     {
       if ($0 == marker) {
@@ -1331,7 +1373,7 @@ check_buffer_marker_in_prefix() {  # <state> <reservation-nonce> <delivered-buff
         after_marker=1
         next
       }
-      if (is_internal_marker($0)) {
+      if (is_check_marker($0)) {
         if (after_marker) after_marker=0
         next
       }
@@ -1351,12 +1393,14 @@ check_buffer_marker_in_prefix() {  # <state> <reservation-nonce> <delivered-buff
 }
 
 check_ledger_mark_delivered() {  # <state> [delivered-buffer-lines]
-  local state=$1 delivered_lines=${2:-} ledger tmp status sequence key payload reservation_nonce marker_status
+  local state=$1 delivered_lines=${2:-} ledger pending status sequence key payload reservation_nonce marker_status
   case "$delivered_lines" in ''|*[!0-9]*) [ -z "$delivered_lines" ] || return 2 ;; esac
   ledger="$state/.subsuper-check-ledger"
   [ -s "$ledger" ] || return 0
-  tmp=$(mktemp "$state/.subsuper-check-delivered.XXXXXX") || return 1
-  if ! awk -F '\t' '
+  # Snapshot the eligible reservations before the loop appends to the ledger, so
+  # the read source is an in-memory copy rather than a temp file the loop also
+  # removes (which reads and writes one path in one construct).
+  pending=$(awk -F '\t' '
     BEGIN { OFS="\t" }
     {
       id=$2 FS $3 FS $4
@@ -1373,33 +1417,32 @@ check_ledger_mark_delivered() {  # <state> [delivered-buffer-lines]
         }
       }
     }
-  ' "$ledger" > "$tmp"; then
-    rm -f "$tmp"
-    return 1
-  fi
+  ' "$ledger") || return 1
+  [ -n "$pending" ] || return 0
   while IFS=$'\t' read -r status sequence key payload reservation_nonce; do
     marker_status=0
     [ -n "$status$sequence$key$payload$reservation_nonce" ] || continue
     case "$reservation_nonce" in
       [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-      *) rm -f "$tmp"; return 1 ;;
+      *) return 1 ;;
     esac
-    [ -n "$delivered_lines" ] || { rm -f "$tmp"; return 2; }
+    [ -n "$delivered_lines" ] || return 2
     check_buffer_marker_in_prefix "$state" "$reservation_nonce" "$delivered_lines" "$payload" \
       || marker_status=$?
     case "$marker_status" in
       0) ;;
       1) continue ;;
-      *) rm -f "$tmp"; return 1 ;;
+      *) return 1 ;;
     esac
     if [ "$status" = reserved ]; then
       check_ledger_append "$state" buffered "$sequence" "$key" "$payload" \
-        || { rm -f "$tmp"; return 1; }
+        || return 1
     fi
     check_ledger_append "$state" delivered "$sequence" "$key" "$payload" \
-      || { rm -f "$tmp"; return 1; }
-  done < "$tmp"
-  rm -f "$tmp"
+      || return 1
+  done <<EOF
+$pending
+EOF
 }
 
 delivery_reconcile_startup() {  # <state> <backend> <target> <harness>
@@ -1468,7 +1511,7 @@ delivery_complete() {  # <state> <delivered-buffer-lines> <nonce>
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for witness recheck / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf record record_status version nonce n target backend harness msg witness_transcript offset buffered_at rest
+  local state=$1 buf record record_status version nonce n target backend harness msg witness_transcript offset buffered_at rest active
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
   record_status=1
@@ -1519,18 +1562,20 @@ escalate_flush() {  # <state>
   n=$(delivery_buffer_line_count "$state")
   case "$n" in ''|*[!0-9]*|0) return 1 ;; esac
   nonce=$(delivery_nonce_generate) || { log "inject stalled: could not generate a delivery nonce"; return 1; }
+  active=$(delivery_buffer_active_marker "$state" 2>/dev/null || true)
   # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk -v delivery_prefix="$DELIVERY_BUFFER_MARKER_PREFIX" \
-    -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
-    function is_marker(line, prefix, suffix) {
-      if (index(line, prefix) != 1) return 0
-      suffix=substr(line, length(prefix) + 1)
+  # The content set MUST match delivery_buffer_line_count above: skip only the
+  # exact record-pinned delivery marker at line 1 and the interior check markers;
+  # a content line matching the delivery grammar is kept.
+  msg=$(awk -v active="$active" -v check_prefix="$CHECK_BUFFER_MARKER_PREFIX" '
+    function is_check_marker(line, suffix) {
+      if (index(line, check_prefix) != 1) return 0
+      suffix=substr(line, length(check_prefix) + 1)
       return length(suffix) == 12 && suffix !~ /[^0-9a-f]/
     }
-    function is_internal_marker(line) {
-      return is_marker(line, delivery_prefix) || is_marker(line, check_prefix)
-    }
-    !is_internal_marker($0) {
+    NR == 1 && active != "" && $0 == active { next }
+    is_check_marker($0) { next }
+    {
       if (seen++) printf " | "
       printf "%s", $0
     }

@@ -2027,6 +2027,112 @@ test_legacy_delivery_marker_like_line_is_preserved() {
   pass "legacy marker-like escalation text remains buffered"
 }
 
+# AFK-012: the delivery marker is recognized ONLY as the record-pinned marker at
+# buffer line 1. A real escalation whose text is a valid 12-hex delivery-marker
+# grammar at any later position must stay counted and delivered, never mistaken
+# for the marker and dropped from a multi-line digest.
+test_delivery_marker_recognized_only_at_record_pinned_line_one() {
+  local dir state nonce collision
+  dir=$(make_supercase delivery-marker-first-line-only)
+  state="$dir/state"
+  nonce=abcdef123456
+  collision='__FIRSTMATE_DELIVERY_NONCE__=ffffffffffff'
+
+  escalate_add "$state" "real event one"
+  escalate_add "$state" "$collision"
+  [ "$(delivery_buffer_line_count "$state")" -eq 2 ] \
+    || fail "a marker-grammar escalation line was excluded before any delivery record existed"
+
+  delivery_record_prepare "$state" "$nonce" 2 - 0 0 \
+    || fail "could not pin the in-flight delivery record and marker"
+  [ "$(head -1 "$state/.subsuper-escalations")" = "__FIRSTMATE_DELIVERY_NONCE__=$nonce" ] \
+    || fail "the delivery marker was not prepended as buffer line 1"
+  [ "$(delivery_buffer_line_count "$state")" -eq 2 ] \
+    || fail "the record-pinned marker or the marker-grammar content line was miscounted"
+  [ "$(delivery_buffer_line_at "$state" 1)" = "real event one" ] \
+    || fail "the first content line was not the first non-marker line"
+  [ "$(delivery_buffer_line_at "$state" 2)" = "$collision" ] \
+    || fail "a marker-grammar content line at position 2 was omitted from the digest"
+
+  delivery_buffer_retire "$state" "$nonce" 2 \
+    || fail "retiring the pinned digest failed when a marker-grammar content line was present"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "retiring the two-line digest left buffered content behind"
+  pass "the delivery marker is bound to the record-pinned line 1; marker-grammar content survives"
+}
+
+# AFK-012: a legacy nonce-less buffer (no delivery record) must never have any
+# line stripped or omitted, even a line that matches the marker grammar, as long
+# as it is not the record's first line.
+test_legacy_marker_grammar_line_preserved_in_multiline_buffer() {
+  local dir state buf collision
+  dir=$(make_supercase delivery-marker-legacy-multiline)
+  state="$dir/state"
+  buf="$state/.subsuper-escalations"
+  collision='__FIRSTMATE_DELIVERY_NONCE__=0123456789ab'
+  printf '%s\n%s\n%s\n' "first legacy event" "$collision" "third legacy event" > "$buf"
+
+  delivery_buffer_strip_markers "$state" \
+    || fail "stripping a legacy multi-line buffer failed"
+  [ "$(wc -l < "$buf" | tr -d ' ')" -eq 3 ] \
+    || fail "a legacy nonce-less buffer line was stripped"
+  grep -qx "$collision" "$buf" \
+    || fail "the legacy marker-grammar line did not survive verbatim"
+  [ "$(delivery_buffer_line_count "$state")" -eq 3 ] \
+    || fail "a legacy marker-grammar line was excluded from the digest count"
+  pass "a legacy marker-grammar escalation line is never stripped or omitted"
+}
+
+# AFK-013: the Pi transcript root honors a configured PI_CODING_AGENT_DIR (the
+# same directory a `--session-dir` launch sets) while keeping the cwd-scoped
+# canonical binding, so a legitimately relocated session is accepted and a
+# foreign root is still rejected.
+test_delivery_transcript_root_honors_configured_pi_agent_dir() {
+  local dir home agent_dir slug transcript_dir transcript nonce text fixture selected foreign foreign_fixture
+  dir=$(make_supercase delivery-transcript-configured-root)
+  home="$dir/home"
+  agent_dir="$dir/pi-agent"
+  nonce=abcdef123456
+  mkdir -p "$home"
+  home=$(cd "$home" && pwd -P)
+  agent_dir=$(mkdir -p "$agent_dir" && cd "$agent_dir" && pwd -P)
+  slug=${home#/}
+  slug=${slug//\//-}
+  transcript_dir="$agent_dir/sessions/--${slug}--"
+  mkdir -p "$transcript_dir"
+  transcript="$transcript_dir/session.jsonl"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
+  text="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] configured root delivery"
+  jq -cn --arg text "$text" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  transcript=$(realpath "$transcript")
+
+  [ "$(PI_CODING_AGENT_DIR="$agent_dir" delivery_transcript_root pi)" = "$agent_dir/sessions" ] \
+    || fail "delivery_transcript_root did not honor the configured PI_CODING_AGENT_DIR"
+  [ "$(PI_CODING_AGENT_DIR="relative/agent" HOME="$dir" delivery_transcript_root pi)" = "$dir/.pi/agent/sessions" ] \
+    || fail "a relative PI_CODING_AGENT_DIR did not fall back to the default agent dir"
+
+  fixture=$(jq -cn --arg path "$transcript" \
+    '{result:{agent:{agent_status:"idle",agent_session:$path}}}')
+  selected=$(PI_CODING_AGENT_DIR="$agent_dir" FM_HOME="$home" \
+    delivery_transcript_path_from_agent_json pi "$fixture") \
+    || fail "a transcript under the configured Pi session root was rejected"
+  [ "$selected" = "$transcript" ] \
+    || fail "the configured-root selector returned '$selected' instead of '$transcript'"
+
+  foreign="$dir/foreign-agent/sessions/--${slug}--/session.jsonl"
+  mkdir -p "$(dirname "$foreign")"
+  cp "$transcript" "$foreign"
+  foreign_fixture=$(jq -cn --arg path "$(realpath "$foreign")" \
+    '{result:{agent:{agent_status:"idle",agent_session:$path}}}')
+  if PI_CODING_AGENT_DIR="$agent_dir" FM_HOME="$home" \
+    delivery_transcript_path_from_agent_json pi "$foreign_fixture" >/dev/null; then
+    fail "a transcript under a foreign root was accepted against the configured Pi session root"
+  fi
+  pass "the Pi transcript root honors a configured root and still rejects a foreign one"
+}
+
 test_max_defer_empty_swallow_types_once_and_alarms() {
   local dir state fakebin sent
   dir=$(make_bordered_case maxdefer-stuck)
@@ -3174,6 +3280,9 @@ test_startup_reconcile_after_retirement_preserves_appended_digest
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_buffer_gets_one_nonce_attempt_then_stalls_without_retype
 test_legacy_delivery_marker_like_line_is_preserved
+test_delivery_marker_recognized_only_at_record_pinned_line_one
+test_legacy_marker_grammar_line_preserved_in_multiline_buffer
+test_delivery_transcript_root_honors_configured_pi_agent_dir
 test_max_defer_empty_swallow_types_once_and_alarms
 test_max_defer_flushes_empty_idle_pane
 test_max_defer_pending_composer_alarms_without_typing

@@ -1793,7 +1793,7 @@ fm_wake_print_deduped() {
 # status or turn-ended change by comparing a size:mtime signature against a
 # persisted state/.seen-* marker, and advances that marker only after the change
 # has been surfaced to firstmate or deliberately absorbed by the signal triage.
-# These three helpers plus the guarded append below are the ONE owner of that
+# These four helpers plus the guarded append below are the ONE owner of that
 # signature and marker format, shared by the scan itself, by the drain-time
 # historical-annotation staleness check, and by this home's own bookkeeping
 # writers.
@@ -1807,21 +1807,24 @@ fm_wake_signal_sig() {  # <file> -> "size:mtime"
 }
 
 fm_wake_signal_seen_path() {  # <state> <file>
-  local base id
-  base=$(basename "$2")
-  case "$base" in
-    *.status)
-      id=${base%.status}
-      printf '%s/.seen-%s_status' "$1" "$id"
-      ;;
-    *.turn-ended)
-      id=${base%.turn-ended}
-      printf '%s/.seen-%s_turn-ended' "$1" "$id"
-      ;;
-    *)
-      printf '%s/.seen-%s' "$1" "$(printf '%s' "$base" | tr '.' '_')"
-      ;;
-  esac
+  printf '%s/.seen-%s' "$1" "$(basename "$2" | tr '.' '_')"
+}
+
+# Extract the trusted byte offset from a persisted .seen-* marker's contents.
+# The marker holds a complete "size:mtime" signature (fm_wake_signal_sig). A
+# marker that is not exactly that shape - an interrupted partial write such as a
+# bare "10", an empty file, or foreign text - cannot be trusted as an offset: a
+# bare numeric prefix looks like a valid byte position but would skip the
+# unsurfaced bytes before it and lose their wake. Any malformed marker yields 0,
+# so the reader rescans the file from the start (the safe direction).
+fm_wake_signal_seen_offset() {  # <marker-contents> -> byte offset (0 if malformed)
+  local marker=$1 size rest
+  case "$marker" in *:*) ;; *) printf '0'; return 0 ;; esac
+  size=${marker%%:*}
+  rest=${marker#*:}
+  case "$size" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+  case "$rest" in ''|*[!0-9.]*) printf '0'; return 0 ;; esac
+  printf '%s' "$size"
 }
 
 # 0 when <file>'s current signature exactly matches its recorded seen marker,

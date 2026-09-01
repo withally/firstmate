@@ -194,6 +194,44 @@ test_scan_captain_relevant_statuses_classifier() {
   pass "scan_captain_relevant_statuses lists only captain-relevant statuses"
 }
 
+# A persisted .seen-* marker is trusted as a scan offset only when it is a
+# complete "size:mtime" signature. An interrupted partial write - a bare number,
+# an empty file, foreign text - must not be trusted as a byte offset, or an
+# unsurfaced captain-relevant line before that offset would be skipped and its
+# wake lost. Any malformed marker resolves to 0 so the reader rescans from byte 0.
+seen_offset() {  # <marker-contents>
+  bash -c '. "$1"; fm_wake_signal_seen_offset "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$1"
+}
+
+test_signal_seen_offset_rejects_malformed_markers() {
+  [ "$(seen_offset '4096:1699999999.500000000')" = 4096 ] \
+    || fail "a complete size:mtime marker did not yield its size"
+  [ "$(seen_offset '512:1699999999')" = 512 ] \
+    || fail "an integer-mtime marker did not yield its size"
+  [ "$(seen_offset '10')" = 0 ] \
+    || fail "a bare numeric prefix was trusted as an offset instead of reset to 0"
+  [ "$(seen_offset '')" = 0 ] \
+    || fail "an empty marker was not reset to 0"
+  [ "$(seen_offset '4096:')" = 0 ] \
+    || fail "a marker with no mtime was not reset to 0"
+  [ "$(seen_offset 'abc:123')" = 0 ] \
+    || fail "a non-numeric size was not reset to 0"
+  [ "$(seen_offset '40 96:1')" = 0 ] \
+    || fail "a size with embedded whitespace was not reset to 0"
+  pass "fm_wake_signal_seen_offset trusts only a complete size:mtime marker, else 0"
+}
+
+test_signal_seen_path_preserves_base_derivation() {
+  local path base
+  for base in a.b.status task.status task.turn-ended a.b.turn-ended; do
+    path=$(bash -c '. "$1"; fm_wake_signal_seen_path "$2" "$3"' _ \
+      "$ROOT/bin/fm-wake-lib.sh" /st "/st/$base")
+    [ "$path" = "/st/.seen-$(printf '%s' "$base" | tr '.' '_')" ] \
+      || fail "seen path for $base drifted from the dots-to-underscores base derivation: $path"
+  done
+  pass "fm_wake_signal_seen_path keeps the shared dots-to-underscores marker path (no dotted-id migration)"
+}
+
 test_classifier_primitives() {
   local dir state open activity
   dir=$(make_case classify-primitives); state="$dir/state"
@@ -711,6 +749,59 @@ test_absorbed_status_remains_unread_for_next_drain() {
   grep -F 'task working: routine progress retained for drain' "$drain_out" >/dev/null \
     || fail "absorbed status line was lost before the next drain"
   pass "absorbed nonterminal status remains available to the next drain"
+}
+
+# Two status files change in the same grace window: one appends only nonterminal
+# lines, the other appends a terminal line. The batch is actionable because of
+# the terminal file, but the routine file must be classified on its own and left
+# absorbed rather than dragged into the queue with its neighbour.
+test_mixed_pending_classifies_each_status_file() {
+  local dir state fakebin out drain_out routine_file terminal_file pid
+  dir=$(make_case mixed-pending); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  routine_file="$state/routine.status"; terminal_file="$state/shipped.status"
+  printf 'working: still compiling\n' > "$routine_file"
+  printf 'done: PR https://example.test/pr/7\n' > "$terminal_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for the terminal status in a mixed batch"
+  grep -F "shipped.status" "$out" >/dev/null || fail "the terminal status was not named in the wake reason"
+  grep -F "routine.status" "$out" >/dev/null && fail "the routine status was dragged into the mixed-batch wake reason"
+  [ -s "$state/.seen-routine_status" ] || fail "the absorbed routine status did not advance its suppressor"
+  [ -s "$state/.seen-shipped_status" ] || fail "the surfaced terminal status did not advance its suppressor"
+  [ -s "$state/.hb-surfaced-shipped" ] || fail "the terminal status was not marked surfaced"
+  [ ! -e "$state/.hb-surfaced-routine" ] || fail "the absorbed routine status was wrongly marked surfaced"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the mixed batch failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "shipped.status" >/dev/null \
+    || fail "the terminal status was not queued as a signal"
+  if grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "routine.status" >/dev/null; then
+    fail "the routine status was queued as a signal in a mixed batch"
+  fi
+  grep -F 'UNREAD STATUS' "$drain_out" >/dev/null || fail "the mixed-batch drain omitted UNREAD STATUS"
+  grep -F 'routine working: still compiling' "$drain_out" >/dev/null \
+    || fail "the absorbed routine line was lost before the next drain"
+  pass "a mixed grace-window batch queues only the actionable status file and leaves the routine one for UNREAD STATUS"
+}
+
+# A captain-relevant line sits at the start of the log, followed by routine
+# bytes, under a truncated "10" seen marker. Trusting that bare number as a byte
+# offset would start the scan past the terminal line and see only the nonterminal
+# tail, losing the wake. The malformed marker must instead rescan from byte 0.
+test_malformed_seen_marker_rescans_and_preserves_wake() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case malformed-marker); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/task.status"
+  printf 'done: PR https://example.test/pr/9\nworking: routine tail\n' > "$status_file"
+  printf '10' > "$state/.seen-task_status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a truncated seen marker suppressed a captain-relevant wake"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the rescan-from-zero did not surface the captain-relevant signal"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the rescanned signal failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "task.status" >/dev/null \
+    || fail "the rescanned captain-relevant signal was not queued"
+  pass "a malformed seen marker rescans from byte 0 so an early captain-relevant line is never skipped"
 }
 
 test_self_announced_close_does_not_rewake_but_next_note_does() {
@@ -2998,6 +3089,8 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
 
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
+test_signal_seen_offset_rejects_malformed_markers
+test_signal_seen_path_preserves_base_derivation
 test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
@@ -3014,6 +3107,8 @@ test_secondmate_nonterminal_status_absorbed
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key
 test_keyed_resolved_survives_interleaved_drain_cursor_advance
 test_absorbed_status_remains_unread_for_next_drain
+test_mixed_pending_classifies_each_status_file
+test_malformed_seen_marker_rescans_and_preserves_wake
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced

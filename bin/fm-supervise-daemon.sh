@@ -1257,7 +1257,7 @@ legacy_since_epoch() {  # <state> <since-path>
 }
 
 legacy_delivery_parse() {  # <delivery-path> -> <version><TAB><nonce><TAB><count><TAB><transcript><TAB><offset><TAB><typed-epoch>
-  local delivery=$1 line version nonce count field4 field5 field6 field7 field8
+  local delivery=$1 line version nonce count field4 field5 field6 field7 field8 parsed_version
   line=$(awk 'NR == 1 { value=$0 } NR > 1 { bad=1 } END { if (bad || NR == 0) exit 1; print value }' "$delivery") || return 1
   case "$line" in *$'\r'*|*$'\n'*) return 1 ;; esac
   IFS=$'\t' read -r version nonce count field4 field5 field6 field7 field8 <<< "$line"
@@ -1274,7 +1274,9 @@ legacy_delivery_parse() {  # <delivery-path> -> <version><TAB><nonce><TAB><count
       case "$field6" in ''|*[!0-9]*) return 1 ;; esac
       case "$field7" in ''|*[!0-9]*) return 1 ;; esac
       [ -z "${field8:-}" ] || return 1
-      printf 'legacy\t%s\t%s\t%s\t%s\t%s' "$nonce" "$count" "$field5" "$field6" "$field7"
+      parsed_version=legacy
+      [ "$version" = v2-retiring ] && parsed_version=retiring
+      printf '%s\t%s\t%s\t%s\t%s\t%s' "$parsed_version" "$nonce" "$count" "$field5" "$field6" "$field7"
       ;;
     v3)
       [ -n "${field4:-}" ] || return 1
@@ -1315,6 +1317,9 @@ legacy_ledger_validate() {  # <ledger-path>
     case "$sequence" in ''|*[!0-9]*) return 1 ;; esac
     case "$key$payload" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
     case "$extra" in *$'\t'*) return 1 ;; esac
+    if [ "$status" != reserved ] && [ -n "$extra" ]; then
+      return 1
+    fi
     if [ "$status" = reserved ]; then
       case "$extra" in
         ''|*[!0-9]*)
@@ -1326,6 +1331,23 @@ legacy_ledger_validate() {  # <ledger-path>
       esac
     fi
   done < "$ledger"
+}
+
+legacy_retiring_records_prove_prefix() {  # <metadata-path> <buffer-lines> <delivered-lines> <nonce>
+  local metadata=$1 buffer_lines=$2 delivered_lines=$3 nonce=$4
+  local kind record_nonce delivery_nonce buffered_epoch origin line_number
+  [ -s "$metadata" ] || return 1
+  [ "$(wc -l < "$metadata" | tr -d ' ')" -eq "$buffer_lines" ] || return 1
+  line_number=0
+  while IFS=$'\t' read -r kind record_nonce delivery_nonce buffered_epoch origin; do
+    line_number=$((line_number + 1))
+    if [ "$line_number" -le "$delivered_lines" ]; then
+      [ "$record_nonce" = "$nonce" ] || [ "$delivery_nonce" = "$nonce" ] || return 1
+    else
+      [ "$record_nonce" != "$nonce" ] && [ "$delivery_nonce" != "$nonce" ] || return 1
+    fi
+  done < "$metadata"
+  [ "$line_number" -eq "$buffer_lines" ]
 }
 
 # One-time migration from the pre-redesign multi-file delivery store into the
@@ -1445,6 +1467,12 @@ delivery_import_legacy() {  # <state>
     "$records" > "$meta_tmp" 2>/dev/null; then
     rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
     legacy_import_quarantine "$state" "legacy delivery records could not be expanded"
+    return 1
+  fi
+  if [ "$delivery_version" = retiring ] \
+    && ! legacy_retiring_records_prove_prefix "$meta_tmp" "$raw" "$delivery_count" "$delivery_nonce"; then
+    rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
+    legacy_import_quarantine "$state" "legacy delivery retirement state lacks an unambiguous record nonce boundary"
     return 1
   fi
   if [ "$(wc -l < "$meta_tmp" | tr -d ' ')" -gt "$raw" ]; then

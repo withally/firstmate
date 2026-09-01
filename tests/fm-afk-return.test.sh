@@ -56,6 +56,12 @@ run_return() {  # <case-dir> <mode>
   FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" "$dir/bin/fm-afk-return.sh" "$mode" 2>&1
 }
 
+run_return_with_path() {  # <case-dir> <mode> <path-prefix>
+  local dir=$1 mode=$2 path_prefix=$3
+  PATH="$path_prefix:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    "$dir/bin/fm-afk-return.sh" "$mode" 2>&1
+}
+
 ack_return() {  # <case-dir> <return-output>
   local dir=$1 output=$2 sequence generation
   sequence=$(printf '%s\n' "$output" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' | tail -1)
@@ -315,6 +321,49 @@ test_return_surfaces_empty_delivery_record() {
   pass "return catch-up reports an empty delivery record before clearing it"
 }
 
+test_empty_delivery_journal_is_a_valid_noop() {
+  local dir out journal gate
+  dir="$TMP_ROOT/empty-delivery-journal"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  gate="$dir/home/state/.afk-return-catchup"
+  : > "$journal"
+
+  out=$(run_return "$dir" begin) || fail "an empty delivery journal blocked return: $out"
+  [ ! -e "$gate" ] || fail "an empty delivery journal opened a return gate"
+  [ ! -e "$journal" ] || fail "successful return left the empty delivery journal behind"
+  pass "return catch-up accepts an empty delivery journal as no work"
+}
+
+test_delivery_cleanup_failure_keeps_return_gate() {
+  local dir out rc gate wedge fakebin
+  dir="$TMP_ROOT/delivery-cleanup-failure"
+  install_runner "$dir"
+  gate="$dir/home/state/.afk-return-catchup"
+  wedge="$dir/home/state/.subsuper-inject-wedged"
+  fakebin="$dir/fakebin"
+  mkdir -p "$fakebin"
+  printf 'delivery is still wedged\n' > "$wedge"
+  cat > "$fakebin/rm" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [ "$arg" = "$FM_RETURN_FAIL_RM" ] && exit 1
+done
+exec /bin/rm "$@"
+SH
+  chmod +x "$fakebin/rm"
+
+  set +e
+  out=$(FM_RETURN_FAIL_RM="$wedge" run_return_with_path "$dir" begin "$fakebin")
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "delivery cleanup failure did not keep return gated (rc=$rc): $out"
+  [ -e "$gate" ] || fail "delivery cleanup failure removed the return gate"
+  [ -e "$wedge" ] || fail "delivery cleanup failure removed the uncleared artifact"
+  assert_contains "$out" 'delivery cleanup failed' "return did not report the cleanup failure"
+  pass "delivery cleanup failure preserves the return gate and uncleared state"
+}
+
 test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
@@ -323,3 +372,5 @@ test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
 test_malformed_delivery_journal_blocks_return_and_preserves_state
 test_return_surfaces_empty_delivery_record
+test_empty_delivery_journal_is_a_valid_noop
+test_delivery_cleanup_failure_keeps_return_gate

@@ -101,8 +101,8 @@ test_afk_start_fails_when_fresh_cleanup_fails() {
   else
     fail "fm-afk-start.sh could not recover after a failed fresh cleanup"
   fi
-  [ ! -e "$state/.subsuper-check-ledger" ] \
-    || fail "fm-afk-start.sh resumed with the stale ledger after a failed fresh cleanup"
+  [ -e "$state/.subsuper-check-ledger" ] \
+    || fail "fm-afk-start.sh discarded the legacy ledger before daemon migration"
   pass "fm-afk-start.sh fails closed when fresh artifact cleanup fails"
 }
 
@@ -1745,6 +1745,49 @@ test_legacy_import_quarantines_uncommitted_journal_with_legacy_state() {
   pass "legacy state is quarantined when the journal is not committed"
 }
 
+test_legacy_retiring_delivery_state_is_quarantined_without_record_nonce() {
+  local dir state qdir
+  dir=$(make_supercase delivery-legacy-retiring-ambiguous)
+  state="$dir/state"
+  mkdir -p "$state"
+  printf '%s\n' 'still buffered after the witnessed digest retired' > "$state/.subsuper-escalations"
+  printf '1700000000\n' > "$state/.subsuper-escalations.since"
+  printf 'v2-retiring\tabcdef123456\t1\tdeadbeef\t-\t0\t1700000001\n' \
+    > "$state/.subsuper-escalations.delivery"
+  jq -cn '{version:1,nonce:"",delivery_nonce:"",kind:"escalation",lines:1,buffered_epoch:1700000000,origin:"legacy"}' \
+    > "$state/.subsuper-escalations.records"
+
+  FM_WEDGE_ALARM_EXEC=discard delivery_import_legacy "$state" \
+    && fail "ambiguous retiring legacy state was imported as a typed record"
+
+  [ ! -e "$state/.subsuper-delivery.jsonl" ] || fail "ambiguous retiring state left an active journal"
+  [ -s "$state/.subsuper-inject-wedged" ] || fail "ambiguous retiring state did not raise a wedge alarm"
+  qdir=$(find "$state" -maxdepth 1 -type d -name '.subsuper-delivery.quarantine-*' | head -1)
+  [ -n "$qdir" ] && [ -e "$qdir/.subsuper-escalations" ] \
+    && [ -e "$qdir/.subsuper-escalations.delivery" ] \
+    || fail "ambiguous retiring state was not preserved in quarantine"
+  pass "ambiguous retiring delivery state is quarantined without record-level nonce proof"
+}
+
+test_legacy_ledger_extra_field_is_quarantined() {
+  local dir state qdir
+  dir=$(make_supercase delivery-legacy-ledger-extra)
+  state="$dir/state"
+  mkdir -p "$state"
+  printf 'buffered\t7\t/state/weekly.check.sh\told check\tunexpected\n' \
+    > "$state/.subsuper-check-ledger"
+
+  FM_WEDGE_ALARM_EXEC=discard delivery_import_legacy "$state" \
+    && fail "legacy ledger extra field was silently accepted"
+
+  [ ! -e "$state/.subsuper-delivery.jsonl" ] || fail "invalid legacy ledger left an active journal"
+  [ -s "$state/.subsuper-inject-wedged" ] || fail "invalid legacy ledger did not raise a wedge alarm"
+  qdir=$(find "$state" -maxdepth 1 -type d -name '.subsuper-delivery.quarantine-*' | head -1)
+  [ -n "$qdir" ] && [ -e "$qdir/.subsuper-check-ledger" ] \
+    || fail "invalid legacy ledger was not preserved in quarantine"
+  pass "legacy ledger rows with extra fields are quarantined"
+}
+
 test_legacy_marker_like_buffer_is_preserved_verbatim() {
   local dir state line1 line2 texts
   dir=$(make_supercase delivery-legacy-marker-text)
@@ -3161,6 +3204,8 @@ test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_legacy_import_preserves_every_line_verbatim
 test_legacy_import_is_idempotent_when_journal_exists
 test_legacy_import_quarantines_uncommitted_journal_with_legacy_state
+test_legacy_retiring_delivery_state_is_quarantined_without_record_nonce
+test_legacy_ledger_extra_field_is_quarantined
 test_legacy_marker_like_buffer_is_preserved_verbatim
 test_legacy_import_preserves_delivery_and_check_history
 test_legacy_imported_blank_record_types_once_without_retype

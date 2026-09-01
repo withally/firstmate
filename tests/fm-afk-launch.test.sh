@@ -41,12 +41,14 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
-# UNIT 1: fm_afk_clear_stale_artifacts removes every session delivery artifact.
+# UNIT 1: fm_afk_clear_stale_artifacts removes live artifacts and preserves
+# legacy inputs for the daemon's one-time migration.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear.XXXXXX")
   mkdir -p "$st/state"
+  : > "$st/state/.subsuper-delivery.jsonl"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
   : > "$st/state/.subsuper-escalations.delivery"
@@ -58,20 +60,45 @@ unit_clear_stale() {
   # otherwise leak that into this test shell) and call the clear helper.
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
-  if [ ! -e "$st/state/.subsuper-escalations" ] \
-     && [ ! -e "$st/state/.subsuper-escalations.since" ] \
-     && [ ! -e "$st/state/.subsuper-escalations.delivery" ] \
-     && [ ! -e "$st/state/.subsuper-escalations.records" ] \
+  if [ ! -e "$st/state/.subsuper-delivery.jsonl" ] \
      && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
-     && [ ! -e "$st/state/.subsuper-check-ledger" ]; then
-    pass "clear-stale: removes escalation delivery state and the check ledger"
+     && [ -e "$st/state/.subsuper-escalations" ] \
+     && [ -e "$st/state/.subsuper-escalations.since" ] \
+     && [ -e "$st/state/.subsuper-escalations.delivery" ] \
+     && [ -e "$st/state/.subsuper-escalations.records" ] \
+     && [ -e "$st/state/.subsuper-check-ledger" ]; then
+    pass "clear-stale: clears live artifacts and preserves legacy migration inputs"
   else
-    fail "clear-stale: stale artifacts survived"
+    fail "clear-stale: live artifacts were not cleared or legacy inputs were lost"
   fi
   if [ -e "$st/state/.wake-queue" ]; then
     pass "clear-stale: leaves the durable wake-queue intact (no pending work dropped)"
   else
     fail "clear-stale: removed the durable wake-queue"
+  fi
+  rm -rf "$st"
+}
+
+unit_clear_stale_reports_any_failure() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear-failure.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.subsuper-delivery.jsonl"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fail_path="$3"
+    rm() {
+      local arg
+      for arg in "$@"; do
+        [ "$arg" = "$fail_path" ] && return 1
+      done
+      command rm "$@"
+    }
+    ! fm_afk_clear_stale_artifacts "$2"
+  ' _ "$START" "$st/state" "$st/state/.subsuper-delivery.jsonl"; then
+    pass "clear-stale: reports a failure from any artifact removal"
+  else
+    fail "clear-stale: masked a failure removing the journal"
   fi
   rm -rf "$st"
 }
@@ -570,9 +597,9 @@ unit_native_lifecycle() {
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
-    && [ ! -e "$st/state/.subsuper-escalations" ] \
-    && [ ! -e "$st/state/.subsuper-check-ledger" ]; then
-    pass "native lifecycle: launcher owns state with no terminal"
+    && [ -e "$st/state/.subsuper-escalations" ] \
+    && [ -e "$st/state/.subsuper-check-ledger" ]; then
+    pass "native lifecycle: launcher owns state and preserves legacy migration inputs"
   else
     fail "native lifecycle: state preparation or no-terminal record failed"
   fi
@@ -1027,6 +1054,7 @@ e2e_tmux() {
 }
 
 unit_clear_stale
+unit_clear_stale_reports_any_failure
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_detector_miss_leaves_daemon_harness_unset
 unit_daemon_command_carries_configured_pi_agent_dir

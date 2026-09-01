@@ -121,7 +121,9 @@ print_blockers() {  # <file>
 
 return_delivery_journal_valid() {  # <journal-path>
   local journal=$1
-  [ -f "$journal" ] && [ -r "$journal" ] && [ -s "$journal" ] || return 1
+  [ -e "$journal" ] || return 0
+  [ -f "$journal" ] && [ -r "$journal" ] || return 1
+  [ -s "$journal" ] || return 0
   jq -e -s '
     all(.[];
       type == "object"
@@ -144,14 +146,18 @@ return_delivery_journal_valid() {  # <journal-path>
 # wedge alarm marker are the live artifacts; the pre-redesign multi-file names
 # are cleared too so a home that upgraded mid-away leaves nothing behind.
 clear_delivery_artifacts() {
-  rm -f \
-    "$STATE/.subsuper-delivery.jsonl" \
-    "$STATE/.subsuper-inject-wedged" \
-    "$STATE/.subsuper-escalations" \
-    "$STATE/.subsuper-escalations.since" \
-    "$STATE/.subsuper-escalations.delivery" \
-    "$STATE/.subsuper-escalations.records" \
-    "$STATE/.subsuper-check-ledger"
+  local artifact result=0
+  for artifact in \
+    .subsuper-delivery.jsonl \
+    .subsuper-inject-wedged \
+    .subsuper-escalations \
+    .subsuper-escalations.since \
+    .subsuper-escalations.delivery \
+    .subsuper-escalations.records \
+    .subsuper-check-ledger; do
+    rm -f "$STATE/$artifact" || result=1
+  done
+  return "$result"
 }
 
 return_guard() {
@@ -265,8 +271,15 @@ return_reconcile() {
     return 3
   fi
 
+  if ! clear_delivery_artifacts; then
+    append_evidence lifecycle 'away-mode delivery cleanup failed; preserved for retry' "$evidence"
+    write_gate "$evidence" "$blockers" || { rm -f "$evidence" "$blockers" "$drain_err"; return 1; }
+    printf 'fm-afk-return: delivery cleanup failed; catch-up remains pending\n' >&2
+    print_evidence "$GATE" >&2
+    rm -f "$evidence" "$blockers" "$drain_err"
+    return 3
+  fi
   rm -f "$GATE"
-  clear_delivery_artifacts
   rm -f "$evidence" "$blockers" "$drain_err"
   printf 'fm-afk-return: catch-up clear; ordinary captain work may proceed\n'
   return 0

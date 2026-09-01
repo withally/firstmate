@@ -310,7 +310,7 @@ There is still one watcher process; the event reader is a bounded child of that 
 The away daemon supports tmux and Herdr supervisor panes only.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
-`bin/fm-supervise-daemon.sh` owns the delivered-once contract: each digest carries one persisted nonce, rendering is the fast confirmation path, Pi and Claude user transcripts are the deterministic witness, and an unconfirmed attempt stalls and alarms without retyping.
+`bin/fm-supervise-daemon.sh` owns the delivered-once contract: a single append-only journal (`state/.subsuper-delivery.jsonl`, one atomic rename per mutation) marks each digest `typed` before its one and only type, rendering is the fast confirmation path, Pi and Claude user transcripts are the deterministic witness for its nonce, and an unconfirmed attempt stays typed and alarms without ever retyping.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.

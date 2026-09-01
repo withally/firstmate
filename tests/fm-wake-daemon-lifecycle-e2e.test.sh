@@ -80,7 +80,7 @@ test_routine_then_terminal_after_restart() {
     || fail "routine signal was not queued"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status_file" "$state"
   ack_handled_wakes "$state" "$drain_err" || fail "routine wake acknowledgement failed"
-  [ ! -s "$state/.subsuper-escalations" ] || fail "routine status was escalated by the daemon"
+  ! delivery_has_undelivered "$state" || fail "routine status was escalated by the daemon"
 
   # The watcher is now DOWN (one-shot exit). A terminal status lands while it is
   # down; the next watcher run must catch it up (losslessness across restart).
@@ -95,13 +95,13 @@ test_routine_then_terminal_after_restart() {
     || fail "drain after terminal signal failed"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status_file" "$state"
   ack_handled_wakes "$state" "$drain_err" || fail "terminal wake acknowledgement failed"
-  [ -s "$state/.subsuper-escalations" ] || fail "captain-relevant terminal status was not buffered"
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+  delivery_has_undelivered "$state" || fail "captain-relevant terminal status was not buffered"
+  [ "$(delivery_undelivered_texts "$state" | wc -l | tr -d ' ')" -eq 1 ] \
     || fail "expected exactly one buffered digest after the terminal signal"
 
   # The catch-all heartbeat scan must NOT re-escalate the same status (no dup).
   FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
+  [ "$(delivery_undelivered_texts "$state" | wc -l | tr -d ' ')" -eq 1 ] \
     || fail "catch-all scan duplicated the already-buffered digest"
 
   # With afk active, the buffered digest flushes to the supervisor pane as ONE
@@ -114,7 +114,7 @@ test_routine_then_terminal_after_restart() {
     FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \
     || fail "escalate_flush failed for the buffered digest"
   [ "$(grep -c '\[ENTER\]' "$sent")" -eq 1 ] || fail "buffered digest was not submitted exactly once"
-  [ ! -s "$state/.subsuper-escalations" ] || fail "buffer not cleared after a successful flush"
+  ! delivery_has_undelivered "$state" || fail "buffer not cleared after a successful flush"
   pass "lifecycle: routine self-handles, terminal survives a watcher restart, buffers once, no dup, injects once"
 }
 
@@ -140,13 +140,13 @@ test_stale_pane_transient_persistent_resume() {
   # housekeeping escalates exactly once and clears the marker.
   printf 'idle prompt $\n' > "$dir/pane.txt"
   echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
-  : > "$state/.subsuper-escalations" 2>/dev/null || true
+  rm -f "$state/.subsuper-delivery.jsonl" 2>/dev/null || true
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 housekeeping "$state" \
     2>"$dir/housekeeping.err"
   [ ! -s "$dir/housekeeping.err" ] \
     || fail "missing task metadata leaked a raw read error: $(cat "$dir/housekeeping.err")"
-  [ -s "$state/.subsuper-escalations" ] || fail "persistent stale did not escalate"
+  delivery_has_undelivered "$state" || fail "persistent stale did not escalate"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "stale marker not cleared after escalation"
 
   # Resumed: a fresh transient marker but the crew is provably working again ->
@@ -159,11 +159,11 @@ test_stale_pane_transient_persistent_resume() {
   resumed_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" stale-w2)
   "$ROOT/bin/fm-busy-event.sh" apply "$state" stale-w2 busy --gen "$resumed_gen" \
     --source pi-ext --event agent-start
-  : > "$state/.subsuper-escalations"
+  rm -f "$state/.subsuper-delivery.jsonl"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "resumed stale marker was not cleared"
-  [ ! -s "$state/.subsuper-escalations" ] || fail "resumed (busy) stale was escalated"
+  ! delivery_has_undelivered "$state" || fail "resumed (busy) stale was escalated"
   pass "lifecycle: stale pane transient self-handles, persistent escalates once and clears, resumed clears quietly"
 }
 

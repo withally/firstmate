@@ -4,8 +4,8 @@
 # This guard never creates, stops, deletes, or restarts a Herdr session.
 # The operator must provide an existing disposable, idle Pi pane and its exact
 # working home; the guard types one nonced away-supervisor probe into that pane.
-# It then reconstructs the buffered recovery record and proves the transcript
-# witness clears it without a second user turn.
+# It then reconstructs the typed-but-unconfirmed journal record and proves the
+# transcript witness retires it without a second user turn.
 #
 # Run explicitly:
 #   FM_AFK_DELIVERY_WITNESS_LIVE=1 \
@@ -103,20 +103,22 @@ esac
 after=$(pi_user_texts | grep -F -c "$TOKEN" || true)
 [ "$after" -eq 1 ] || fail "the live probe appeared in $after Pi user turns instead of exactly one"
 
-# Reconstruct the crash-recovery shape after that exact user turn is already in
-# the transcript. The daemon must retire it from the witness before any pane or
-# composer check can lead to a second type.
-printf '%s\n' "live delivered-once guard $TOKEN; reply with exactly $TOKEN" \
-  > "$STATE/.subsuper-escalations"
-date +%s > "$STATE/.subsuper-escalations.since"
-delivery_record_prepare "$STATE" "$nonce" 1 "$TRANSCRIPT" 0 0 \
-  || fail "could not reconstruct the delivered-once recovery record"
+# Reconstruct the crash-recovery shape in the journal: a `typed` record carrying
+# that exact already-delivered nonce and its witness baseline, exactly as the
+# daemon leaves a batch it typed but crashed before confirming. The daemon must
+# retire it from the transcript witness before any pane or composer check can
+# lead to a second type.
+jq -cn --arg nonce "$nonce" --arg t "$TRANSCRIPT" \
+  --arg text "live delivered-once guard $TOKEN; reply with exactly $TOKEN" \
+  '{nonce:$nonce,kind:"escalation",source_key:"",text:$text,state:"typed",buffered_epoch:0,typed_epoch:0,delivered_epoch:0,witness_transcript:$t,witness_offset:0}' \
+  > "$STATE/.subsuper-delivery.jsonl"
 escalate_flush "$STATE" \
   || fail "the existing Pi transcript witness did not retire the recovery record"
 final=$(pi_user_texts | grep -F -c "$TOKEN" || true)
 [ "$final" -eq 1 ] || fail "recovery retyped the delivered digest into $final Pi user turns"
-[ ! -s "$STATE/.subsuper-escalations" ] \
-  || fail "the transcript-confirmed recovery record did not clear its buffer"
+if jq -s -e 'any(.[]; .state!="delivered")' "$STATE/.subsuper-delivery.jsonl" >/dev/null 2>&1; then
+  fail "the transcript-confirmed recovery record did not retire in the journal"
+fi
 
 PI_VERSION=$(pi --version 2>/dev/null | head -1 || printf 'pi-version-unknown')
 HERDR_VERSION=$(herdr --version 2>/dev/null | head -1 || printf 'herdr-version-unknown')

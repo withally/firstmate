@@ -104,7 +104,7 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
   It preserves proven idle composers as empty but requires a genuine container around shell glyphs; see `docs/herdr-backend.md` "Composer and injection safety" for the operator contract.
   `pane_input_pending` is the tested fail-closed predicate for callers that need to know whether the composer is unsafe: it treats every result except exact `empty` as pending.
 
-A busy primary pane, or any composer verdict other than `empty`, defers the injection; the buffered escalation survives in `state/.subsuper-escalations` and is retried on the next housekeeping tick.
+A busy primary pane, or any composer verdict other than `empty`, defers the injection; the buffered escalation survives in the delivery journal `state/.subsuper-delivery.jsonl` and is retried on the next housekeeping tick.
 In afk mode the composer guard is belt-and-suspenders (no human is typing), but it protects against the race window between the captain returning and their message landing, a dead shell, and the daemon's own previous injection sitting unsent.
 
 **Max-defer escape (the daemon must never silently wedge).**
@@ -126,7 +126,7 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 **verified** through the selected backend's submit primitive.
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
-`bin/fm-supervise-daemon.sh` owns the delivered-once guard: one persisted nonce follows each digest, a Pi or Claude user transcript confirms an otherwise unknown submit, and no later flush may retype an unconfirmed digest.
+`bin/fm-supervise-daemon.sh` owns the delivered-once guard through a single append-only journal (`state/.subsuper-delivery.jsonl`) that marks a digest `typed` in one atomic rename before its only type, so a Pi or Claude user transcript confirms an otherwise unknown submit and no later flush ever retypes it.
 For tmux that confirmation is normally a proven cleared composer from the shared classifier; an idle baseline transitioning to busy across this submit's own Enter also confirms that the turn started when a working harness hides its composer.
 Without that baseline, busy state never converts an `unknown` composer into confirmation.
 For non-Claude Herdr targets, idle-baseline submits first seek native agent-state showing a real turn started, then use the shared classifier when native state remains idle: a cleared composer confirms delivery, while pending text retries Enter and reaches the shared busy-queue verdict only after the retry budget.
@@ -210,10 +210,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
 - **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
   The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
-- **Session dedupe for checks** - the daemon records durable check routing as reserved, buffered, and delivered in `state/.subsuper-check-ledger`.
-  It appends the first event to the escalation buffer before recording it buffered, preserves the original across failed flushes and daemon restarts, and marks it delivered only after verified submit.
-  A routing failure returns before durable queue acknowledgement so the original wake remains available for replay, while a delivery-state failure likewise retains the original buffer and wake without duplicate escalation.
-  The ledger survives daemon replacement inside one away session and is cleared on fresh away entry or return.
+- **Session dedupe for checks** - a durable check is one journal record keyed by its source key plus distilled text, so an exact identity replay is suppressed while a genuinely new observation under the same key is not; because each journal append is a single atomic rename, no reservation transaction is needed for crash safety. The dedup survives daemon replacement inside one away session and is cleared on fresh away entry or return.
 - **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
   (tmux vs herdr) and TARGET independently, mirroring
   `bin/fm-backend.sh`'s own runtime auto-detection. Backend: `FM_SUPERVISOR_BACKEND`
@@ -231,8 +228,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat `state/.subsuper-escalations`, its `.since`, `.delivery`, and `.records` sidecars, `state/.subsuper-inject-wedged`, and `state/.subsuper-check-ledger` as session-scoped delivery artifacts, not as the durable work record.
-Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry with no existing `state/.afk`, and preserves the current session's buffer on restart or refresh.
+Treat the delivery journal `state/.subsuper-delivery.jsonl` and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record (a home upgraded mid-away may still carry the pre-redesign `state/.subsuper-escalations*` and `state/.subsuper-check-ledger` files until the daemon's one-time startup import consumes them).
+Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry with no existing `state/.afk`, and preserves the current session's journal on restart or refresh.
 Fresh entry clears prior delivery artifacts before publishing the new away flag, and a cleanup or flag-write failure stops before daemon startup.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.

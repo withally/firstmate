@@ -44,6 +44,22 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
 
+# The away daemon's delivery store is the single journal state/.subsuper-delivery.jsonl
+# (bin/fm-supervise-daemon.sh owns its format) plus the .subsuper-inject-wedged alarm
+# marker. The pre-redesign multi-file names are listed after them so a fresh entry
+# still clears any home carrying them and a launch still backs them up during the
+# migration window; the daemon's one-time startup import consumes them otherwise.
+# This is the ONE owner of the delivery-artifact set for the away-mode scripts.
+FM_AFK_DELIVERY_ARTIFACTS=(
+  .subsuper-delivery.jsonl
+  .subsuper-inject-wedged
+  .subsuper-escalations
+  .subsuper-escalations.since
+  .subsuper-escalations.delivery
+  .subsuper-escalations.records
+  .subsuper-check-ledger
+)
+
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -52,21 +68,18 @@ fm_afk_start_usage() {
 # absent and the daemon is not already running), drop the previous session's
 # leftover escalation-delivery artifacts so they cannot surface as stale
 # escalations under the new session. A restart or recovery with state/.afk
-# already present preserves the current session's buffer, delivery sidecars,
-# wedge marker, and check ledger for replay-safe routing. The fresh-entry clear
-# does not drop durable work: a condition still true is re-derived by the
-# daemon's heartbeat catch-all scan, and an unacknowledged wake remains in
-# state/.wake-queue (see .agents/skills/afk/SKILL.md "Stale-artifact lifecycle"
-# and bin/fm-supervise-daemon.sh's escalate_add/inject_wedge_alarm). This helper
-# is not called on a refresh or same-session recovery.
+# already present preserves the current session's delivery journal and wedge
+# marker for replay-safe routing. The fresh-entry clear does not drop durable
+# work: a condition still true is re-derived by the daemon's heartbeat catch-all
+# scan, and an unacknowledged wake remains in state/.wake-queue (see
+# .agents/skills/afk/SKILL.md "Stale-artifact lifecycle" and
+# bin/fm-supervise-daemon.sh's escalate_add/inject_wedge_alarm). This helper is
+# not called on a refresh or same-session recovery.
 fm_afk_clear_stale_artifacts() {  # <state-dir>
-  local state=$1
-  rm -f "$state/.subsuper-escalations" \
-        "$state/.subsuper-escalations.since" \
-        "$state/.subsuper-escalations.delivery" \
-        "$state/.subsuper-escalations.records" \
-        "$state/.subsuper-inject-wedged" \
-        "$state/.subsuper-check-ledger" 2>/dev/null
+  local state=$1 artifact
+  for artifact in "${FM_AFK_DELIVERY_ARTIFACTS[@]}"; do
+    rm -f "$state/$artifact" 2>/dev/null
+  done
 }
 
 daemon_lock_owner() {

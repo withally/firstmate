@@ -119,13 +119,17 @@ print_blockers() {  # <file>
   done < "$file"
 }
 
+# Clear the away daemon's delivery store on return. The single journal and the
+# wedge alarm marker are the live artifacts; the pre-redesign multi-file names
+# are cleared too so a home that upgraded mid-away leaves nothing behind.
 clear_delivery_artifacts() {
   rm -f \
+    "$STATE/.subsuper-delivery.jsonl" \
+    "$STATE/.subsuper-inject-wedged" \
     "$STATE/.subsuper-escalations" \
     "$STATE/.subsuper-escalations.since" \
     "$STATE/.subsuper-escalations.delivery" \
     "$STATE/.subsuper-escalations.records" \
-    "$STATE/.subsuper-inject-wedged" \
     "$STATE/.subsuper-check-ledger"
 }
 
@@ -175,8 +179,18 @@ return_reconcile() {
     wedge=$(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
     append_evidence wedge "$wedge" "$evidence"
   fi
-  if [ -s "$STATE/.subsuper-escalations" ]; then
+  # Undelivered escalation/check items still in the delivery journal are the
+  # "while you were out" catch-up. A home that upgraded mid-away and has not yet
+  # imported its legacy buffer also surfaces those raw lines.
+  escalations=""
+  if [ -s "$STATE/.subsuper-delivery.jsonl" ]; then
+    escalations=$(jq -s -r 'map(select(.state!="delivered") | .text) | .[]' \
+      "$STATE/.subsuper-delivery.jsonl" 2>/dev/null || true)
+  fi
+  if [ -z "$escalations" ] && [ -s "$STATE/.subsuper-escalations" ]; then
     escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
+  fi
+  if [ -n "$escalations" ]; then
     append_evidence escalation "$escalations" "$evidence"
   fi
 

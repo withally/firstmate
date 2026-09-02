@@ -228,7 +228,7 @@ test_stale_diagnostic_wedge_survives_busy_housekeeping() {
     key=$(printf '%s' "$task" | tr ':/.' '___')
     echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
     [ "$case_name" = prior-terminal ] \
-      && printf '%s' "$status_line" > "$state/.subsuper-seen-status-$key"
+      && mark_status_seen "$state" "$task" "$status_line" "$state/$task.status"
     [ "$case_name" = paused ] \
       && echo $(( $(date +%s) - 500 )) > "$state/.subsuper-paused-$key"
 
@@ -1050,14 +1050,14 @@ test_terminal_stale_escalate_leaves_no_marker() {
 }
 
 test_signal_escalate_marks_seen_no_catchall_refire() {
-  local dir state key
+  local dir state
   dir=$(make_supercase signal-seen)
   state="$dir/state"
   printf 'done: PR https://x/y/pull/8\n' > "$state/sig-t8.status"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $state/sig-t8.status" "$state"
   journal_has_buffered "$state" || fail "captain signal was not escalated"
-  key=$(printf '%s' "sig-t8" | tr ':/.' '___')
-  [ "$(cat "$state/.subsuper-seen-status-$key" 2>/dev/null || true)" = "done: PR https://x/y/pull/8" ] \
+  status_seen_matches "$state" sig-t8 "$state/sig-t8.status" \
+    "done: PR https://x/y/pull/8" \
     || fail "captain signal escalate did not write the seen-status marker"
   journal_clear "$state"
   rm -f "$state/.subsuper-last-scan"
@@ -1327,7 +1327,7 @@ test_classify_signal_dedup_against_scan() {
   printf 'done: PR https://x/y/pull/9\n' > "$state/dup-s9.status"
   # Simulate the catch-all scan having already escalated this status.
   key=$(printf '%s' "dup-s9" | tr ':/.' '___')
-  printf 'done: PR https://x/y/pull/9' > "$state/.subsuper-seen-status-$key"
+  mark_status_seen "$state" dup-s9 "done: PR https://x/y/pull/9" "$state/dup-s9.status"
   out=$(FM_STATE_OVERRIDE="$state" classify_signal "$state/dup-s9.status" "$state")
   case "$out" in self\|*) ;; *) fail "signal not deduped against scan: $out" ;; esac
   # Without the seen marker, it should escalate.
@@ -1345,7 +1345,7 @@ test_classify_stale_dedup_against_signal() {
   state="$dir/state"
   printf 'done: PR https://x/y/pull/10\n' > "$state/dup-s10.status"
   key=$(printf '%s' "dup-s10" | tr ':/.' '___')
-  printf 'done: PR https://x/y/pull/10' > "$state/.subsuper-seen-status-$key"
+  mark_status_seen "$state" dup-s10 "done: PR https://x/y/pull/10" "$state/dup-s10.status"
   out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-dup-s10" "$state")
   case "$out" in self\|*) ;; *) fail "stale not deduped against signal: $out" ;; esac
   # Without the seen marker, it should escalate.
@@ -1371,7 +1371,7 @@ test_afk_nonterminal_working_merged_keeps_wedge_aging() {
   printf 'idle prompt $\n' > "$pane"
   key=$(printf '%s' "wishlist-w1" | tr ':/.' '___')
   # Simulate an earlier false-positive escalate that wrote the seen marker.
-  printf '%s' "$incident" > "$state/.subsuper-seen-status-$key"
+  mark_status_seen "$state" wishlist-w1 "$incident" "$state/wishlist-w1.status"
   out=$(FM_STATE_OVERRIDE="$state" classify_stale "$win" "$state")
   case "$out" in
     self\|*transient*) ;;

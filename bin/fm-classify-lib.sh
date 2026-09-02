@@ -101,6 +101,24 @@ last_status_line() {
   grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -1
 }
 
+status_last_line_offset() {  # <status-file>
+  local f=$1
+  LC_ALL=C awk '
+    BEGIN { offset=0 }
+    {
+      if ($0 ~ /[^[:space:]]/) {
+        last=offset
+        found=1
+      }
+      offset += length($0) + 1
+    }
+    END {
+      if (found) print last
+      else exit 1
+    }
+  ' "$f" 2>/dev/null
+}
+
 # 0 if the given (last) status line's leading verb is a real terminal captain verb
 # (done, needs-decision, blocked, failed). Free-text tokens alone never count here;
 # callers that need legacy free-text matching use status_is_captain_relevant.

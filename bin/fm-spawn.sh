@@ -296,6 +296,8 @@ if [ -e "$STATE" ] || [ -L "$STATE" ]; then
 fi
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-secondmate-parent-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 fm_backlog_directory_present "$STATE" "state directory" || {
@@ -789,6 +791,10 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+SPAWN_NORMAL_ABORT_CLEANUP=0
+SPAWN_NORMAL_ABORT_PROJECTED=0
+SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
+SPAWN_PARENT_BINDING_STALE_REASON=
 
 spawn_fresh_commit_rollback() {
   if fm_backlog_atomic_transition rollback "$STATE/$ID.meta" \
@@ -817,8 +823,78 @@ parse_orca_worktree_result() {
   fi
 }
 
+spawn_abort_worktree_has_no_unlanded_work() {
+  local status line unpushed
+  [ -n "${WT:-}" ] && [ -d "$WT" ] || return 1
+  git -C "$WT" fetch --quiet origin >/dev/null 2>&1 || return 1
+  status=$(git -C "$WT" -c core.quotePath=false status --porcelain=v1 \
+    --untracked-files=all --ignored=matching 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    return 1
+  done <<< "$status"
+  unpushed=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null) || return 1
+  [ -z "$unpushed" ]
+}
+
+spawn_abort_preserve_meta() {
+  local meta="$STATE/$ID.meta" tmp
+  [ -n "${WT:-}" ] && [ -n "${T:-}" ] || return 1
+  mkdir -p "$STATE" || return 1
+  [ ! -e "$meta" ] && [ ! -L "$meta" ] || return 1
+  tmp="$STATE/.$ID.meta.abort.${BASHPID:-$$}"
+  {
+    printf 'window=%s\n' "$T"
+    printf 'endpoint_task_id=%s\n' "$ID"
+    printf 'worktree=%s\n' "$WT"
+    printf 'project=%s\n' "$PROJ_ABS"
+    printf 'harness=%s\n' "$HARNESS"
+    printf 'kind=%s\n' "$KIND"
+    [ -z "${MODE:-}" ] || printf 'mode=%s\n' "$MODE"
+    [ -z "${YOLO:-}" ] || printf 'yolo=%s\n' "$YOLO"
+    printf 'tasktmp=%s\n' "${TASK_TMP:-}"
+    printf 'model=%s\n' "${MODEL:-default}"
+    printf 'effort=%s\n' "${EFFORT:-default}"
+    [ "$BACKEND" = tmux ] || printf 'backend=%s\n' "$BACKEND"
+    case "$BACKEND" in
+      herdr)
+        printf 'herdr_session=%s\n' "${HERDR_SES:-}"
+        printf 'herdr_workspace_id=%s\n' "${HERDR_WORKSPACE_ID:-}"
+        printf 'herdr_tab_id=%s\n' "${HERDR_TAB_ID:-}"
+        printf 'herdr_pane_id=%s\n' "${HERDR_PANE_ID:-}"
+        ;;
+      zellij)
+        printf 'zellij_session=%s\n' "${ZELLIJ_SES:-}"
+        printf 'zellij_tab_id=%s\n' "${ZELLIJ_TAB_ID:-}"
+        printf 'zellij_pane_id=%s\n' "${ZELLIJ_PANE_ID:-}"
+        ;;
+      cmux)
+        printf 'cmux_workspace_id=%s\n' "${CMUX_WORKSPACE_ID:-}"
+        printf 'cmux_surface_id=%s\n' "${CMUX_SURFACE_ID:-}"
+        ;;
+    esac
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
+}
+
+spawn_abort_return_worktree() {
+  local out reason
+  if out=$( ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) 2>&1 ); then
+    return 0
+  fi
+  reason=$(printf '%s' "$out" | LC_ALL=C tr '\t\r\n' '   ' | cut -c1-1200)
+  if [ -n "$reason" ]; then
+    echo "warning: could not return freshly acquired worktree '$WT'; $reason" >&2
+  else
+    echo "warning: could not return freshly acquired worktree '$WT'" >&2
+  fi
+  return 1
+}
+
 spawn_abort_cleanup() {
   local status=$?
+  local normal_endpoint_clean=0 normal_return_clean=0
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
      && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
@@ -899,6 +975,35 @@ spawn_abort_cleanup() {
         fi
       fi
     fi
+  fi
+  if [ "$SPAWN_NORMAL_ABORT_CLEANUP" = 1 ]; then
+    if [ "$SPAWN_NORMAL_ABORT_PROJECTED" = 1 ]; then
+      if declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1 \
+        && fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+        normal_endpoint_clean=1
+      fi
+    elif fm_backend_kill "$BACKEND" "$T" 2>/dev/null; then
+      normal_endpoint_clean=1
+    fi
+    if [ "$normal_endpoint_clean" = 1 ] && [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ]; then
+      if spawn_abort_worktree_has_no_unlanded_work; then
+        if spawn_abort_return_worktree; then
+          normal_return_clean=1
+        fi
+      else
+        echo "warning: could not prove freshly acquired worktree '$WT' is free of unlanded work; leaving its lease for teardown" >&2
+      fi
+    elif [ "$normal_endpoint_clean" != 1 ] && [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ]; then
+      echo "warning: could not prove cleanup of the newly created $BACKEND endpoint '$T'; leaving the worktree lease for teardown" >&2
+    fi
+    if [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ] \
+      && { [ "$normal_endpoint_clean" != 1 ] || [ "$normal_return_clean" != 1 ]; }; then
+      if [ -n "${WT:-}" ] && ! spawn_abort_preserve_meta; then
+        echo "warning: could not preserve recoverable metadata for aborted task $ID" >&2
+      fi
+    fi
+    SPAWN_NORMAL_ABORT_CLEANUP=0
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -2011,9 +2116,95 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     wt_top_real=
   fi
   if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+}
+
+spawn_parent_binding_record_one_line() {
+  local record=$1 summary
+  summary=$(LC_ALL=C tr '\t\r\n' '   ' < "$record" 2>/dev/null \
+    | LC_ALL=C tr -d '\000' | cut -c1-1200 || true)
+  [ -n "$summary" ] || summary=unreadable
+  printf '%s' "$summary"
+}
+
+spawn_foreign_parent_binding_is_stale() {
+  local parent=$1 registry lock rc
+  SPAWN_PARENT_BINDING_STALE_REASON=
+  if [ "$FM_SECONDMATE_PARENT_ROUTE" != local ]; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the remote parent route cannot be checked locally'
+    return 1
+  fi
+  if [ ! -d "$parent" ]; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent home no longer exists'
+    return 0
+  fi
+  registry="$parent/data/secondmates.md"
+  if [ ! -f "$registry" ] || [ -L "$registry" ]; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent registry is unavailable or unsafe'
+    return 1
+  fi
+  lock=$(secondmate_registry_lock_path "$parent/state" 2>/dev/null || true)
+  if [ -z "$lock" ] || ! fm_lock_acquire_wait "$lock"; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent registry cannot be locked'
+    return 1
+  fi
+  if secondmate_registry_has_home_binding \
+    "$registry" secondmate_registry_path_key "$WT"; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the parent registry still registers this worktree'
+    rc=1
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      SPAWN_PARENT_BINDING_STALE_REASON='the parent registry has no binding for this worktree'
+      rc=0
+    else
+      secondmate_registry_error_sanitize
+      SPAWN_PARENT_BINDING_STALE_REASON=${SECONDMATE_REGISTRY_ERROR:-'the parent registry could not be validated'}
+      rc=1
+    fi
+  fi
+  if ! fm_lock_release "$lock"; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent registry lock could not be released'
+    rc=1
+  fi
+  return "$rc"
+}
+
+refuse_spawn_worktree_parent_binding() {  # <source>
+  local source=$1 record="$WT/.fm-secondmate-parent" active_home recorded_parent binding_summary
+  [ ! -e "$record" ] && [ ! -L "$record" ] && return 0
+  if ! fm_secondmate_parent_record_parse "$record"; then
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    binding_summary=$(spawn_parent_binding_record_one_line "$record")
+    echo "error: $source yielded an unproven .fm-secondmate-parent at worktree $WT; binding=$binding_summary; firstmate ownership or staleness could not be proven; refusing to launch and retaining its lease" >&2
+    return 1
+  fi
+  active_home=$(real_path_or_raw "$FM_HOME")
+  if [ "$FM_SECONDMATE_PARENT_ROUTE" = local ]; then
+    recorded_parent=$(real_path_or_raw "$FM_SECONDMATE_PARENT_HOME")
+  else
+    recorded_parent="remote:${FM_SECONDMATE_PARENT_HOST:-unknown}"
+  fi
+  if [ "$recorded_parent" != "$active_home" ]; then
+    if spawn_foreign_parent_binding_is_stale "$FM_SECONDMATE_PARENT_HOME"; then
+      if rm -f -- "$record" && [ ! -e "$record" ] && [ ! -L "$record" ]; then
+        echo "notice: $source cleared a stale foreign .fm-secondmate-parent at worktree $WT; $SPAWN_PARENT_BINDING_STALE_REASON" >&2
+        return 0
+      fi
+      SPAWN_PARENT_BINDING_STALE_REASON='the stale binding could not be cleared'
+    fi
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    binding_summary=$(spawn_parent_binding_record_one_line "$record")
+    echo "error: $source yielded an unproven foreign .fm-secondmate-parent at worktree $WT; binding=$binding_summary; ${SPAWN_PARENT_BINDING_STALE_REASON:-parent staleness could not be proven}; refusing to launch and retaining its lease" >&2
+  else
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    binding_summary=$(spawn_parent_binding_record_one_line "$record")
+    echo "error: $source yielded an unexpected .fm-secondmate-parent at worktree $WT; binding=$binding_summary; the binding points to the current home; refusing to launch and retaining its lease" >&2
+  fi
+  return 1
 }
 
 # A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:
@@ -2456,6 +2647,7 @@ EOF
       exit 1
     fi
     validate_spawn_worktree "orca worktree create" "$W"
+    refuse_spawn_worktree_parent_binding "orca worktree create" || exit 1
     if [ -z "$ORCA_TERMINAL" ]; then
       ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
     fi
@@ -2474,6 +2666,10 @@ fi
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  SPAWN_NORMAL_ABORT_CLEANUP=1
+  [ "${HERDR_PROJECTED:-0}" -eq 1 ] && SPAWN_NORMAL_ABORT_PROJECTED=1
+fi
 spawn_send_text_line() {  # <target> <text>
   case "$BACKEND" in
     tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
@@ -2633,6 +2829,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+  refuse_spawn_worktree_parent_binding "treehouse get" || exit 1
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
@@ -3137,6 +3334,8 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
 fi
 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+SPAWN_NORMAL_ABORT_CLEANUP=0
+SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

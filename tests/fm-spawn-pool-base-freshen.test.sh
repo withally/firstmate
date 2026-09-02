@@ -14,13 +14,14 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
 
 make_case() {
-  local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial
+  local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial lease
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   project="$case_dir/project"
   origin="$case_dir/origin.git"
   pool="$case_dir/pool"
   publisher="$case_dir/publisher"
+  lease="$case_dir/lease"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
@@ -30,7 +31,8 @@ make_case() {
 
   git init --quiet -b "$default" "$project"
   printf 'base\n' > "$project/README.md"
-  git -C "$project" add README.md
+  printf '.fm-secondmate-parent\n' > "$project/.gitignore"
+  git -C "$project" add README.md .gitignore
   git -C "$project" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
   git clone --quiet --bare "$project" "$origin"
   git -C "$project" remote add origin "file://$origin"
@@ -43,11 +45,11 @@ make_case() {
   git -C "$publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm advance-main
   git -C "$publisher" push --quiet origin "$default"
 
-  printf '%s\n' "$case_dir|$home|$project|$pool|$fakebin|$initial|$default"
+  printf '%s\n' "$case_dir|$home|$project|$pool|$fakebin|$initial|$default|$lease"
 }
 
 read_case_record() {
-  IFS='|' read -r CASE_DIR HOME_DIR PROJECT_DIR POOL_DIR FAKEBIN_DIR INITIAL_SHA DEFAULT_BRANCH <<EOF
+  IFS='|' read -r CASE_DIR HOME_DIR PROJECT_DIR POOL_DIR FAKEBIN_DIR INITIAL_SHA DEFAULT_BRANCH LEASE_FILE <<EOF
 $1
 EOF
 }
@@ -178,6 +180,104 @@ test_dirty_pool_refuses_without_discarding_work() {
       "$(printf '%s\n' "$out" | tail -n 1)" "$(cat "$POOL_DIR/uncommitted.txt")"
   fi
   pass "a dirty pooled worktree is refused without discarding its local work"
+}
+
+test_foreign_secondmate_parent_binding_refuses_pooled_spawn() {
+  local rec id out status foreign_parent binding_before
+  id='pool-foreign-parent-r12'
+  rec=$(make_case foreign-parent "$id")
+  read_case_record "$rec"
+  foreign_parent="$CASE_DIR/retired-primary-home"
+  mkdir -p "$foreign_parent/data" "$foreign_parent/state"
+  printf '%s\n' "- retired-mate - retained route (home: $POOL_DIR; scope: test; projects: test; added 2026-08-30)" \
+    > "$foreign_parent/data/secondmates.md"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$foreign_parent" \
+    > "$POOL_DIR/.fm-secondmate-parent"
+  binding_before=$(cat "$POOL_DIR/.fm-secondmate-parent")
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn launched a new crew from a pool slot carrying a retired secondmate binding"
+  assert_contains "$out" "foreign .fm-secondmate-parent" \
+    "spawn refusal did not name the foreign secondmate parent binding"
+  assert_contains "$out" "$POOL_DIR" \
+    "unproven foreign-binding refusal did not identify the leased worktree"
+  assert_contains "$out" "schema=fm-secondmate-parent.v1 route=local parent_home=$foreign_parent" \
+    "unproven foreign-binding refusal did not expose the binding contents"
+  assert_contains "$out" "parent registry still registers this worktree" \
+    "unproven foreign-binding refusal did not explain why staleness was unavailable"
+  [ "$binding_before" = "$(cat "$POOL_DIR/.fm-secondmate-parent")" ] \
+    || fail "spawn changed the foreign binding instead of refusing it"
+  [ -e "$LEASE_FILE" ] || fail "unproven foreign-binding refusal released the freshly acquired pool lease"
+  assert_grep "kill-window -t =firstmate:=fm-$id" "$CASE_DIR/tmux.log" \
+    "spawn did not close the newly created endpoint after refusal"
+  assert_not_contains "$(cat "$CASE_DIR/treehouse.log" 2>/dev/null || true)" \
+    "treehouse return --force $POOL_DIR" \
+    "unproven foreign-binding refusal returned the pool worktree"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] \
+    || fail "unproven foreign-binding refusal created quarantine metadata"
+  pass "an unproven foreign binding retains its lease for inspection"
+}
+
+test_stale_foreign_binding_is_cleared_before_spawn() {
+  local variant rec id out status foreign_parent
+  for variant in missing-parent empty-registry; do
+    id="pool-foreign-parent-cleared-$variant-r12"
+    rec=$(make_case "foreign-parent-cleared-$variant" "$id")
+    read_case_record "$rec"
+    foreign_parent="$CASE_DIR/retired-primary-home"
+    if [ "$variant" = empty-registry ]; then
+      mkdir -p "$foreign_parent/data" "$foreign_parent/state"
+      : > "$foreign_parent/data/secondmates.md"
+    fi
+    printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$foreign_parent" \
+      > "$POOL_DIR/.fm-secondmate-parent"
+
+    out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+    status=$?
+    expect_code 0 "$status" "spawn should clear a proven stale foreign binding ($variant)"
+    assert_contains "$out" "spawned $id" \
+      "spawn did not launch after clearing the proven stale binding ($variant)"
+    [ ! -e "$POOL_DIR/.fm-secondmate-parent" ] \
+      || fail "spawn retained a proven stale foreign binding ($variant)"
+    [ -e "$LEASE_FILE" ] || fail "successful spawn did not retain its active pool lease ($variant)"
+    assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" \
+      "successful spawn did not publish the cleared pool worktree ($variant)"
+  done
+  pass "proven stale foreign bindings are cleared before spawn"
+}
+
+test_foreign_binding_preserves_unlanded_pool_work() {
+  local rec id out status foreign_parent
+  id='pool-foreign-parent-dirty-r12'
+  rec=$(make_case foreign-parent-dirty "$id")
+  read_case_record "$rec"
+  foreign_parent="$CASE_DIR/retired-primary-home"
+  mkdir -p "$foreign_parent"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$foreign_parent" \
+    > "$POOL_DIR/.fm-secondmate-parent"
+  printf 'keep this unlanded pool work\n' > "$POOL_DIR/uncommitted.txt"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn launched from a dirty pool slot carrying a foreign binding"
+  assert_contains "$out" "retaining its lease" \
+    "dirty foreign-binding refusal did not explain why the lease was retained"
+  assert_contains "$out" "$POOL_DIR" \
+    "dirty foreign-binding refusal did not identify the leased worktree"
+  assert_contains "$out" "schema=fm-secondmate-parent.v1 route=local parent_home=$foreign_parent" \
+    "dirty foreign-binding refusal did not expose the binding contents"
+  assert_grep 'keep this unlanded pool work' "$POOL_DIR/uncommitted.txt" \
+    "foreign-binding cleanup discarded unlanded pool work"
+  [ -e "$LEASE_FILE" ] || fail "dirty foreign-binding refusal released the pool lease without proof"
+  assert_not_contains "$(cat "$CASE_DIR/treehouse.log" 2>/dev/null || true)" \
+    "treehouse return --force $POOL_DIR" \
+    "dirty foreign-binding refusal returned the pool worktree"
+  assert_grep "kill-window -t =firstmate:=fm-$id" "$CASE_DIR/tmux.log" \
+    "dirty foreign-binding refusal did not close the endpoint"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] \
+    || fail "dirty foreign-binding refusal created quarantine metadata"
+  pass "a foreign-binding refusal preserves unlanded pool work for inspection"
 }
 
 test_unresolved_remote_default_refuses_pool() {
@@ -427,6 +527,9 @@ test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
+test_foreign_secondmate_parent_binding_refuses_pooled_spawn
+test_stale_foreign_binding_is_cleared_before_spawn
+test_foreign_binding_preserves_unlanded_pool_work
 test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
 test_stale_submodule_pin_explains_itself

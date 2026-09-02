@@ -31,6 +31,12 @@ SECONDMATE_REGISTRY_ERROR=
 secondmate_registry_lock_path() { printf '%s/.secondmate-registry.lock\n' "$1"; }
 secondmate_reply_lifecycle_lock_path() { printf '%s/.remote-reply-lifecycle-%s.lock\n' "$1" "$2"; }
 
+secondmate_registry_error_sanitize() {
+  local reason=${SECONDMATE_REGISTRY_ERROR:-secondmate registry validation failed}
+  SECONDMATE_REGISTRY_ERROR=$(printf '%s' "$reason" | LC_ALL=C tr '\t\r\n' '   ')
+  [ -n "$SECONDMATE_REGISTRY_ERROR" ] || SECONDMATE_REGISTRY_ERROR='secondmate registry validation failed'
+}
+
 secondmate_registry_parse_line() {
   local line=$1
   local local_re='^- ([A-Za-z0-9._-]+) - (.+) \(home:[[:space:]]*([^;)]*);[[:space:]]*scope:[[:space:]]*(.*);[[:space:]]*projects:[[:space:]]*([^;)]*);[[:space:]]*added[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})\)[[:space:]]*$'
@@ -308,4 +314,32 @@ secondmate_registry_validate_bindings() {
     fi
   fi
   return 0
+}
+
+secondmate_registry_has_home_binding() {
+  local reg=$1 resolver=$2 expected_home=$3 line home home_key expected_key
+  [ -n "$expected_home" ] || return 2
+  secondmate_registry_validate_bindings "$reg" "$resolver" || return 2
+  expected_key=$("$resolver" "$expected_home" 2>/dev/null || true)
+  [ -n "$expected_key" ] || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "- "*)
+        secondmate_registry_parse_line "$line" || return 2
+        home=$SECONDMATE_REGISTRY_HOME
+        if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+          home_key=$home
+          if [ -d "$home" ]; then
+            home_key=$("$resolver" "$home" 2>/dev/null || true)
+            [ -n "$home_key" ] || return 2
+          fi
+        else
+          home_key=$("$resolver" "$home" 2>/dev/null || true)
+          [ -n "$home_key" ] || return 2
+        fi
+        [ "$home_key" = "$expected_key" ] && return 0
+        ;;
+    esac
+  done < "$reg"
+  return 1
 }

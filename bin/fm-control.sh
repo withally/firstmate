@@ -320,6 +320,60 @@ busy_verdict() {
   fm_busy_classify_meta "$META" "$ID" "$STATE"
 }
 
+COMPOSER_STATE=
+COMPOSER_EXCERPT=
+COMPOSER_EXCERPT_STATUS=
+COMPOSER_EXCERPT_CAPTURED=0
+COMPOSER_EXCERPT_REPORTED=0
+
+read_composer_state() {
+  local observed remainder
+  if [ "$COMPOSER_EXCERPT_CAPTURED" = 1 ]; then
+    observed=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null)
+  else
+    observed=$(FM_COMPOSER_STATE_OUTPUT=state-and-excerpt \
+      fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null)
+  fi
+  case "$observed" in
+    *$'\t'*)
+      COMPOSER_STATE=${observed%%$'\t'*}
+      remainder=${observed#*$'\t'}
+      COMPOSER_EXCERPT_STATUS=${remainder%%$'\t'*}
+      COMPOSER_EXCERPT=${remainder#*$'\t'}
+      ;;
+    *)
+      COMPOSER_STATE=$observed
+      if [ "$COMPOSER_EXCERPT_CAPTURED" != 1 ]; then
+        COMPOSER_EXCERPT_STATUS=unavailable
+        COMPOSER_EXCERPT=
+      fi
+      ;;
+  esac
+  [ -n "$COMPOSER_STATE" ] || COMPOSER_STATE=unknown
+  case "$COMPOSER_STATE" in
+    pending|pending-unproven)
+      if [ "$COMPOSER_EXCERPT_CAPTURED" != 1 ]; then
+        [ "$COMPOSER_EXCERPT_STATUS" = available ] \
+          && [ -n "$COMPOSER_EXCERPT" ] || return 1
+        COMPOSER_EXCERPT_CAPTURED=1
+      fi
+      ;;
+  esac
+  return 0
+}
+
+report_composer_excerpt() {
+  [ "$COMPOSER_EXCERPT_CAPTURED" = 1 ] || return 0
+  [ "$COMPOSER_EXCERPT_REPORTED" = 0 ] || return 0
+  echo "pending composer excerpt: $COMPOSER_EXCERPT" >&2
+  COMPOSER_EXCERPT_REPORTED=1
+}
+
+refuse_composer() {
+  report_composer_excerpt
+  die "$1"
+}
+
 # wait_agent_state <wanted...> <timeout>: poll until agent_state prints one of
 # the wanted values. Prints the final observed state; returns 0 on a match.
 wait_agent_state() {  # <timeout> <wanted>...
@@ -441,50 +495,43 @@ retire_busy_incarnation() {
   fi
 }
 
-composer_excerpt() {
-  local cap caps
-  cap=$(fm_backend_capture "$BACKEND" "$T" "$FM_COMPOSER_CAPTURE_LINES" "$LABEL" 2>/dev/null) \
-    || return 1
-  caps=$(printf 'styled=0\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
-  fm_composer_extract_selected_content "$caps" "$cap" 2>/dev/null | cut -c 1-80
-}
-
-# Prove the composer empty before lifecycle text is typed. Pending input is
-# transient rather than durable, but its bounded excerpt is retained in the
-# operator output so it can be re-sent after the lifecycle action.
 clear_composer_before_exit() {
-  local state initial excerpt clear attempts='' i=0 max_backspaces=80
-  state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL")
+  local state initial clear attempts='' i=0 max_backspaces=80
+  if ! read_composer_state; then
+    refuse_composer "refusing to clear task $ID because pending composer excerpt is unavailable; observed state '$COMPOSER_STATE'; keys sent: none"
+  fi
+  state=$COMPOSER_STATE
   initial=$state
   case "$state" in
     empty) return 0 ;;
     pending|pending-unproven) ;;
     *)
-      die "refusing to type the exit command for task $ID because its composer state is '$state', not proven empty; keys sent: none"
+      refuse_composer "refusing to type the exit command for task $ID because its composer state is '$state', not proven empty; keys sent: none"
       ;;
   esac
-  excerpt=$(composer_excerpt || true)
   clear=$(fm_control_composer_clear_key "$HARNESS") \
-    || die "harness $HARNESS has no verified composer-clear key; composer remained '$state'; keys sent: none"
+    || refuse_composer "harness $HARNESS has no verified composer-clear key; composer remained '$state'; keys sent: none"
   fm_control_backend_supports_key "$BACKEND" "$clear" \
-    || die "harness $HARNESS clears its composer with $clear, which the $BACKEND backend cannot deliver; composer remained '$state'; keys sent: none"
+    || refuse_composer "harness $HARNESS clears its composer with $clear, which the $BACKEND backend cannot deliver; composer remained '$state'; keys sent: none"
   fm_backend_send_key "$BACKEND" "$T" "$clear" "$LABEL" \
-    || die "composer clear key $clear could not be delivered to task $ID on $BACKEND; composer remained '$state'; keys sent: none"
+    || refuse_composer "composer clear key $clear could not be delivered to task $ID on $BACKEND; composer remained '$state'; keys sent: none"
   attempts=$clear
-  state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL")
+  read_composer_state || refuse_composer "refusing to type the exit command for task $ID because its composer excerpt became unavailable; observed state '$COMPOSER_STATE'; keys sent: $attempts"
+  state=$COMPOSER_STATE
   while [ "$state" != empty ] && [ "$i" -lt "$max_backspaces" ]; do
     case "$state" in pending|pending-unproven) ;; *) break ;; esac
     fm_control_backend_supports_key "$BACKEND" BSpace \
-      || die "task $ID's composer remained '$state' after $attempts, and $BACKEND cannot deliver the BSpace fallback; keys sent: $attempts"
+      || refuse_composer "task $ID's composer remained '$state' after $attempts, and $BACKEND cannot deliver the BSpace fallback; keys sent: $attempts"
     fm_backend_send_key "$BACKEND" "$T" BSpace "$LABEL" \
-      || die "task $ID's composer remained '$state' and BSpace delivery failed; keys sent: $attempts"
+      || refuse_composer "task $ID's composer remained '$state' and BSpace delivery failed; keys sent: $attempts"
     attempts="$attempts, BSpace"
     i=$((i + 1))
-    state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL")
+    read_composer_state || refuse_composer "refusing to type the exit command for task $ID because its composer excerpt became unavailable; observed state '$COMPOSER_STATE'; keys sent: $attempts"
+    state=$COMPOSER_STATE
   done
   [ "$state" = empty ] \
-    || die "task $ID's composer remained '$state' after bounded clear attempts; initial state: $initial; keys sent: $attempts"
-  echo "cleared composer text: ${excerpt:-[content unavailable]}" >&2
+    || refuse_composer "task $ID's composer remained '$state' after bounded clear attempts; initial state: $initial; keys sent: $attempts"
+  report_composer_excerpt
 }
 
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
@@ -521,6 +568,7 @@ do_exit() {
       ;;
   esac
   cmd=$(fm_control_exit_command "$HARNESS")
+  clear_composer_before_exit
   # The submit verdict is NOT the postcondition here: a successful exit command
   # destroys the composer the verdict is read from, so a post-exit read can
   # legitimately report anything. Only a hard transport failure aborts; the

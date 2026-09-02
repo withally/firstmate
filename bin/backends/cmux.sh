@@ -553,11 +553,12 @@ fm_backend_cmux_composer_caps() {
 # never here. cmux has no identity probe, so the classifier's identity
 # sentinel resolves to unknown.
 fm_backend_cmux_composer_state() {  # <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local cap verdict
-  cap=$(fm_backend_cmux_composer_capture "$1" "${2:-}") || { printf 'unknown'; return 0; }
-  verdict=$(fm_composer_classify_screen "$(fm_backend_cmux_composer_caps)" "$cap")
+  local cap verdict caps
+  caps=$(fm_backend_cmux_composer_caps)
+  cap=$(fm_backend_cmux_composer_capture "$1" "${2:-}") || { fm_composer_state_output unknown "$caps"; return 0; }
+  verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  printf '%s' "$verdict"
+  fm_composer_state_output "$verdict" "$caps" "$cap"
 }
 
 # fm_backend_cmux_send_text_submit: type <text> into <target> once (raw,

@@ -529,12 +529,12 @@ fm_backend_zellij_composer_state() {  # <target> [expected-label] -> empty|pendi
   elif cap=$(fm_backend_zellij_capture "$target" "$FM_COMPOSER_CAPTURE_LINES" "$expected_label") && [ -n "$cap" ]; then
     caps=$(printf 'styled=0\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   else
-    printf 'unknown'
+    fm_composer_state_output unknown
     return 0
   fi
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  printf '%s' "$verdict"
+  fm_composer_state_output "$verdict" "$caps" "$cap"
 }
 
 fm_backend_zellij_composer_content() {  # <target> [expected-label]

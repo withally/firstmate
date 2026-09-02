@@ -138,16 +138,17 @@ EOF
 # it (a pi separator pair under the cursor), so the common read never pays
 # for the process probe.
 fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
-  local target=$1 cy pane verdict identity
-  cy=$(fm_tmux_composer_cursor_row "$target") || { printf 'unknown'; return 0; }
-  case "$cy" in ''|*[!0-9]*) printf 'unknown'; return 0 ;; esac
-  pane=$(fm_tmux_composer_capture "$target") || { printf 'unknown'; return 0; }
-  verdict=$(fm_composer_classify_screen "$(fm_tmux_composer_caps)" "$pane" "$cy")
+  local target=$1 cy pane verdict identity caps
+  caps=$(fm_tmux_composer_caps)
+  cy=$(fm_tmux_composer_cursor_row "$target") || { fm_composer_state_output unknown "$caps"; return 0; }
+  case "$cy" in ''|*[!0-9]*) fm_composer_state_output unknown "$caps"; return 0 ;; esac
+  pane=$(fm_tmux_composer_capture "$target") || { fm_composer_state_output unknown "$caps"; return 0; }
+  verdict=$(fm_composer_classify_screen "$caps" "$pane" "$cy")
   if [ "$verdict" = need-identity ]; then
     if ! identity=$(fm_tmux_composer_identity "$target") || [ -z "$identity" ]; then
       identity=probe-absent
     fi
-    verdict=$(fm_composer_classify_screen "$(fm_tmux_composer_caps)" "$pane" "$cy" "$identity")
+    verdict=$(fm_composer_classify_screen "$caps" "$pane" "$cy" "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
   fi
   # Cursor Agent CLI parks its terminal cursor OUTSIDE its composer, below the
@@ -160,9 +161,9 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
   # alone, so the strict blank-row posture that owns `unknown` for every other
   # harness is untouched.
   if [ "$verdict" = unknown ] && fm_tmux_pane_is_cursor "$target"; then
-    verdict=$(fm_composer_classify_screen "$(fm_tmux_composer_caps)" "$pane" '')
+    verdict=$(fm_composer_classify_screen "$caps" "$pane" '')
   fi
-  printf '%s' "$verdict"
+  fm_composer_state_output "$verdict" "$caps" "$pane"
 }
 
 # fm_tmux_pane_is_cursor: true when the pane's FOREGROUND process group contains

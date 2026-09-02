@@ -6,7 +6,7 @@
 # construction, current parsing, and narrow pre-protocol transcript parsing.
 #
 # Current generic wire form:
-#   U+2063 FIRSTMATE_OP: v1 <kind>: <body>
+#   U+2063 FIRSTMATE_OP: v1 <kind>: <body> <silent-reply-carrier>
 #
 # The landed U+2063 + "FIRSTMATE_OP: " prefix is permanent compatibility.
 # The version and kind header make current inputs structurally typed without
@@ -29,6 +29,8 @@ FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP: "
 FM_OPERATIONAL_VERSION=v1
 FM_OPERATIONAL_HEADER_PREFIX="${FM_OPERATIONAL_PREFIX}${FM_OPERATIONAL_VERSION} "
 FM_OPERATIONAL_KINDS='session-start watcher turn-end-guard away-supervisor launch-brief branch-outcome'
+FM_OPERATIONAL_SILENT_REPLY_RULE='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
+FM_OPERATIONAL_SILENT_REPLY_CARRIER=" ${FM_OPERATIONAL_MARK}${FM_OPERATIONAL_SILENT_REPLY_RULE}"
 
 # Compatibility name retained for the away-mode owner and its tests.
 # shellcheck disable=SC2034 # Public source-library variable used by callers.
@@ -52,7 +54,7 @@ fm_operational_input_encode() {  # <generic-kind> <body> <result-var>
   [ -n "$result_var" ] || return 2
   fm_operational_kind_is_current "$kind" || return 2
   [ -n "$body" ] || return 2
-  printf -v "$result_var" '%s%s: %s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body"
+  printf -v "$result_var" '%s%s: %s%s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body" "$FM_OPERATIONAL_SILENT_REPLY_CARRIER"
 }
 
 fm_operational_input_construct() {  # <kind> <body> <result-var>
@@ -101,12 +103,22 @@ fm_operational_input_body() {  # <current-message> <result-var>
   [ -n "$result_var" ] || return 2
   if fm_operational_generic_kind "$message" current_kind; then
     parsed_body=${message#"${FM_OPERATIONAL_HEADER_PREFIX}${current_kind}: "}
+    case "$parsed_body" in
+      *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER")
+        parsed_body=${parsed_body%"$FM_OPERATIONAL_SILENT_REPLY_CARRIER"}
+        ;;
+    esac
     printf -v "$result_var" '%s' "$parsed_body"
     return 0
   fi
   case "$message" in
     "$FM_FROMFIRST_MARK"?*)
       parsed_body=${message#"$FM_FROMFIRST_MARK"}
+      case "$parsed_body" in
+        *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER")
+          parsed_body=${parsed_body%"$FM_OPERATIONAL_SILENT_REPLY_CARRIER"}
+          ;;
+      esac
       printf -v "$result_var" '%s' "$parsed_body"
       return 0
       ;;
@@ -179,9 +191,12 @@ fm_message_mark_from_firstmate() {  # <message> <result-var>
   local message=${1-} result_var=${2-} transformed
   [ -n "$result_var" ] || return 2
   if fm_message_from_firstmate "$message"; then
-    transformed=$message
+    case "$message" in
+      *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") transformed=$message ;;
+      *) transformed="${message}${FM_OPERATIONAL_SILENT_REPLY_CARRIER}" ;;
+    esac
   else
-    transformed="${FM_FROMFIRST_MARK}${message}"
+    transformed="${FM_FROMFIRST_MARK}${message}${FM_OPERATIONAL_SILENT_REPLY_CARRIER}"
   fi
   printf -v "$result_var" '%s' "$transformed"
 }

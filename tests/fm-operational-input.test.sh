@@ -22,8 +22,18 @@ kind_cli() {
   printf '%s' "$1" | "$OWNER" kind 2>/dev/null
 }
 
+count_literal() {  # <text> <literal>
+  local rest=$1 needle=$2 count=0
+  while [ "${rest#*"$needle"}" != "$rest" ]; do
+    rest=${rest#*"$needle"}
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
 test_current_generic_matrix() {
-  local kind body encoded parsed stripped prefix_hex
+  local kind body encoded parsed stripped prefix_hex reply_rule rule_count
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
   prefix_hex=$(printf '%s' "$FM_OPERATIONAL_PREFIX" | od -An -tx1 | tr -d ' \n')
   [ "$prefix_hex" = e281a346495253544d4154455f4f503a20 ] \
     || fail "current operational prefix lost the landed U+2063 FIRSTMATE_OP bytes: $prefix_hex"
@@ -40,6 +50,9 @@ test_current_generic_matrix() {
       || fail "cross-language CLI lost current $kind"
     [ "$(classify_cli "$encoded")" = "$kind" ] \
       || fail "classifier lost current $kind"
+    rule_count=$(count_literal "$encoded" "$reply_rule")
+    [ "$rule_count" = 1 ] \
+      || fail "current $kind carrier must include the silent operational-input rule exactly once, found $rule_count"
     fm_operational_input_body "$encoded" stripped \
       || fail "could not recover current $kind body"
     [ "$stripped" = "$body" ] \
@@ -49,7 +62,8 @@ test_current_generic_matrix() {
 }
 
 test_current_from_firstmate_carrier() {
-  local encoded parsed separator
+  local encoded parsed separator stripped reply_rule rule_count
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
   separator=$(printf '\342\201\243')
   fm_message_mark_from_firstmate "corr=0123456789abcdef inspect the report" encoded
   [ "${encoded#"[fm-from-firstmate]$separator"}" != "$encoded" ] \
@@ -60,6 +74,13 @@ test_current_from_firstmate_carrier() {
     || fail "from-firstmate current carrier became $parsed"
   [ "$(classify_cli "$encoded")" = from-firstmate ] \
     || fail "cross-language classifier lost from-firstmate"
+  rule_count=$(count_literal "$encoded" "$reply_rule")
+  [ "$rule_count" = 1 ] \
+    || fail "from-firstmate carrier must include the silent operational-input rule exactly once, found $rule_count"
+  fm_operational_input_body "$encoded" stripped \
+    || fail "could not recover the from-firstmate body"
+  [ "$stripped" = 'corr=0123456789abcdef inspect the report' ] \
+    || fail "from-firstmate body changed while carrying the silent reply rule"
   pass "operational input: the established from-firstmate carrier remains structurally typed and byte-compatible"
 }
 

@@ -101,7 +101,7 @@ record_body() {  # <record-path>
 }
 
 test_secondmate_target_is_marked() {
-  local dir fb log home rc got corr
+  local dir fb log home rc got body corr
   dir="$TMP_ROOT/sm"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home sm)
@@ -113,9 +113,11 @@ test_secondmate_target_is_marked() {
     "$FM_FROMFIRST_MARK"corr=[a-f0-9][a-f0-9]*) : ;;
     *) fail "secondmate send: the recorded steer should be marker+corr+text"$'\n'"--- bytes ---"$'\n'"$(printf '%s' "$got" | od -An -c)" ;;
   esac
-  case "$got" in
+  fm_operational_input_body "$got" body \
+    || fail "secondmate send did not produce a parseable operational input"
+  case "$body" in
     *audit\ the\ build) : ;;
-    *) fail "secondmate send lost the request body"$'\n'"$got" ;;
+    *) fail "secondmate send lost the request body"$'\n'"$body" ;;
   esac
   case "$(cat "$log")" in
     *"$FM_FROMFIRST_MARK"*) fail "the marker must ride the record, never the typed doorbell" ;;
@@ -149,10 +151,10 @@ test_exact_secondmate_task_id_is_marked() {
   run_send "$fb" "$home" "$log" "domain" "$already_marked"; rc=$?
   expect_code 0 "$rc" "send of already-marked exact-id content should succeed"
   got=$(record_body "$home/state/domain.inbox/002.msg")
-  case "$got" in
-    "${FM_FROMFIRST_MARK}corr=${corr} already routed") : ;;
-    *) fail "exact secondmate send altered already-correlated content"$'\n'"--- bytes ---"$'\n'"$(printf '%s' "$got" | od -An -tx1)" ;;
-  esac
+  fm_operational_input_body "$got" got \
+    || fail "already-correlated secondmate send did not remain parseable"
+  [ "$got" = "corr=${corr} already routed" ] \
+    || fail "exact secondmate send altered already-correlated content"$'\n'"$got"
   pass "fm-send: an exact kind=secondmate task id is marked with corr exactly once"
 }
 
@@ -240,8 +242,8 @@ test_marker_transformation_is_idempotent() {
   fm_message_mark_from_firstmate "$once" twice
   [ "$once" = "$twice" ] \
     || fail "already-marked content was double-prefixed"$'\n'"--- once ---"$'\n'"$(printf '%s' "$once" | od -An -tx1)"$'\n'"--- twice ---"$'\n'"$(printf '%s' "$twice" | od -An -tx1)"
-  [ "$once" = "${FM_FROMFIRST_MARK}do the work" ] \
-    || fail "marker transformation did not prefix bare content exactly once"
+  [ "$once" = "${FM_FROMFIRST_MARK}do the work${FM_OPERATIONAL_SILENT_REPLY_CARRIER}" ] \
+    || fail "marker transformation did not add the marker and reply carrier exactly once"
   pass "fm-marker: from-firstmate transformation is idempotent"
 }
 

@@ -1,0 +1,5 @@
+herdr=available
+jq=available
+pi=available
+live-guard-env=unset (required target/home not supplied)
+skip: set FM_AFK_DELIVERY_WITNESS_LIVE=1 with an existing disposable Herdr+Pi target and its working home

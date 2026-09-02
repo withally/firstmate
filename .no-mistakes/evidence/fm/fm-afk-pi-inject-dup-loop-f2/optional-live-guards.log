@@ -1,0 +1,6 @@
+tests/fm-afk-pi-herdr-return-e2e.test.sh
+skip: set FM_AFK_PI_HERDR_E2E=1 to run the real Pi/Herdr away-return regression
+exit=0
+tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
+skip: set FM_AFK_HERDR_CLAUDE_LIVE=1 to run the live Herdr+Claude away-mode guard
+exit=0

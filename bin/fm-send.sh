@@ -118,11 +118,13 @@
 # failed enqueue discards the expectation. On the typed plane, exit 3 and an
 # exit 1 with visibly retained text keep it armed rather than dropping it, and
 # only a proven send failure discards it.
-# Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending a recovery request
-# for an already-open expectation so a second record is not created. Direct
-# unmarked captain input never creates one. A marked secondmate instruction
-# sent with --fire-and-forget <16-hex-delivery-id> uses the same inbox transport
-# without creating a reply expectation; its delivery id makes uncertain retries
+# Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending an existing request
+# or recovery attempt for an already-open expectation so a second record is not
+# created. Set FM_PENDING_REPLY_RECOVERY=1 with it when re-sending a recovery
+# attempt so the persisted recovery body is used. Direct unmarked captain input
+# never creates one. A marked secondmate instruction sent with
+# --fire-and-forget <16-hex-delivery-id> uses the same inbox transport without
+# creating a reply expectation; its delivery id makes uncertain retries
 # idempotent while allowing a later identical instruction to be distinct.
 #
 # Remote secondmate delivery: the send crosses fm-on.sh to a host-local leg
@@ -886,6 +888,9 @@ else
       if [ "${FM_STATE_OVERRIDE+x}" = x ]; then
         resend_state=$(cd "$STATE" 2>/dev/null && pwd) || resend_state=$STATE
         printf 'FM_STATE_OVERRIDE=%q ' "$resend_state" >&2
+      fi
+      if [ "$pending_reply_attempt" = recovery ]; then
+        printf 'FM_PENDING_REPLY_RECOVERY=1 ' >&2
       fi
       printf 'FM_PENDING_REPLY_EXISTING_CORR=%q %q' "$PENDING_REPLY_CORR" "$SCRIPT_DIR/fm-send.sh" >&2
       for resend_arg in "${FM_SEND_ORIGINAL_ARGS[@]}"; do

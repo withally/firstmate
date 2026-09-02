@@ -2728,7 +2728,7 @@ test_pane_is_busy_herdr_claude_uses_ansi_capture_capability
 
 test_pane_is_busy_herdr_claude_accepts_wrapped_idle_background_footer() {
   local idle
-  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258-idle-background-narrow.ansi.txt")")
+  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt")")
   (
     fm_backend_busy_state() { printf 'busy'; }
     fm_backend_herdr_capture_ansi() { printf '%s' "$idle"; }

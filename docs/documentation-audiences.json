@@ -423,6 +423,14 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt",
+      "audience": "maintainer-verification"
     }
   ]
 }

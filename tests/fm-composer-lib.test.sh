@@ -779,8 +779,8 @@ test_claude_plain_capture_active_hint_uses_actual_capabilities
 
 test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
   local idle busy pending garbled dead rc
-  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258-idle-background-narrow.ansi.txt")")
-  busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258-busy-background-narrow.ansi.txt")")
+  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt")")
+  busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt")")
 
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
     fail "Claude's captured idle background-shell footer must not read busy"

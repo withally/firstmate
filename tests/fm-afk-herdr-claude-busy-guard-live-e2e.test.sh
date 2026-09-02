@@ -29,14 +29,14 @@ done
   || fail "FM_AFK_HERDR_CLAUDE_LIVE=1 but the Herdr lab helper is not executable at $HERDR_LAB_HELPER"
 
 ORIGINAL_PATH=$PATH
-HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-inject-wedge-w2) \
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-claude-herdr-unreadable-wedge-f1) \
   || fail "could not generate the isolated Herdr lab session name"
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-afk-herdr-claude-guard.XXXXXX") \
   || fail "could not create the live-test temporary root"
 STATE_DIR="$TMP_ROOT/state"
 FAKEBIN="$TMP_ROOT/fakebin"
-FM_HOME="$TMP_ROOT/home"
-mkdir -p "$STATE_DIR" "$FAKEBIN" "$FM_HOME"
+FM_HOME="$ROOT"
+mkdir -p "$STATE_DIR" "$FAKEBIN"
 
 export HERDR_LAB_HELPER HERDR_LAB_SESSION
 # The exact lab teardown trap is installed before provisioning as required by
@@ -109,7 +109,7 @@ CLAUDE_TEST_SYSTEM_PROMPT="This is a live away-mode guard test. For an injected 
 printf '%s\n' 'Reply with the single word ready and stop.' > "$PROMPT_FILE"
 # shellcheck disable=SC2016 # The generated launcher expands $(cat ...) when it runs.
 printf -v CLAUDE_LAUNCHER_CONTENT \
-  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nexec %q --dangerously-skip-permissions --append-system-prompt %q "$(cat %q)"\n' \
+  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nstty cols 66 rows 39\nexec %q --dangerously-skip-permissions --append-system-prompt %q "$(cat %q)"\n' \
   "$ROOT" "$FAKEBIN:$ORIGINAL_PATH" "$FM_HOME" "$STATE_DIR" "$ROOT" \
   "$HERDR_LAB_SESSION" "$CLAUDE_BIN" "$CLAUDE_TEST_SYSTEM_PROMPT" "$PROMPT_FILE"
 printf '%s' "$CLAUDE_LAUNCHER_CONTENT" > "$CLAUDE_LAUNCHER"
@@ -266,6 +266,38 @@ wait_for_single_delivery() {
   return 1
 }
 
+wait_for_digest_visible() {
+  local token=$1
+  for _ in $(seq 1 30); do
+    [ "$(token_count "$token")" -eq 1 ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_digest_queued_or_visible() {
+  local token=$1
+  for _ in $(seq 1 60); do
+    [ "$(token_count "$token")" -eq 1 ] && return 0
+    delivery_has_undelivered "$STATE_DIR" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_wrapped_idle_background_footer() {
+  local screen
+  for _ in $(seq 1 30); do
+    screen=$(screen_text)
+    if printf '%s\n' "$screen" | grep -Eq '1 shell .*↓ to manage' \
+      && printf '%s\n' "$screen" | grep -Eq '^[[:space:]]*/rc[[:space:]]*$'; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
 wait_for_rendered_busy() {
   local token=$1 screen status composer
   for _ in $(seq 1 30); do
@@ -384,10 +416,24 @@ if ! wait_for_afk_daemon; then
 fi
 wait_for_idle_native_working \
   || fail "Herdr did not report working with an idle Claude composer after the foreground /afk turn"
+wait_for_wrapped_idle_background_footer \
+  || fail "Claude Code ($CLAUDE_VERSION) did not render the captured narrow two-row background footer"
 emit_verdict_evidence idle-post-afk
 
 ESCALATION_ONE="FM_AFK_CLAUDE_GUARD_ONE_$$"
 printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR/crew-one.status"
+wait_for_digest_queued_or_visible "$ESCALATION_ONE" \
+  || fail "the watcher did not queue the first escalation within the live observation window"
+DELIVERY_STARTED=$(date +%s)
+wait_for_digest_visible "$ESCALATION_ONE" \
+  || {
+    echo "one-tick delivery diagnostics:" >&2
+    sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
+    fail "the queued first escalation was not visible within one housekeeping tick"
+  }
+DELIVERY_ELAPSED=$(( $(date +%s) - DELIVERY_STARTED ))
+[ "$DELIVERY_ELAPSED" -le 2 ] \
+  || fail "the first escalation took ${DELIVERY_ELAPSED}s to appear instead of one 1s housekeeping cadence"
 wait_for_single_delivery "$ESCALATION_ONE" "$AWAY_ACK_TOKEN" \
   || fail "native Herdr working plus rendered-idle Claude did not submit the first escalation exactly once"
 sleep 3
@@ -453,5 +499,5 @@ printf '%s\n' "$screen" | grep -Fq "$HUMAN_TEXT" \
   || fail "bright human text was modified or disappeared while the daemon deferred"
 pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: rendered-busy and pending-composer deferrals preserve human text"
 
-printf 'evidence: session=%s native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1\n' \
-  "$HERDR_LAB_SESSION"
+printf 'evidence: session=%s native=working rendered=idle composer=empty wrapped-footer=1 delivery-seconds=%s delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1\n' \
+  "$HERDR_LAB_SESSION" "$DELIVERY_ELAPSED"

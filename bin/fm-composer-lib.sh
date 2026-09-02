@@ -316,6 +316,8 @@ FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[
 FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
 FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX='Press up to edit queued messages'
 FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX='Running…[[:space:]]+\([0-9]+[smh].*timeout'
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass permissions on([[:space:]]|$)'
+FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX='^[[:space:]]*(/rc|●[[:space:]]+(low|medium|high)[[:space:]]+·[[:space:]]+/effort)[[:space:]]*$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -363,25 +365,52 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local capture_caps=${1:-} lines plain footer footer_row composer caps verdict active_rows preceding screen_verdict
+  local capture_caps=${1:-} lines plain footer footer_row footer_start composer screen caps verdict active_rows preceding screen_verdict
   local active_hint=0 active_tool=0
   FM_CLAUDE_BUSY_MATCHED_ROW=
   [ -n "$capture_caps" ] || capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
-  footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
-  footer_row=$(printf '%s\n' "$plain" | awk 'NF { row=NR - 1 } END { if (row != "") print row }')
+  footer_start=$(printf '%s\n' "$plain" | awk \
+    -v primary="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX" \
+    -v continuation="$FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX" '
+      { rows[NR]=$0 }
+      function previous_nonblank(from, row) {
+        for (row=from; row >= 1; row--)
+          if (rows[row] !~ /^[[:space:]]*$/) return row
+        return 0
+      }
+      END {
+        row=previous_nonblank(NR)
+        count=0
+        while (row > 0 && count < 2 && rows[row] ~ continuation) {
+          count++
+          row=previous_nonblank(row - 1)
+        }
+        if (row > 0 && rows[row] ~ primary) print row
+      }
+    ')
+  if [ -n "$footer_start" ]; then
+    footer=$(printf '%s\n' "$plain" | awk -v start="$footer_start" 'NR == start { print; exit }')
+    footer_row=$((footer_start - 1))
+    composer=$(printf '%s\n' "$plain" | awk -v start="$footer_start" 'NR < start { print }')
+    screen=$(printf '%s\n' "$lines" | awk -v start="$footer_start" 'NR < start { print }')
+  else
+    footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
+    footer_row=$(printf '%s\n' "$plain" | awk 'NF { row=NR - 1 } END { if (row != "") print row }')
+    composer=$(printf '%s\n' "$plain" | awk '
+      { rows[NR]=$0 }
+      NF { last=NR }
+      END { for (row=1; row < last; row++) print rows[row] }
+    ')
+    screen=$lines
+  fi
   fm_composer_normalize_trim_var footer
   [ -n "$footer" ] && [ -n "$footer_row" ] || return 2
-  composer=$(printf '%s\n' "$plain" | awk '
-    { rows[NR]=$0 }
-    NF { last=NR }
-    END { for (row=1; row < last; row++) print rows[row] }
-  ')
   _fm_composer_scan_screen "$composer" ''
   _fm_composer_select_cursorless "$composer" || return 2
-  screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$lines")
+  screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$screen")
   active_rows=$(printf '%s\n' "$composer" | awk \
     -v first="$FM_COMPOSER_SELECTED_FIRST" -v last="$FM_COMPOSER_SELECTED_LAST" \
     'NR - 1 >= first && NR - 1 <= last { print }')

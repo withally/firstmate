@@ -321,6 +321,7 @@ The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-a
 
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
 `pane_is_busy` therefore uses that shared current-footer predicate; footer-like text outside the selected composer boundary is inert, including nested worker output that can quote another harness's busy footer.
+Claude may wrap its bottom status area across a primary `⏵⏵ bypass permissions on` row and up to two verified continuation rows such as `/rc` or the effort control; the shared classifier removes that bounded furniture before evaluating the composer and active-turn context, while any unrecognized continuation remains unreadable and defers.
 When the rendered pane is idle, injection falls through to the affirmative `empty` composer guard, while an unreadable capture or any non-`empty` composer verdict still defers.
 Each busy or composer deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`; a `rendered-busy` record includes the exact matched row, and an unreadable busy-guard capture is logged as `unreadable` and also defers.
 The Herdr `busy` adapter result is logged as its native `working` label; for Claude this preserves diagnostic evidence without making it a busy verdict.

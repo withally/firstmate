@@ -1,0 +1,10 @@
+scenario=tmux control exit with cursor-selected pending box and stale lower box
+fm_control_exit_rc=0
+control_output_begin
+pending composer excerpt: pending under cursor
+stopped t1 harness=claude backend=tmux endpoint=fmses:fm-t1 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-control.Nul4lh/manual-cursor-box-8505/wt-t1
+control_output_end
+named_keys_sent=C-u
+literal_payloads=/exit
+final_fake_agent_command=zsh
+end_to_end_check=passed

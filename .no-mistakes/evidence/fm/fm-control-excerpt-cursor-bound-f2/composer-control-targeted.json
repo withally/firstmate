@@ -1,0 +1,44 @@
+{
+  "families": [
+    {
+      "count": 1,
+      "duration_ms": 48819,
+      "failed": 0,
+      "name": "backend-dispatch"
+    },
+    {
+      "count": 1,
+      "duration_ms": 5957,
+      "failed": 0,
+      "name": "pure-contract-unit"
+    }
+  ],
+  "finished_at": "2026-09-02T23:43:50Z",
+  "run_id": "fm-test-run-1788392575226-70865",
+  "scripts": [
+    {
+      "duration_ms": 5957,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-composer-lib.test.sh"
+    },
+    {
+      "duration_ms": 48819,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "backend-dispatch",
+      "gate_skip": false,
+      "path": "tests/fm-control.test.sh"
+    }
+  ],
+  "selection": "scripts",
+  "started_at": "2026-09-02T23:42:55Z",
+  "summary": {
+    "duration_ms": 54855,
+    "failed": 0,
+    "skipped_gate": 0,
+    "total": 2
+  }
+}

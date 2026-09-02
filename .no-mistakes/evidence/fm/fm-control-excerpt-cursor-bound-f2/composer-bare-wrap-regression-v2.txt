@@ -1,0 +1,6 @@
+scenario=cursorless bare-wrap inside Pi separator pair
+caps=styled=1 cursor=0 identity=0 rows=20
+screen=top-rule | ❯ | continuation text | bottom-rule
+pre_fix_parent_2be3313=empty
+target_4e5e66a=pending
+behavior_check=passed

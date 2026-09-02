@@ -1,0 +1,30 @@
+fm-control pending-composer executable evidence
+target=41ef3c258b10f8f7ea5d5d84ffb550c4bd3fb4f4
+fixture=tests/fm-control.test.sh fake tmux provider
+
+SUCCESS control_rc=0
+pending composer excerpt: draft doorbell line waiting to be sent
+stopped t1 harness=claude backend=tmux endpoint=fmses:fm-t1 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-control.JarIx0/evidence-success-18749/wt-t1
+success_keys=C-u
+success_literals=/exit
+
+PENDING_UNPROVEN initial_state=pending-unproven control_rc=0
+pending composer excerpt: draft
+stopped t1 harness=claude backend=tmux endpoint=fmses:fm-t1 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-control.JarIx0/evidence-unproven-17474/wt-t1
+unproven_keys=C-u
+unproven_literals=/exit
+
+REFUSAL control_rc=1
+pending composer excerpt: foreign pending text
+error: task t1's composer remained 'pending' after bounded clear attempts; initial state: pending; keys sent: C-u, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace, BSpace
+refusal_key_count=81
+refusal_keys_first_last=C-u / BSpace
+refusal_literals=
+
+LONG_EXCERPT control_rc=0
+pending composer excerpt: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqr
+stopped t1 harness=claude backend=tmux endpoint=fmses:fm-t1 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-control.JarIx0/evidence-cap-23476/wt-t1
+excerpt_length=80
+excerpt=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqr
+cap_keys=C-u
+cap_literals=/exit

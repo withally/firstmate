@@ -2642,15 +2642,15 @@ fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
 # only when the classifier reports the verdict depends on it (a pi separator
 # pair below every other candidate), preserving this adapter's original
 # consult-only-when-needed behavior.
-fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
-  local target=$1 cap caps verdict identity
-  fm_backend_herdr_parse_target "$target" || { fm_composer_state_output unknown; return 0; }
+fm_backend_herdr_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local target=$1 cap caps verdict identity output=${3-}
+  fm_backend_herdr_parse_target "$target" || { fm_composer_state_output unknown '' '' "$output"; return 0; }
   if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   elif cap=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES"); then
     caps=$(printf 'styled=0\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   else
-    fm_composer_state_output unknown
+    fm_composer_state_output unknown '' '' "$output"
     return 0
   fi
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
@@ -2661,7 +2661,7 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
     verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
   fi
-  fm_composer_state_output "$verdict" "$caps" "$cap"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 # fm_backend_herdr_rendered_busy_state: busy|idle|unknown from the pane's

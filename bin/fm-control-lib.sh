@@ -145,12 +145,12 @@ fm_control_interrupt_clear_key() {  # <harness>
 }
 
 # The primary key that clears transient typed composer input before an exit.
-# Ctrl+U is verified across the supported harness composers; callers re-read
+# Ctrl+U is verified for the supported harness composers; callers re-read
 # through the shared composer classifier and fall back to bounded Backspace
 # delivery rather than assuming the key worked.
 fm_control_composer_clear_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) printf 'C-u' ;;
+    claude|codex|pi|pi-signed|grok|kimi|cursor|muse) printf 'C-u' ;;
     *) return 1 ;;
   esac
 }

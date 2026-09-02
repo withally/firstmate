@@ -331,8 +331,7 @@ read_composer_state() {
   if [ "$COMPOSER_EXCERPT_CAPTURED" = 1 ]; then
     observed=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null)
   else
-    observed=$(FM_COMPOSER_STATE_OUTPUT=state-and-excerpt \
-      fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null)
+    observed=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" state-and-excerpt 2>/dev/null)
   fi
   case "$observed" in
     *$'\t'*)

@@ -245,13 +245,13 @@ fm_backend_orca_composer_caps() {
 # shared verdict out. Every shape (bordered boxes AND the borderless bare-glyph
 # row this adapter never learned, which left every claude/codex/pi/muse steer
 # unconfirmed) lives in bin/fm-composer-lib.sh.
-fm_backend_orca_composer_state() {  # <terminal-id> [expected-label] -> empty|pending|pending-unproven|unknown
-  local cap verdict caps
+fm_backend_orca_composer_state() {  # <terminal-id> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local cap verdict caps output=${3-}
   caps=$(fm_backend_orca_composer_caps)
-  cap=$(fm_backend_orca_composer_capture "$1") || { fm_composer_state_output unknown "$caps"; return 0; }
+  cap=$(fm_backend_orca_composer_capture "$1") || { fm_composer_state_output unknown "$caps" '' "$output"; return 0; }
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  fm_composer_state_output "$verdict" "$caps" "$cap"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 fm_backend_orca_send_key() {  # <terminal-id> <key>

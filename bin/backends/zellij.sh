@@ -522,19 +522,19 @@ fm_backend_zellij_composer_capture() {  # <target> [expected-label]
 # a message the crew never received. A dead pane still fails safe here: the
 # unconditional-exit-0 CLI quirk (file header) yields an empty dump, which
 # classifies unknown - never a confirmation.
-fm_backend_zellij_composer_state() {  # <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local target=$1 expected_label=${2:-} cap caps verdict
+fm_backend_zellij_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local target=$1 expected_label=${2:-} cap caps verdict output=${3-}
   if cap=$(fm_backend_zellij_composer_capture "$target" "$expected_label"); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   elif cap=$(fm_backend_zellij_capture "$target" "$FM_COMPOSER_CAPTURE_LINES" "$expected_label") && [ -n "$cap" ]; then
     caps=$(printf 'styled=0\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   else
-    fm_composer_state_output unknown
+    fm_composer_state_output unknown '' '' "$output"
     return 0
   fi
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  fm_composer_state_output "$verdict" "$caps" "$cap"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 fm_backend_zellij_composer_content() {  # <target> [expected-label]

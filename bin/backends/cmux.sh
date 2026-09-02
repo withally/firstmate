@@ -552,13 +552,13 @@ fm_backend_cmux_composer_caps() {
 # bin/fm-composer-lib.sh, so a new harness shape is taught there once and
 # never here. cmux has no identity probe, so the classifier's identity
 # sentinel resolves to unknown.
-fm_backend_cmux_composer_state() {  # <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local cap verdict caps
+fm_backend_cmux_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local cap verdict caps output=${3-}
   caps=$(fm_backend_cmux_composer_caps)
-  cap=$(fm_backend_cmux_composer_capture "$1" "${2:-}") || { fm_composer_state_output unknown "$caps"; return 0; }
+  cap=$(fm_backend_cmux_composer_capture "$1" "${2:-}") || { fm_composer_state_output unknown "$caps" '' "$output"; return 0; }
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  fm_composer_state_output "$verdict" "$caps" "$cap"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 # fm_backend_cmux_send_text_submit: type <text> into <target> once (raw,

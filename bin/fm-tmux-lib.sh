@@ -137,12 +137,12 @@ EOF
 # is fetched lazily, only when the classifier reports the verdict depends on
 # it (a pi separator pair under the cursor), so the common read never pays
 # for the process probe.
-fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
-  local target=$1 cy pane verdict identity caps
+fm_tmux_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local target=$1 cy pane verdict identity caps output=${3-}
   caps=$(fm_tmux_composer_caps)
-  cy=$(fm_tmux_composer_cursor_row "$target") || { fm_composer_state_output unknown "$caps"; return 0; }
-  case "$cy" in ''|*[!0-9]*) fm_composer_state_output unknown "$caps"; return 0 ;; esac
-  pane=$(fm_tmux_composer_capture "$target") || { fm_composer_state_output unknown "$caps"; return 0; }
+  cy=$(fm_tmux_composer_cursor_row "$target") || { fm_composer_state_output unknown "$caps" '' "$output"; return 0; }
+  case "$cy" in ''|*[!0-9]*) fm_composer_state_output unknown "$caps" '' "$output"; return 0 ;; esac
+  pane=$(fm_tmux_composer_capture "$target") || { fm_composer_state_output unknown "$caps" '' "$output"; return 0; }
   verdict=$(fm_composer_classify_screen "$caps" "$pane" "$cy")
   if [ "$verdict" = need-identity ]; then
     if ! identity=$(fm_tmux_composer_identity "$target") || [ -z "$identity" ]; then
@@ -163,7 +163,7 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
   if [ "$verdict" = unknown ] && fm_tmux_pane_is_cursor "$target"; then
     verdict=$(fm_composer_classify_screen "$caps" "$pane" '')
   fi
-  fm_composer_state_output "$verdict" "$caps" "$pane"
+  fm_composer_state_output "$verdict" "$caps" "$pane" "$output"
 }
 
 # fm_tmux_pane_is_cursor: true when the pane's FOREGROUND process group contains

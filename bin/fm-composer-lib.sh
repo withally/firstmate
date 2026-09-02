@@ -1267,9 +1267,9 @@ EOF
   printf '%s\n' "$joined" | LC_ALL=C awk '{$1=$1; printf "%s", $0}'
 }
 
-fm_composer_state_output() {  # <state> [caps] [screen]
-  local state=$1 caps=${2-} screen=${3-} excerpt
-  if [ "${FM_COMPOSER_STATE_OUTPUT:-state}" != state-and-excerpt ]; then
+fm_composer_state_output() {  # <state> [caps] [screen] [output-mode]
+  local state=$1 caps=${2-} screen=${3-} output=${4-} excerpt
+  if [ "$output" != state-and-excerpt ]; then
     printf '%s' "$state"
     return 0
   fi

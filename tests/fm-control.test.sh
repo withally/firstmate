@@ -120,11 +120,18 @@ case "${1:-}" in
         printf 'zsh' > "$D/command"
       fi
       if [ "$payload" = Escape ] && [ -n "${FM_FAKE_MUSE_LOG:-}" ]; then
+        if [ -n "${FM_FAKE_MUSE_RESTORE_ON_INTERRUPT:-}" ]; then
+          printf '╭────╮\n│ %s │\n╰────╯\n' \
+            "$FM_FAKE_MUSE_RESTORE_ON_INTERRUPT" > "$D/pane"
+        fi
         if [ -n "${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" ]; then
           : > "$D/muse-ack-pending"
         else
           printf '%s\n' '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"terminal","terminal":"cancelled","reason":null}}}' >> "$FM_FAKE_MUSE_LOG"
         fi
+      fi
+      if [ "$payload" = "${FM_FAKE_FAIL_KEY:-}" ]; then
+        exit 1
       fi
     fi
     exit 0 ;;
@@ -210,6 +217,8 @@ run_control() {
     FM_FAKE_MUSE_LOG="${FM_FAKE_MUSE_LOG:-}" \
     FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK="${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" \
     FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT="${FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT:-}" \
+    FM_FAKE_MUSE_RESTORE_ON_INTERRUPT="${FM_FAKE_MUSE_RESTORE_ON_INTERRUPT:-}" \
+    FM_FAKE_FAIL_KEY="${FM_FAKE_FAIL_KEY:-}" \
     FM_FAKE_INTERRUPT_STOPS_AGENT="${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" \
     "$CONTROL" "$@" 2>&1
 }
@@ -737,6 +746,38 @@ test_busy_interrupt_rechecks_composer_before_exit_command() {
   pass "fm-control exit: a busy interrupt cannot reintroduce pending composer text before exit"
 }
 
+test_busy_interrupt_failure_reports_restored_composer_without_exit() {
+  local dir root log pending expected excerpt_line out rc
+  dir=$(new_case busy-interrupt-fails)
+  add_task "$dir" t1 muse
+  alive_as "$dir" muse
+  root="$dir/muse-sessions"
+  log="$root/2026/08/08/session-1/session.jsonl"
+  mkdir -p "$(dirname "$log")"
+  printf '%s\n' \
+    "{\"schema_version\":1,\"payload_type\":\"runtime.session.metadata\",\"payload\":{\"kind\":\"metadata\",\"record\":{\"workspace_root\":\"$dir/wt-t1\"}}}" \
+    '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"started","prompt":"work"}}}' > "$log"
+  printf 'sessions_root=%s\nworkspace_root=%s\nbinding_id=test\n' \
+    "$root" "$dir/wt-t1" > "$dir/home/state/t1.muse-session"
+  pending='restored pending text 0123456789012345678901234567890123456789012345678901234567890123456789 tail'
+  expected=$(printf '%s' "$pending" | cut -c 1-80)
+
+  out=$(FM_FAKE_MUSE_LOG="$log" FM_FAKE_MUSE_RESTORE_ON_INTERRUPT="$pending" \
+    FM_FAKE_FAIL_KEY=C-u run_control "$dir" t1 exit); rc=$?
+
+  expect_code 1 "$rc" "exit should refuse through composer reporting when its interrupt sequence fails"$'\n'"$out"
+  assert_contains "$out" "composer state 'pending-unproven'" \
+    "the refusal should report the composer state read after interrupt failure"
+  assert_contains "$out" "keys sent: Escape" \
+    "the refusal should report the successfully delivered interrupt keys"
+  excerpt_line=$(printf '%s\n' "$out" | sed -n 's/^pending composer excerpt: //p')
+  [ "$excerpt_line" = "$expected" ] \
+    || fail "the refusal should preserve exactly the first 80 restored composer characters, got: $excerpt_line"
+  [ -z "$(literals "$dir")" ] \
+    || fail "a failed interrupt must never submit the exit command, got: $(literals "$dir")"
+  pass "fm-control exit: interrupt failure preserves and reports restored composer text without exit"
+}
+
 test_pending_composer_is_cleared_before_exit_is_typed() {
   local dir out rc
   dir=$(new_case pending-clear)
@@ -1059,6 +1100,7 @@ test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses
 test_busy_agent_is_interrupted_before_the_exit_command
 test_busy_interrupt_rechecks_composer_before_exit_command
+test_busy_interrupt_failure_reports_restored_composer_without_exit
 test_pending_composer_is_cleared_before_exit_is_typed
 test_unclearable_pending_composer_refuses_without_typing_exit
 test_pending_composer_without_excerpt_refuses_before_clear

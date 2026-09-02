@@ -373,6 +373,14 @@ refuse_composer() {
   die "$1"
 }
 
+refuse_after_interrupt_failure() {  # <reason> <successfully-sent-keys>
+  local reason=$1 sent=${2:-none}
+  if ! read_composer_state; then
+    refuse_composer "$reason; composer state '$COMPOSER_STATE' with pending excerpt unavailable; keys sent: $sent"
+  fi
+  refuse_composer "$reason; composer state '$COMPOSER_STATE'; keys sent: $sent"
+}
+
 # wait_agent_state <wanted...> <timeout>: poll until agent_state prints one of
 # the wanted values. Prints the final observed state; returns 0 on a match.
 wait_agent_state() {  # <timeout> <wanted>...
@@ -405,7 +413,7 @@ require_state_verified_backend() {  # <verb>
 # an interrupt that cancels the turn but leaves the restored prompt in the
 # composer would make the next submitted line concatenate onto it.
 send_interrupt_keys() {
-  local key repeat clear i=0
+  local key repeat clear sent='' i=0
   key=$(fm_control_interrupt_key "$HARNESS")
   repeat=$(fm_control_interrupt_repeat "$HARNESS")
   clear=$(fm_control_interrupt_clear_key "$HARNESS")
@@ -414,13 +422,20 @@ send_interrupt_keys() {
   [ -z "$clear" ] || fm_control_backend_supports_key "$BACKEND" "$clear" \
     || die "harness $HARNESS needs $clear to clear its composer after an interrupt, which the $BACKEND backend cannot deliver; refusing to leave the cancelled prompt where the next submitted line would concatenate onto it"
   while [ "$i" -lt "$repeat" ]; do
-    fm_backend_send_key "$BACKEND" "$T" "$key" "$LABEL" \
-      || die "interrupt key $key was not delivered to task $ID on $BACKEND"
+    if ! fm_backend_send_key "$BACKEND" "$T" "$key" "$LABEL"; then
+      refuse_after_interrupt_failure \
+        "interrupt key $key was not delivered to task $ID on $BACKEND" "$sent"
+    fi
+    sent="${sent}${sent:+, }$key"
     i=$((i + 1))
     [ "$i" -ge "$repeat" ] || sleep 0.2
   done
-  [ -z "$clear" ] || fm_backend_send_key "$BACKEND" "$T" "$clear" "$LABEL" \
-    || die "interrupt key $key reached task $ID, but $clear did not, so its composer still holds the cancelled prompt; clear it before the next lifecycle action"
+  if [ -n "$clear" ] \
+     && ! fm_backend_send_key "$BACKEND" "$T" "$clear" "$LABEL"; then
+    refuse_after_interrupt_failure \
+      "interrupt key $key reached task $ID, but $clear did not, so its composer still holds the cancelled prompt; clear it before the next lifecycle action" \
+      "$sent"
+  fi
 }
 
 prepare_interrupt_ack() {

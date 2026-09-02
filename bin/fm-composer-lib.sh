@@ -1267,6 +1267,9 @@ EOF
   printf '%s\n' "$joined" | LC_ALL=C awk '{$1=$1; printf "%s", $0}'
 }
 
+# The default output is only the shared composer verdict. The explicit
+# state-and-excerpt mode is private to the control plane's first pending read,
+# so no ambient variable can change the exact state contract for other callers.
 fm_composer_state_output() {  # <state> [caps] [screen] [output-mode]
   local state=$1 caps=${2-} screen=${3-} output=${4-} excerpt
   if [ "$output" != state-and-excerpt ]; then

@@ -18,9 +18,9 @@ The failure repeated across harnesses and homes, and the workaround (remember to
 - The **verb allowlist**: `interrupt`, `exit`, `relaunch`.
   There is no arbitrary-text and no generic raw-key entry point.
   A caller either names an allowlisted verb or is refused.
-- **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, and which task kinds the adapter is verified to run.
+- **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, any clear key required after that interrupt, the verified key for clearing pending composer input before exit, the command that exits the agent, and which task kinds the adapter is verified to run.
   These were previously carried only in the [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md) skill's per-adapter tables, which now point here.
-  `bin/fm-send.sh`'s `--key` path reads the composer-clear table from this owner too, rather than keeping a second copy of it.
+  `bin/fm-send.sh`'s `--key` path reads the interrupt-follow-up clear table from this owner too, rather than keeping a second copy of it.
 - **Per-backend capability**: which named keys a runtime backend can deliver, and whether it has a recovery-grade agent-state classifier able to prove an agent stopped.
 
 A recorded `harness=` is not always an exact adapter name: a task launched from a raw command records that command's basename instead.
@@ -44,7 +44,10 @@ muse is the one verified adapter that restores the cancelled prompt back into it
 The clear is refused before anything is sent when the recorded backend cannot deliver it.
 
 Before `exit` types its harness command, including the stop phase of `relaunch`, the control plane reads the composer through the shared classifier and requires a proven `empty` result.
-Pending or pending-unproven text is copied to the operator output up to 80 characters, cleared with the harness's verified key and a bounded Backspace fallback, and re-read after each attempt.
+For a busy agent, it repeats that guard after interrupt delivery and immediately before submitting the exit command.
+Pending or pending-unproven input is transient rather than durable; the same state read captures its first 80 characters for control-plane output, and missing excerpt proof refuses before any clear key is sent.
+With an available excerpt, the control plane sends the harness's verified clear key, re-reads boundedly, and uses a bounded Backspace fallback while the state remains `pending` or `pending-unproven`.
+A harness without a verified pre-exit clear key - currently OpenCode - refuses to clear a pending composer rather than guessing a key.
 If the composer cannot be proven empty, the lifecycle action refuses with the observed state and delivered clear keys, so an exit command is never appended to foreign text.
 
 **Teardown and discard are not verbs and will not become verbs.**
@@ -96,8 +99,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An implicit relaunch from a prefixed raw-command basename is refused before the agent or durable state is touched because its original launch command cannot be reconstructed.
 - An adapter that is not verified for this task's kind is refused **before** the running agent is stopped, not after.
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
-- A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
-  Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
+- A backend that cannot deliver a required harness interrupt or composer-clear key is refused rather than sent a different key.
+  Orca's terminal API exposes only an interrupt and an Enter, so it can deliver none of Escape, Ctrl+U, or BSpace.
 - `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux and herdr - because without one the "the agent stopped" postcondition cannot be proven.
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
@@ -121,6 +124,6 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 
 ## Verification
 
-- `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
+- `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, pending-composer clearing and refusal, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

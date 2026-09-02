@@ -2549,17 +2549,18 @@ fm_backend_herdr_send_literal() {  # <target> <text>
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
-# Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
-# herdr's `pane send-keys` names. Verified empirically: enter, escape/esc, and
-# both ctrl+c/C-c all work (case-insensitive on herdr's side, but normalize
-# explicitly rather than relying on that).
+# Escape, C-c, C-u, and BSpace, as used by fm-send.sh, fm-control.sh, and
+# stuck-crewmate-recovery) onto herdr's `pane send-keys` names. Verified
+# empirically: enter, escape/esc, and both ctrl+c/C-c all work
+# (case-insensitive on herdr's side, but normalize explicitly rather than
+# relying on that).
 fm_backend_herdr_normalize_key() {  # <key>
   case "$1" in
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+C) printf 'ctrl+c' ;;
-    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
-    # drop the prompt muse restores into the composer after Escape.
+    # C-u clears a composer line. fm-send.sh's muse interrupt path and
+    # fm-control.sh's exit guard use it for composer safety.
     C-u|c-u|ctrl+u|Ctrl+U) printf 'ctrl+u' ;;
     BSpace|Backspace|backspace) printf 'backspace' ;;
     *) printf '%s' "$1" ;;

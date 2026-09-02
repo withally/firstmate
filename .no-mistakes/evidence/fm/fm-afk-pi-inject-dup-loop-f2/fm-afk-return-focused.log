@@ -1,0 +1,11 @@
+ok - return catch-up precedes Bearings, owns live blocker remediation, preserves evidence once, and clears idempotently
+ok - tmux and Herdr blockers require the same explicit durable reclassification before ordinary work
+ok - needs-decision remains reportable without masquerading as a firstmate-actionable blocker
+ok - AFK return re-drains published wakes until handling acknowledges
+ok - away-mode re-entry fails closed while the prior return catch-up is pending
+ok - check retries recorded terminal teardown and keeps catch-up gated until success
+ok - return catch-up fails closed and preserves a malformed delivery journal
+ok - return catch-up rejects typed records without nonces and preserves the journal
+ok - return catch-up reports an empty delivery record before clearing it
+ok - return catch-up accepts an empty delivery journal as no work
+ok - delivery cleanup failure preserves the return gate and uncleared state

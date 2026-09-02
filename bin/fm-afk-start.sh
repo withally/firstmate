@@ -47,7 +47,7 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 # The away daemon's delivery store is the single journal state/.subsuper-delivery.jsonl
 # (bin/fm-supervise-daemon.sh owns its format) plus the .subsuper-inject-wedged alarm
 # marker. The pre-redesign multi-file names remain available to the launch backup
-# and return cleanup while the daemon's one-time startup import consumes them.
+# and daemon startup quarantine.
 # This is the ONE owner of the delivery-artifact set for the away-mode scripts.
 FM_AFK_FRESH_DELIVERY_ARTIFACTS=(
   .subsuper-delivery.jsonl
@@ -72,8 +72,8 @@ fm_afk_start_usage() {
 # absent and the daemon is not already running), drop the previous journal and
 # wedge marker. A restart or recovery with state/.afk already present preserves
 # the current session's delivery journal and wedge marker for replay-safe
-# routing. Legacy multi-file inputs remain available for the daemon's one-time
-# startup import. This helper is not called on a refresh or same-session recovery.
+# routing. Legacy multi-file inputs remain untouched for the daemon's startup
+# quarantine. This helper is not called on a refresh or same-session recovery.
 fm_afk_clear_stale_artifacts() {  # <state-dir>
   local state=$1 artifact result=0
   for artifact in "${FM_AFK_FRESH_DELIVERY_ARTIFACTS[@]}"; do

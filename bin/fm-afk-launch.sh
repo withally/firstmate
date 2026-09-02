@@ -163,14 +163,18 @@ fm_afk_launch_primary_harness() {
   esac
 }
 
-fm_afk_launch_daemon_cmd() {  # <captain-target> <captain-backend> <entry>
-  local captain_target=$1 captain_backend=$2 entry=$3 primary_harness pi_agent_dir daemon_env
+fm_afk_launch_daemon_cmd() {  # <captain-target> <captain-backend> <entry> [pi-session-dir]
+  local captain_target=$1 captain_backend=$2 entry=$3 primary_harness pi_agent_dir pi_session_dir daemon_env
   primary_harness=$(fm_afk_launch_primary_harness)
   daemon_env=$(printf 'exec env -u FM_DAEMON_PRIMARY_HARNESS FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q' \
     "$FM_HOME" "$captain_target" "$captain_backend")
   pi_agent_dir=${PI_CODING_AGENT_DIR:-}
   if [ -n "$pi_agent_dir" ]; then
     daemon_env+=" PI_CODING_AGENT_DIR=$(printf '%q' "$pi_agent_dir")"
+  fi
+  pi_session_dir=${4:-${PI_CODING_AGENT_SESSION_DIR:-}}
+  if [ -n "$pi_session_dir" ]; then
+    daemon_env+=" PI_CODING_AGENT_SESSION_DIR=$(printf '%q' "$pi_session_dir")"
   fi
   if [ -n "$primary_harness" ]; then
     daemon_env+=" FM_DAEMON_PRIMARY_HARNESS=$(printf '%q' "$primary_harness")"

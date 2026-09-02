@@ -127,6 +127,7 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
 `bin/fm-supervise-daemon.sh` owns the delivered-once guard through a single append-only journal (`state/.subsuper-delivery.jsonl`) that marks a digest `typed` in one atomic rename before its only type, so a Pi or Claude user transcript confirms an otherwise unknown submit and no later flush ever retypes it.
+Pre-journal delivery files are never parsed or imported; daemon startup moves them verbatim into a unique quarantine and raises the wedge alarm.
 For tmux that confirmation is normally a proven cleared composer from the shared classifier; an idle baseline transitioning to busy across this submit's own Enter also confirms that the turn started when a working harness hides its composer.
 Without that baseline, busy state never converts an `unknown` composer into confirmation.
 For non-Claude Herdr targets, idle-baseline submits first seek native agent-state showing a real turn started, then use the shared classifier when native state remains idle: a cleared composer confirms delivery, while pending text retries Enter and reaches the shared busy-queue verdict only after the retry budget.
@@ -228,7 +229,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat the delivery journal `state/.subsuper-delivery.jsonl` and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record (a home upgraded mid-away may still carry the pre-redesign `state/.subsuper-escalations*` and `state/.subsuper-check-ledger` files until the daemon's one-time startup import consumes them).
+Treat the delivery journal `state/.subsuper-delivery.jsonl` and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
+If a home upgraded mid-away still carries pre-redesign `state/.subsuper-escalations*` or `state/.subsuper-check-ledger` files, daemon startup quarantines them verbatim and never imports them.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry with no existing `state/.afk`, and preserves the current session's journal on restart or refresh.
 Fresh entry clears prior delivery artifacts before publishing the new away flag, and a cleanup or flag-write failure stops before daemon startup.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.

@@ -311,6 +311,8 @@ The away daemon supports tmux and Herdr supervisor panes only.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
 `bin/fm-supervise-daemon.sh` owns the delivered-once contract: a single append-only journal (`state/.subsuper-delivery.jsonl`, one atomic rename per mutation) marks each digest `typed` before its one and only type, rendering is the fast confirmation path, Pi and Claude user transcripts are the deterministic witness for its nonce, and an unconfirmed attempt stays typed and alarms without ever retyping.
+Pi witness lookup uses the configured `PI_CODING_AGENT_DIR` session root or the propagated `PI_CODING_AGENT_SESSION_DIR` override and validates the transcript's working directory.
+Pre-redesign delivery files are quarantined verbatim at daemon startup and are never imported into the journal.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
@@ -327,7 +329,8 @@ It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-Fresh-entry cleanup and flag ordering are owned by the AFK skill's stale-artifact lifecycle; an away restart or recovery with `state/.afk` already present preserves the session's escalation buffer, delivery sidecars, and check ledger.
+Fresh-entry cleanup and flag ordering are owned by the AFK skill's stale-artifact lifecycle; an away restart or recovery with `state/.afk` already present preserves the session's delivery journal.
+Pre-redesign delivery files remain available for daemon startup quarantine rather than being treated as live delivery state.
 
 ## Destructive lab safety
 

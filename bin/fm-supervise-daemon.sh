@@ -788,15 +788,22 @@ stale_window_is_busy() {  # <window> <state>
 # record that the max-defer wedge alarm surfaces: a stall, never a flood.
 JOURNAL_NAME=".subsuper-delivery.jsonl"
 
-delivery_nonce_generate() {
-  local nonce
-  nonce=$(LC_ALL=C od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
-  case "$nonce" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
-      printf '%s' "$nonce"
-      ;;
-    *) return 1 ;;
-  esac
+delivery_nonce_generate() {  # <state>
+  local state=${1:-} journal nonce existing attempts=0
+  [ -n "$state" ] || return 1
+  journal="$state/$JOURNAL_NAME"
+  while [ "$attempts" -lt 64 ]; do
+    attempts=$((attempts + 1))
+    nonce=$(LC_ALL=C od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
+    delivery_nonce_valid "$nonce" || continue
+    if [ -s "$journal" ]; then
+      existing=$(jq -s -r --arg nonce "$nonce" 'any(.[]; .nonce==$nonce)' "$journal" 2>/dev/null) || return 1
+      [ "$existing" = true ] && continue
+    fi
+    printf '%s' "$nonce"
+    return 0
+  done
+  return 1
 }
 
 delivery_nonce_valid() {
@@ -808,16 +815,16 @@ delivery_nonce_valid() {
 
 
 # The Pi transcript root follows Pi's own agent-directory resolution: an explicit
-# PI_CODING_AGENT_DIR (the same variable a configured `--session-dir` launch sets)
-# overrides the default $HOME/.pi/agent, and sessions live under <agent-dir>/sessions.
-# Only an absolute configured value is honored; anything else falls back to the
-# default so a stray relative value cannot redirect the witness. The cwd-scoped
-# canonical check (delivery_transcript_expected_dir/_canonical_path) still binds the
-# accepted transcript to <root>/--<home-slug>--, so a foreign root is still rejected.
+# PI_CODING_AGENT_SESSION_DIR overrides the default session directory, otherwise an
+# absolute PI_CODING_AGENT_DIR overrides the default agent directory.
 delivery_transcript_root() {  # <harness>
-  local pi_agent_dir
+  local pi_agent_dir pi_session_dir
   case "$1" in
     pi|pi-signed)
+      if pi_session_dir=$(delivery_transcript_pi_session_override); then
+        printf '%s' "$pi_session_dir"
+        return 0
+      fi
       pi_agent_dir=$HOME/.pi/agent
       case "${PI_CODING_AGENT_DIR:-}" in
         /*) pi_agent_dir=$PI_CODING_AGENT_DIR ;;
@@ -829,12 +836,23 @@ delivery_transcript_root() {  # <harness>
   esac
 }
 
+delivery_transcript_pi_session_override() {
+  case "${PI_CODING_AGENT_SESSION_DIR:-}" in
+    /*) printf '%s' "$PI_CODING_AGENT_SESSION_DIR" ;;
+    *) return 1 ;;
+  esac
+}
+
 delivery_transcript_expected_dir() {  # <harness>
-  local harness=$1 root cwd slug
+  local harness=$1 root cwd slug pi_session_dir
   root=$(delivery_transcript_root "$harness") || return 1
   cwd=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || cwd=$FM_HOME
   case "$harness" in
     pi|pi-signed)
+      if pi_session_dir=$(delivery_transcript_pi_session_override); then
+        printf '%s' "$pi_session_dir"
+        return 0
+      fi
       slug=${cwd#/}
       slug=${slug//\//-}
       printf '%s/--%s--' "$root" "$slug"
@@ -861,12 +879,28 @@ delivery_transcript_canonical_path() {  # <harness> <candidate-path>
   printf '%s' "$canonical"
 }
 
+delivery_transcript_cwd_matches() {  # <harness> <transcript>
+  local harness=$1 transcript=$2 cwd actual
+  cwd=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || cwd=$FM_HOME
+  case "$harness" in
+    pi|pi-signed)
+      actual=$(jq -r 'select(.type == "session") | .cwd // empty' "$transcript" 2>/dev/null | head -1) || return 1
+      ;;
+    claude*)
+      actual=$(jq -r --arg cwd "$cwd" 'select(.cwd == $cwd) | .cwd' "$transcript" 2>/dev/null | head -1) || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  [ "$actual" = "$cwd" ]
+}
+
 delivery_transcript_path_from_agent_json() {  # <harness> <Herdr-agent-get-JSON>
   local harness=$1 agent_json=$2 path
   path=$(printf '%s' "$agent_json" \
     | jq -r '.result.agent.agent_session // empty' 2>/dev/null) || return 1
   path=$(delivery_transcript_canonical_path "$harness" "$path") || return 1
   [ -f "$path" ] || return 1
+  delivery_transcript_cwd_matches "$harness" "$path" || return 1
   printf '%s' "$path"
 }
 
@@ -1012,9 +1046,8 @@ journal_valid() {  # <state>
 # The one atomic mutation primitive: read all records as a JSON array, pipe them
 # through <jq-program> (array -> array), and write the result back as JSONL via a
 # single temp + rename. Any extra args (e.g. --arg/--argjson) are passed to jq
-# verbatim ahead of the program. An empty result removes the journal so "absent"
-# and "empty" stay indistinguishable. The temp name is distinct from the journal
-# path, so a crash mid-write only orphans the temp and never corrupts the journal.
+# verbatim ahead of the program. The temp name is distinct from the journal path,
+# so a crash mid-write only orphans the temp and never corrupts the journal.
 journal_apply() {  # <state> <jq-program> [jq-args...]
   local state=$1 prog=$2 journal="$1/$JOURNAL_NAME" tmp
   shift 2
@@ -1028,8 +1061,7 @@ journal_apply() {  # <state> <jq-program> [jq-args...]
   if [ -s "$tmp" ]; then
     mv "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
   else
-    rm -f "$tmp"
-    rm -f "$journal" || return 1
+    mv "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
   fi
 }
 
@@ -1149,462 +1181,73 @@ check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
   return 0
 }
 
-# --- quarantine + legacy import ---------------------------------------------
-journal_remove_legacy() {  # <state>
-  local state=$1
-  rm -f "$state/.subsuper-escalations" "$state/.subsuper-escalations.since" \
-        "$state/.subsuper-escalations.delivery" "$state/.subsuper-escalations.records" \
-        "$state/.subsuper-check-ledger" 2>/dev/null || true
-}
+# --- quarantine -------------------------------------------------------------
+DELIVERY_LEGACY_ARTIFACTS=(
+  .subsuper-escalations
+  .subsuper-escalations.since
+  .subsuper-escalations.delivery
+  .subsuper-escalations.records
+  .subsuper-check-ledger
+)
 
-# Move the given delivery-store files into a dated quarantine sibling and raise
-# the existing wedge alarm, so no away-mode content is lost or silently dropped
-# when the daemon cannot safely interpret its store.
-journal_quarantine_and_alarm() {  # <state> <reason> <file...>
-  local state=$1 reason=$2 dir f
-  shift 2
-  dir="$state/.subsuper-delivery.quarantine-$(date '+%Y%m%dT%H%M%S')"
-  mkdir -p "$dir" 2>/dev/null || true
-  for f in "$@"; do
-    [ -e "$f" ] || continue
-    mv "$f" "$dir/" 2>/dev/null || true
-  done
-  log "ERROR: away-mode delivery store quarantined ($reason); moved to $dir; raising wedge alarm"
+journal_quarantine_alarm_write() {  # <state> <reason> <directory>
+  local state=$1 reason=$2 directory=$3 marker_tmp
+  marker_tmp=$(umask 077; mktemp "$state/.subsuper-inject-wedged.XXXXXX") || return 1
   {
     printf 'fm away-mode delivery store QUARANTINED: %s as of %s\n' "$reason" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
-    printf 'The daemon could not safely interpret its delivery store. Contents preserved at:\n%s\n' "$dir"
-  } 2>/dev/null > "$state/.subsuper-inject-wedged" || true
-  wedge_alarm_notify "away-mode delivery store quarantined ($reason) - see $dir" "$state/.subsuper-inject-wedged"
+    printf 'The daemon could not safely interpret its delivery store. Contents preserved at:\n%s\n' "$directory"
+  } > "$marker_tmp" 2>/dev/null || { rm -f "$marker_tmp"; return 1; }
+  mv "$marker_tmp" "$state/.subsuper-inject-wedged" || { rm -f "$marker_tmp"; return 1; }
 }
 
-legacy_import_quarantine() {
-  local state=$1 reason=$2 extra=${3:-}
-  if [ -n "$extra" ]; then
-    journal_quarantine_and_alarm "$state" "$reason" \
-      "$state/$JOURNAL_NAME" "$state/.subsuper-escalations" \
-      "$state/.subsuper-escalations.since" "$state/.subsuper-escalations.delivery" \
-      "$state/.subsuper-escalations.records" "$state/.subsuper-check-ledger" "$extra"
-  else
-    journal_quarantine_and_alarm "$state" "$reason" \
-      "$state/$JOURNAL_NAME" "$state/.subsuper-escalations" \
-      "$state/.subsuper-escalations.since" "$state/.subsuper-escalations.delivery" \
-      "$state/.subsuper-escalations.records" "$state/.subsuper-check-ledger"
+journal_quarantine_and_alarm() {  # <state> <reason> <file...>
+  local state=$1 reason=$2 dir f base destination failed=0 moved=0
+  shift 2
+  if ! dir=$(umask 077; mktemp -d "$state/.subsuper-delivery.quarantine-XXXXXX" 2>/dev/null); then
+    log "ERROR: away-mode delivery store quarantine allocation failed ($reason); source files retained"
+    if journal_quarantine_alarm_write "$state" "$reason; quarantine allocation failed" unavailable; then
+      wedge_alarm_notify "away-mode delivery store quarantine failed ($reason) - source files retained" "$state/.subsuper-inject-wedged"
+    fi
+    return 1
   fi
-  return 1
-}
-
-legacy_ledger_id_seen() {
-  local used=$1 wanted=$2 seen
-  [ -s "$used" ] || return 1
-  while IFS= read -r seen; do
-    [ "$seen" = "$wanted" ] && return 0
-  done < "$used"
-  return 1
-}
-
-legacy_ledger_match() {  # <final-ledger> <used-ids> <text> <line-number> <record-nonce>
-  local ledger=$1 used=$2 text=$3 line_number=$4 record_nonce=${5:-}
-  local status sequence key payload extra id matched
-  [ -s "$ledger" ] || return 1
-  while IFS=$'\t' read -r status sequence key payload extra; do
-    [ -n "$status" ] || continue
-    id="${sequence}"$'\t'"${key}"$'\t'"${payload}"
-    legacy_ledger_id_seen "$used" "$id" && continue
-    matched=0
-    [ "$payload" = "$text" ] && matched=1
-    if [ "$status" = reserved ]; then
-      case "$extra" in
-        ''|*[!0-9]*) [ -n "$record_nonce" ] && [ "$extra" = "$record_nonce" ] && matched=1 ;;
-        *) [ "$line_number" -eq $((extra + 1)) ] && matched=1 ;;
-      esac
-    fi
-    [ "$matched" -eq 1 ] || continue
-    printf '%s\n' "$id" >> "$used" || return 1
-    printf '%s\t%s\t%s\t%s\t%s' "$status" "$sequence" "$key" "$payload" "$extra"
-    return 0
-  done < "$ledger"
-  return 1
-}
-
-legacy_journal_emit() {  # <output> <nonce> <kind> <source-key> <text> <state> <buffered> <typed> <delivered> <transcript> <offset>
-  local output=$1 nonce=$2 kind=$3 source_key=$4 text=$5 state=$6 buffered_epoch=$7
-  local typed_epoch=$8 delivered_epoch=$9 witness_transcript=${10} witness_offset=${11}
-  jq -cn \
-    --arg nonce "$nonce" \
-    --arg kind "$kind" \
-    --arg source_key "$source_key" \
-    --arg text "$text" \
-    --arg state "$state" \
-    --argjson buffered_epoch "$buffered_epoch" \
-    --argjson typed_epoch "$typed_epoch" \
-    --argjson delivered_epoch "$delivered_epoch" \
-    --arg witness_transcript "$witness_transcript" \
-    --argjson witness_offset "$witness_offset" \
-    '{nonce:$nonce,kind:$kind,source_key:$source_key,text:$text,state:$state,buffered_epoch:$buffered_epoch,typed_epoch:$typed_epoch,delivered_epoch:$delivered_epoch,witness_transcript:$witness_transcript,witness_offset:$witness_offset}' \
-    >> "$output"
-}
-
-legacy_since_epoch() {  # <state> <since-path>
-  local since=$2 epoch
-  if [ ! -e "$since" ]; then
-    _now
-    return 0
-  fi
-  [ -f "$since" ] && [ -r "$since" ] || return 1
-  epoch=$(awk 'NR == 1 { value=$0 } NR > 1 { bad=1 } END { if (bad || NR == 0) exit 1; print value }' "$since") || return 1
-  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$epoch"
-}
-
-legacy_delivery_parse() {  # <delivery-path> -> <version><TAB><nonce><TAB><count><TAB><transcript><TAB><offset><TAB><typed-epoch>
-  local delivery=$1 line version nonce count field4 field5 field6 field7 field8 parsed_version
-  line=$(awk 'NR == 1 { value=$0 } NR > 1 { bad=1 } END { if (bad || NR == 0) exit 1; print value }' "$delivery") || return 1
-  case "$line" in *$'\r'*|*$'\n'*) return 1 ;; esac
-  IFS=$'\t' read -r version nonce count field4 field5 field6 field7 field8 <<< "$line"
-  case "$version" in
-    v1)
-      case "$field4" in ''|*[!0-9a-f]*) return 1 ;; esac
-      [ -z "${field5:-}${field6:-}${field7:-}${field8:-}" ] || return 1
-      printf 'legacy\t%s\t%s\t-\t0\t0' "$nonce" "$count"
-      ;;
-    v2|v2-retiring)
-      case "$field4" in ''|*[!0-9a-f]*) return 1 ;; esac
-      [ -n "${field5:-}" ] || return 1
-      case "$field5" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
-      case "$field6" in ''|*[!0-9]*) return 1 ;; esac
-      case "$field7" in ''|*[!0-9]*) return 1 ;; esac
-      [ -z "${field8:-}" ] || return 1
-      parsed_version=legacy
-      [ "$version" = v2-retiring ] && parsed_version=retiring
-      printf '%s\t%s\t%s\t%s\t%s\t%s' "$parsed_version" "$nonce" "$count" "$field5" "$field6" "$field7"
-      ;;
-    v3)
-      [ -n "${field4:-}" ] || return 1
-      case "$field4" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
-      case "$field5" in ''|*[!0-9]*) return 1 ;; esac
-      case "$field6" in ''|*[!0-9]*) return 1 ;; esac
-      [ -z "${field7:-}${field8:-}" ] || return 1
-      printf 'current\t%s\t%s\t%s\t%s\t%s' "$nonce" "$count" "$field4" "$field5" "$field6"
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-legacy_records_validate() {  # <records-path>
-  local records=$1
-  [ -s "$records" ] || return 0
-  jq -e -s '
-    all(.[];
-      type == "object"
-      and .version == 1
-      and ((.nonce | type) == "string")
-      and ((.nonce == "") or (.nonce | test("^[0-9a-f]{12}$")))
-      and (((.delivery_nonce // "") | type) == "string")
-      and ((((.delivery_nonce // "") == "") or ((.delivery_nonce // "") | test("^[0-9a-f]{12}$"))))
-      and (.kind == "escalation" or .kind == "check")
-      and ((.lines | type) == "number") and (.lines == (.lines | floor)) and (.lines >= 1)
-      and ((.buffered_epoch | type) == "number") and (.buffered_epoch == (.buffered_epoch | floor)) and (.buffered_epoch >= 0)
-      and (.origin == "legacy" or .origin == "live")
-    )
-  ' "$records" >/dev/null 2>&1
-}
-
-legacy_ledger_validate() {  # <ledger-path>
-  local ledger=$1 status sequence key payload extra
-  [ -s "$ledger" ] || return 0
-  while IFS=$'\t' read -r status sequence key payload extra; do
-    case "$status" in reserved|buffered|delivered) ;; *) return 1 ;; esac
-    case "$sequence" in ''|*[!0-9]*) return 1 ;; esac
-    case "$key$payload" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
-    case "$extra" in *$'\t'*) return 1 ;; esac
-    if [ "$status" != reserved ] && [ -n "$extra" ]; then
-      return 1
-    fi
-    if [ "$status" = reserved ]; then
-      case "$extra" in
-        ''|*[!0-9]*)
-          case "$extra" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) return 1 ;;
-          esac
-          ;;
-      esac
-    fi
-  done < "$ledger"
-}
-
-legacy_retiring_records_prove_prefix() {  # <metadata-path> <buffer-lines> <delivered-lines> <nonce>
-  local metadata=$1 buffer_lines=$2 delivered_lines=$3 nonce=$4
-  local kind record_nonce delivery_nonce buffered_epoch origin line_number
-  [ -s "$metadata" ] || return 1
-  [ "$(wc -l < "$metadata" | tr -d ' ')" -eq "$buffer_lines" ] || return 1
-  line_number=0
-  while IFS=$'\t' read -r kind record_nonce delivery_nonce buffered_epoch origin; do
-    line_number=$((line_number + 1))
-    if [ "$line_number" -le "$delivered_lines" ]; then
-      [ "$record_nonce" = "$nonce" ] || [ "$delivery_nonce" = "$nonce" ] || return 1
-    else
-      [ "$record_nonce" != "$nonce" ] && [ "$delivery_nonce" != "$nonce" ] || return 1
-    fi
-  done < "$metadata"
-  [ "$line_number" -eq "$buffer_lines" ]
-}
-
-# One-time migration from the pre-redesign multi-file delivery store into the
-# journal.
-delivery_import_legacy() {  # <state>
-  local state=$1 buf="$1/.subsuper-escalations" journal="$1/$JOURNAL_NAME"
-  local since="$1/.subsuper-escalations.since" delivery="$1/.subsuper-escalations.delivery"
-  local records="$1/.subsuper-escalations.records" ledger="$1/.subsuper-check-ledger"
-  local legacy_present=0 f epoch raw delivery_meta delivery_version delivery_nonce delivery_count
-  local delivery_transcript delivery_offset delivery_typed_epoch meta_tmp ledger_tmp used_tmp tmp
-  local line line_number meta_line meta_kind meta_nonce meta_delivery meta_epoch meta_origin
-  local matched match_status match_sequence match_key match_payload match_extra id
-  local record_nonce record_kind record_source record_state record_buffered record_typed record_delivered
-  local record_transcript record_offset record_epoch
-
-  for f in "$buf" "$since" "$delivery" "$records" "$ledger"; do
-    if [ -e "$f" ]; then
-      legacy_present=1
-      break
+  for f in "$@"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then
+      base=${f##*/}
+      destination="$dir/$base"
+      if mv "$f" "$destination" 2>/dev/null \
+        && [ ! -e "$f" ] && [ ! -L "$f" ] \
+        && { [ -e "$destination" ] || [ -L "$destination" ]; }; then
+        moved=$((moved + 1))
+      else
+        failed=$((failed + 1))
+      fi
     fi
   done
-  [ "$legacy_present" -eq 1 ] || return 0
-
-  if [ -e "$journal" ]; then
-    if [ ! -s "$journal" ] || ! journal_valid "$state"; then
-      legacy_import_quarantine "$state" "delivery journal is not a committed valid journal"
-      return 1
-    fi
-    journal_remove_legacy "$state"
-    return 0
-  fi
-
-  if [ -e "$buf" ] && { [ ! -f "$buf" ] || [ ! -r "$buf" ]; }; then
-    legacy_import_quarantine "$state" "legacy delivery buffer is not a readable file"
+  if ! journal_quarantine_alarm_write "$state" "$reason" "$dir"; then
+    log "ERROR: away-mode delivery store quarantine alarm publication failed ($reason); source files retained where moves failed"
     return 1
   fi
-
-  epoch=$(legacy_since_epoch "$state" "$since") || {
-    legacy_import_quarantine "$state" "legacy delivery epoch is unreadable"
-    return 1
-  }
-
-  if [ -e "$delivery" ]; then
-    [ -f "$delivery" ] && [ -r "$delivery" ] || {
-      legacy_import_quarantine "$state" "legacy delivery record is not readable"
-      return 1
-    }
-    delivery_meta=$(legacy_delivery_parse "$delivery") || {
-      legacy_import_quarantine "$state" "legacy delivery record is malformed"
-      return 1
-    }
-    IFS=$'\t' read -r delivery_version delivery_nonce delivery_count delivery_transcript delivery_offset delivery_typed_epoch <<< "$delivery_meta"
-    delivery_nonce_valid "$delivery_nonce" || {
-      legacy_import_quarantine "$state" "legacy delivery record has an invalid nonce"
-      return 1
-    }
-    case "$delivery_count" in ''|*[!0-9]*|0) legacy_import_quarantine "$state" "legacy delivery record has an invalid line count"; return 1 ;; esac
-    case "$delivery_offset" in ''|*[!0-9]*) legacy_import_quarantine "$state" "legacy delivery record has an invalid transcript offset"; return 1 ;; esac
-    case "$delivery_typed_epoch" in ''|*[!0-9]*) legacy_import_quarantine "$state" "legacy delivery record has an invalid epoch"; return 1 ;; esac
+  if [ "$failed" -eq 0 ]; then
+    log "ERROR: away-mode delivery store quarantined ($reason); moved $moved file(s) to $dir; raising wedge alarm"
   else
-    delivery_version=
-    delivery_nonce=
-    delivery_count=0
-    delivery_transcript=-
-    delivery_offset=0
-    delivery_typed_epoch=0
+    log "ERROR: away-mode delivery store quarantine incomplete ($reason); moved $moved file(s) to $dir; $failed source move(s) failed and remain in place; raising wedge alarm"
   fi
-
-  if [ -e "$records" ]; then
-    [ -f "$records" ] && [ -r "$records" ] && legacy_records_validate "$records" || {
-      legacy_import_quarantine "$state" "legacy delivery records are malformed"
-      return 1
-    }
-  fi
-  if [ -e "$ledger" ]; then
-    [ -f "$ledger" ] && [ -r "$ledger" ] && legacy_ledger_validate "$ledger" || {
-      legacy_import_quarantine "$state" "legacy check ledger is malformed"
-      return 1
-    }
-  fi
-
-  raw=0
-  if [ -e "$buf" ]; then
-    raw=$(awk 'END { print NR + 0 }' "$buf" 2>/dev/null) || {
-      legacy_import_quarantine "$state" "legacy delivery buffer could not be counted"
-      return 1
-    }
-  fi
-  case "$raw" in ''|*[!0-9]*) legacy_import_quarantine "$state" "legacy delivery buffer has no valid line count"; return 1 ;; esac
-  if [ "$delivery_count" -gt "$raw" ]; then
-    legacy_import_quarantine "$state" "legacy delivery record does not match its buffer"
-    return 1
-  fi
-
-  meta_tmp=$(umask 077; mktemp "$state/.subsuper-delivery.legacy-meta.XXXXXX") || {
-    legacy_import_quarantine "$state" "legacy delivery metadata staging failed"
-    return 1
-  }
-  ledger_tmp=$(umask 077; mktemp "$state/.subsuper-delivery.legacy-ledger.XXXXXX") || {
-    rm -f "$meta_tmp"
-    legacy_import_quarantine "$state" "legacy check ledger staging failed"
-    return 1
-  }
-  used_tmp=$(umask 077; mktemp "$state/.subsuper-delivery.legacy-used.XXXXXX") || {
-    rm -f "$meta_tmp" "$ledger_tmp"
-    legacy_import_quarantine "$state" "legacy check ledger identity staging failed"
-    return 1
-  }
-  tmp=$(umask 077; mktemp "$state/.subsuper-delivery.import.XXXXXX") || {
-    rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp"
-    legacy_import_quarantine "$state" "legacy delivery journal staging failed"
-    return 1
-  }
-
-  if [ -s "$records" ] && ! jq -s -r \
-    '.[] | . as $record | range($record.lines) | [$record.kind, $record.nonce, ($record.delivery_nonce // ""), $record.buffered_epoch, $record.origin] | @tsv' \
-    "$records" > "$meta_tmp" 2>/dev/null; then
-    rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-    legacy_import_quarantine "$state" "legacy delivery records could not be expanded"
-    return 1
-  fi
-  if [ "$delivery_version" = retiring ] \
-    && ! legacy_retiring_records_prove_prefix "$meta_tmp" "$raw" "$delivery_count" "$delivery_nonce"; then
-    rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-    legacy_import_quarantine "$state" "legacy delivery retirement state lacks an unambiguous record nonce boundary"
-    return 1
-  fi
-  if [ "$(wc -l < "$meta_tmp" | tr -d ' ')" -gt "$raw" ]; then
-    rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-    legacy_import_quarantine "$state" "legacy delivery records do not match their buffer"
-    return 1
-  fi
-  if [ -s "$ledger" ] && ! awk -F $'\t' '
-    {
-      id=$2 SUBSEP $3 SUBSEP $4
-      status[id]=$1
-      sequence[id]=$2
-      key[id]=$3
-      payload[id]=$4
-      extra[id]=$5
-    }
-    END {
-      for (id in status) print status[id], sequence[id], key[id], payload[id], extra[id]
-    }
-  ' OFS=$'\t' "$ledger" > "$ledger_tmp"; then
-    rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-    legacy_import_quarantine "$state" "legacy check ledger could not be reduced"
-    return 1
-  fi
-
-  line_number=0
-  if [ -e "$buf" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      line_number=$((line_number + 1))
-      meta_line=$(sed -n "${line_number}p" "$meta_tmp" 2>/dev/null) || {
-        rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-        legacy_import_quarantine "$state" "legacy delivery metadata could not be read"
-        return 1
-      }
-      meta_kind=escalation
-      meta_nonce=
-      meta_delivery=
-      meta_epoch=$epoch
-      meta_origin=legacy
-      if [ -n "$meta_line" ]; then
-        IFS=$'\t' read -r meta_kind meta_nonce meta_delivery meta_epoch meta_origin <<< "$meta_line"
-      fi
-      record_epoch=$meta_epoch
-      case "$record_epoch" in ''|*[!0-9]*) record_epoch=$epoch ;; esac
-
-      record_nonce=
-      record_kind=escalation
-      record_source=
-      record_state=buffered
-      record_buffered=$record_epoch
-      record_typed=0
-      record_delivered=0
-      record_transcript=-
-      record_offset=0
-      if [ "$delivery_count" -gt 0 ] && [ "$line_number" -le "$delivery_count" ]; then
-        record_nonce=$delivery_nonce
-        record_state=typed
-        record_typed=$delivery_typed_epoch
-        record_transcript=$delivery_transcript
-        record_offset=$delivery_offset
-      fi
-
-      matched=0
-      match=
-      if match=$(legacy_ledger_match "$ledger_tmp" "$used_tmp" "$line" "$line_number" "$meta_nonce"); then
-        matched=1
-        IFS=$'\t' read -r match_status match_sequence match_key match_payload match_extra <<< "$match"
-        record_kind=check
-        record_source=$match_key
-        case "$match_status" in
-          delivered)
-            record_state=delivered
-            record_delivered=$record_epoch
-            ;;
-          buffered|reserved)
-            ;;
-        esac
-      fi
-      if [ "$matched" -eq 0 ] && [ "$meta_kind" = check ]; then
-        rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-        legacy_import_quarantine "$state" "legacy check record has no matching ledger entry"
-        return 1
-      fi
-      legacy_journal_emit "$tmp" "$record_nonce" "$record_kind" "$record_source" "$line" \
-        "$record_state" "$record_buffered" "$record_typed" "$record_delivered" \
-        "$record_transcript" "$record_offset" || {
-          rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-          legacy_import_quarantine "$state" "legacy delivery record conversion failed"
-          return 1
-        }
-    done < "$buf"
-  fi
-
-  if [ -s "$ledger_tmp" ]; then
-    while IFS=$'\t' read -r match_status match_sequence match_key match_payload match_extra; do
-      [ -n "$match_status" ] || continue
-      id="${match_sequence}"$'\t'"${match_key}"$'\t'"${match_payload}"
-      legacy_ledger_id_seen "$used_tmp" "$id" && continue
-      case "$match_status" in
-        buffered|delivered|reserved) ;;
-        *)
-          rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-          legacy_import_quarantine "$state" "legacy check ledger has an unknown final state"
-          return 1
-          ;;
-      esac
-      record_state=buffered
-      record_delivered=0
-      [ "$match_status" = delivered ] && { record_state=delivered; record_delivered=$epoch; }
-      legacy_journal_emit "$tmp" "" check "$match_key" "$match_payload" \
-        "$record_state" "$epoch" 0 "$record_delivered" - 0 || {
-          rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp" "$tmp"
-          legacy_import_quarantine "$state" "legacy check ledger conversion failed"
-          return 1
-        }
-    done < "$ledger_tmp"
-  fi
-
-  rm -f "$meta_tmp" "$ledger_tmp" "$used_tmp"
-  if [ -s "$tmp" ]; then
-    mv "$tmp" "$journal" || {
-      legacy_import_quarantine "$state" "legacy delivery journal commit failed" "$tmp"
-      return 1
-    }
-  else
-    rm -f "$tmp"
-  fi
-  journal_remove_legacy "$state"
-  [ -s "$journal" ] && log "startup: imported $(wc -l < "$journal" | tr -d ' ') legacy delivery record(s) into the delivery journal"
-  return 0
+  wedge_alarm_notify "away-mode delivery store quarantined ($reason) - see $dir" "$state/.subsuper-inject-wedged"
+  [ "$failed" -eq 0 ]
 }
 
+delivery_quarantine_legacy() {  # <state>
+  local state=$1 artifact path
+  local -a files=()
+  for artifact in "${DELIVERY_LEGACY_ARTIFACTS[@]}"; do
+    path="$state/$artifact"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      files+=("$path")
+    fi
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  journal_quarantine_and_alarm "$state" "pre-journal delivery state is unsupported" "${files[@]}"
+}
 # --- startup reconciliation -------------------------------------------------
 # Witness any typed (sent, unconfirmed) records so a restart immediately
 # confirms an in-flight digest. A corrupt journal is quarantined + alarmed;
@@ -1679,7 +1322,7 @@ EOF
   msg=$(jq -s -r 'map(select(.state=="buffered") | .text) | join(" | ")' "$journal" 2>/dev/null)
   buffered_at=$(jq -s -r 'map(select(.state=="buffered") | .buffered_epoch) | min' "$journal" 2>/dev/null)
   case "$buffered_at" in ''|*[!0-9]*) buffered_at=$(_now) ;; esac
-  nonce=$(delivery_nonce_generate) || { log "inject stalled: could not generate a delivery nonce"; return 1; }
+  nonce=$(delivery_nonce_generate "$state") || { log "inject stalled: could not generate a delivery nonce"; return 1; }
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$count" "$msg")
   transcript=-
   offset=0
@@ -2602,7 +2245,12 @@ fm_super_main() {
   fi
 
   fm_daemon_primary_harness >/dev/null
-  delivery_import_legacy "$STATE" || log "startup: legacy delivery import deferred"
+  if ! delivery_quarantine_legacy "$STATE"; then
+    log "startup failed: pre-journal delivery state quarantine failed"
+    fm_lock_release "$LOCK" 2>/dev/null || true
+    rm -f "$PIDFILE" 2>/dev/null || true
+    exit 1
+  fi
   delivery_reconcile_startup "$STATE" "$BACKEND" "$TARGET" "$FM_DAEMON_PRIMARY_HARNESS" \
     || log "startup: delivered-once reconciliation deferred"
   local afk_status="off"

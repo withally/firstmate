@@ -142,19 +142,13 @@ return_delivery_journal_valid() {  # <journal-path>
   ' "$journal" >/dev/null 2>&1
 }
 
-# Clear the away daemon's delivery store on return. The single journal and the
-# wedge alarm marker are the live artifacts; the pre-redesign multi-file names
-# are cleared too so a home that upgraded mid-away leaves nothing behind.
+# Clear the away daemon's live delivery store on return. Pre-redesign files are
+# preserved for the daemon's startup quarantine path.
 clear_delivery_artifacts() {
   local artifact result=0
   for artifact in \
     .subsuper-delivery.jsonl \
-    .subsuper-inject-wedged \
-    .subsuper-escalations \
-    .subsuper-escalations.since \
-    .subsuper-escalations.delivery \
-    .subsuper-escalations.records \
-    .subsuper-check-ledger; do
+    .subsuper-inject-wedged; do
     rm -f "$STATE/$artifact" || result=1
   done
   return "$result"
@@ -208,8 +202,7 @@ return_reconcile() {
     append_evidence wedge "$wedge" "$evidence"
   fi
   # Undelivered escalation/check items still in the delivery journal are the
-  # "while you were out" catch-up. A home that upgraded mid-away and has not yet
-  # imported its legacy buffer also surfaces those raw lines.
+  # "while you were out" catch-up.
   escalations=""
   if [ -e "$journal" ]; then
     if ! return_delivery_journal_valid "$journal"; then
@@ -237,9 +230,6 @@ return_reconcile() {
         fi
       fi
     fi
-  fi
-  if [ -z "$escalations" ] && [ -s "$STATE/.subsuper-escalations" ]; then
-    escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
   fi
   if [ -n "$escalations" ]; then
     append_evidence escalation "$escalations" "$evidence"

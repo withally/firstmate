@@ -42,7 +42,7 @@ trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
 # UNIT 1: fm_afk_clear_stale_artifacts removes live artifacts and preserves
-# legacy inputs for the daemon's one-time migration.
+# pre-journal inputs for the daemon's startup quarantine.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
@@ -67,7 +67,7 @@ unit_clear_stale() {
      && [ -e "$st/state/.subsuper-escalations.delivery" ] \
      && [ -e "$st/state/.subsuper-escalations.records" ] \
      && [ -e "$st/state/.subsuper-check-ledger" ]; then
-    pass "clear-stale: clears live artifacts and preserves legacy migration inputs"
+    pass "clear-stale: clears live artifacts and preserves pre-journal quarantine inputs"
   else
     fail "clear-stale: live artifacts were not cleared or legacy inputs were lost"
   fi
@@ -184,25 +184,27 @@ unit_detector_miss_leaves_daemon_harness_unset() {
 }
 
 unit_daemon_command_carries_configured_pi_agent_dir() {
-  local st detector entry custom output expected command
+  local st detector entry custom session_dir output expected command
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-root.XXXXXX")
   detector="$st/detector"
   entry="$st/entry"
   custom="$st/custom pi agent"
-  mkdir -p "$detector" "$custom"
-  printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  session_dir="$st/custom pi sessions"
+  mkdir -p "$detector" "$custom" "$session_dir"
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${PI_CODING_AGENT_SESSION_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
   printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
   chmod +x "$entry" "$detector/fm-harness.sh"
   output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" PI_CODING_AGENT_DIR="$custom" \
+    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
     bash -c '
       . "$1"
       FM_AFK_LAUNCH_DIR="$2"
       command=$(fm_afk_launch_daemon_cmd named:w1:p2 herdr "$3")
       eval "$command"
     ' _ "$LAUNCH" "$detector" "$entry")
-  expected="$custom|$st|named:w1:p2|pi"
+  expected="$custom|$session_dir|$st|named:w1:p2|pi"
   if [ "$output" = "$expected" ]; then
-    pass "launcher command: configured Pi agent root reaches the daemon pane"
+    pass "launcher command: configured Pi agent and session roots reach the daemon pane"
   else
     fail "launcher command: configured Pi agent root was not propagated ($output)"
   fi
@@ -599,7 +601,7 @@ unit_native_lifecycle() {
     && [ -e "$st/state/.afk" ] \
     && [ -e "$st/state/.subsuper-escalations" ] \
     && [ -e "$st/state/.subsuper-check-ledger" ]; then
-    pass "native lifecycle: launcher owns state and preserves legacy migration inputs"
+    pass "native lifecycle: launcher owns state and preserves pre-journal inputs"
   else
     fail "native lifecycle: state preparation or no-terminal record failed"
   fi
@@ -628,7 +630,7 @@ unit_restart_preserves_session_ledger() {
       fm_afk_launch_start
     ' _ "$LAUNCH" >/dev/null 2>&1 \
     && [ -s "$st/state/.subsuper-check-ledger" ]; then
-    pass "restart recovery: an existing away flag preserves the check ledger"
+    pass "restart recovery: an existing away flag preserves pre-journal state"
   else
     fail "restart recovery: the existing away session lost its check ledger"
   fi

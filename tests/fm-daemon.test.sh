@@ -2726,6 +2726,26 @@ test_pane_is_busy_herdr_claude_uses_ansi_capture_capability() {
 
 test_pane_is_busy_herdr_claude_uses_ansi_capture_capability
 
+test_pane_is_busy_herdr_claude_accepts_wrapped_idle_background_footer() {
+  local idle
+  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258-idle-background-narrow.ansi.txt")")
+  (
+    fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_herdr_capture_ansi() { printf '%s' "$idle"; }
+    fm_backend_capture() { fail "Herdr Claude wrapped-footer guard fell back to a plain capture"; }
+    if FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr; then
+      fail "an idle Claude composer with the captured background-shell footer must be injectable"
+    fi
+    [ "${FM_PANE_BUSY_REASON:-}" != unreadable ] \
+      || fail "the captured wrapped /rc footer remained unreadable"
+    [ "$FM_PANE_NATIVE_BUSY_STATE" = working ] \
+      || fail "the captured background-shell fixture lost native working diagnostics"
+  ) || fail "Herdr+Claude wrapped idle background-footer subshell failed"
+  pass "pane_is_busy: captured wrapped Claude background footer is rendered idle while native working remains diagnostic"
+}
+
+test_pane_is_busy_herdr_claude_accepts_wrapped_idle_background_footer
+
 test_pane_is_busy_herdr_claude_rendered_busy_state() {
   local dir
   dir=$(make_supercase primary-herdr-claude-rendered-busy)

@@ -777,6 +777,55 @@ test_claude_plain_capture_active_hint_uses_actual_capabilities() {
 
 test_claude_plain_capture_active_hint_uses_actual_capabilities
 
+test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
+  local idle busy pending garbled dead rc
+  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258-idle-background-narrow.ansi.txt")")
+  busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258-busy-background-narrow.ansi.txt")")
+
+  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
+    fail "Claude's captured idle background-shell footer must not read busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] \
+    || fail "Claude's wrapped /rc footer must preserve rendered idle, got rc=$rc"
+
+  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$busy" \
+    || fail "Claude's captured foreground Bash turn must remain rendered busy"
+  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
+    || fail "Claude's wrapped busy fixture did not expose its spinner row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
+
+  pending=${idle/❯ /❯ bright-human-draft}
+  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$pending"; then
+    fail "Claude's wrapped status footer must not outrank pending composer text"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] \
+    || fail "Claude's pending composer must route to the composer guard, got rc=$rc"
+
+  garbled="$idle"$'\nforeign footer damage'
+  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$garbled"; then
+    fail "a garbled row below Claude's status footer must not read busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] \
+    || fail "a garbled row below Claude's status footer must remain unreadable, got rc=$rc"
+
+  dead=${idle/❯ /\$}
+  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$dead"; then
+    fail "a dead shell above Claude-like status furniture must not read busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] \
+    || fail "a dead shell above Claude-like status furniture must remain unreadable, got rc=$rc"
+  pass "fm_claude_current_footer_busy: captured wrapped background footers preserve idle, busy, pending, garbled, and dead-shell safety"
+}
+
+test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts
+
 test_submit_retry_reports_send_failed_before_any_enter() {
   local out
   submit_key_always_fails() { return 1; }

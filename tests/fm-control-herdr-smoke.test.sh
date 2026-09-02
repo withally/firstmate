@@ -134,16 +134,16 @@ herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
 [ -d "$WT" ] || fail "the control plane must never remove the task's local copy"
 pass "real herdr: no control verb removed the endpoint or the task's local copy"
 
-# Last, because it deliberately types a harness command into a pane that hosts
-# a plain shell: the registered agent cannot actually be stopped that way, and
-# the control plane must say so rather than report a stop it did not achieve.
+# Last, because this registered pane hosts a plain shell: its composer cannot
+# be classified, so the control plane must refuse before typing a harness
+# command rather than sending it into an unproven input state.
 if OUT=$(run_control hsmoke exit 2>&1); then
-  fail "exit should fail closed when the agent does not stop: $OUT"
+  fail "exit should refuse when the composer state is unproven: $OUT"
 fi
 case "$OUT" in
-  *"did not stop"*) : ;;
-  *) fail "the exit failure should say the agent did not stop, got: $OUT" ;;
+  *"composer state is 'unknown', not proven empty; keys sent: none"*) : ;;
+  *) fail "the exit refusal should name the unproven composer state and sent keys, got: $OUT" ;;
 esac
-pass "real herdr: an agent that does not stop fails closed instead of being reported as stopped"
+pass "real herdr: an unproven composer refuses exit before any harness command is sent"
 
 fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true

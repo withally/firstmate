@@ -1560,7 +1560,7 @@ test_terminal_stale_escalate_leaves_no_marker() {
 }
 
 test_signal_escalate_marks_seen_no_catchall_refire() {
-  local dir state key
+  local dir state
   dir=$(make_supercase signal-seen)
   state="$dir/state"
   printf 'done: PR https://x/y/pull/8\n' > "$state/sig-t8.status"

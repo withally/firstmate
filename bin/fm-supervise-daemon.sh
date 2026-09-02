@@ -482,6 +482,100 @@ classify_unknown() {  # <reason>
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 
+status_seen_candidate_snapshot() {  # <status-file> <expected-last-line>
+  local f=$1 expected=$2 record offset line ident
+  record=$(status_last_line_offset "$f" record) || return 1
+  case "$record" in *$'\n'*) ;; *) return 1 ;; esac
+  offset=${record%%$'\n'*}
+  line=${record#*$'\n'}
+  [ "$line" = "$expected" ] || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  [ -n "$ident" ] || return 1
+  printf '%s\t%s' "$offset" "$ident"
+}
+
+status_seen_matches() {  # <state> <task> <status-file> <last-line> [offset] [ident]
+  local state=$1 task=$2 f=$3 line=$4 marker data marker_first marker_rest
+  local marker_ident marker_offset marker_line offset current_ident cursor manifest legacy_cursor record candidate_line
+  local candidate_offset candidate_ident
+  candidate_offset=${5:-}
+  candidate_ident=${6:-}
+  marker="$state/.subsuper-seen-status-$(_stale_key "$task")"
+  [ -f "$marker" ] && [ -r "$marker" ] && [ ! -L "$marker" ] || return 1
+  data=$(LC_ALL=C command cat "$marker" 2>/dev/null) || return 1
+  marker_ident=
+  marker_offset=
+  marker_line=
+  case "$data" in
+    ident=*)
+      marker_first=${data%%$'\n'*}
+      if [ "$marker_first" = "$data" ]; then
+        marker_line=$data
+      else
+        marker_ident=${marker_first#ident=}
+        [ -n "$marker_ident" ] || return 1
+        marker_rest=${data#*$'\n'}
+        case "$marker_rest" in *$'\n'*) ;; *) return 1 ;; esac
+        marker_first=${marker_rest%%$'\n'*}
+        case "$marker_first" in
+          offset=*) marker_offset=${marker_first#offset=} ;;
+          *) return 1 ;;
+        esac
+        marker_line=${marker_rest#*$'\n'}
+        case "$marker_offset" in ''|*[!0-9]*) return 1 ;; esac
+      fi
+      ;;
+    offset=*)
+      marker_first=${data%%$'\n'*}
+      if [ "$marker_first" != "$data" ]; then
+        marker_offset=${marker_first#offset=}
+        marker_line=${data#*$'\n'}
+        case "$marker_offset" in ''|*[!0-9]*) return 1 ;; esac
+      else
+        marker_line=$data
+      fi
+      ;;
+    *)
+      marker_line=$data
+      ;;
+  esac
+  [ "$marker_line" = "$line" ] || return 1
+  if [ -z "$candidate_offset" ]; then
+    record=$(status_last_line_offset "$f" record) || return 1
+    case "$record" in *$'\n'*) ;; *) return 1 ;; esac
+    candidate_offset=${record%%$'\n'*}
+    candidate_line=${record#*$'\n'}
+    [ "$candidate_line" = "$line" ] || return 1
+  fi
+  case "$candidate_offset" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -z "$candidate_ident" ]; then
+    candidate_ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  fi
+  [ -n "$candidate_ident" ] || return 1
+  offset=$candidate_offset
+  current_ident=$candidate_ident
+  if [ -n "$marker_ident" ]; then
+    [ "$marker_ident" = "$current_ident" ] || return 1
+    [ "$marker_offset" = "$offset" ]
+    return
+  fi
+  if [ -n "$marker_offset" ]; then
+    [ "$marker_offset" = "$offset" ] || return 1
+  fi
+  cursor=$(status_presentation_cursor_offset "$f") || return 1
+  case "$cursor" in ''|*[!0-9]*) return 1 ;; esac
+  manifest="$state/.status-presentation-cursor"
+  legacy_cursor="$state/.$task.open-decisions-cursor"
+  if [ -e "$manifest" ] || [ -L "$manifest" ] || [ -e "$legacy_cursor" ] || [ -L "$legacy_cursor" ]; then
+    [ "$offset" -lt "$cursor" ] || return 1
+  else
+    return 1
+  fi
+  mark_status_seen "$state" "$task" "$line" "$f" "$offset" "$current_ident" || return 1
+  return 0
+}
+
 stale_marker_record() {  # <window> <state>  — create if absent
   local win=$1 state=$2 key marker
   key=$(_stale_key "$(window_to_task "$win" "$state")")
@@ -1724,7 +1818,7 @@ inject_wedge_alarm() {  # <state> <age-seconds>
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs unread candidate candidate_offset candidate_ident
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 

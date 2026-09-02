@@ -108,13 +108,13 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 
 Backend capability comes from each adapter's real surface, not from a policy choice.
 
-| Backend | Escape | Enter | Ctrl+C | Ctrl+U | Recovery-grade agent state |
-| --- | --- | --- | --- | --- | --- |
-| tmux | yes | yes | yes | yes | yes |
-| herdr | yes | yes | yes | yes | yes |
-| zellij | yes | yes | yes | yes | no |
-| cmux | yes | yes | yes | yes | no |
-| orca | no | yes | yes | no | no |
+| Backend | Escape | Enter | Ctrl+C | Ctrl+U | Backspace fallback | Recovery-grade agent state |
+| --- | --- | --- | --- | --- | --- | --- |
+| tmux | yes | yes | yes | yes | yes | yes |
+| herdr | yes | yes | yes | yes | yes | yes |
+| zellij | yes | yes | yes | yes | yes | no |
+| cmux | yes | yes | yes | yes | yes | no |
+| orca | no | yes | yes | no | no | no |
 
 Per-harness interrupt keys, repeat counts, composer clears, exit commands, and supported task kinds live in `bin/fm-control-lib.sh` and are exercised for every verified harness by `tests/fm-control.test.sh`.
 The empirical basis for each adapter's value is the `harness-adapters` skill's verification record for that adapter.

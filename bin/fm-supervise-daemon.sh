@@ -496,18 +496,21 @@ status_seen_matches() {  # <state> <task> <status-file> <last-line> [offset] [id
   case "$data" in
     ident=*)
       marker_first=${data%%$'\n'*}
-      [ "$marker_first" != "$data" ] || return 1
-      marker_ident=${marker_first#ident=}
-      [ -n "$marker_ident" ] || return 1
-      marker_rest=${data#*$'\n'}
-      case "$marker_rest" in *$'\n'*) ;; *) return 1 ;; esac
-      marker_first=${marker_rest%%$'\n'*}
-      case "$marker_first" in
-        offset=*) marker_offset=${marker_first#offset=} ;;
-        *) return 1 ;;
-      esac
-      marker_line=${marker_rest#*$'\n'}
-      case "$marker_offset" in ''|*[!0-9]*) return 1 ;; esac
+      if [ "$marker_first" = "$data" ]; then
+        marker_line=$data
+      else
+        marker_ident=${marker_first#ident=}
+        [ -n "$marker_ident" ] || return 1
+        marker_rest=${data#*$'\n'}
+        case "$marker_rest" in *$'\n'*) ;; *) return 1 ;; esac
+        marker_first=${marker_rest%%$'\n'*}
+        case "$marker_first" in
+          offset=*) marker_offset=${marker_first#offset=} ;;
+          *) return 1 ;;
+        esac
+        marker_line=${marker_rest#*$'\n'}
+        case "$marker_offset" in ''|*[!0-9]*) return 1 ;; esac
+      fi
       ;;
     offset=*)
       marker_first=${data%%$'\n'*}

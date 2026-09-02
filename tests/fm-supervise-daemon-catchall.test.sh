@@ -42,6 +42,38 @@ test_presented_status_before_away_entry_is_not_escalated() {
   pass "catch-all ignores a status line presented before away-mode entry"
 }
 
+test_legacy_ident_prefixed_marker_is_settled_and_migrated() {
+  local dir state status line snapshot offset ident marker out marker_data expected_marker
+  dir=$(make_supercase legacy-ident-marker)
+  state="$dir/state"
+  status="$state/pilo-continuity-s1.status"
+  line='ident=done: legacy status was already handled'
+  printf '%s\n' "$line" > "$status"
+
+  snapshot=$(status_presentation_snapshot "$state") \
+    || fail "could not snapshot the attended presentation boundary"
+  status_commit_presentation_snapshot "$state" "$snapshot" \
+    || fail "could not commit the attended presentation boundary"
+  offset=$(status_last_line_offset "$status") \
+    || fail "could not read the legacy marker candidate offset"
+  ident=$(_fm_open_decisions_file_ident "$status") \
+    || fail "could not read the legacy marker candidate identity"
+  marker="$state/.subsuper-seen-status-pilo-continuity-s1"
+  printf '%s' "$line" > "$marker"
+
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$status" "$state")
+  case "$out" in
+    self\|*) ;;
+    *) fail "legacy ident-prefixed marker re-escalated a settled status: $out" ;;
+  esac
+  marker_data=$(LC_ALL=C command cat "$marker" 2>/dev/null) \
+    || fail "could not read the migrated seen marker"
+  expected_marker=$(printf 'ident=%s\noffset=%s\n%s' "$ident" "$offset" "$line")
+  [ "$marker_data" = "$expected_marker" ] \
+    || fail "legacy marker was not migrated to append-aware identity form"
+  pass "legacy ident-prefixed markers settle and migrate"
+}
+
 test_repeated_identical_append_after_seen_marker_is_escalated() {
   local dir state status snapshot line buffered
   dir=$(make_supercase repeated-identical-append)
@@ -171,6 +203,7 @@ test_status_appended_after_away_entry_remains_a_candidate() {
 }
 
 test_presented_status_before_away_entry_is_not_escalated
+test_legacy_ident_prefixed_marker_is_settled_and_migrated
 test_repeated_identical_append_after_seen_marker_is_escalated
 test_reused_task_id_does_not_inherit_seen_marker
 test_captured_seen_offset_keeps_racing_append_eligible

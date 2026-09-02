@@ -114,6 +114,8 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
         if ! secondmate_registry_validate_bindings \
           "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
           secondmate_registry_path_key "$self" "$home"; then
+          secondmate_registry_error_sanitize
+          echo "error: parent binding refused: $SECONDMATE_REGISTRY_ERROR" >&2
           fm_lock_release "$parent_registry_lock"
           parent_registry_lock_held=0
           return 3

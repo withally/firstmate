@@ -64,6 +64,8 @@ CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -318,12 +320,38 @@ append_once() { # <path> <line>
 }
 
 report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>
-  local self=$1 task=$2 state=$3 outcome_key=$4 fingerprint=$5 pr=$6 parent_record destination line
+  local self=$1 task=$2 state=$3 outcome_key=$4 fingerprint=$5 pr=$6
+  local parent_record destination line parent_registry_lock append_rc=0
+  PARENT_REPORT_ERROR=
   parent_record="$FM_HOME/.fm-secondmate-parent"
-  fm_secondmate_parent_record_parse "$parent_record" || return 1
+  if ! fm_secondmate_parent_record_parse "$parent_record"; then
+    PARENT_REPORT_ERROR="missing or unreadable parent binding .fm-secondmate-parent"
+    return 1
+  fi
   case "$FM_SECONDMATE_PARENT_ROUTE" in
     local)
-      [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 1
+      parent_registry_lock=$(secondmate_registry_lock_path \
+        "$FM_SECONDMATE_PARENT_HOME/state") || {
+        PARENT_REPORT_ERROR="parent binding refused: parent registry lock is unavailable"
+        return 1
+      }
+      if ! fm_lock_acquire_wait "$parent_registry_lock"; then
+        PARENT_REPORT_ERROR="parent binding refused: parent registry lock could not be acquired"
+        return 1
+      fi
+      if ! secondmate_registry_validate_bindings \
+        "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
+        secondmate_registry_path_key "$self" "$FM_HOME"; then
+        secondmate_registry_error_sanitize
+        PARENT_REPORT_ERROR="parent binding refused: $SECONDMATE_REGISTRY_ERROR"
+        fm_lock_release "$parent_registry_lock"
+        return 1
+      fi
+      if [ "$SECONDMATE_REGISTRY_MATCH_REMOTE" -ne 0 ]; then
+        PARENT_REPORT_ERROR="parent binding refused: child $self is not registered as a local route"
+        fm_lock_release "$parent_registry_lock"
+        return 1
+      fi
       destination="$FM_SECONDMATE_PARENT_HOME/state/$self.status"
       ;;
     remote)
@@ -333,7 +361,9 @@ report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>
   esac
   line="$state [key=$outcome_key]: inactive terminal child=$task fingerprint=$fingerprint"
   [ -z "$pr" ] || line="$line pr=$pr"
-  append_once "$destination" "$line"
+  append_once "$destination" "$line" || append_rc=$?
+  [ -z "${parent_registry_lock:-}" ] || fm_lock_release "$parent_registry_lock"
+  return "$append_rc"
 }
 
 reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeout>
@@ -374,9 +404,7 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
       # and every later terminal outcome fails the same way for the same
       # reason. Name the missing binding so the diagnostic points at the repair
       # instead of reading as one report that happened to fail.
-      if ! fm_secondmate_parent_record_parse "$FM_HOME/.fm-secondmate-parent"; then
-        payload="$payload (missing or unreadable parent binding .fm-secondmate-parent)"
-      fi
+      [ -z "${PARENT_REPORT_ERROR:-}" ] || payload="$payload ($PARENT_REPORT_ERROR)"
       queue_notice_once "$RECORD_PENDING" "inactive-reconcile:$fingerprint" "$payload" || true
     fi
     return 0

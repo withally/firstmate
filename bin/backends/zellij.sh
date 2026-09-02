@@ -440,8 +440,9 @@ fm_backend_zellij_send_literal() {  # <target> <text> [expected-label]
 }
 
 # fm_backend_zellij_normalize_key: map firstmate's key vocabulary (Enter,
-# Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
-# zellij's verified `action send-keys` names. Verified empirically: "Enter"
+# Escape, C-c, C-u, and BSpace, as used by fm-send.sh, fm-control.sh, and
+# stuck-crewmate-recovery) onto zellij's verified `action send-keys` names.
+# Verified empirically: "Enter"
 # and "Esc" work; "Escape" and "escape" are REJECTED ("Invalid key"); Ctrl-C
 # must be the single argument "Ctrl c" (a space-separated two-word key
 # expression passed as ONE shell arg) - "C-c", "Ctrl+c", and two separate argv
@@ -451,9 +452,10 @@ fm_backend_zellij_normalize_key() {  # <key>
     Enter|enter) printf 'Enter' ;;
     Escape|escape|Esc|esc) printf 'Esc' ;;
     C-c|c-c|ctrl+c|Ctrl+c|Ctrl+C|'Ctrl c'|'ctrl c') printf 'Ctrl c' ;;
-    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
-    # drop the prompt muse restores into the composer after Escape.
+    # C-u clears a composer line. fm-send.sh's muse interrupt path and
+    # fm-control.sh's exit guard use it for composer safety.
     C-u|c-u|ctrl+u|Ctrl+u|Ctrl+U|'Ctrl u'|'ctrl u') printf 'Ctrl u' ;;
+    BSpace|Backspace|backspace) printf 'Backspace' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -521,19 +523,19 @@ fm_backend_zellij_composer_capture() {  # <target> [expected-label]
 # a message the crew never received. A dead pane still fails safe here: the
 # unconditional-exit-0 CLI quirk (file header) yields an empty dump, which
 # classifies unknown - never a confirmation.
-fm_backend_zellij_composer_state() {  # <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local target=$1 expected_label=${2:-} cap caps verdict
+fm_backend_zellij_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local target=$1 expected_label=${2:-} cap caps verdict output=${3-}
   if cap=$(fm_backend_zellij_composer_capture "$target" "$expected_label"); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   elif cap=$(fm_backend_zellij_capture "$target" "$FM_COMPOSER_CAPTURE_LINES" "$expected_label") && [ -n "$cap" ]; then
     caps=$(printf 'styled=0\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   else
-    printf 'unknown'
+    fm_composer_state_output unknown '' '' "$output"
     return 0
   fi
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  printf '%s' "$verdict"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 fm_backend_zellij_composer_content() {  # <target> [expected-label]

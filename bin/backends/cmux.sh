@@ -478,19 +478,21 @@ fm_backend_cmux_send_literal() {  # <target> <text> [expected-label]
 }
 
 # fm_backend_cmux_normalize_key: map firstmate's key vocabulary (Enter,
-# Escape, C-c) onto cmux's `send-key` names. Verified empirically: enter,
-# escape, and ctrl-c all work directly (lowercase, hyphenated). cmux's own
+# Escape, C-c, C-u, and BSpace) onto cmux's `send-key` names. Verified
+# empirically: enter, escape, and ctrl-c all work directly (lowercase,
+# hyphenated). cmux's own
 # key vocabulary is genuinely richer (ctrl-d/ctrl-z/ctrl-\\, semantic aliases
 # sigint/sigtstp/sigquit - `TerminalSurface+Input.swift`), but firstmate's
-# shared vocabulary across backends only needs these three today.
+# shared vocabulary across backends currently uses these five.
 fm_backend_cmux_normalize_key() {  # <key>
   case "$1" in
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+c|Ctrl+C|ctrl-c) printf 'ctrl-c' ;;
-    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
-    # drop the prompt muse restores into the composer after Escape.
+    # C-u clears a composer line. fm-send.sh's muse interrupt path and
+    # fm-control.sh's exit guard use it for composer safety.
     C-u|c-u|ctrl+u|Ctrl+u|Ctrl+U|ctrl-u) printf 'ctrl-u' ;;
+    BSpace|Backspace|backspace) printf 'backspace' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -551,12 +553,13 @@ fm_backend_cmux_composer_caps() {
 # bin/fm-composer-lib.sh, so a new harness shape is taught there once and
 # never here. cmux has no identity probe, so the classifier's identity
 # sentinel resolves to unknown.
-fm_backend_cmux_composer_state() {  # <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local cap verdict
-  cap=$(fm_backend_cmux_composer_capture "$1" "${2:-}") || { printf 'unknown'; return 0; }
-  verdict=$(fm_composer_classify_screen "$(fm_backend_cmux_composer_caps)" "$cap")
+fm_backend_cmux_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local cap verdict caps output=${3-}
+  caps=$(fm_backend_cmux_composer_caps)
+  cap=$(fm_backend_cmux_composer_capture "$1" "${2:-}") || { fm_composer_state_output unknown "$caps" '' "$output"; return 0; }
+  verdict=$(fm_composer_classify_screen "$caps" "$cap")
   [ "$verdict" != need-identity ] || verdict=unknown
-  printf '%s' "$verdict"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 # fm_backend_cmux_send_text_submit: type <text> into <target> once (raw,

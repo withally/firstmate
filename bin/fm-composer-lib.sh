@@ -1267,6 +1267,47 @@ EOF
   printf '%s\n' "$joined" | LC_ALL=C awk '{$1=$1; printf "%s", $0}'
 }
 
+# fm_composer_utf8_prefix_var: cap a UTF-8 string by complete code points in
+# place through the named variable. LC_ALL=C makes Bash's length and substring
+# operators byte-exact on both macOS Bash 3.2 and Linux; the scanner validates
+# lead and continuation bytes before retaining a sequence so an excerpt can
+# never end with partial UTF-8.
+fm_composer_utf8_prefix_var() {  # <varname> <character-count>
+  local __fmut_name=$1 __fmut_limit=$2 __fmut_text=${!1} __fmut_out=
+  local __fmut_i=0 __fmut_count=0 __fmut_length __fmut_byte __fmut_value
+  local __fmut_width __fmut_j __fmut_next __fmut_next_value
+  local LC_ALL=C
+  __fmut_length=${#__fmut_text}
+  while [ "$__fmut_i" -lt "$__fmut_length" ] \
+    && [ "$__fmut_count" -lt "$__fmut_limit" ]; do
+    __fmut_byte=${__fmut_text:$__fmut_i:1}
+    printf -v __fmut_value '%d' "'$__fmut_byte"
+    [ "$__fmut_value" -ge 0 ] || __fmut_value=$((__fmut_value + 256))
+    case "$__fmut_value" in
+      [0-9]|[1-9][0-9]|1[01][0-9]|12[0-7]) __fmut_width=1 ;;
+      19[4-9]|2[01][0-9]|22[0-3]) __fmut_width=2 ;;
+      22[4-9]|23[0-9]) __fmut_width=3 ;;
+      24[0-4]) __fmut_width=4 ;;
+      *) return 1 ;;
+    esac
+    [ $((__fmut_i + __fmut_width)) -le "$__fmut_length" ] || return 1
+    __fmut_j=1
+    while [ "$__fmut_j" -lt "$__fmut_width" ]; do
+      __fmut_next=${__fmut_text:$((__fmut_i + __fmut_j)):1}
+      printf -v __fmut_next_value '%d' "'$__fmut_next"
+      [ "$__fmut_next_value" -ge 0 ] \
+        || __fmut_next_value=$((__fmut_next_value + 256))
+      [ "$__fmut_next_value" -ge 128 ] \
+        && [ "$__fmut_next_value" -le 191 ] || return 1
+      __fmut_j=$((__fmut_j + 1))
+    done
+    __fmut_out=${__fmut_out}${__fmut_text:$__fmut_i:$__fmut_width}
+    __fmut_i=$((__fmut_i + __fmut_width))
+    __fmut_count=$((__fmut_count + 1))
+  done
+  printf -v "$__fmut_name" '%s' "$__fmut_out"
+}
+
 # The default output is only the shared composer verdict. The explicit
 # state-and-excerpt mode is private to the control plane's first pending read,
 # so no ambient variable can change the exact state contract for other callers.
@@ -1290,7 +1331,7 @@ fm_composer_state_output() {  # <state> [caps] [screen] [output-mode]
         printf '%s\tunavailable\t' "$state"
         return 0
       fi
-      if ! excerpt=$(printf '%s' "$excerpt" | cut -c 1-80); then
+      if ! fm_composer_utf8_prefix_var excerpt 80; then
         printf '%s\tunavailable\t' "$state"
         return 0
       fi

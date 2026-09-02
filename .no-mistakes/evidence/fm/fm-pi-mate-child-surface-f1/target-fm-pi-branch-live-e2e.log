@@ -1,0 +1,4 @@
+ok - real Pi SDK 0.84.2 accepts the branch session construction and preserves an unpromptable wake
+ok - real Pi SDK 0.84.2 applies an explicit branch model on create and over a reopened session's recorded model
+ok - real Pi SDK 0.84.2 reports its own supported effort levels and applies an explicit branch effort over a reopened session's recorded level
+ok - real Pi SDK 0.84.2 delivers a custom message to the provider as user text carrying only content, so the captain outcome's typed envelope is what reaches the model

@@ -1,0 +1,4 @@
+=== Base commit: ordinary parent status append ===
+base_parent_signal_queue_rows=2
+base_parent_wake_output:
+  signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-parent-grace-baseline.IXIN48/primary/state/task.status

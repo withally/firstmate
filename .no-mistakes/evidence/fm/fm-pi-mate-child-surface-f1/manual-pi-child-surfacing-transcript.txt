@@ -1,0 +1,4 @@
+=== Pi primary: registered local secondmate ===
+parent_before=working: both tracks live
+child_before=working: child is still compiling
+bash: line 26: [watch_pid]: command not found

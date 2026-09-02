@@ -1,0 +1,6 @@
+bash: line 17: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-pi-child-manual.y2KSA8/primary/state/ally.meta: No such file or directory
+bash: line 22: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-pi-child-manual.y2KSA8/primary/state/ally.status: No such file or directory
+=== Pi primary: registered local secondmate ===
+parent_before=working: both tracks live
+child_before=working: child is still compiling
+ERROR: child cursor was not established

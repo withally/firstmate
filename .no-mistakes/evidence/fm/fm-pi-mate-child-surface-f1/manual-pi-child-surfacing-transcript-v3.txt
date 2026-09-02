@@ -1,0 +1,22 @@
+=== Pi primary: registered local secondmate ===
+parent_before=working: both tracks live
+child_before=working: child is still compiling
+baseline=child cursor established; watcher alive
+working_line_parent_mirror=none
+watcher_exit=0
+parent_status_after:
+  working: both tracks live
+  done [secondmate-child=child] corr=0123456789abcdef: report-ready on localhost
+  blocked [secondmate-child=child] corr=abcdef0123456789 [key=ally/inputs]: scoring input unavailable
+  needs-decision [secondmate-child=child] [key=ally/default]: choose the launch copy
+wake_output:
+  signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-pi-child-manual.bymb1x/primary/state/ally.status
+wake_queue_parent_signal:
+  1788314564	1	signal	ally.status	signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-pi-child-manual.bymb1x/primary/state/ally.status
+  1788314564	2	signal	ally.status	signal: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-pi-child-manual.bymb1x/primary/state/ally.status
+child_terminal_classes_mirrored=done,blocked,needs-decision
+child_working_line_mirrored=0
+=== Non-Pi control: same child stays private ===
+non_pi_parent_child_terminal_mirror=0
+=== Generated branch classification interface ===
+branch_classification_rule=- A secondmate parent reports dispatch progress while contracted child next steps remain, including "spawned", "will check in", "both tracks live", or a post-dispatch `done corr=`; MAIN must inventory that mate's child status files and surface their terminal results or blocks.

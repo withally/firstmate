@@ -1,0 +1,8 @@
+=== Base commit: same registered local secondmate ===
+parent_before=working: both tracks live
+child_before=working: child is still compiling
+baseline=watcher alive before child terminal append
+baseline_child_terminal_stays_hidden=1
+baseline_parent_status_after:
+  working: both tracks live
+baseline_wake_output:

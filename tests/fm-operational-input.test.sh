@@ -61,6 +61,25 @@ test_current_generic_matrix() {
   pass "operational input: every current generic envelope retains its exact structured kind"
 }
 
+test_main_recipient_preserves_captain_boundary() {
+  local body encoded parsed stripped rule_count
+  body='This outcome is captain-facing: give the captain a visible response now.'
+  encoded=$(printf '%s' "$body" | "$OWNER" encode branch-outcome main) \
+    || fail "main-bound branch outcome could not be encoded"
+  fm_operational_input_kind "$encoded" parsed \
+    || fail "main-bound branch outcome did not remain current operational input"
+  [ "$parsed" = branch-outcome ] \
+    || fail "main-bound branch outcome became $parsed"
+  rule_count=$(count_literal "$encoded" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$rule_count" = 0 ] \
+    || fail "main-bound branch outcome carried the worker-only silent rule"
+  fm_operational_input_body "$encoded" stripped \
+    || fail "main-bound branch outcome body could not be recovered"
+  [ "$stripped" = "$body" ] \
+    || fail "main-bound branch outcome body changed during encoding"
+  pass "operational input: main-bound branch outcomes retain their visible-response instruction"
+}
+
 test_current_from_firstmate_carrier() {
   local encoded parsed separator stripped reply_rule rule_count
   reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
@@ -173,6 +192,7 @@ test_invalid_current_encodings_are_rejected() {
 }
 
 test_current_generic_matrix
+test_main_recipient_preserves_captain_boundary
 test_current_from_firstmate_carrier
 test_landed_untyped_prefix_is_explicitly_legacy
 test_isolated_legacy_matrix

@@ -6,7 +6,7 @@
 # construction, current parsing, and narrow pre-protocol transcript parsing.
 #
 # Current generic wire form:
-#   U+2063 FIRSTMATE_OP: v1 <kind>: <body> <silent-reply-carrier>
+#   U+2063 FIRSTMATE_OP: v1 <kind>: <body> [<silent-reply-carrier>]
 #
 # The landed U+2063 + "FIRSTMATE_OP: " prefix is permanent compatibility.
 # The version and kind header make current inputs structurally typed without
@@ -15,7 +15,7 @@
 # secondmates have its leading label in their charter context.
 #
 # CLI:
-#   fm-operational-input.sh encode <kind>  # body on stdin, encoded input stdout
+#   fm-operational-input.sh encode <kind> [recipient]  # body on stdin
 #   fm-operational-input.sh kind           # current input on stdin, kind stdout
 #   fm-operational-input.sh classify       # current or legacy input on stdin
 #   fm-operational-input.sh body           # current generic input on stdin
@@ -49,22 +49,37 @@ fm_operational_kind_is_current() {  # <kind>
   return 1
 }
 
-fm_operational_input_encode() {  # <generic-kind> <body> <result-var>
-  local kind=${1-} body=${2-} result_var=${3-}
+fm_operational_input_carrier_for_recipient() {  # <recipient> <result-var>
+  local recipient=${1:-crewmate} result_var=${2-}
+  [ -n "$result_var" ] || return 2
+  case "$recipient" in
+    crewmate|secondmate)
+      printf -v "$result_var" '%s' "$FM_OPERATIONAL_SILENT_REPLY_CARRIER"
+      ;;
+    main)
+      printf -v "$result_var" '%s' ''
+      ;;
+    *) return 2 ;;
+  esac
+}
+
+fm_operational_input_encode() {  # <generic-kind> <body> <result-var> [recipient]
+  local kind=${1-} body=${2-} result_var=${3-} recipient=${4:-crewmate} carrier
   [ -n "$result_var" ] || return 2
   fm_operational_kind_is_current "$kind" || return 2
   [ -n "$body" ] || return 2
-  printf -v "$result_var" '%s%s: %s%s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body" "$FM_OPERATIONAL_SILENT_REPLY_CARRIER"
+  fm_operational_input_carrier_for_recipient "$recipient" carrier || return 2
+  printf -v "$result_var" '%s%s: %s%s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body" "$carrier"
 }
 
-fm_operational_input_construct() {  # <kind> <body> <result-var>
-  local kind=${1-} body=${2-} result_var=${3-}
+fm_operational_input_construct() {  # <kind> <body> <result-var> [recipient]
+  local kind=${1-} body=${2-} result_var=${3-} recipient=${4:-crewmate}
   [ -n "$result_var" ] && [ -n "$body" ] || return 2
   if [ "$kind" = from-firstmate ]; then
-    fm_message_mark_from_firstmate "$body" "$result_var"
+    fm_message_mark_from_firstmate "$body" "$result_var" "$recipient"
     return
   fi
-  fm_operational_input_encode "$kind" "$body" "$result_var"
+  fm_operational_input_encode "$kind" "$body" "$result_var" "$recipient"
 }
 
 fm_operational_generic_kind() {  # <message> <result-var>
@@ -187,16 +202,24 @@ fm_message_from_firstmate() {  # <message>
   fm_operational_input_kind "${1-}" kind && [ "$kind" = from-firstmate ]
 }
 
-fm_message_mark_from_firstmate() {  # <message> <result-var>
-  local message=${1-} result_var=${2-} transformed
+fm_message_mark_from_firstmate() {  # <message> <result-var> [recipient]
+  local message=${1-} result_var=${2-} recipient=${3:-crewmate} carrier transformed
   [ -n "$result_var" ] || return 2
+  fm_operational_input_carrier_for_recipient "$recipient" carrier || return 2
   if fm_message_from_firstmate "$message"; then
-    case "$message" in
-      *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") transformed=$message ;;
-      *) transformed="${message}${FM_OPERATIONAL_SILENT_REPLY_CARRIER}" ;;
-    esac
+    if [ -n "$carrier" ]; then
+      case "$message" in
+        *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") transformed=$message ;;
+        *) transformed="${message}${carrier}" ;;
+      esac
+    else
+      case "$message" in
+        *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") transformed=${message%"$FM_OPERATIONAL_SILENT_REPLY_CARRIER"} ;;
+        *) transformed=$message ;;
+      esac
+    fi
   else
-    transformed="${FM_FROMFIRST_MARK}${message}${FM_OPERATIONAL_SILENT_REPLY_CARRIER}"
+    transformed="${FM_FROMFIRST_MARK}${message}${carrier}"
   fi
   printf -v "$result_var" '%s' "$transformed"
 }
@@ -212,7 +235,7 @@ fm_operational_read_stdin() {  # <result-var>
 fm_operational_usage() {
   cat <<'EOF'
 Usage:
-  bin/fm-operational-input.sh encode <kind>  # body on stdin
+  bin/fm-operational-input.sh encode <kind> [recipient]  # body on stdin
   bin/fm-operational-input.sh kind           # current input on stdin
   bin/fm-operational-input.sh classify       # current or legacy input on stdin
   bin/fm-operational-input.sh body           # current input on stdin
@@ -222,19 +245,20 @@ Current construction kinds:
   branch-outcome
 
 The from-firstmate kind uses its established live-charter-compatible carrier.
+Recipients are crewmate, secondmate (the default), or main.
 EOF
 }
 
 fm_operational_main() {
-  local command=${1-} argument=${2-} input output
+  local command=${1-} argument=${2-} recipient=${3:-crewmate} input output
   case "$command" in
     -h|--help|help)
       fm_operational_usage
       ;;
     encode)
-      [ "$#" -eq 2 ] || return 2
+      [ "$#" -ge 2 ] && [ "$#" -le 3 ] || return 2
       fm_operational_read_stdin input || return 2
-      fm_operational_input_construct "$argument" "$input" output || return 2
+      fm_operational_input_construct "$argument" "$input" output "$recipient" || return 2
       printf '%s' "$output"
       ;;
     kind)

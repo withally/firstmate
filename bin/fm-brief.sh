@@ -82,7 +82,7 @@ esac
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
-SILENT_OPERATIONAL_INPUT_RULE='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
+SILENT_OPERATIONAL_INPUT_RULE=$FM_OPERATIONAL_SILENT_REPLY_RULE
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved

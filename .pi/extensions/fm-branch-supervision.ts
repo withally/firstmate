@@ -757,7 +757,7 @@ export default function (pi: ExtensionAPI) {
       : FIRSTMATE_ACTION_OUTCOME_INSTRUCTION;
     const body = `${instruction}\n\n${task}: ${summary}`;
     try {
-      return encodeFirstmateOperationalInput("branch-outcome", body);
+      return encodeFirstmateOperationalInput("branch-outcome", body, "main");
     } catch {
       return body;
     }

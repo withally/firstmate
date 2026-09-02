@@ -27,6 +27,7 @@ set -u
 
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+. "$ROOT/bin/fm-operational-input.sh"
 
 WATCH="$ROOT/bin/fm-watch.sh"
 TMP_ROOT=$(fm_test_tmproot fm-task-inbox)
@@ -46,6 +47,15 @@ inbox_lib() {  # <state> <function> [args...]
     shift 2
     "$fn" "$@"
   ' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$@"
+}
+
+count_literal() {  # <text> <literal>
+  local rest=$1 needle=$2 count=0
+  while [ "${rest#*"$needle"}" != "$rest" ]; do
+    rest=${rest#*"$needle"}
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
 }
 
 # A fake tmux for the watcher cases: capture-pane replays FM_FAKE_TMUX_CAPTURE,
@@ -120,7 +130,7 @@ age_path() {  # <path>  (set mtime well past any grace under test)
 }
 
 test_write_is_durable_and_exact() {
-  local state rec rec2 doorbell doorbell2 expected actual expected2 actual2 text
+  local state rec rec2 doorbell doorbell2 expected actual expected2 actual2 text rule_count
   state="$TMP_ROOT/write/state"; mkdir -p "$state"
   text=$'line one\nline two with  spaces\n/slash body\n\n'
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "$text") \
@@ -154,6 +164,8 @@ test_write_is_durable_and_exact() {
   assert_contains "$doorbell" "numeric order" "doorbell should require ordered processing"
   assert_contains "$doorbell" "$state/t1.inbox/handled/" "doorbell should name the handled dir"
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
+  rule_count=$(count_literal "$doorbell" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$rule_count" = 1 ] || fail "doorbell should carry the silent operational-input rule exactly once"
   case "$doorbell" in
     *$'\n'*) fail "the doorbell must be a single line" ;;
   esac

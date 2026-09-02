@@ -21,13 +21,14 @@
 #      is refused.
 #   2. Per-harness control mechanics: which key interrupts a running turn, how
 #      many times it must be sent, whether the composer needs clearing after
-#      that key, which adapter-owned cancellation acknowledgement is observable,
-#      which command exits the agent, and which task kinds the adapter is
-#      verified to run. These are the empirically verified facts previously
+#      that key, which verified key clears pending composer input before exit,
+#      which adapter-owned cancellation acknowledgement is observable, which
+#      command exits the agent, and which task kinds the adapter is verified to
+#      run. These are the empirically verified facts previously
 #      carried only in the harness-adapters skill's per-adapter tables; that
 #      skill now points here so one executable owner holds them, and
-#      bin/fm-send.sh's --key path reads the same table rather than a second
-#      copy of it.
+#      bin/fm-send.sh's --key path reads the interrupt-follow-up clear table
+#      rather than keeping a second copy of it.
 #   3. Per-backend capability: which named keys a runtime backend can deliver,
 #      and whether the backend has a recovery-grade agent-state classifier
 #      (bin/fm-backend.sh's fm_backend_agent_state) able to PROVE that an agent
@@ -144,6 +145,18 @@ fm_control_interrupt_clear_key() {  # <harness>
   esac
 }
 
+# The primary key that clears transient typed composer input before an exit.
+# Ctrl+U is verified for the harnesses listed below; OpenCode has no verified
+# composer-clear key and is intentionally absent. Callers re-read through the
+# shared composer classifier and fall back to bounded Backspace delivery rather
+# than assuming the key worked.
+fm_control_composer_clear_key() {  # <harness>
+  case "${1-}" in
+    claude|codex|pi|pi-signed|grok|kimi|cursor|muse) printf 'C-u' ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_control_interrupt_ack_source() {  # <harness>
   case "${1-}" in
     muse) printf 'muse-session-terminal' ;;
@@ -165,15 +178,15 @@ fm_control_exit_command() {  # <harness>
   esac
 }
 
-# Which named keys a backend adapter can deliver. Every session provider
-# normalizes Enter, Ctrl+C, and the Ctrl+U composer clear; Orca's terminal API
-# exposes only an interrupt and an Enter, so it can deliver neither Escape nor
-# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key).
+# Which named keys a backend adapter can deliver. Tmux, Herdr, Zellij, and cmux
+# normalize Enter, Ctrl+C, Ctrl+U, and the BSpace fallback; Orca's terminal API
+# exposes only an interrupt and an Enter, so it can deliver none of Escape,
+# Ctrl+U, or BSpace (bin/backends/orca.sh's fm_backend_orca_send_key).
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
     tmux|herdr|zellij|cmux)
-      case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
+      case "$key" in Escape|Enter|C-c|C-u|BSpace) return 0 ;; esac
       ;;
     orca)
       case "$key" in Enter|C-c) return 0 ;; esac

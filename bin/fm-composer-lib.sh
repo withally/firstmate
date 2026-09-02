@@ -1262,6 +1262,45 @@ EOF
   printf '%s\n' "$joined" | LC_ALL=C awk '{$1=$1; printf "%s", $0}'
 }
 
+# The default output is only the shared composer verdict. The explicit
+# state-and-excerpt mode is private to the control plane's first pending read,
+# so no ambient variable can change the exact state contract for other callers.
+fm_composer_state_output() {  # <state> [caps] [screen] [output-mode]
+  local state=$1 caps=${2-} screen=${3-} output=${4-} excerpt
+  if [ "$output" != state-and-excerpt ]; then
+    printf '%s' "$state"
+    return 0
+  fi
+  case "$state" in
+    pending|pending-unproven)
+      if [ -z "$caps" ] || [ -z "$screen" ]; then
+        printf '%s\tunavailable\t' "$state"
+        return 0
+      fi
+      if ! excerpt=$(fm_composer_extract_selected_content "$caps" "$screen" 2>/dev/null); then
+        printf '%s\tunavailable\t' "$state"
+        return 0
+      fi
+      if [ -z "$excerpt" ]; then
+        printf '%s\tunavailable\t' "$state"
+        return 0
+      fi
+      if ! excerpt=$(printf '%s' "$excerpt" | cut -c 1-80); then
+        printf '%s\tunavailable\t' "$state"
+        return 0
+      fi
+      if [ -n "$excerpt" ]; then
+        printf '%s\tavailable\t%s' "$state" "$excerpt"
+      else
+        printf '%s\tunavailable\t' "$state"
+      fi
+      ;;
+    *)
+      printf '%s\tnot-applicable\t' "$state"
+      ;;
+  esac
+}
+
 fm_composer_classify_screen() {  # <caps> <screen> [cursor_row] [identity]
   local caps=$1 screen=$2 cy=${3:-} identity=${4:-}
   local styled=0 cursor=0 has_identity=0 kv plain

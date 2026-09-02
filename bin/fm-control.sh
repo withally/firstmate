@@ -128,6 +128,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-composer-lib.sh
+. "$SCRIPT_DIR/fm-composer-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
@@ -323,6 +325,59 @@ busy_verdict() {
   fm_busy_classify_meta "$META" "$ID" "$STATE"
 }
 
+COMPOSER_STATE=
+COMPOSER_EXCERPT=
+COMPOSER_EXCERPT_STATUS=
+COMPOSER_EXCERPT_CAPTURED=0
+COMPOSER_EXCERPT_REPORTED=0
+
+read_composer_state() {
+  local observed remainder
+  if [ "$COMPOSER_EXCERPT_CAPTURED" = 1 ]; then
+    observed=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null)
+  else
+    observed=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" state-and-excerpt 2>/dev/null)
+  fi
+  case "$observed" in
+    *$'\t'*)
+      COMPOSER_STATE=${observed%%$'\t'*}
+      remainder=${observed#*$'\t'}
+      COMPOSER_EXCERPT_STATUS=${remainder%%$'\t'*}
+      COMPOSER_EXCERPT=${remainder#*$'\t'}
+      ;;
+    *)
+      COMPOSER_STATE=$observed
+      if [ "$COMPOSER_EXCERPT_CAPTURED" != 1 ]; then
+        COMPOSER_EXCERPT_STATUS=unavailable
+        COMPOSER_EXCERPT=
+      fi
+      ;;
+  esac
+  [ -n "$COMPOSER_STATE" ] || COMPOSER_STATE=unknown
+  case "$COMPOSER_STATE" in
+    pending|pending-unproven)
+      if [ "$COMPOSER_EXCERPT_CAPTURED" != 1 ]; then
+        [ "$COMPOSER_EXCERPT_STATUS" = available ] \
+          && [ -n "$COMPOSER_EXCERPT" ] || return 1
+        COMPOSER_EXCERPT_CAPTURED=1
+      fi
+      ;;
+  esac
+  return 0
+}
+
+report_composer_excerpt() {
+  [ "$COMPOSER_EXCERPT_CAPTURED" = 1 ] || return 0
+  [ "$COMPOSER_EXCERPT_REPORTED" = 0 ] || return 0
+  echo "pending composer excerpt: $COMPOSER_EXCERPT" >&2
+  COMPOSER_EXCERPT_REPORTED=1
+}
+
+refuse_composer() {
+  report_composer_excerpt
+  die "$1"
+}
+
 # wait_agent_state <wanted...> <timeout>: poll until agent_state prints one of
 # the wanted values. Prints the final observed state; returns 0 on a match.
 wait_agent_state() {  # <timeout> <wanted>...
@@ -426,7 +481,7 @@ verify_interrupt_running() {
     after=$(agent_state)
     [ "$after" = alive ] \
       || die "task $ID's agent is '$after' after its interrupt key; an interrupt must leave the agent running"
-    proof=agent-alive
+    proof='agent-alive'
   fi
   printf '%s' "$proof"
 }
@@ -444,6 +499,45 @@ retire_busy_incarnation() {
   fi
 }
 
+clear_composer_before_exit() {
+  local state initial clear attempts='' i=0 max_backspaces=80
+  if ! read_composer_state; then
+    refuse_composer "refusing to clear task $ID because pending composer excerpt is unavailable; observed state '$COMPOSER_STATE'; keys sent: none"
+  fi
+  state=$COMPOSER_STATE
+  initial=$state
+  case "$state" in
+    empty) return 0 ;;
+    pending|pending-unproven) ;;
+    *)
+      refuse_composer "refusing to type the exit command for task $ID because its composer state is '$state', not proven empty; keys sent: none"
+      ;;
+  esac
+  clear=$(fm_control_composer_clear_key "$HARNESS") \
+    || refuse_composer "harness $HARNESS has no verified composer-clear key; composer remained '$state'; keys sent: none"
+  fm_control_backend_supports_key "$BACKEND" "$clear" \
+    || refuse_composer "harness $HARNESS clears its composer with $clear, which the $BACKEND backend cannot deliver; composer remained '$state'; keys sent: none"
+  fm_backend_send_key "$BACKEND" "$T" "$clear" "$LABEL" \
+    || refuse_composer "composer clear key $clear could not be delivered to task $ID on $BACKEND; composer remained '$state'; keys sent: none"
+  attempts=$clear
+  read_composer_state || refuse_composer "refusing to type the exit command for task $ID because its composer excerpt became unavailable; observed state '$COMPOSER_STATE'; keys sent: $attempts"
+  state=$COMPOSER_STATE
+  while [ "$state" != empty ] && [ "$i" -lt "$max_backspaces" ]; do
+    case "$state" in pending|pending-unproven) ;; *) break ;; esac
+    fm_control_backend_supports_key "$BACKEND" BSpace \
+      || refuse_composer "task $ID's composer remained '$state' after $attempts, and $BACKEND cannot deliver the BSpace fallback; keys sent: $attempts"
+    fm_backend_send_key "$BACKEND" "$T" BSpace "$LABEL" \
+      || refuse_composer "task $ID's composer remained '$state' and BSpace delivery failed; keys sent: $attempts"
+    attempts="$attempts, BSpace"
+    i=$((i + 1))
+    read_composer_state || refuse_composer "refusing to type the exit command for task $ID because its composer excerpt became unavailable; observed state '$COMPOSER_STATE'; keys sent: $attempts"
+    state=$COMPOSER_STATE
+  done
+  [ "$state" = empty ] \
+    || refuse_composer "task $ID's composer remained '$state' after bounded clear attempts; initial state: $initial; keys sent: $attempts"
+  report_composer_excerpt
+}
+
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
@@ -459,6 +553,7 @@ do_exit() {
     missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action" ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
+  clear_composer_before_exit
   # A busy agent is interrupted first before the exit command is submitted.
   case "$(busy_verdict)" in
     busy*)
@@ -477,6 +572,7 @@ do_exit() {
       ;;
   esac
   cmd=$(fm_control_exit_command "$HARNESS")
+  clear_composer_before_exit
   # The submit verdict is NOT the postcondition here: a successful exit command
   # destroys the composer the verdict is read from, so a post-exit read can
   # legitimately report anything. Only a hard transport failure aborts; the

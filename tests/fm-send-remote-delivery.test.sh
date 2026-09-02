@@ -205,10 +205,10 @@ record_without_current_carrier() {  # <record-path>
   body=$(fm_task_inbox_body "$rec"; printf x)
   body=${body%x}
   case "$body" in
-    *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") ;;
+    *"$FM_OPERATIONAL_WORKER_CARRIER") ;;
     *) return 1 ;;
   esac
-  body=${body%"$FM_OPERATIONAL_SILENT_REPLY_CARRIER"}
+  body=${body%"$FM_OPERATIONAL_WORKER_CARRIER"}
   tmp="$rec.pre-carrier"
   sed -n '1,/^--$/p' "$rec" > "$tmp" || return 1
   printf '%s' "$body" >> "$tmp" || return 1

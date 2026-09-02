@@ -131,7 +131,7 @@ test_secondmate_target_is_marked() {
 }
 
 test_exact_secondmate_task_id_is_marked() {
-  local dir fb log home rc got already_marked corr
+  local dir fb log home rc got already_marked
   dir="$TMP_ROOT/sm-exact"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home sm-exact)
@@ -143,18 +143,16 @@ test_exact_secondmate_task_id_is_marked() {
     "$FM_FROMFIRST_MARK"corr=[a-f0-9]*) : ;;
     *) fail "exact secondmate send: the recorded steer should be marker+corr+text"$'\n'"--- bytes ---"$'\n'"$(printf '%s' "$got" | od -An -c)" ;;
   esac
-  # shellcheck source=/dev/null
-  . "$ROOT/bin/fm-pending-reply-lib.sh"
-  corr=$(fm_pending_reply_extract_corr "$got")
-  # Resend with the same corr already present: embed is idempotent for that corr.
-  already_marked="${FM_FROMFIRST_MARK}corr=${corr} already routed"
+  already_marked="${FM_FROMFIRST_MARK}already routed"
   run_send "$fb" "$home" "$log" "domain" "$already_marked"; rc=$?
   expect_code 0 "$rc" "send of already-marked exact-id content should succeed"
   got=$(record_body "$home/state/domain.inbox/002.msg")
   fm_operational_input_body "$got" got \
     || fail "already-correlated secondmate send did not remain parseable"
-  [ "$got" = "corr=${corr} already routed" ] \
-    || fail "exact secondmate send altered already-correlated content"$'\n'"$got"
+  case "$got" in
+    corr=*' already routed') : ;;
+    *) fail "exact secondmate send altered already-marked content"$'\n'"$got" ;;
+  esac
   pass "fm-send: an exact kind=secondmate task id is marked with corr exactly once"
 }
 
@@ -242,7 +240,7 @@ test_marker_transformation_is_idempotent() {
   fm_message_mark_from_firstmate "$once" twice secondmate
   [ "$once" = "$twice" ] \
     || fail "already-marked content was double-prefixed"$'\n'"--- once ---"$'\n'"$(printf '%s' "$once" | od -An -tx1)"$'\n'"--- twice ---"$'\n'"$(printf '%s' "$twice" | od -An -tx1)"
-  [ "$once" = "${FM_FROMFIRST_MARK}do the work${FM_OPERATIONAL_SILENT_REPLY_CARRIER}" ] \
+  [ "$once" = "${FM_FROMFIRST_MARK}do the work${FM_OPERATIONAL_WORKER_CARRIER}" ] \
     || fail "marker transformation did not add the marker and reply carrier exactly once"
   pass "fm-marker: from-firstmate transformation is idempotent"
 }

@@ -80,6 +80,20 @@ test_main_recipient_preserves_captain_boundary() {
   pass "operational input: main-bound branch outcomes retain their visible-response instruction"
 }
 
+test_main_body_preserves_literal_carrier_suffix() {
+  local body kind encoded stripped
+  body="main-bound body${FM_OPERATIONAL_SILENT_REPLY_CARRIER}"
+  for kind in watcher from-firstmate; do
+    encoded=$(printf '%s' "$body" | "$OWNER" encode "$kind" main) \
+      || fail "main-bound $kind body could not be encoded"
+    stripped=$(printf '%s' "$encoded" | "$OWNER" body) \
+      || fail "main-bound $kind body could not be parsed"
+    [ "$stripped" = "$body" ] \
+      || fail "main-bound $kind body lost its literal carrier suffix"
+  done
+  pass "operational input: main-bound bodies preserve a literal carrier-like suffix"
+}
+
 test_default_main_and_explicit_worker_carriers() {
   local body main_encoded mate_encoded main_count mate_count
   body='Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.'
@@ -209,6 +223,7 @@ test_invalid_current_encodings_are_rejected() {
 
 test_current_generic_matrix
 test_main_recipient_preserves_captain_boundary
+test_main_body_preserves_literal_carrier_suffix
 test_default_main_and_explicit_worker_carriers
 test_current_from_firstmate_carrier
 test_landed_untyped_prefix_is_explicitly_legacy

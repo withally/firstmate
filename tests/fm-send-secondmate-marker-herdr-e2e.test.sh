@@ -167,7 +167,7 @@ PATH="$FAKEBIN:$ORIGINAL_PATH" FM_GATE_REFUSE_BYPASS=1 FM_HOME="$SENDER_HOME" \
   "$ROOT/bin/fm-send.sh" "$ID" "$REQUEST" >/dev/null
 wait_for_prompt "$REQUEST" || fail "real Pi did not receive the exact-id fm-send request"
 GOT=$(jq -r --arg needle "$REQUEST" 'select(.prompt | contains($needle)) | .prompt' "$CAPTURE" | tail -1)
-[ "$GOT" = "${FM_FROMFIRST_MARK}${REQUEST}${FM_OPERATIONAL_SILENT_REPLY_CARRIER}" ] \
+[ "$GOT" = "${FM_FROMFIRST_MARK}${REQUEST}${FM_OPERATIONAL_WORKER_CARRIER}" ] \
   || fail "real Pi exact-id prompt did not contain exactly one terminal-safe marker"$'\n'"--- bytes ---"$'\n'"$(printf '%s' "$GOT" | od -An -tx1)"
 printf 'evidence: exact-id received-hex=%s\n' "$(printf '%s' "$GOT" | od -An -tx1 | tr -d ' \n')"
 pass "real Pi/Herdr: exact-id FM_HOME send delivers exactly one from-firstmate marker"

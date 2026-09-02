@@ -44,27 +44,43 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
 
+# The away daemon's delivery store is the single journal state/.subsuper-delivery.jsonl
+# (bin/fm-supervise-daemon.sh owns its format) plus the .subsuper-inject-wedged alarm
+# marker. The pre-redesign multi-file names remain available to the launch backup
+# and daemon startup quarantine.
+# This is the ONE owner of the delivery-artifact set for the away-mode scripts.
+FM_AFK_FRESH_DELIVERY_ARTIFACTS=(
+  .subsuper-delivery.jsonl
+  .subsuper-inject-wedged
+)
+
+# shellcheck disable=SC2034 # Consumed by fm-afk-launch.sh after sourcing.
+FM_AFK_DELIVERY_ARTIFACTS=(
+  .subsuper-delivery.jsonl
+  .subsuper-inject-wedged
+  .subsuper-escalations
+  .subsuper-escalations.since
+  .subsuper-escalations.delivery
+  .subsuper-escalations.records
+  .subsuper-check-ledger
+)
+
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # fm_afk_clear_stale_artifacts: on a FRESH away-session entry (state/.afk is
-# absent and the daemon is not already running), drop the previous session's
-# leftover escalation-delivery artifacts so they cannot surface as stale
-# escalations under the new session. A restart or recovery with state/.afk
-# already present preserves the current session's buffer, delivery sidecars,
-# wedge marker, and check ledger for replay-safe routing. The fresh-entry clear
-# does not drop durable work: a condition still true is re-derived by the
-# daemon's heartbeat catch-all scan, and an unacknowledged wake remains in
-# state/.wake-queue (see .agents/skills/afk/SKILL.md "Stale-artifact lifecycle"
-# and bin/fm-supervise-daemon.sh's escalate_add/inject_wedge_alarm). This helper
-# is not called on a refresh or same-session recovery.
+# absent and the daemon is not already running), drop the previous journal and
+# wedge marker. A restart or recovery with state/.afk already present preserves
+# the current session's delivery journal and wedge marker for replay-safe
+# routing. Legacy multi-file inputs remain untouched for the daemon's startup
+# quarantine. This helper is not called on a refresh or same-session recovery.
 fm_afk_clear_stale_artifacts() {  # <state-dir>
-  local state=$1
-  rm -f "$state/.subsuper-escalations" \
-        "$state/.subsuper-escalations.since" \
-        "$state/.subsuper-inject-wedged" \
-        "$state/.subsuper-check-ledger" 2>/dev/null
+  local state=$1 artifact result=0
+  for artifact in "${FM_AFK_FRESH_DELIVERY_ARTIFACTS[@]}"; do
+    rm -f "$state/$artifact" 2>/dev/null || result=1
+  done
+  return "$result"
 }
 
 daemon_lock_owner() {
@@ -160,7 +176,7 @@ fm_afk_start_main() {
     fm_lock_remove_path "$FM_AFK_LOCK" 2>/dev/null || true
   fi
 
-  # Fresh start: clear the previous away session's stale delivery artifacts
+  # Fresh start: clear the previous away session's live delivery artifacts
   # before the new daemon can surface them (fix for the leaked-artifact defect).
   if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ] && [ "$had_afk" -eq 0 ]; then
     fm_afk_clear_stale_artifacts "$FM_AFK_STATE" || {

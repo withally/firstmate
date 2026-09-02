@@ -50,7 +50,7 @@ fm_operational_kind_is_current() {  # <kind>
 }
 
 fm_operational_input_carrier_for_recipient() {  # <recipient> <result-var>
-  local recipient=${1:-crewmate} result_var=${2-}
+  local recipient=${1:-main} result_var=${2-}
   [ -n "$result_var" ] || return 2
   case "$recipient" in
     crewmate|secondmate)
@@ -64,7 +64,7 @@ fm_operational_input_carrier_for_recipient() {  # <recipient> <result-var>
 }
 
 fm_operational_input_encode() {  # <generic-kind> <body> <result-var> [recipient]
-  local kind=${1-} body=${2-} result_var=${3-} recipient=${4:-crewmate} carrier
+  local kind=${1-} body=${2-} result_var=${3-} recipient=${4:-main} carrier
   [ -n "$result_var" ] || return 2
   fm_operational_kind_is_current "$kind" || return 2
   [ -n "$body" ] || return 2
@@ -73,7 +73,7 @@ fm_operational_input_encode() {  # <generic-kind> <body> <result-var> [recipient
 }
 
 fm_operational_input_construct() {  # <kind> <body> <result-var> [recipient]
-  local kind=${1-} body=${2-} result_var=${3-} recipient=${4:-crewmate}
+  local kind=${1-} body=${2-} result_var=${3-} recipient=${4:-main}
   [ -n "$result_var" ] && [ -n "$body" ] || return 2
   if [ "$kind" = from-firstmate ]; then
     fm_message_mark_from_firstmate "$body" "$result_var" "$recipient"
@@ -203,7 +203,7 @@ fm_message_from_firstmate() {  # <message>
 }
 
 fm_message_mark_from_firstmate() {  # <message> <result-var> [recipient]
-  local message=${1-} result_var=${2-} recipient=${3:-crewmate} carrier transformed
+  local message=${1-} result_var=${2-} recipient=${3:-main} carrier transformed
   [ -n "$result_var" ] || return 2
   fm_operational_input_carrier_for_recipient "$recipient" carrier || return 2
   if fm_message_from_firstmate "$message"; then
@@ -245,12 +245,12 @@ Current construction kinds:
   branch-outcome
 
 The from-firstmate kind uses its established live-charter-compatible carrier.
-Recipients are crewmate, secondmate (the default), or main.
+Recipients are main (the default), crewmate, or secondmate.
 EOF
 }
 
 fm_operational_main() {
-  local command=${1-} argument=${2-} recipient=${3:-crewmate} input output
+  local command=${1-} argument=${2-} recipient=${3:-main} input output
   case "$command" in
     -h|--help|help)
       fm_operational_usage

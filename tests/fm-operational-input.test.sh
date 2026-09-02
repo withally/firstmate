@@ -40,7 +40,7 @@ test_current_generic_matrix() {
 
   for kind in session-start watcher turn-end-guard away-supervisor launch-brief branch-outcome; do
     body="CURRENT_BODY_FOR_${kind}"
-    fm_operational_input_encode "$kind" "$body" encoded \
+    fm_operational_input_encode "$kind" "$body" encoded secondmate \
       || fail "could not encode current $kind fixture"
     fm_operational_input_kind "$encoded" parsed \
       || fail "could not parse current $kind fixture"
@@ -80,11 +80,27 @@ test_main_recipient_preserves_captain_boundary() {
   pass "operational input: main-bound branch outcomes retain their visible-response instruction"
 }
 
+test_default_main_and_explicit_worker_carriers() {
+  local body main_encoded mate_encoded main_count mate_count
+  body='Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.'
+  main_encoded=$(printf '%s' "$body" | "$OWNER" encode session-start) \
+    || fail "main-bound session-start nudge could not be encoded"
+  mate_encoded=$(printf '%s' "$body" | "$OWNER" encode session-start secondmate) \
+    || fail "secondmate session-start nudge could not be encoded"
+  main_count=$(count_literal "$main_encoded" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$main_count" = 0 ] \
+    || fail "main-bound session-start nudge carried the worker-only silent rule"
+  mate_count=$(count_literal "$mate_encoded" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$mate_count" = 1 ] \
+    || fail "secondmate session-start nudge must carry the silent rule exactly once, found $mate_count"
+  pass "operational input: main-bound nudges stay captain-facing while explicit mate inputs carry silence"
+}
+
 test_current_from_firstmate_carrier() {
   local encoded parsed separator stripped reply_rule rule_count
   reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
   separator=$(printf '\342\201\243')
-  fm_message_mark_from_firstmate "corr=0123456789abcdef inspect the report" encoded
+  fm_message_mark_from_firstmate "corr=0123456789abcdef inspect the report" encoded secondmate
   [ "${encoded#"[fm-from-firstmate]$separator"}" != "$encoded" ] \
     || fail "from-firstmate lost its live-charter-compatible leading carrier"
   fm_operational_input_kind "$encoded" parsed \
@@ -193,6 +209,7 @@ test_invalid_current_encodings_are_rejected() {
 
 test_current_generic_matrix
 test_main_recipient_preserves_captain_boundary
+test_default_main_and_explicit_worker_carriers
 test_current_from_firstmate_carrier
 test_landed_untyped_prefix_is_explicitly_legacy
 test_isolated_legacy_matrix

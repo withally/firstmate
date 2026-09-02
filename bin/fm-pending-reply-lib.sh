@@ -218,11 +218,11 @@ fm_pending_reply_set() {  # <record-path> <key> <value>
 # Result is assigned to <result-var>.
 # Trailing newlines in the request body are preserved: never strip via bare
 # $(...) on the body (command substitution removes trailing newlines).
-fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var>
-  local message=$1 corr=$2 result_var=$3 body token marked existing
+fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var> [recipient]
+  local message=$1 corr=$2 result_var=$3 recipient=${4:-main} body token marked existing
   [ -n "$result_var" ] || return 2
   token=$(fm_pending_reply_corr_token "$corr")
-  fm_message_mark_from_firstmate "$message" marked
+  fm_message_mark_from_firstmate "$message" marked "$recipient"
   body=${marked#"$FM_FROMFIRST_MARK"}
   # Strip a leading corr=<16hex> plus following blanks (space/tab only).
   existing=${body:0:21}
@@ -855,7 +855,7 @@ fm_pending_reply_recovery_message() {  # <record-path>
   summary=$(fm_pending_reply_get "$rec" request_summary)
   token=$(fm_pending_reply_corr_token "$corr")
   msg="REPOST REQUIRED: previous marked request had no correlated parent report. Reply on the parent status channel including ${token}. Original request: ${summary}"
-  fm_pending_reply_embed_corr "$msg" "$corr" msg
+  fm_pending_reply_embed_corr "$msg" "$corr" msg secondmate
   printf '%s' "$msg"
 }
 

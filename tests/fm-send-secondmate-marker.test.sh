@@ -238,8 +238,8 @@ test_marker_is_label_plus_invisible_separator() {
 
 test_marker_transformation_is_idempotent() {
   local once twice
-  fm_message_mark_from_firstmate "do the work" once
-  fm_message_mark_from_firstmate "$once" twice
+  fm_message_mark_from_firstmate "do the work" once secondmate
+  fm_message_mark_from_firstmate "$once" twice secondmate
   [ "$once" = "$twice" ] \
     || fail "already-marked content was double-prefixed"$'\n'"--- once ---"$'\n'"$(printf '%s' "$once" | od -An -tx1)"$'\n'"--- twice ---"$'\n'"$(printf '%s' "$twice" | od -An -tx1)"
   [ "$once" = "${FM_FROMFIRST_MARK}do the work${FM_OPERATIONAL_SILENT_REPLY_CARRIER}" ] \
@@ -260,7 +260,7 @@ test_marked_send_preserves_trailing_newlines() {
   . "$ROOT/bin/fm-pending-reply-lib.sh"
   corr=$(fm_pending_reply_extract_corr "$(record_body "$home/state/domain.inbox/001.msg")")
   [ -n "$corr" ] || fail "marked send should embed a corr id"
-  fm_pending_reply_embed_corr "$payload" "$corr" expected_message
+  fm_pending_reply_embed_corr "$payload" "$corr" expected_message secondmate
   expected="$dir/expected.body"
   actual="$dir/actual.body"
   printf '%s' "$expected_message" > "$expected"

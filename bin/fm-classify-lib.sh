@@ -101,20 +101,25 @@ last_status_line() {
   grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -1
 }
 
-status_last_line_offset() {  # <status-file>
-  local f=$1
-  LC_ALL=C awk '
+status_last_line_offset() {  # <status-file> [record]
+  local f=$1 mode=${2:-offset}
+  LC_ALL=C awk -v mode="$mode" '
     BEGIN { offset=0 }
     {
       if ($0 ~ /[^[:space:]]/) {
         last=offset
+        last_line=$0
         found=1
       }
       offset += length($0) + 1
     }
     END {
-      if (found) print last
-      else exit 1
+      if (!found) exit 1
+      if (mode == "record") {
+        printf "%s\n%s", last, last_line
+      } else {
+        print last
+      }
     }
   ' "$f" 2>/dev/null
 }
@@ -659,6 +664,10 @@ FM_OPEN_DECISIONS_FOLD_VERSION=5
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
   local f=$1
+  if [ -n "${FM_STATUS_IDENT_READER:-}" ]; then
+    "$FM_STATUS_IDENT_READER" "$f"
+    return
+  fi
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
     LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null
   else

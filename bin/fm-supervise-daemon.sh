@@ -353,7 +353,7 @@ _collapse_newlines() {  # <text>
 # summary firstmate would otherwise have to re-read.
 
 classify_signal() {  # <reason-after-colon> <state>
-  local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task
+  local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task candidate candidate_offset candidate_ident
   for f in $reason; do
     [ -e "$f" ] || continue
     last=$(last_status_line "$f")
@@ -366,7 +366,14 @@ classify_signal() {  # <reason-after-colon> <state>
     # single source of truth shared between the per-wake signal path and the
     # heartbeat scan. all_seen stays 1 only if EVERY relevant file was seen.
     task=$(basename "$f"); task="${task%.status}"
-    if ! status_seen_matches "$state" "$task" "$f" "$last"; then
+    candidate=$(status_seen_candidate_snapshot "$f" "$last") || {
+      all_seen=0
+      continue
+    }
+    candidate_offset=${candidate%%$'\t'*}
+    candidate_ident=${candidate#*$'\t'}
+    if ! status_seen_matches "$state" "$task" "$f" "$last" \
+      "$candidate_offset" "$candidate_ident"; then
       all_seen=0
     fi
   done
@@ -387,7 +394,7 @@ classify_signal() {  # <reason-after-colon> <state>
 # first sight of a non-terminal stale it returns "self" and the caller records a
 # timestamp marker; persistence is escalated by housekeeping's recheck, not here.
 classify_stale() {  # <window> <state>
-  local win=$1 state=$2 task last
+  local win=$1 state=$2 task last candidate candidate_offset candidate_ident
   task=$(window_to_task "$win" "$state")
   last=$(last_status_line "$state/$task.status")
   if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
@@ -416,7 +423,14 @@ classify_stale() {  # <window> <state>
     fi
     # Dedupe against the signal path: if this status was already escalated
     # (seen marker matches), self-handle to avoid a duplicate in the digest.
-    if status_seen_matches "$state" "$task" "$state/$task.status" "$last"; then
+    candidate=$(status_seen_candidate_snapshot "$state/$task.status" "$last") || {
+      printf 'escalate|stale + terminal status: %s' "$last"
+      return
+    }
+    candidate_offset=${candidate%%$'\t'*}
+    candidate_ident=${candidate#*$'\t'}
+    if status_seen_matches "$state" "$task" "$state/$task.status" "$last" \
+      "$candidate_offset" "$candidate_ident"; then
       printf 'self|stale + terminal (already escalated by signal): %s' "$last"
       return
     fi
@@ -449,33 +463,88 @@ classify_unknown() {  # <reason>
 #           (escalation and durable-check records, buffering, typing, and
 #           delivered-once retirement); the "delivered-once journal" block below
 #           owns its format and every mutation.
-# Seen:     state/.subsuper-seen-status-<task>  last status line offset and text
-#           the scan escalated, so the catch-all does not re-fire the same event.
+# Seen:     state/.subsuper-seen-status-<task>  status-file identity, last line
+#           offset, and text for the scan's escalated event.
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 
-status_seen_matches() {  # <state> <task> <status-file> <last-line>
-  local state=$1 task=$2 f=$3 line=$4 marker data marker_offset marker_line offset cursor manifest legacy_cursor
+status_seen_candidate_snapshot() {  # <status-file> <expected-last-line>
+  local f=$1 expected=$2 record offset line ident
+  record=$(status_last_line_offset "$f" record) || return 1
+  case "$record" in *$'\n'*) ;; *) return 1 ;; esac
+  offset=${record%%$'\n'*}
+  line=${record#*$'\n'}
+  [ "$line" = "$expected" ] || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  [ -n "$ident" ] || return 1
+  printf '%s\t%s' "$offset" "$ident"
+}
+
+status_seen_matches() {  # <state> <task> <status-file> <last-line> [offset] [ident]
+  local state=$1 task=$2 f=$3 line=$4 marker data marker_first marker_rest
+  local marker_ident marker_offset marker_line offset current_ident cursor manifest legacy_cursor record candidate_line
+  local candidate_offset candidate_ident
+  candidate_offset=${5:-}
+  candidate_ident=${6:-}
   marker="$state/.subsuper-seen-status-$(_stale_key "$task")"
   [ -f "$marker" ] && [ -r "$marker" ] && [ ! -L "$marker" ] || return 1
   data=$(LC_ALL=C command cat "$marker" 2>/dev/null) || return 1
+  marker_ident=
+  marker_offset=
+  marker_line=
   case "$data" in
-    offset=$'\n'*)
-      marker_offset=${data%%$'\n'*}
-      marker_offset=${marker_offset#offset=}
-      marker_line=${data#*$'\n'}
+    ident=*)
+      marker_first=${data%%$'\n'*}
+      [ "$marker_first" != "$data" ] || return 1
+      marker_ident=${marker_first#ident=}
+      [ -n "$marker_ident" ] || return 1
+      marker_rest=${data#*$'\n'}
+      case "$marker_rest" in *$'\n'*) ;; *) return 1 ;; esac
+      marker_first=${marker_rest%%$'\n'*}
+      case "$marker_first" in
+        offset=*) marker_offset=${marker_first#offset=} ;;
+        *) return 1 ;;
+      esac
+      marker_line=${marker_rest#*$'\n'}
       case "$marker_offset" in ''|*[!0-9]*) return 1 ;; esac
       ;;
+    offset=*)
+      marker_first=${data%%$'\n'*}
+      if [ "$marker_first" != "$data" ]; then
+        marker_offset=${marker_first#offset=}
+        marker_line=${data#*$'\n'}
+        case "$marker_offset" in ''|*[!0-9]*) return 1 ;; esac
+      else
+        marker_line=$data
+      fi
+      ;;
     *)
-      marker_offset=
       marker_line=$data
       ;;
   esac
   [ "$marker_line" = "$line" ] || return 1
-  offset=$(status_last_line_offset "$f") || return 1
-  if [ -n "$marker_offset" ]; then
+  if [ -z "$candidate_offset" ]; then
+    record=$(status_last_line_offset "$f" record) || return 1
+    case "$record" in *$'\n'*) ;; *) return 1 ;; esac
+    candidate_offset=${record%%$'\n'*}
+    candidate_line=${record#*$'\n'}
+    [ "$candidate_line" = "$line" ] || return 1
+  fi
+  case "$candidate_offset" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -z "$candidate_ident" ]; then
+    candidate_ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  fi
+  [ -n "$candidate_ident" ] || return 1
+  offset=$candidate_offset
+  current_ident=$candidate_ident
+  if [ -n "$marker_ident" ]; then
+    [ "$marker_ident" = "$current_ident" ] || return 1
     [ "$marker_offset" = "$offset" ]
     return
+  fi
+  if [ -n "$marker_offset" ]; then
+    [ "$marker_offset" = "$offset" ] || return 1
   fi
   cursor=$(status_presentation_cursor_offset "$f") || return 1
   case "$cursor" in ''|*[!0-9]*) return 1 ;; esac
@@ -484,9 +553,9 @@ status_seen_matches() {  # <state> <task> <status-file> <last-line>
   if [ -e "$manifest" ] || [ -L "$manifest" ] || [ -e "$legacy_cursor" ] || [ -L "$legacy_cursor" ]; then
     [ "$offset" -lt "$cursor" ] || return 1
   else
-    [ "$offset" -eq 0 ] || return 1
+    return 1
   fi
-  mark_status_seen "$state" "$task" "$line" "$f" || return 1
+  mark_status_seen "$state" "$task" "$line" "$f" "$offset" "$current_ident" || return 1
   return 0
 }
 
@@ -583,12 +652,24 @@ sync_pause_markers_from_signal() {  # <state> <signal files>
 # heartbeat catch-all scan does not re-fire it. The single source of truth for
 # the .subsuper-seen-status-<task> dedup state: called from both the per-wake
 # escalate path and the catch-all scan.
-mark_status_seen() {  # <state> <task> <last-line> [<status-file>]
-  local state=$1 task=$2 line=$3 f offset
+mark_status_seen() {  # <state> <task> <last-line> [<status-file>] [<offset> <ident>]
+  local state=$1 task=$2 line=$3 f offset ident record candidate_line
   f=${4:-$state/$task.status}
-  offset=$(status_last_line_offset "$f") || return 1
+  offset=${5:-}
+  ident=${6:-}
+  if [ -z "$offset" ]; then
+    record=$(status_last_line_offset "$f" record) || return 1
+    case "$record" in *$'\n'*) ;; *) return 1 ;; esac
+    offset=${record%%$'\n'*}
+    candidate_line=${record#*$'\n'}
+    [ "$candidate_line" = "$line" ] || return 1
+  fi
   case "$offset" in ''|*[!0-9]*) return 1 ;; esac
-  printf 'offset=%s\n%s' "$offset" "$line" \
+  if [ -z "$ident" ]; then
+    ident=$(_fm_open_decisions_file_ident "$f") || return 1
+  fi
+  [ -n "$ident" ] || return 1
+  printf 'ident=%s\noffset=%s\n%s' "$ident" "$offset" "$line" \
     > "$state/.subsuper-seen-status-$(_stale_key "$task")"
 }
 
@@ -596,7 +677,7 @@ mark_status_seen() {  # <state> <task> <last-line> [<status-file>]
 # seen, so the catch-all scan does not re-escalate the same line within
 # HEARTBEAT_SCAN_SECS. Mirrors classify_signal/classify_stale's relevance test.
 mark_escalated_seen() {  # <kind> <arg> <state>
-  local kind=$1 arg=$2 state=$3 f last task
+  local kind=$1 arg=$2 state=$3 f last task candidate candidate_offset candidate_ident
   case "$kind" in
     signal)
       for f in $arg; do
@@ -605,14 +686,23 @@ mark_escalated_seen() {  # <kind> <arg> <state>
         [ -n "$last" ] || continue
         status_is_captain_relevant "$last" || continue
         task=$(basename "$f"); task="${task%.status}"
-        mark_status_seen "$state" "$task" "$last" "$f"
+        candidate=$(status_seen_candidate_snapshot "$f" "$last") || continue
+        candidate_offset=${candidate%%$'\t'*}
+        candidate_ident=${candidate#*$'\t'}
+        mark_status_seen "$state" "$task" "$last" "$f" \
+          "$candidate_offset" "$candidate_ident"
       done ;;
     stale)
       task=$(window_to_task "$arg" "$state")
       f="$state/$task.status"
       last=$(last_status_line "$f")
-      [ -n "$last" ] && status_is_captain_relevant "$last" \
-        && mark_status_seen "$state" "$task" "$last" "$f" ;;
+      if [ -n "$last" ] && status_is_captain_relevant "$last"; then
+        candidate=$(status_seen_candidate_snapshot "$f" "$last") || return 0
+        candidate_offset=${candidate%%$'\t'*}
+        candidate_ident=${candidate#*$'\t'}
+        mark_status_seen "$state" "$task" "$last" "$f" \
+          "$candidate_offset" "$candidate_ident"
+      fi ;;
   esac
 }
 
@@ -1728,7 +1818,7 @@ inject_wedge_alarm() {  # <state> <age-seconds>
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs unread
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs unread candidate candidate_offset candidate_ident
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1853,14 +1943,19 @@ housekeeping() {  # <state>
     _now > "$state/.subsuper-last-scan"
     while IFS="$(printf '\t')" read -r f task last; do
       [ -n "$f" ] || continue
+      candidate=$(status_seen_candidate_snapshot "$f" "$last") || continue
+      candidate_offset=${candidate%%$'\t'*}
+      candidate_ident=${candidate#*$'\t'}
       if unread=$(status_new_lines_since_cursor "$f"); then
         [ -n "$unread" ] || continue
       else
         log "catch-all presentation cursor unreadable for $f; escalating fail-safe"
       fi
-      status_seen_matches "$state" "$task" "$f" "$last" && continue
+      status_seen_matches "$state" "$task" "$f" "$last" \
+        "$candidate_offset" "$candidate_ident" && continue
       escalate_add "$state" "$(basename "$f"): $last (catch-all scan)"
-      mark_status_seen "$state" "$task" "$last" "$f"
+      mark_status_seen "$state" "$task" "$last" "$f" \
+        "$candidate_offset" "$candidate_ident"
     done < <(scan_captain_relevant_statuses "$state")
   fi
 }

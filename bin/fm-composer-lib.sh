@@ -1387,6 +1387,8 @@ fm_composer_utf8_prefix_var() {  # <varname> <character-count>
 # The default output is only the shared composer verdict. The explicit
 # state-and-excerpt mode is private to the control plane's first pending read,
 # so no ambient variable can change the exact state contract for other callers.
+# When a cursor row is supplied, extraction repeats shared selection with that
+# row and identity so the excerpt cannot drift to a different cursorless shape.
 fm_composer_state_output() {  # <state> [caps] [screen] [output-mode] [cursor-row] [identity]
   local state=$1 caps=${2-} screen=${3-} output=${4-} cy=${5-} identity=${6-} excerpt
   if [ "$output" != state-and-excerpt ]; then

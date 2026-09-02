@@ -107,6 +107,10 @@ case "${1:-}" in
       esac
     else
       printf '%s\n' "$payload" >> "$D/keys"
+      if [ "$payload" = "${FM_FAKE_FAIL_KEY_AFTER_INTERRUPT:-}" ] \
+         && grep -qE '^(Escape|C-c)$' "$D/keys"; then
+        exit 1
+      fi
       if [ "$payload" = C-u ] && [ -e "$D/clear-composer" ]; then
         printf '╭────╮\n│    │\n╰────╯\n' > "$D/pane"
         if [ -n "${FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT:-}" ] \
@@ -219,6 +223,7 @@ run_control() {
     FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT="${FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT:-}" \
     FM_FAKE_MUSE_RESTORE_ON_INTERRUPT="${FM_FAKE_MUSE_RESTORE_ON_INTERRUPT:-}" \
     FM_FAKE_FAIL_KEY="${FM_FAKE_FAIL_KEY:-}" \
+    FM_FAKE_FAIL_KEY_AFTER_INTERRUPT="${FM_FAKE_FAIL_KEY_AFTER_INTERRUPT:-}" \
     FM_FAKE_INTERRUPT_STOPS_AGENT="${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" \
     "$CONTROL" "$@" 2>&1
 }
@@ -747,7 +752,7 @@ test_busy_interrupt_rechecks_composer_before_exit_command() {
 }
 
 test_busy_interrupt_failure_reports_restored_composer_without_exit() {
-  local dir root log pending expected excerpt_line out rc
+  local dir root log pending expected excerpt_line sent_line out rc
   dir=$(new_case busy-interrupt-fails)
   add_task "$dir" t1 muse
   alive_as "$dir" muse
@@ -759,20 +764,25 @@ test_busy_interrupt_failure_reports_restored_composer_without_exit() {
     '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"started","prompt":"work"}}}' > "$log"
   printf 'sessions_root=%s\nworkspace_root=%s\nbinding_id=test\n' \
     "$root" "$dir/wt-t1" > "$dir/home/state/t1.muse-session"
+  printf '╭────╮\n│ initial pending text │\n╰────╯\n' > "$dir/fake/pane"
+  : > "$dir/fake/clear-composer"
   pending='restored pending text 0123456789012345678901234567890123456789012345678901234567890123456789 tail'
   expected=$(printf '%s' "$pending" | cut -c 1-80)
 
   out=$(FM_FAKE_MUSE_LOG="$log" FM_FAKE_MUSE_RESTORE_ON_INTERRUPT="$pending" \
-    FM_FAKE_FAIL_KEY=C-u run_control "$dir" t1 exit); rc=$?
+    FM_FAKE_FAIL_KEY_AFTER_INTERRUPT=C-u run_control "$dir" t1 exit); rc=$?
 
   expect_code 1 "$rc" "exit should refuse through composer reporting when its interrupt sequence fails"$'\n'"$out"
   assert_contains "$out" "composer state 'pending-unproven'" \
     "the refusal should report the composer state read after interrupt failure"
-  assert_contains "$out" "keys sent: Escape" \
-    "the refusal should report the successfully delivered interrupt keys"
-  excerpt_line=$(printf '%s\n' "$out" | sed -n 's/^pending composer excerpt: //p')
+  sent_line=$(printf '%s\n' "$out" | sed -n 's/^error: .*keys sent: //p')
+  [ "$sent_line" = Escape ] \
+    || fail "the refusal should report only the successfully delivered interrupt keys, got: $sent_line"
+  excerpt_line=$(printf '%s\n' "$out" | sed -n 's/^pending composer excerpt: //p' | tail -n 1)
   [ "$excerpt_line" = "$expected" ] \
     || fail "the refusal should preserve exactly the first 80 restored composer characters, got: $excerpt_line"
+  [ "$(keys_sent "$dir")" = $'C-u\nEscape\nC-u' ] \
+    || fail "the fake should record the pre-clear, interrupt, and failed interrupt-clear keys, got: $(keys_sent "$dir")"
   [ -z "$(literals "$dir")" ] \
     || fail "a failed interrupt must never submit the exit command, got: $(literals "$dir")"
   pass "fm-control exit: interrupt failure preserves and reports restored composer text without exit"

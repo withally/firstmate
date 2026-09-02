@@ -327,7 +327,14 @@ COMPOSER_EXCERPT_CAPTURED=0
 COMPOSER_EXCERPT_REPORTED=0
 
 read_composer_state() {
-  local observed remainder
+  local observed remainder mode=${1:-}
+  if [ "$mode" = fresh ]; then
+    COMPOSER_STATE=
+    COMPOSER_EXCERPT=
+    COMPOSER_EXCERPT_STATUS=
+    COMPOSER_EXCERPT_CAPTURED=0
+    COMPOSER_EXCERPT_REPORTED=0
+  fi
   if [ "$COMPOSER_EXCERPT_CAPTURED" = 1 ]; then
     observed=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null)
   else
@@ -375,7 +382,7 @@ refuse_composer() {
 
 refuse_after_interrupt_failure() {  # <reason> <successfully-sent-keys>
   local reason=$1 sent=${2:-none}
-  if ! read_composer_state; then
+  if ! read_composer_state fresh; then
     refuse_composer "$reason; composer state '$COMPOSER_STATE' with pending excerpt unavailable; keys sent: $sent"
   fi
   refuse_composer "$reason; composer state '$COMPOSER_STATE'; keys sent: $sent"

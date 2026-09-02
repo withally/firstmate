@@ -452,8 +452,6 @@ fi
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
 FIRE_AND_FORGET_ID=
-REMOTE_REUSE_TOKEN=
-existing_corr_explicit=0
 fm_send_add_resolve_key() {  # <key>
   local k=$1
   case "$k" in
@@ -566,7 +564,6 @@ if [ -n "$FIRE_AND_FORGET_ID" ]; then
     || { echo "error: --fire-and-forget requires a recorded secondmate task selector" >&2; exit 1; }
   [ -z "$RESOLVE_KEYS" ] \
     || { echo "error: --fire-and-forget cannot accompany --resolve-key" >&2; exit 1; }
-  REMOTE_REUSE_TOKEN="delivery=$FIRE_AND_FORGET_ID"
 fi
 
 if [ -n "$RESOLVE_KEYS" ]; then
@@ -751,10 +748,6 @@ else
       echo "error: failed to durably prepare pending-reply delivery for $TARGET_TASK_ID" >&2
       exit 1
     fi
-    if [ "$existing_corr_explicit" = 1 ] \
-      && [ "${FM_PENDING_REPLY_RECOVERY:-0}" != 1 ]; then
-      REMOTE_REUSE_TOKEN="corr=$PENDING_REPLY_CORR"
-    fi
   fi
   # Data-plane selection (see the header): text addressed to a task selector
   # resolved through this home's metadata rides the inbox plane, unless it is
@@ -827,7 +820,6 @@ else
     remote_completion_unknown=0
     REMOTE_SEND_ARGS=("$TARGET_REMOTE_ID" "$MESSAGE")
     [ -z "$FIRE_AND_FORGET_ID" ] || REMOTE_SEND_ARGS+=(fire-and-forget)
-    [ -z "$REMOTE_REUSE_TOKEN" ] || REMOTE_SEND_ARGS+=("reuse=$REMOTE_REUSE_TOKEN")
     # Each transport attempt is bounded by FM_SEND_REMOTE_BUDGET seconds.
     # fm_run_timed's 124 means the attempt was killed at the bound with remote
     # completion unknown - the enqueue may have landed - so it exits through
@@ -930,19 +922,6 @@ else
       exit 1
     fi
     if [ "${FM_SEND_IDEMPOTENT:-0}" = 1 ]; then
-      retry_body=
-      retry_body_status=0
-      fm_task_inbox_existing_body_for_token "$STATE" "$INBOX_TASK_ID" \
-        "delivery=$FIRE_AND_FORGET_ID" retry_body || retry_body_status=$?
-      case "$retry_body_status" in
-        0) MESSAGE=$retry_body ;;
-        1) ;;
-        *)
-          fm_lock_release "$INBOX_META_LOCK"
-          echo "error: steer not sent to $INBOX_TASK_ID: its fire-and-forget retry identity is invalid" >&2
-          exit 1
-          ;;
-      esac
       INBOX_RECORD=$(fm_task_inbox_write_idempotent "$STATE" "$INBOX_TASK_ID" "$MESSAGE" \
         "${FIRE_AND_FORGET_ID:+fire-and-forget}") || inbox_write_rc=$?
     else

@@ -198,22 +198,6 @@ remote_inbox_records() {  # <remote-home>
   find "$1/state/parent-route/rsm.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null
 }
 
-record_without_current_carrier() {  # <record-path> -> old body
-  local rec=$1 body tmp
-  body=$(fm_task_inbox_body "$rec"; printf x)
-  body=${body%x}
-  case "$body" in
-    *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") ;;
-    *) return 1 ;;
-  esac
-  body=${body%"$FM_OPERATIONAL_SILENT_REPLY_CARRIER"}
-  tmp="$rec.pre-carrier"
-  sed -n '1,/^--$/p' "$rec" > "$tmp" || return 1
-  printf '%s' "$body" >> "$tmp" || return 1
-  mv "$tmp" "$rec" || return 1
-  printf '%s' "$body"
-}
-
 # The single non-dot pending-reply record in <home>, or empty.
 pending_record() {  # <home>
   find "$1/state/pending-replies" -maxdepth 1 -type f ! -name '.*' 2>/dev/null | head -1
@@ -275,7 +259,7 @@ test_remote_steer_lands_in_remote_inbox() {
 }
 
 test_remote_rerun_is_idempotent() {
-  local dir fb ssh_log home rhome rc err count pend corr expected_cmd arg quoted rec ssh_before resend_cmd old_body body
+  local dir fb ssh_log home rhome rc err count pend corr expected_cmd arg quoted rec ssh_before resend_cmd
   dir="$TMP_ROOT/remote-idem"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); ssh_log="$dir/ssh.log"; : > "$ssh_log"
   rhome=$(setup_remote_secondmate_home remote-idem)
@@ -297,9 +281,6 @@ test_remote_rerun_is_idempotent() {
   count=$(remote_inbox_records "$rhome" | grep -c . || true)
   [ "$count" = 1 ] \
     || fail "re-running the remote leg must dedup onto one record, found $count:"$'\n'"$(remote_inbox_records "$rhome")"
-  rec=$(remote_inbox_records "$rhome" | head -1)
-  old_body=$(record_without_current_carrier "$rec") \
-    || fail "the remote retry fixture could not model a pre-carrier record"
   assert_contains "$err" "Only the correlation-reusing resend below is idempotent" \
     "an unconfirmed remote steer must limit resend safety to correlation reuse"
   assert_not_contains "$err" "do not resend" \
@@ -351,9 +332,6 @@ test_remote_rerun_is_idempotent() {
   rec=$(find "$rhome/state/parent-route/rsm.inbox" -name '*.msg' | head -1)
   grep -F "corr=$corr" "$rec" >/dev/null \
     || fail "the deduplicated remote record did not preserve correlation $corr"
-  body=$(fm_task_inbox_body "$rec")
-  [ "$body" = "$old_body" ] \
-    || fail "the correlation-reusing resend changed the pre-carrier record body"
   [ -n "$(fm_pending_reply_get "$pend" delivered_epoch)" ] \
     || fail "the successful resend did not confirm pending-reply delivery: $(cat "$pend")"
   [ "$(fm_pending_reply_get "$pend" phase)" = awaiting_report ] \
@@ -385,7 +363,7 @@ test_remote_retry_failure_preserves_ambiguous_expectation() {
 }
 
 test_remote_fire_and_forget_never_arms_reply_recovery() {
-  local dir fb ssh_log home rhome rc count delivery action rec old_body body
+  local dir fb ssh_log home rhome rc count delivery action
   dir="$TMP_ROOT/remote-fire-and-forget"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); ssh_log="$dir/ssh.log"; : > "$ssh_log"
   rhome=$(setup_remote_secondmate_home remote-fire-and-forget)
@@ -401,9 +379,6 @@ test_remote_fire_and_forget_never_arms_reply_recovery() {
     || fail "fire-and-forget delivery created a pending-reply expectation"
   count=$(find "$rhome/state/parent-route/rsm.inbox" -name '*.msg' | wc -l | tr -d ' ')
   [ "$count" = 1 ] || fail "the ambiguous fire-and-forget delivery did not land exactly once"
-  rec=$(find "$rhome/state/parent-route/rsm.inbox" -name '*.msg' | head -1)
-  old_body=$(record_without_current_carrier "$rec") \
-    || fail "the fire-and-forget retry fixture could not model a pre-carrier record"
   action=$(FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_RING_MAX=0 \
     fm_task_inbox_due_action "$rhome/state/parent-route" rsm)
   [ "$action" = quiet ] || fail "the remote fire-and-forget record armed inbox escalation: $action"
@@ -416,9 +391,6 @@ test_remote_fire_and_forget_never_arms_reply_recovery() {
   [ "$count" = 1 ] || fail "the same fire-and-forget delivery id created a duplicate remote record"
   grep -F "delivery=$delivery" "$(remote_inbox_records "$rhome" | head -1)" >/dev/null \
     || fail "the remote record omitted its fire-and-forget delivery identity"
-  body=$(fm_task_inbox_body "$rec")
-  [ "$body" = "$old_body" ] \
-    || fail "the fire-and-forget retry changed the pre-carrier record body"
   pass "fm-send remote: fire-and-forget delivery is idempotent without reply recovery"
 }
 

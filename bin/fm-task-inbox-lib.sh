@@ -247,35 +247,6 @@ fm_task_inbox_body() {  # <record-path>
   return 1
 }
 
-fm_task_inbox_retry_token_is_valid() {  # <corr=16hex|delivery=16hex>
-  local token=${1-} value
-  case "$token" in
-    corr=*|delivery=*) ;;
-    *) return 1 ;;
-  esac
-  value=${token#*=}
-  printf '%s' "$value" | grep -Eq '^[a-fA-F0-9]{16}$'
-}
-
-fm_task_inbox_existing_body_for_token() {  # <state-dir> <task-id> <token> <result-var>
-  local state=$1 task=$2 token=$3 result_var=$4 dir f body
-  [ -n "$result_var" ] || return 2
-  fm_task_inbox_retry_token_is_valid "$token" || return 2
-  dir=$(fm_task_inbox_dir "$state" "$task")
-  for f in "$dir"/*.msg "$dir/handled"/*.msg; do
-    [ -f "$f" ] || continue
-    body=$(fm_task_inbox_body "$f"; printf x)
-    body=${body%x}
-    case "$body" in
-      "${FM_FROMFIRST_MARK}${token} "*)
-        printf -v "$result_var" '%s' "$body"
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
 # The constant self-describing doorbell line for the inbox containing a record.
 # Self-describing on purpose: a worker whose brief predates the inbox contract
 # still receives the complete instruction in the line itself.

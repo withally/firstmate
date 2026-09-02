@@ -603,6 +603,25 @@ test_selected_content_is_composer_scoped_and_wrap_normalized() {
   pass "fm_composer_extract_selected_content: scopes user content and excludes furniture"
 }
 
+test_state_excerpt_cap_preserves_utf8_character_boundaries() {
+  local ascii draft screen want utf8_locale locale out
+  ascii=$(printf 'a%.0s' {1..79})
+  draft="${ascii}界tail"
+  screen="❯ ${draft}"
+  want=$'pending\tavailable\t'"${ascii}界"
+  utf8_locale=$(locale -a | awk 'tolower($0) ~ /utf-?8$/ { print; exit }')
+  [ -n "$utf8_locale" ] || fail "the UTF-8 excerpt test requires a UTF-8 locale"
+  for locale in C "$utf8_locale"; do
+    out=$(LC_ALL="$locale" fm_composer_state_output \
+      pending "$CAPS_STYLED_NOID" "$screen" state-and-excerpt)
+    [ "$out" = "$want" ] \
+      || fail "the 80-character excerpt split its final UTF-8 code point under $locale: '$out'"
+  done
+  pass "fm_composer_state_output: the 80-character excerpt cap is UTF-8-safe in C and UTF-8 locales"
+}
+
+test_state_excerpt_cap_preserves_utf8_character_boundaries
+
 test_pi_submit_observation_honors_pair_bound() {
   local separator blank screen out
   separator='─────────────────────────────────────────────────────'

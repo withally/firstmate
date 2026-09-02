@@ -1202,6 +1202,7 @@ _fm_composer_select_screen_context() {  # <plain-screen> <cursor-or-empty>
   if [ -z "$cy" ]; then
     _fm_composer_select_cursorless "$plain" || return 1
     if [ "$FM_COMPOSER_SELECTED_KIND" = bare ] \
+       && [ "$FM_COMPOSER_SELECTED_FIRST" -eq "$FM_COMPOSER_SELECTED_LAST" ] \
        && [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
        && [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
        && [ "$FM_COMPOSER_SCAN_BARE_ROW" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then

@@ -1,0 +1,11 @@
+scenario: Muse Escape restores pending text; C-u then fails
+fm-control exit status: 1
+fm-control combined output:
+pending composer excerpt: initial pending text
+pending composer excerpt: restored pending text 0123456789012345678901234567890123456789012345678901234567
+error: interrupt key Escape reached task t1, but C-u did not, so its composer still holds the cancelled prompt; clear it before the next lifecycle action; composer state 'pending-unproven'; keys sent: Escape
+recorded named keys (excluding Enter):
+C-u
+Escape
+C-u
+literal submissions:

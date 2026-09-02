@@ -25,23 +25,42 @@ case "$*" in
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows|has-session|new-session|new-window|kill-window|send-keys) exit 0 ;;
+  list-windows|has-session|new-session|new-window|kill-window|send-keys)
+    printf '%s\n' "$*" >> "${FM_FAKE_TMUX_LOG:-/dev/null}"
+    if [ "${1:-}" = send-keys ] && printf '%s' "$*" | grep -Fq 'treehouse get'; then
+      [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || printf '%s\n' "${FM_FAKE_TREEHOUSE_HOLDER:-unknown}" > "$FM_FAKE_TREEHOUSE_LEASE_FILE"
+    fi
+    exit 0
+    ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'treehouse %s\n' "$*" >> "${FM_FAKE_TREEHOUSE_LOG:-/dev/null}"
+case "${1:-}" in
+  return)
+    [ -z "${FM_FAKE_TREEHOUSE_RETURN_FAIL:-}" ] || exit 17
+    [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || rm -f "$FM_FAKE_TREEHOUSE_LEASE_FILE"
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 
 make_case() {
-  local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial
+  local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial lease
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   project="$case_dir/project"
   origin="$case_dir/origin.git"
   pool="$case_dir/pool"
   publisher="$case_dir/publisher"
+  lease="$case_dir/lease"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
@@ -65,11 +84,11 @@ make_case() {
   git -C "$publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm advance-main
   git -C "$publisher" push --quiet origin "$default"
 
-  printf '%s\n' "$case_dir|$home|$project|$pool|$fakebin|$initial|$default"
+  printf '%s\n' "$case_dir|$home|$project|$pool|$fakebin|$initial|$default|$lease"
 }
 
 read_case_record() {
-  IFS='|' read -r CASE_DIR HOME_DIR PROJECT_DIR POOL_DIR FAKEBIN_DIR INITIAL_SHA DEFAULT_BRANCH <<EOF
+  IFS='|' read -r CASE_DIR HOME_DIR PROJECT_DIR POOL_DIR FAKEBIN_DIR INITIAL_SHA DEFAULT_BRANCH LEASE_FILE <<EOF
 $1
 EOF
 }
@@ -81,6 +100,8 @@ run_spawn() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_FAKE_PANE_PATH="$POOL_DIR" \
+    FM_FAKE_TMUX_LOG="$CASE_DIR/tmux.log" FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$LEASE_FILE" FM_FAKE_TREEHOUSE_HOLDER="$id" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJECT_DIR" "$@" 2>&1
 }
@@ -225,9 +246,43 @@ test_foreign_secondmate_parent_binding_refuses_pooled_spawn() {
     "spawn refusal did not name the foreign secondmate parent binding"
   [ "$binding_before" = "$(cat "$POOL_DIR/.fm-secondmate-parent")" ] \
     || fail "spawn changed the foreign binding instead of refusing it"
+  [ ! -e "$LEASE_FILE" ] || fail "spawn left the freshly acquired pool lease held after refusal"
+  assert_grep "kill-window -t =firstmate:=fm-$id" "$CASE_DIR/tmux.log" \
+    "spawn did not close the newly created endpoint after refusal"
+  assert_grep "treehouse return --force $POOL_DIR" "$CASE_DIR/treehouse.log" \
+    "spawn did not return the freshly acquired pool worktree after refusal"
   [ ! -e "$HOME_DIR/state/$id.meta" ] \
-    || fail "spawn published task metadata after the foreign-binding refusal"
-  pass "a new crew cannot launch from a pooled worktree carrying a retired secondmate parent binding"
+    || fail "spawn published task metadata after successful foreign-binding cleanup"
+  pass "a foreign pooled binding closes its endpoint and releases the pool lease"
+}
+
+test_foreign_binding_preserves_unlanded_pool_work() {
+  local rec id out status foreign_parent
+  id='pool-foreign-parent-dirty-r12'
+  rec=$(make_case foreign-parent-dirty "$id")
+  read_case_record "$rec"
+  foreign_parent="$CASE_DIR/retired-primary-home"
+  mkdir -p "$foreign_parent"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$foreign_parent" \
+    > "$POOL_DIR/.fm-secondmate-parent"
+  printf 'keep this unlanded pool work\n' > "$POOL_DIR/uncommitted.txt"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn launched from a dirty pool slot carrying a foreign binding"
+  assert_contains "$out" "unlanded work" \
+    "dirty foreign-binding refusal did not explain why the lease was retained"
+  assert_grep 'keep this unlanded pool work' "$POOL_DIR/uncommitted.txt" \
+    "foreign-binding cleanup discarded unlanded pool work"
+  [ -e "$LEASE_FILE" ] || fail "dirty foreign-binding refusal released the pool lease without proof"
+  assert_not_contains "$(cat "$CASE_DIR/treehouse.log" 2>/dev/null || true)" \
+    "treehouse return --force $POOL_DIR" \
+    "dirty foreign-binding refusal returned the pool worktree"
+  assert_grep "kill-window -t =firstmate:=fm-$id" "$CASE_DIR/tmux.log" \
+    "dirty foreign-binding refusal did not close the endpoint"
+  assert_grep "worktree=$POOL_DIR" "$HOME_DIR/state/$id.meta" \
+    "dirty foreign-binding refusal did not retain recoverable worktree metadata"
+  pass "a foreign-binding refusal preserves unlanded pool work for teardown"
 }
 
 test_unresolved_remote_default_refuses_pool() {
@@ -479,6 +534,7 @@ test_non_main_default_branch_refreshes_before_branching
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_foreign_secondmate_parent_binding_refuses_pooled_spawn
+test_foreign_binding_preserves_unlanded_pool_work
 test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
 test_stale_submodule_pin_explains_itself

@@ -31,6 +31,12 @@ SECONDMATE_REGISTRY_ERROR=
 secondmate_registry_lock_path() { printf '%s/.secondmate-registry.lock\n' "$1"; }
 secondmate_reply_lifecycle_lock_path() { printf '%s/.remote-reply-lifecycle-%s.lock\n' "$1" "$2"; }
 
+secondmate_registry_error_sanitize() {
+  local reason=${SECONDMATE_REGISTRY_ERROR:-secondmate registry validation failed}
+  SECONDMATE_REGISTRY_ERROR=$(printf '%s' "$reason" | LC_ALL=C tr '\t\r\n' '   ')
+  [ -n "$SECONDMATE_REGISTRY_ERROR" ] || SECONDMATE_REGISTRY_ERROR='secondmate registry validation failed'
+}
+
 secondmate_registry_parse_line() {
   local line=$1
   local local_re='^- ([A-Za-z0-9._-]+) - (.+) \(home:[[:space:]]*([^;)]*);[[:space:]]*scope:[[:space:]]*(.*);[[:space:]]*projects:[[:space:]]*([^;)]*);[[:space:]]*added[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})\)[[:space:]]*$'

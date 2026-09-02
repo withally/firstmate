@@ -2481,9 +2481,35 @@ test_unregistered_local_parent_binding_cannot_escape_case_home() {
     "an unregistered parent binding escaped the case home and wrote outside it"
   assert_grep 'could not report it upward' "$case_dir/stderr" \
     "unregistered parent refusal was silent after the merge landed"
-  assert_grep 'parent binding refused: child mate-x is not registered' "$case_dir/stderr" \
-    "unregistered parent refusal did not log the rejected child identity"
+  assert_grep 'parent binding refused: secondmate registry is unavailable or unsafe:' "$case_dir/stderr" \
+    "unregistered parent refusal did not preserve the validator reason"
   pass "an unregistered local parent binding cannot redirect merge outcomes outside the case home"
+}
+
+test_malformed_local_parent_registry_diagnostic_is_preserved() {
+  local case_dir parent rc url
+  url=https://github.com/example/repo/pull/83
+  parent="$TMP_ROOT/malformed-parent-diagnostic"
+  case_dir=$(make_home_case malformed-parent-diagnostic local "$parent")
+  printf '%s\r\n' '- mate-x - malformed route (home: /tmp; scope: missing' > "$parent/data/secondmates.md"
+  add_gh_mocks "$case_dir" 8383838383838383838383838383838383838383
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "the confirmed forge merge must survive a malformed parent registry"
+  assert_absent "$parent/state/mate-x.status" \
+    "a malformed parent registry received a merge outcome"
+  assert_grep 'parent binding refused: malformed secondmate registry entry' "$case_dir/stderr" \
+    "merge outcome replaced the malformed registry diagnostic"
+  assert_not_contains "$(cat "$case_dir/stderr")" \
+    'child mate-x is not registered' \
+    "merge outcome emitted the retired generic registry diagnosis"
+  case "$(cat "$case_dir/stderr")" in *$'\r'*) fail "merge registry diagnostic was not sanitized to one line" ;; esac
+  pass "merge outcome preserves malformed local registry diagnostics"
 }
 
 test_github_zero_exit_queue_required_refuses_with_exact_retry
@@ -2555,3 +2581,4 @@ test_distinct_merged_prs_keep_distinct_wakes
 test_uncommitted_marker_retry_is_never_silent
 test_secondmate_without_parent_binding_is_loud
 test_unregistered_local_parent_binding_cannot_escape_case_home
+test_malformed_local_parent_registry_diagnostic_is_preserved

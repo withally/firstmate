@@ -342,7 +342,8 @@ report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>
       if ! secondmate_registry_validate_bindings \
         "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
         secondmate_registry_path_key "$self" "$FM_HOME"; then
-        PARENT_REPORT_ERROR="parent binding refused: child $self is not registered in the claimed parent's data/secondmates.md"
+        secondmate_registry_error_sanitize
+        PARENT_REPORT_ERROR="parent binding refused: $SECONDMATE_REGISTRY_ERROR"
         fm_lock_release "$parent_registry_lock"
         return 1
       fi

@@ -168,10 +168,68 @@ test_retired_binding_cannot_route_new_crew_status_upward() {
   [ "$(outcome_count "$MATE" pending)" = 1 ] \
     || fail "the refused stale-binding report did not retain its pending receipt"
   case "$out" in
-    *"parent binding refused"*"mate is not registered"*) ;;
-    *) fail "the stale-binding refusal was not logged with its unregistered child id: $out" ;;
+    *"parent binding refused"*"no registry binding for secondmate mate"*) ;;
+    *) fail "the stale-binding refusal did not preserve the validator reason: $out" ;;
   esac
   pass "a retired secondmate binding cannot route a newly leased crew's status upward"
+}
+
+test_local_parent_registry_diagnostics_are_preserved() {
+  local case_name out expected other
+  for case_name in missing malformed unsafe duplicate overlap unresolvable mismatch; do
+    make_world "registry-diagnostic-$case_name"; bind_secondmate local
+    other="$WORLD/other"
+    case "$case_name" in
+      missing)
+        : > "$MAIN/data/secondmates.md"
+        expected='no registry binding for secondmate mate'
+        ;;
+      malformed)
+        printf '%s\r\n' '- mate - malformed route (home: /tmp; scope: missing' > "$MAIN/data/secondmates.md"
+        expected='malformed secondmate registry entry'
+        ;;
+      unsafe)
+        printf '%s\n' '- mate - unsafe route (home: relative-home; scope: test; projects: test; added 2026-08-30)' > "$MAIN/data/secondmates.md"
+        expected='unsafe non-absolute secondmate home for mate'
+        ;;
+      duplicate)
+        printf '%s\n' \
+          "- mate - first route (home: $MATE; scope: test; projects: test; added 2026-08-30)" \
+          "- other - duplicate route (home: $MATE; scope: test; projects: test; added 2026-08-30)" \
+          > "$MAIN/data/secondmates.md"
+        expected='duplicate secondmate home assignment'
+        ;;
+      overlap)
+        mkdir -p "$MATE/nested"
+        printf '%s\n' \
+          "- mate - first route (home: $MATE; scope: test; projects: test; added 2026-08-30)" \
+          "- nested - overlapping route (home: $MATE/nested; scope: test; projects: test; added 2026-08-30)" \
+          > "$MAIN/data/secondmates.md"
+        expected='overlapping secondmate home assignment'
+        ;;
+      unresolvable)
+        printf '%s\n' '- mate - missing route (home: /no/such/secondmate/parent/mate; scope: test; projects: test; added 2026-08-30)' > "$MAIN/data/secondmates.md"
+        expected='unresolvable secondmate home for mate'
+        ;;
+      mismatch)
+        mkdir -p "$other"
+        printf '%s\n' \
+          "- mate - moved route (home: $other; scope: test; projects: test; added 2026-08-30)" \
+          > "$MAIN/data/secondmates.md"
+        expected='secondmate mate is registered at'
+        ;;
+    esac
+    write_child "$MATE" "new-crew-$case_name" 'done: 13 fixture lines complete'
+    out=$(FM_FAKE_CREW_STATE='done' run_reconcile "$MATE" --startup)
+    [ ! -e "$MAIN/state/mate.status" ] \
+      || fail "$case_name registry diagnostic still appended a parent status"
+    [ "$(outcome_count "$MATE" pending)" = 1 ] \
+      || fail "$case_name registry diagnostic did not retain its pending receipt"
+    assert_contains "$out" "parent binding refused: $expected" \
+      "$case_name registry diagnostic was replaced by a generic refusal"
+    case "$out" in *$'\r'*) fail "$case_name registry diagnostic was not sanitized to one line" ;; esac
+  done
+  pass "inactive status routing preserves specific registry validation diagnostics"
 }
 
 test_local_secondmate_rejects_relative_parent_home() {
@@ -512,6 +570,7 @@ test_reconciliation_never_calls_forge() {
 test_main_direct_terminal_presentation_receipt
 test_local_secondmate_reports_terminal_child
 test_retired_binding_cannot_route_new_crew_status_upward
+test_local_parent_registry_diagnostics_are_preserved
 test_local_secondmate_rejects_relative_parent_home
 test_invalid_secondmate_marker_blocks_routing
 test_remote_parent_reply_is_idempotent

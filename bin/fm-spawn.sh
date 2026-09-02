@@ -711,6 +711,8 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+SPAWN_NORMAL_ABORT_CLEANUP=0
+SPAWN_NORMAL_ABORT_PROJECTED=0
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -729,8 +731,81 @@ parse_orca_worktree_result() {
   fi
 }
 
+spawn_abort_worktree_has_no_unlanded_work() {
+  local status line unpushed
+  [ -n "${WT:-}" ] && [ -d "$WT" ] || return 1
+  git -C "$WT" fetch --quiet origin >/dev/null 2>&1 || return 1
+  status=$(git -C "$WT" -c core.quotePath=false status --porcelain=v1 \
+    --untracked-files=all --ignored=matching 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      '?? .fm-secondmate-parent'|'!! .fm-secondmate-parent') ;;
+      *) return 1 ;;
+    esac
+  done <<< "$status"
+  unpushed=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null) || return 1
+  [ -z "$unpushed" ]
+}
+
+spawn_abort_preserve_meta() {
+  local meta="$STATE/$ID.meta" tmp
+  [ -n "${WT:-}" ] && [ -n "${T:-}" ] || return 1
+  mkdir -p "$STATE" || return 1
+  [ ! -e "$meta" ] && [ ! -L "$meta" ] || return 1
+  tmp="$STATE/.$ID.meta.abort.${BASHPID:-$$}"
+  {
+    printf 'window=%s\n' "$T"
+    printf 'endpoint_task_id=%s\n' "$ID"
+    printf 'worktree=%s\n' "$WT"
+    printf 'project=%s\n' "$PROJ_ABS"
+    printf 'harness=%s\n' "$HARNESS"
+    printf 'kind=%s\n' "$KIND"
+    [ -z "${MODE:-}" ] || printf 'mode=%s\n' "$MODE"
+    [ -z "${YOLO:-}" ] || printf 'yolo=%s\n' "$YOLO"
+    printf 'tasktmp=%s\n' "${TASK_TMP:-}"
+    printf 'model=%s\n' "${MODEL:-default}"
+    printf 'effort=%s\n' "${EFFORT:-default}"
+    [ "$BACKEND" = tmux ] || printf 'backend=%s\n' "$BACKEND"
+    case "$BACKEND" in
+      herdr)
+        printf 'herdr_session=%s\n' "${HERDR_SES:-}"
+        printf 'herdr_workspace_id=%s\n' "${HERDR_WORKSPACE_ID:-}"
+        printf 'herdr_tab_id=%s\n' "${HERDR_TAB_ID:-}"
+        printf 'herdr_pane_id=%s\n' "${HERDR_PANE_ID:-}"
+        ;;
+      zellij)
+        printf 'zellij_session=%s\n' "${ZELLIJ_SES:-}"
+        printf 'zellij_tab_id=%s\n' "${ZELLIJ_TAB_ID:-}"
+        printf 'zellij_pane_id=%s\n' "${ZELLIJ_PANE_ID:-}"
+        ;;
+      cmux)
+        printf 'cmux_workspace_id=%s\n' "${CMUX_WORKSPACE_ID:-}"
+        printf 'cmux_surface_id=%s\n' "${CMUX_SURFACE_ID:-}"
+        ;;
+    esac
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
+}
+
+spawn_abort_return_worktree() {
+  local out reason
+  if out=$( ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) 2>&1 ); then
+    return 0
+  fi
+  reason=$(printf '%s' "$out" | LC_ALL=C tr '\t\r\n' '   ' | cut -c1-1200)
+  if [ -n "$reason" ]; then
+    echo "warning: could not return freshly acquired worktree '$WT'; $reason" >&2
+  else
+    echo "warning: could not return freshly acquired worktree '$WT'" >&2
+  fi
+  return 1
+}
+
 spawn_abort_cleanup() {
   local status=$?
+  local normal_endpoint_clean=0 normal_return_clean=0
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
      && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
@@ -800,6 +875,33 @@ spawn_abort_cleanup() {
         fi
       fi
     fi
+  fi
+  if [ "$SPAWN_NORMAL_ABORT_CLEANUP" = 1 ]; then
+    if [ "$SPAWN_NORMAL_ABORT_PROJECTED" = 1 ]; then
+      if declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1 \
+        && fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+        normal_endpoint_clean=1
+      fi
+    elif fm_backend_kill "$BACKEND" "$T" 2>/dev/null; then
+      normal_endpoint_clean=1
+    fi
+    if [ "$normal_endpoint_clean" = 1 ]; then
+      if spawn_abort_worktree_has_no_unlanded_work; then
+        if spawn_abort_return_worktree; then
+          normal_return_clean=1
+        fi
+      else
+        echo "warning: could not prove freshly acquired worktree '$WT' is free of unlanded work; leaving its lease for teardown" >&2
+      fi
+    else
+      echo "warning: could not prove cleanup of the newly created $BACKEND endpoint '$T'; leaving the worktree lease for teardown" >&2
+    fi
+    if [ "$normal_endpoint_clean" != 1 ] || [ "$normal_return_clean" != 1 ]; then
+      if [ -n "${WT:-}" ] && ! spawn_abort_preserve_meta; then
+        echo "warning: could not preserve recoverable metadata for aborted task $ID" >&2
+      fi
+    fi
+    SPAWN_NORMAL_ABORT_CLEANUP=0
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -2274,6 +2376,10 @@ fi
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  SPAWN_NORMAL_ABORT_CLEANUP=1
+  [ "${HERDR_PROJECTED:-0}" -eq 1 ] && SPAWN_NORMAL_ABORT_PROJECTED=1
+fi
 spawn_send_text_line() {  # <target> <text>
   case "$BACKEND" in
     tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
@@ -2882,6 +2988,7 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+SPAWN_NORMAL_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

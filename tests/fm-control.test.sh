@@ -102,6 +102,9 @@ case "${1:-}" in
       esac
     else
       printf '%s\n' "$payload" >> "$D/keys"
+      if [ "$payload" = C-u ] && [ -e "$D/clear-composer" ]; then
+        printf '╭────╮\n│    │\n╰────╯\n' > "$D/pane"
+      fi
       if [ -n "${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" ] \
          && { [ "$payload" = Escape ] || [ "$payload" = C-c ]; }; then
         printf 'zsh' > "$D/command"
@@ -358,6 +361,17 @@ test_backend_key_capability_matrix() {
   fm_control_backend_supports_key orca C-c || fail "orca should deliver C-c"
   fm_control_backend_supports_key orca Enter || fail "orca should deliver Enter"
   pass "fm-control-lib: the backend key matrix matches each adapter's real send-key surface"
+}
+
+test_harness_composer_clear_key_matrix() {
+  local harness
+  for harness in $VERIFIED_HARNESSES; do
+    [ "$(fm_control_composer_clear_key "$harness")" = C-u ] \
+      || fail "$harness should clear transient composer input with C-u"
+  done
+  fm_control_composer_clear_key someagent \
+    && fail "an unverified harness must not receive a guessed composer-clear key"
+  pass "fm-control-lib: every verified harness has an explicit composer-clear key"
 }
 
 # A verified adapter is not automatically verified for every task kind, and the
@@ -680,6 +694,45 @@ test_busy_agent_is_interrupted_before_the_exit_command() {
   pass "fm-control exit: a busy agent receives interrupt delivery before the exit command"
 }
 
+test_pending_composer_is_cleared_before_exit_is_typed() {
+  local dir out rc
+  dir=$(new_case pending-clear)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  printf '╭────╮\n│ draft doorbell line waiting to be sent │\n╰────╯\n' > "$dir/fake/pane"
+  : > "$dir/fake/clear-composer"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 0 "$rc" "exit should clear a pending composer before typing its command"$'\n'"$out"
+  [ "$(keys_sent "$dir")" = C-u ] \
+    || fail "exit should clear pending composer text with C-u before typing, got: $(keys_sent "$dir")"
+  [ "$(literals "$dir")" = /exit ] \
+    || fail "exit should type only its command after the composer is proven empty"
+  assert_contains "$out" "cleared composer text: draft doorbell line waiting to be sent" \
+    "the operator should receive a bounded copy of the transient text that was cleared"
+  pass "fm-control exit: pending composer text is cleared and reported before the exit command is typed"
+}
+
+test_unclearable_pending_composer_refuses_without_typing_exit() {
+  local dir out rc
+  dir=$(new_case pending-refuse)
+  add_task "$dir" t1 pi
+  alive_as "$dir" pi
+  printf '────────\nforeign pending text\n────────\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 1 "$rc" "exit should refuse when pending composer text cannot be cleared"$'\n'"$out"
+  assert_contains "$out" "composer remained 'pending'" \
+    "the refusal should name the final composer state"
+  assert_contains "$out" "keys sent: C-u, BSpace" \
+    "the refusal should name the clear attempts"
+  [ -z "$(literals "$dir")" ] \
+    || fail "a dirty composer must receive no exit command, got: $(literals "$dir")"
+  pass "fm-control exit: an unclearable composer refuses with concrete state and key evidence"
+}
+
 test_idle_agent_is_not_interrupted() {
   local dir out rc gen
   dir=$(new_case idle)
@@ -880,6 +933,7 @@ test_unverified_harness_is_refused
 test_harness_family_resolution
 test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix
+test_harness_composer_clear_key_matrix
 test_harness_kind_capability
 test_orca_refuses_an_escape_harness_interrupt
 test_unverified_state_backends_refuse_stop_verbs
@@ -898,6 +952,8 @@ test_missing_endpoint_refuses
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses
 test_busy_agent_is_interrupted_before_the_exit_command
+test_pending_composer_is_cleared_before_exit_is_typed
+test_unclearable_pending_composer_refuses_without_typing_exit
 test_idle_agent_is_not_interrupted
 test_interrupt_without_acknowledgement_preserves_busy_state
 test_muse_interrupt_confirms_adapter_acknowledgement

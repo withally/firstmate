@@ -126,6 +126,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-composer-lib.sh
+. "$SCRIPT_DIR/fm-composer-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
@@ -421,7 +423,7 @@ verify_interrupt_running() {
     after=$(agent_state)
     [ "$after" = alive ] \
       || die "task $ID's agent is '$after' after its interrupt key; an interrupt must leave the agent running"
-    proof=agent-alive
+    proof='agent-alive'
   fi
   printf '%s' "$proof"
 }
@@ -439,6 +441,52 @@ retire_busy_incarnation() {
   fi
 }
 
+composer_excerpt() {
+  local cap caps
+  cap=$(fm_backend_capture "$BACKEND" "$T" "$FM_COMPOSER_CAPTURE_LINES" "$LABEL" 2>/dev/null) \
+    || return 1
+  caps=$(printf 'styled=0\ncursor=0\nidentity=0\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
+  fm_composer_extract_selected_content "$caps" "$cap" 2>/dev/null | cut -c 1-80
+}
+
+# Prove the composer empty before lifecycle text is typed. Pending input is
+# transient rather than durable, but its bounded excerpt is retained in the
+# operator output so it can be re-sent after the lifecycle action.
+clear_composer_before_exit() {
+  local state initial excerpt clear attempts='' i=0 max_backspaces=80
+  state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL")
+  initial=$state
+  case "$state" in
+    empty) return 0 ;;
+    pending|pending-unproven) ;;
+    *)
+      die "refusing to type the exit command for task $ID because its composer state is '$state', not proven empty; keys sent: none"
+      ;;
+  esac
+  excerpt=$(composer_excerpt || true)
+  clear=$(fm_control_composer_clear_key "$HARNESS") \
+    || die "harness $HARNESS has no verified composer-clear key; composer remained '$state'; keys sent: none"
+  fm_control_backend_supports_key "$BACKEND" "$clear" \
+    || die "harness $HARNESS clears its composer with $clear, which the $BACKEND backend cannot deliver; composer remained '$state'; keys sent: none"
+  fm_backend_send_key "$BACKEND" "$T" "$clear" "$LABEL" \
+    || die "composer clear key $clear could not be delivered to task $ID on $BACKEND; composer remained '$state'; keys sent: none"
+  attempts=$clear
+  state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL")
+  while [ "$state" != empty ] && [ "$i" -lt "$max_backspaces" ]; do
+    case "$state" in pending|pending-unproven) ;; *) break ;; esac
+    fm_control_backend_supports_key "$BACKEND" BSpace \
+      || die "task $ID's composer remained '$state' after $attempts, and $BACKEND cannot deliver the BSpace fallback; keys sent: $attempts"
+    fm_backend_send_key "$BACKEND" "$T" BSpace "$LABEL" \
+      || die "task $ID's composer remained '$state' and BSpace delivery failed; keys sent: $attempts"
+    attempts="$attempts, BSpace"
+    i=$((i + 1))
+    state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL")
+  done
+  [ "$state" = empty ] \
+    || die "task $ID's composer remained '$state' after bounded clear attempts; initial state: $initial; keys sent: $attempts"
+  echo "cleared composer text: ${excerpt:-[content unavailable]}" >&2
+}
+
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
@@ -454,6 +502,7 @@ do_exit() {
     missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action" ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
+  clear_composer_before_exit
   # A busy agent is interrupted first before the exit command is submitted.
   case "$(busy_verdict)" in
     busy*)

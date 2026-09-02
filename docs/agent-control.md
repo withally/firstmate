@@ -43,6 +43,10 @@ An interrupt is not complete until the composer is empty.
 muse is the one verified adapter that restores the cancelled prompt back into its composer as real text, so its interrupt key is followed by a Ctrl+U clear; without it the next submitted line - including this plane's own exit command - would concatenate onto the restored prompt and submit both as one line.
 The clear is refused before anything is sent when the recorded backend cannot deliver it.
 
+Before `exit` types its harness command, including the stop phase of `relaunch`, the control plane reads the composer through the shared classifier and requires a proven `empty` result.
+Pending or pending-unproven text is copied to the operator output up to 80 characters, cleared with the harness's verified key and a bounded Backspace fallback, and re-read after each attempt.
+If the composer cannot be proven empty, the lifecycle action refuses with the observed state and delivered clear keys, so an exit command is never appended to foreign text.
+
 **Teardown and discard are not verbs and will not become verbs.**
 `exit` stops an agent and preserves everything else.
 Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm-teardown.sh`](../bin/fm-teardown.sh), which owns the landed-work test.

@@ -144,6 +144,17 @@ fm_control_interrupt_clear_key() {  # <harness>
   esac
 }
 
+# The primary key that clears transient typed composer input before an exit.
+# Ctrl+U is verified across the supported harness composers; callers re-read
+# through the shared composer classifier and fall back to bounded Backspace
+# delivery rather than assuming the key worked.
+fm_control_composer_clear_key() {  # <harness>
+  case "${1-}" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) printf 'C-u' ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_control_interrupt_ack_source() {  # <harness>
   case "${1-}" in
     muse) printf 'muse-session-terminal' ;;
@@ -173,7 +184,7 @@ fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
     tmux|herdr|zellij|cmux)
-      case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
+      case "$key" in Escape|Enter|C-c|C-u|BSpace) return 0 ;; esac
       ;;
     orca)
       case "$key" in Enter|C-c) return 0 ;; esac

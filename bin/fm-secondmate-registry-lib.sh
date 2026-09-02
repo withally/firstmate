@@ -315,3 +315,31 @@ secondmate_registry_validate_bindings() {
   fi
   return 0
 }
+
+secondmate_registry_has_home_binding() {
+  local reg=$1 resolver=$2 expected_home=$3 line home home_key expected_key
+  [ -n "$expected_home" ] || return 2
+  secondmate_registry_validate_bindings "$reg" "$resolver" || return 2
+  expected_key=$("$resolver" "$expected_home" 2>/dev/null || true)
+  [ -n "$expected_key" ] || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "- "*)
+        secondmate_registry_parse_line "$line" || return 2
+        home=$SECONDMATE_REGISTRY_HOME
+        if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+          home_key=$home
+          if [ -d "$home" ]; then
+            home_key=$("$resolver" "$home" 2>/dev/null || true)
+            [ -n "$home_key" ] || return 2
+          fi
+        else
+          home_key=$("$resolver" "$home" 2>/dev/null || true)
+          [ -n "$home_key" ] || return 2
+        fi
+        [ "$home_key" = "$expected_key" ] && return 0
+        ;;
+    esac
+  done < "$reg"
+  return 1
+}

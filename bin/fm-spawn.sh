@@ -713,6 +713,8 @@ CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 SPAWN_NORMAL_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_PROJECTED=0
+SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
+SPAWN_PARENT_BINDING_STALE_REASON=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -739,10 +741,7 @@ spawn_abort_worktree_has_no_unlanded_work() {
     --untracked-files=all --ignored=matching 2>/dev/null) || return 1
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    case "$line" in
-      '?? .fm-secondmate-parent'|'!! .fm-secondmate-parent') ;;
-      *) return 1 ;;
-    esac
+    return 1
   done <<< "$status"
   unpushed=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null) || return 1
   [ -z "$unpushed" ]
@@ -885,7 +884,7 @@ spawn_abort_cleanup() {
     elif fm_backend_kill "$BACKEND" "$T" 2>/dev/null; then
       normal_endpoint_clean=1
     fi
-    if [ "$normal_endpoint_clean" = 1 ]; then
+    if [ "$normal_endpoint_clean" = 1 ] && [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ]; then
       if spawn_abort_worktree_has_no_unlanded_work; then
         if spawn_abort_return_worktree; then
           normal_return_clean=1
@@ -893,15 +892,17 @@ spawn_abort_cleanup() {
       else
         echo "warning: could not prove freshly acquired worktree '$WT' is free of unlanded work; leaving its lease for teardown" >&2
       fi
-    else
+    elif [ "$normal_endpoint_clean" != 1 ] && [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ]; then
       echo "warning: could not prove cleanup of the newly created $BACKEND endpoint '$T'; leaving the worktree lease for teardown" >&2
     fi
-    if [ "$normal_endpoint_clean" != 1 ] || [ "$normal_return_clean" != 1 ]; then
+    if [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ] \
+      && { [ "$normal_endpoint_clean" != 1 ] || [ "$normal_return_clean" != 1 ]; }; then
       if [ -n "${WT:-}" ] && ! spawn_abort_preserve_meta; then
         echo "warning: could not preserve recoverable metadata for aborted task $ID" >&2
       fi
     fi
     SPAWN_NORMAL_ABORT_CLEANUP=0
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -1936,11 +1937,64 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+spawn_parent_binding_record_one_line() {
+  local record=$1 summary
+  summary=$(LC_ALL=C tr '\t\r\n' '   ' < "$record" 2>/dev/null \
+    | LC_ALL=C tr -d '\000' | cut -c1-1200 || true)
+  [ -n "$summary" ] || summary=unreadable
+  printf '%s' "$summary"
+}
+
+spawn_foreign_parent_binding_is_stale() {
+  local parent=$1 registry lock rc
+  SPAWN_PARENT_BINDING_STALE_REASON=
+  if [ "$FM_SECONDMATE_PARENT_ROUTE" != local ]; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the remote parent route cannot be checked locally'
+    return 1
+  fi
+  if [ ! -d "$parent" ]; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent home no longer exists'
+    return 0
+  fi
+  registry="$parent/data/secondmates.md"
+  if [ ! -f "$registry" ] || [ -L "$registry" ]; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent registry is unavailable or unsafe'
+    return 1
+  fi
+  lock=$(secondmate_registry_lock_path "$parent/state" 2>/dev/null || true)
+  if [ -z "$lock" ] || ! fm_lock_acquire_wait "$lock"; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent registry cannot be locked'
+    return 1
+  fi
+  if secondmate_registry_has_home_binding \
+    "$registry" secondmate_registry_path_key "$WT"; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the parent registry still registers this worktree'
+    rc=1
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      SPAWN_PARENT_BINDING_STALE_REASON='the parent registry has no binding for this worktree'
+      rc=0
+    else
+      secondmate_registry_error_sanitize
+      SPAWN_PARENT_BINDING_STALE_REASON=${SECONDMATE_REGISTRY_ERROR:-'the parent registry could not be validated'}
+      rc=1
+    fi
+  fi
+  if ! fm_lock_release "$lock"; then
+    SPAWN_PARENT_BINDING_STALE_REASON='the recorded parent registry lock could not be released'
+    rc=1
+  fi
+  return "$rc"
+}
+
 refuse_spawn_worktree_parent_binding() {  # <source>
-  local source=$1 record="$WT/.fm-secondmate-parent" active_home recorded_parent
+  local source=$1 record="$WT/.fm-secondmate-parent" active_home recorded_parent binding_summary
   [ ! -e "$record" ] && [ ! -L "$record" ] && return 0
   if ! fm_secondmate_parent_record_parse "$record"; then
-    echo "error: $source yielded a worktree with an unreadable .fm-secondmate-parent; refusing to launch" >&2
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    binding_summary=$(spawn_parent_binding_record_one_line "$record")
+    echo "error: $source yielded an unproven .fm-secondmate-parent at worktree $WT; binding=$binding_summary; firstmate ownership or staleness could not be proven; refusing to launch and retaining its lease" >&2
     return 1
   fi
   active_home=$(real_path_or_raw "$FM_HOME")
@@ -1950,9 +2004,20 @@ refuse_spawn_worktree_parent_binding() {  # <source>
     recorded_parent="remote:${FM_SECONDMATE_PARENT_HOST:-unknown}"
   fi
   if [ "$recorded_parent" != "$active_home" ]; then
-    echo "error: $source yielded a worktree with a foreign .fm-secondmate-parent for $recorded_parent; current home is $active_home; refusing to launch" >&2
+    if spawn_foreign_parent_binding_is_stale "$FM_SECONDMATE_PARENT_HOME"; then
+      if rm -f -- "$record" && [ ! -e "$record" ] && [ ! -L "$record" ]; then
+        echo "notice: $source cleared a stale foreign .fm-secondmate-parent at worktree $WT; $SPAWN_PARENT_BINDING_STALE_REASON" >&2
+        return 0
+      fi
+      SPAWN_PARENT_BINDING_STALE_REASON='the stale binding could not be cleared'
+    fi
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    binding_summary=$(spawn_parent_binding_record_one_line "$record")
+    echo "error: $source yielded an unproven foreign .fm-secondmate-parent at worktree $WT; binding=$binding_summary; ${SPAWN_PARENT_BINDING_STALE_REASON:-parent staleness could not be proven}; refusing to launch and retaining its lease" >&2
   else
-    echo "error: $source yielded a worktree with an unexpected .fm-secondmate-parent for the current home; refusing to launch" >&2
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    binding_summary=$(spawn_parent_binding_record_one_line "$record")
+    echo "error: $source yielded an unexpected .fm-secondmate-parent at worktree $WT; binding=$binding_summary; the binding points to the current home; refusing to launch and retaining its lease" >&2
   fi
   return 1
 }
@@ -2989,6 +3054,7 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_CLEANUP=0
+SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

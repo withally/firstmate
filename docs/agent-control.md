@@ -48,7 +48,7 @@ For a busy agent, it repeats that guard after interrupt delivery and immediately
 Pending or pending-unproven input is transient rather than durable; the same state read captures its first 80 characters for control-plane output, and missing excerpt proof refuses before any clear key is sent.
 With an available excerpt, the control plane sends the harness's verified clear key, re-reads boundedly, and uses a bounded Backspace fallback while the state remains `pending` or `pending-unproven`.
 A harness without a verified pre-exit clear key - currently OpenCode - refuses to clear a pending composer rather than guessing a key.
-If the composer cannot be proven empty, the lifecycle action refuses with the observed state and delivered clear keys, so an exit command is never appended to foreign text.
+If the composer cannot be proven empty, or sending an interrupt key or its required follow-up clear key fails, the lifecycle action re-reads and refuses through the shared composer reporting boundary with the observed state, a fresh first-80-character pending excerpt when available, and only successfully sent keys, so an exit command is never appended to foreign text.
 
 **Teardown and discard are not verbs and will not become verbs.**
 `exit` stops an agent and preserves everything else.

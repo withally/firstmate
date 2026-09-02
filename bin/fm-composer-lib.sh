@@ -1191,18 +1191,93 @@ _fm_composer_select_cursorless() {
   [ -n "$FM_COMPOSER_SELECTED_KIND" ]
 }
 
-fm_composer_extract_selected_content() {  # <caps> <screen>
-  local caps=$1 screen=$2 styled=0 kv plain row raw content glyph joined='' footer_re prompt_row=-1
+_fm_composer_select_screen_context() {  # <plain-screen> <cursor-or-empty>
+  local plain=$1 cy=${2:-}
+  FM_COMPOSER_SELECTED_KIND=
+  FM_COMPOSER_SELECTED_FIRST=-1
+  FM_COMPOSER_SELECTED_LAST=-1
+  FM_COMPOSER_SELECTED_AMBIG=0
+  FM_COMPOSER_SELECTED_BOUNDARY=-1
+  _fm_composer_scan_screen "$plain" "$cy"
+  if [ -z "$cy" ]; then
+    _fm_composer_select_cursorless "$plain" || return 1
+    if [ "$FM_COMPOSER_SELECTED_KIND" = bare ] \
+       && [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
+       && [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
+       && [ "$FM_COMPOSER_SCAN_BARE_ROW" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then
+      FM_COMPOSER_SELECTED_KIND=bare-pi
+    fi
+    return 0
+  fi
+  [ "$FM_COMPOSER_SCAN_UNSAFE" = 0 ] || return 1
+  if [ "$FM_COMPOSER_SCAN_BOX_TOP" -ge 0 ]; then
+    FM_COMPOSER_SELECTED_KIND=box
+    FM_COMPOSER_SELECTED_FIRST=$((FM_COMPOSER_SCAN_BOX_TOP + 1))
+    FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_BOX_BOTTOM - 1))
+    FM_COMPOSER_SELECTED_AMBIG=$FM_COMPOSER_SCAN_BOX_AMBIG
+    FM_COMPOSER_SELECTED_BOUNDARY=$FM_COMPOSER_SCAN_BOX_BOTTOM
+  elif [ "$FM_COMPOSER_SCAN_LEFTBAR_START" -ge 0 ] \
+       && [ "$cy" -ge "$FM_COMPOSER_SCAN_LEFTBAR_START" ] \
+       && [ "$cy" -le "$FM_COMPOSER_SCAN_LEFTBAR_END" ]; then
+    FM_COMPOSER_SELECTED_KIND=leftbar
+    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_LEFTBAR_START
+    FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_LEFTBAR_END
+    FM_COMPOSER_SELECTED_BOUNDARY=$FM_COMPOSER_SCAN_LEFTBAR_END
+  elif [ "$FM_COMPOSER_SCAN_BARE_ROW" -ge 0 ] && [ "$cy" -eq "$FM_COMPOSER_SCAN_BARE_ROW" ]; then
+    FM_COMPOSER_SELECTED_KIND=bare
+    if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
+       && [ "$cy" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
+       && [ "$cy" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then
+      FM_COMPOSER_SELECTED_KIND=bare-pi
+    fi
+    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_BARE_ROW
+    FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_BARE_ROW
+    FM_COMPOSER_SELECTED_BOUNDARY=$FM_COMPOSER_SCAN_BARE_ROW
+  elif [ "$FM_COMPOSER_SCAN_BARE_ROW" -ge 0 ] && [ "$cy" -gt "$FM_COMPOSER_SCAN_BARE_ROW" ] \
+       && _fm_composer_wrap_region_ok "$plain" "$FM_COMPOSER_SCAN_BARE_ROW" "$cy"; then
+    FM_COMPOSER_SELECTED_KIND=bare
+    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_BARE_ROW
+    FM_COMPOSER_SELECTED_LAST=$cy
+    FM_COMPOSER_SELECTED_BOUNDARY=$cy
+  elif [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
+       && [ "$cy" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
+       && [ "$cy" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then
+    FM_COMPOSER_SELECTED_KIND=pi
+    FM_COMPOSER_SELECTED_FIRST=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
+    FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_PI_CLOSE - 1))
+    FM_COMPOSER_SELECTED_BOUNDARY=$FM_COMPOSER_SCAN_PI_CLOSE
+  elif [ "$FM_COMPOSER_SCAN_CURSOR_EDGE" = 1 ]; then
+    return 1
+  else
+    return 1
+  fi
+  return 0
+}
+
+fm_composer_extract_selected_content() {  # <caps> <screen> [cursor-row] [identity]
+  local caps=$1 screen=$2 cy=${3:-} identity=${4:-} styled=0 has_identity=0 kv plain row raw content glyph joined='' footer_re prompt_row=-1
   local leading_blank=1 placeholder_position=0 prompt_is_shell=0
   footer_re=${FM_COMPOSER_LEFTBAR_FOOTER_RE:-$FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT}
   while IFS= read -r kv; do
-    [ "$kv" = styled=1 ] && styled=1
+    case "$kv" in
+      styled=1) styled=1 ;;
+      identity=1) has_identity=1 ;;
+    esac
   done <<EOF
 $caps
 EOF
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
-  _fm_composer_scan_screen "$plain" '' 1
-  _fm_composer_select_cursorless "$plain" || return 1
+  _fm_composer_select_screen_context "$plain" "$cy" || return 1
+  if [ "$FM_COMPOSER_SELECTED_KIND" = bare-pi ]; then
+    if [ "$has_identity" = 1 ] && [ "${identity%%$'\t'*}" = pi ]; then
+      FM_COMPOSER_SELECTED_KIND=pi
+      FM_COMPOSER_SELECTED_FIRST=$((FM_COMPOSER_SCAN_PI_OPEN + 1))
+      FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_PI_CLOSE - 1))
+      FM_COMPOSER_SELECTED_BOUNDARY=$FM_COMPOSER_SCAN_PI_CLOSE
+    else
+      FM_COMPOSER_SELECTED_KIND=bare
+    fi
+  fi
   row=$FM_COMPOSER_SELECTED_FIRST
   while [ "$row" -le "$FM_COMPOSER_SELECTED_LAST" ]; do
     raw=$(_fm_composer_screen_row "$row" "$screen")
@@ -1311,8 +1386,8 @@ fm_composer_utf8_prefix_var() {  # <varname> <character-count>
 # The default output is only the shared composer verdict. The explicit
 # state-and-excerpt mode is private to the control plane's first pending read,
 # so no ambient variable can change the exact state contract for other callers.
-fm_composer_state_output() {  # <state> [caps] [screen] [output-mode]
-  local state=$1 caps=${2-} screen=${3-} output=${4-} excerpt
+fm_composer_state_output() {  # <state> [caps] [screen] [output-mode] [cursor-row] [identity]
+  local state=$1 caps=${2-} screen=${3-} output=${4-} cy=${5-} identity=${6-} excerpt
   if [ "$output" != state-and-excerpt ]; then
     printf '%s' "$state"
     return 0
@@ -1323,7 +1398,7 @@ fm_composer_state_output() {  # <state> [caps] [screen] [output-mode]
         printf '%s\tunavailable\t' "$state"
         return 0
       fi
-      if ! excerpt=$(fm_composer_extract_selected_content "$caps" "$screen" 2>/dev/null); then
+      if ! excerpt=$(fm_composer_extract_selected_content "$caps" "$screen" "$cy" "$identity" 2>/dev/null); then
         printf '%s\tunavailable\t' "$state"
         return 0
       fi
@@ -1364,65 +1439,7 @@ EOF
     case "$cy" in *[!0-9]*) printf 'unknown'; return 0 ;; esac
   fi
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
-  _fm_composer_scan_screen "$plain" "$cy"
-  if [ -n "$cy" ]; then
-    # Cursor mode (tmux): the shape CONTAINING the cursor is the composer.
-    if [ "$FM_COMPOSER_SCAN_UNSAFE" = 1 ]; then
-      printf 'unknown'; return 0
-    fi
-    if [ "$FM_COMPOSER_SCAN_BOX_TOP" -ge 0 ]; then
-      _fm_composer_classify_rows "$screen" "$styled" "$FM_COMPOSER_SCAN_BOX_AMBIG" \
-        "$((FM_COMPOSER_SCAN_BOX_TOP + 1))" "$((FM_COMPOSER_SCAN_BOX_BOTTOM - 1))"
-      return 0
-    fi
-    if [ "$FM_COMPOSER_SCAN_LEFTBAR_START" -ge 0 ] \
-       && [ "$cy" -ge "$FM_COMPOSER_SCAN_LEFTBAR_START" ] \
-       && [ "$cy" -le "$FM_COMPOSER_SCAN_LEFTBAR_END" ]; then
-      _fm_composer_classify_leftbar "$screen" "$styled" \
-        "$FM_COMPOSER_SCAN_LEFTBAR_START" "$FM_COMPOSER_SCAN_LEFTBAR_END"
-      return 0
-    fi
-    if [ "$FM_COMPOSER_SCAN_BARE_ROW" -ge 0 ] && [ "$cy" -eq "$FM_COMPOSER_SCAN_BARE_ROW" ]; then
-      if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
-         && [ "$cy" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
-         && [ "$cy" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then
-        _fm_composer_classify_bare_pi_overlap "$screen" "$styled" "$has_identity" "$identity" "$cy"
-      else
-        _fm_composer_classify_bare_row "$screen" "$styled" "$cy"
-      fi
-      return 0
-    fi
-    # A bare composer's WRAP region: long typed input wraps below the glyph
-    # row, and the cursor lands on a continuation row that carries no glyph of
-    # its own. When every row from the glyph row down to the cursor is
-    # non-blank and non-structural, the cursor is inside that composer's
-    # wrapped input - an IDENTIFIED region, so the strict blank-row rule does
-    # not apply and a swallowed Enter on a long message still reads pending
-    # and earns its retry.
-    if [ "$FM_COMPOSER_SCAN_BARE_ROW" -ge 0 ] && [ "$cy" -gt "$FM_COMPOSER_SCAN_BARE_ROW" ] \
-       && _fm_composer_wrap_region_ok "$plain" "$FM_COMPOSER_SCAN_BARE_ROW" "$cy"; then
-      _fm_composer_classify_bare_wrap "$screen" "$styled" "$FM_COMPOSER_SCAN_BARE_ROW" "$cy"
-      return 0
-    fi
-    if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
-       && [ "$cy" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
-       && [ "$cy" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then
-      _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity"
-      return 0
-    fi
-    if [ "$FM_COMPOSER_SCAN_CURSOR_EDGE" = 1 ]; then
-      printf 'unknown'; return 0
-    fi
-    # STRICT: a blank or otherwise unidentified cursor row has no positive
-    # container proof. This replaced the permissive blank-cursor-row rule
-    # (captain decision blank-row-injection-posture).
-    printf 'unknown'
-    return 0
-  fi
-  # No cursor: the bottom-most shape wins, with the pi-separator staleness
-  # rules layered on (a live pi composer pair below the generic candidate
-  # proves that candidate stale).
-  if ! _fm_composer_select_cursorless "$plain"; then
+  if ! _fm_composer_select_screen_context "$plain" "$cy"; then
     printf 'unknown'
     return 0
   fi
@@ -1438,14 +1455,13 @@ EOF
       if [ "$FM_COMPOSER_SELECTED_LAST" -gt "$FM_COMPOSER_SELECTED_FIRST" ]; then
         _fm_composer_classify_bare_wrap "$screen" "$styled" \
           "$FM_COMPOSER_SELECTED_FIRST" "$FM_COMPOSER_SELECTED_LAST"
-      elif [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
-         && [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
-         && [ "$FM_COMPOSER_SCAN_BARE_ROW" -lt "$FM_COMPOSER_SCAN_PI_CLOSE" ]; then
-        _fm_composer_classify_bare_pi_overlap "$screen" "$styled" "$has_identity" "$identity" \
-          "$FM_COMPOSER_SCAN_BARE_ROW"
       else
-        _fm_composer_classify_bare_row "$screen" "$styled" "$FM_COMPOSER_SCAN_BARE_ROW"
+        _fm_composer_classify_bare_row "$screen" "$styled" "$FM_COMPOSER_SELECTED_FIRST"
       fi
+      ;;
+    bare-pi)
+      _fm_composer_classify_bare_pi_overlap "$screen" "$styled" "$has_identity" "$identity" \
+        "$FM_COMPOSER_SELECTED_FIRST"
       ;;
     leftbar)
       _fm_composer_classify_leftbar "$screen" "$styled" \

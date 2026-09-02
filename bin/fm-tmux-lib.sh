@@ -161,9 +161,10 @@ fm_tmux_composer_state() {  # <target> [expected-label] [output-mode] -> empty|p
   # alone, so the strict blank-row posture that owns `unknown` for every other
   # harness is untouched.
   if [ "$verdict" = unknown ] && fm_tmux_pane_is_cursor "$target"; then
+    cy=
     verdict=$(fm_composer_classify_screen "$caps" "$pane" '')
   fi
-  fm_composer_state_output "$verdict" "$caps" "$pane" "$output"
+  fm_composer_state_output "$verdict" "$caps" "$pane" "$output" "$cy" "$identity"
 }
 
 # fm_tmux_pane_is_cursor: true when the pane's FOREGROUND process group contains

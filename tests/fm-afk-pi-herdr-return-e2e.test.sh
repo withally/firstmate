@@ -207,7 +207,7 @@ CHILD_CMD=$(printf "printf 'blocked [key=synthetic-dependency]: firstmate can re
 "$LAB_HELPER" run "$SESSION" pane run "$CHILD_PANE" "$CHILD_CMD" >/dev/null
 for _ in $(seq 1 160); do [ -s "$STATE/.subsuper-inject-wedged" ] && break; sleep 0.1; done
 [ -s "$STATE/.subsuper-inject-wedged" ] || fail "persistently pending real Pi composer did not raise the defense-in-depth alarm"
-[ -s "$STATE/.subsuper-escalations" ] || fail "pending real Pi composer lost the buffered blocker"
+delivery_has_undelivered "$STATE" || fail "pending real Pi composer lost the buffered blocker"
 [ ! -s "$CAPTURE" ] || fail "daemon submitted into Pi while the real human draft was pending"
 plain=$("$LAB_HELPER" run "$SESSION" pane read "$PRIMARY_PANE" --source recent --lines 200)
 printf '%s' "$plain" | grep -F 'privacy safe human draft' >/dev/null || fail "pending Pi draft was modified or forcibly submitted"
@@ -231,8 +231,8 @@ wait_for_prompt 'any(.[]; .prompt | startswith("\u2063Supervisor escalate"))' \
   || fail "real Pi did not receive the buffered escalation after becoming safely idle"
 INJECT_HEX=$(jq -r 'select(.prompt | startswith("\u2063Supervisor escalate")) | .hex' "$CAPTURE" | tail -1)
 case "$INJECT_HEX" in e281a3*) ;; *) fail "real Pi escalation lost the terminal-safe marker: $INJECT_HEX" ;; esac
-for _ in $(seq 1 80); do [ ! -s "$STATE/.subsuper-escalations" ] && break; sleep 0.1; done
-[ ! -s "$STATE/.subsuper-escalations" ] || fail "confirmed real Pi delivery did not clear the escalation buffer"
+for _ in $(seq 1 80); do ! delivery_has_undelivered "$STATE" && break; sleep 0.1; done
+! delivery_has_undelivered "$STATE" || fail "confirmed real Pi delivery did not clear the escalation buffer"
 [ ! -e "$STATE/.subsuper-inject-wedged" ] || fail "confirmed real Pi delivery did not clear the old wedge marker"
 sleep 4
 [ "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" -eq 1 ] || fail "successful delivery emitted a duplicate wedge alert"

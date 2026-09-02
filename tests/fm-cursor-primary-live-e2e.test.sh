@@ -198,7 +198,7 @@ export FM_DAEMON_PRIMARY_HARNESS=cursor
 composer=\$(fm_backend_composer_state tmux primary)
 printf 'composer=%s\n' "\$composer"
 [ "\$composer" = empty ] || exit 3
-inject_msg "AWAY PROBE - reply with exactly the token $AWAY_TOKEN and nothing else." "$HOME_DIR/state"
+inject_msg "$HOME_DIR/state" "" "AWAY PROBE - reply with exactly the token $AWAY_TOKEN and nothing else."
 EOS
 chmod +x "$LAB/inject.sh"
 COMPOSER_OUT=$(bash "$LAB/inject.sh" 2>&1) || INJECT_RC=$?

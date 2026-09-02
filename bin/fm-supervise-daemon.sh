@@ -18,8 +18,8 @@
 # user message clears it and firstmate resumes full responsiveness.
 # When afk is off, normal fm-watch.sh always-on triage is the active mechanism.
 # Any buffered daemon escalations that remain while afk is off survive in
-# state/.subsuper-escalations and are flushed on the next "while you were out"
-# catch-up or when afk is re-entered.
+# the delivered-once journal state/.subsuper-delivery.jsonl and are flushed on
+# the next "while you were out" catch-up or when afk is re-entered.
 #
 # IN-BAND OPERATIONAL INPUT. bin/fm-operational-input.sh constructs every
 # current daemon injection as the typed away-supervisor kind after the stable
@@ -53,9 +53,9 @@
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
-#     undelivered past FM_MAX_DEFER_SECS, the daemon retries a normal flush and
-#     writes state/.subsuper-inject-wedged and attempts a configurable active
-#     alert if submit still cannot be confirmed.
+#     undelivered past FM_MAX_DEFER_SECS, the daemon rechecks its delivery nonce
+#     without retyping and writes state/.subsuper-inject-wedged and attempts a
+#     configurable active alert if submit still cannot be confirmed.
 #   - Cheap heartbeat catch-all: every HEARTBEAT_SCAN_SECS the daemon greps all
 #     state/*.status for a captain-relevant line the per-wake classifier might
 #     have missed (e.g. a status verb outside CAPTAIN_RE) and escalates it.
@@ -108,9 +108,10 @@
 #          FM_COMPOSER_IDLE_RE      optional shared classifier override; see
 #                                   docs/configuration.md for its safety gates
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
-#                                   undelivered before one normal flush attempt;
-#                                   if that cannot confirm a submit, a wedge
-#                                   alarm fires (default 300; 0 disables)
+#                                   unconfirmed before its nonce witness is
+#                                   rechecked without retyping; if that cannot
+#                                   confirm delivery, a wedge alarm fires
+#                                   (default 300; 0 disables)
 #          FM_WEDGE_ALARM_CHANNEL   override config/wedge-alarm with a single
 #                                   active-alert directive for that wedge alarm
 #                                   (off|auto|osascript|herdr|command:<cmd>). An
@@ -442,11 +443,12 @@ classify_unknown() {  # <reason>
   printf 'escalate|unknown wake: %s' "$1"
 }
 
-# --- stale marker + escalation buffer (stateful, but via explicit state dir) -
+# --- stale marker + escalation delivery (stateful, but via explicit state dir)
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
-# Buffer:   state/.subsuper-escalations    one distilled line per escalation.
-# Checks:   state/.subsuper-check-ledger   session-scoped routing transactions
-#           and verified-delivery state for durable check wakes.
+# Delivery: state/.subsuper-delivery.jsonl  the single delivered-once journal
+#           (escalation and durable-check records, buffering, typing, and
+#           delivered-once retirement); the "delivered-once journal" block below
+#           owns its format and every mutation.
 # Seen:     state/.subsuper-seen-status-<task>  last status line the scan
 #           escalated, so the catch-all does not re-fire the same terminal.
 
@@ -755,190 +757,640 @@ stale_window_is_busy() {  # <window> <state>
   [ "${verdict%% *}" = busy ]
 }
 
-escalate_add() {  # <state> <distilled-item>
-  local state=$1 item=$2 buf
-  buf="$state/.subsuper-escalations"
-  [ -s "$buf" ] || _now > "${buf}.since"
-  printf '%s\n' "$item" >> "$buf"
+# --- delivered-once journal -------------------------------------------------
+# state/.subsuper-delivery.jsonl is the SINGLE source of truth for away-mode
+# escalation delivery. One JSON object per line, one line per record:
+#   {
+#     "nonce":          "" while buffered; the 12-hex digest nonce shared by
+#                       every record typed together in one flush (the
+#                       [d:<nonce>] the transcript witness looks for),
+#     "kind":           "escalation" | "check",
+#     "source_key":     the durable check key for dedup ("" for escalations),
+#     "text":           the distilled digest item,
+#     "state":          "buffered" | "typed" | "delivered",
+#     "buffered_epoch": epoch first buffered,
+#     "typed_epoch":    0, or epoch the digest was committed for typing,
+#     "delivered_epoch":0, or epoch delivery was confirmed,
+#     "witness_transcript": "-", or the transcript path captured just before
+#                       the type, used to witness this record's digest nonce,
+#     "witness_offset": byte-offset baseline captured with witness_transcript
+#   }
+# Every mutation is read-all -> write ONE temp -> single rename, so a crash can
+# never leave a half-written journal or a duplicated/lost record: the only
+# journal a reader ever opens is a fully renamed one, and an orphaned temp is
+# ignored (readers open the exact journal path, never a glob). The
+# delivered-once guard lives in the buffered->typed transition. A batch is
+# marked "typed" (one rename) BEFORE its Enter is ever sent, so a crash after
+# the send but before the delivered rename finds the record already "typed" and
+# never retypes it - it witnesses the nonce instead. A digest is typed at most
+# once in its lifetime; only Enter is retried within one bounded attempt. The
+# rare crash between the typed rename and the send leaves an unwitnessable typed
+# record that the max-defer wedge alarm surfaces: a stall, never a flood.
+JOURNAL_NAME=".subsuper-delivery.jsonl"
+
+delivery_nonce_generate() {  # <state>
+  local state=${1:-} journal nonce existing attempts=0
+  [ -n "$state" ] || return 1
+  journal="$state/$JOURNAL_NAME"
+  while [ "$attempts" -lt 64 ]; do
+    attempts=$((attempts + 1))
+    nonce=$(LC_ALL=C od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
+    delivery_nonce_valid "$nonce" || continue
+    if [ -s "$journal" ]; then
+      existing=$(jq -s -r --arg nonce "$nonce" 'any(.[]; .nonce==$nonce)' "$journal" 2>/dev/null) || return 1
+      [ "$existing" = true ] && continue
+    fi
+    printf '%s' "$nonce"
+    return 0
+  done
+  return 1
 }
 
-check_ledger_state() {  # <state> <sequence-or-empty> <key> <payload>
-  local state=$1 sequence=$2 key=$3 payload=$4 ledger
-  ledger="$state/.subsuper-check-ledger"
-  [ -s "$ledger" ] || return 0
-  awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
-    $3 == key && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) { state=$1 }
-    END { if (state != "") print state }
-  ' "$ledger"
+delivery_nonce_valid() {
+  case "$1" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
-check_ledger_append() {  # <state> <reserved|buffered|delivered> <sequence> <key> <payload> [buffer-lines]
-  local state=$1 status=$2 sequence=$3 key=$4 payload=$5 buffer_lines=${6:-} ledger
-  case "$status" in reserved|buffered|delivered) ;; *) return 2 ;; esac
-  case "$sequence" in ''|*[!0-9]*) return 2 ;; esac
-  case "$key$payload" in *$'\t'*|*$'\r'*|*$'\n'*) return 2 ;; esac
-  if [ "$status" = reserved ]; then
-    case "$buffer_lines" in ''|*[!0-9]*) return 2 ;; esac
-  else
-    buffer_lines=''
+
+# The Pi transcript root follows Pi's own agent-directory resolution: an explicit
+# PI_CODING_AGENT_SESSION_DIR overrides the default session directory, otherwise an
+# absolute PI_CODING_AGENT_DIR overrides the default agent directory.
+delivery_transcript_root() {  # <harness>
+  local pi_agent_dir pi_session_dir
+  case "$1" in
+    pi|pi-signed)
+      if pi_session_dir=$(delivery_transcript_pi_session_override); then
+        printf '%s' "$pi_session_dir"
+        return 0
+      fi
+      pi_agent_dir=$HOME/.pi/agent
+      case "${PI_CODING_AGENT_DIR:-}" in
+        /*) pi_agent_dir=$PI_CODING_AGENT_DIR ;;
+      esac
+      printf '%s/sessions' "$pi_agent_dir"
+      ;;
+    claude*) printf '%s' "$HOME/.claude/projects" ;;
+    *) return 1 ;;
+  esac
+}
+
+delivery_transcript_pi_session_override() {
+  case "${PI_CODING_AGENT_SESSION_DIR:-}" in
+    /*) printf '%s' "$PI_CODING_AGENT_SESSION_DIR" ;;
+    *) return 1 ;;
+  esac
+}
+
+delivery_transcript_expected_dir() {  # <harness>
+  local harness=$1 root cwd slug pi_session_dir
+  root=$(delivery_transcript_root "$harness") || return 1
+  cwd=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || cwd=$FM_HOME
+  case "$harness" in
+    pi|pi-signed)
+      if pi_session_dir=$(delivery_transcript_pi_session_override); then
+        printf '%s' "$pi_session_dir"
+        return 0
+      fi
+      slug=${cwd#/}
+      slug=${slug//\//-}
+      printf '%s/--%s--' "$root" "$slug"
+      ;;
+    claude*)
+      slug=$(printf '%s' "$cwd" | sed 's#[^[:alnum:]_-]#-#g')
+      printf '%s/%s' "$root" "$slug"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+delivery_transcript_canonical_path() {  # <harness> <candidate-path>
+  local harness=$1 path=$2 expected expected_real canonical
+  expected=$(delivery_transcript_expected_dir "$harness") || return 1
+  expected_real=$(realpath "$expected" 2>/dev/null) || return 1
+  canonical=$(realpath "$path" 2>/dev/null) || return 1
+  case "$canonical" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  case "$canonical" in
+    "$expected_real"/*) ;;
+    *) return 1 ;;
+  esac
+  case "$canonical" in *.jsonl) ;; *) return 1 ;; esac
+  printf '%s' "$canonical"
+}
+
+delivery_transcript_cwd_matches() {  # <harness> <transcript>
+  local harness=$1 transcript=$2 cwd actual
+  cwd=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || cwd=$FM_HOME
+  case "$harness" in
+    pi|pi-signed)
+      actual=$(jq -r 'select(.type == "session") | .cwd // empty' "$transcript" 2>/dev/null | head -1) || return 1
+      ;;
+    claude*)
+      actual=$(jq -r --arg cwd "$cwd" 'select(.cwd == $cwd) | .cwd' "$transcript" 2>/dev/null | head -1) || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  [ "$actual" = "$cwd" ]
+}
+
+delivery_transcript_path_from_agent_json() {  # <harness> <Herdr-agent-get-JSON>
+  local harness=$1 agent_json=$2 path
+  path=$(printf '%s' "$agent_json" \
+    | jq -r '.result.agent.agent_session // empty' 2>/dev/null) || return 1
+  path=$(delivery_transcript_canonical_path "$harness" "$path") || return 1
+  [ -f "$path" ] || return 1
+  delivery_transcript_cwd_matches "$harness" "$path" || return 1
+  printf '%s' "$path"
+}
+
+delivery_transcript_from_herdr() {  # <harness> <target>
+  local harness=$1 target=$2 out
+  fm_backend_source herdr >/dev/null 2>&1 || return 1
+  fm_backend_herdr_parse_target "$target" || return 1
+  out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent get "$FM_BACKEND_HERDR_PANE" 2>/dev/null) \
+    || return 1
+  delivery_transcript_path_from_agent_json "$harness" "$out"
+}
+
+delivery_transcript_fallback() {  # <harness>
+  local harness=$1 cwd dir file file_cwd mtime canonical newest='' newest_mtime=0
+  cwd=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || cwd=$FM_HOME
+  dir=$(delivery_transcript_expected_dir "$harness") || return 1
+  [ -d "$dir" ] || return 1
+  for file in "$dir"/*.jsonl; do
+    [ -f "$file" ] || continue
+    case "$harness" in
+      pi|pi-signed)
+        file_cwd=$(jq -r 'select(.type == "session") | .cwd // empty' "$file" 2>/dev/null | head -1)
+        ;;
+      claude*)
+        file_cwd=$(jq -r --arg cwd "$cwd" 'select(.cwd == $cwd) | .cwd' "$file" 2>/dev/null | head -1)
+        ;;
+    esac
+    [ "$file_cwd" = "$cwd" ] || continue
+    canonical=$(delivery_transcript_canonical_path "$harness" "$file") || continue
+    mtime=$(_stat_file_mtime "$canonical") || continue
+    case "$mtime" in ''|*[!0-9]*) continue ;; esac
+    if [ "$mtime" -ge "$newest_mtime" ]; then
+      newest=$canonical
+      newest_mtime=$mtime
+    fi
+  done
+  [ -n "$newest" ] || return 1
+  printf '%s' "$newest"
+}
+
+delivery_transcript_baseline() {  # <backend> <target> <harness> -> <transcript><TAB><byte-offset>
+  local backend=$1 target=$2 harness=$3 transcript offset
+  transcript=
+  if [ "$backend" = herdr ]; then
+    transcript=$(delivery_transcript_from_herdr "$harness" "$target" 2>/dev/null || true)
   fi
-  ledger="$state/.subsuper-check-ledger"
-  (umask 077; printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$status" "$sequence" "$key" "$payload" "$buffer_lines" >> "$ledger")
+  [ -n "$transcript" ] \
+    || transcript=$(delivery_transcript_fallback "$harness" 2>/dev/null || true)
+  [ -n "$transcript" ] || return 1
+  case "$transcript" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  offset=$(wc -c < "$transcript" 2>/dev/null | tr -d ' ') || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\t%s' "$transcript" "$offset"
 }
 
-check_ledger_reserve() {  # <state> <sequence> <key> <payload>
-  local state=$1 sequence=$2 key=$3 payload=$4 exact buf buffer_lines
-  exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
-  [ -n "$exact" ] && return 0
-  buf="$state/.subsuper-escalations"
-  buffer_lines=0
-  [ ! -e "$buf" ] || buffer_lines=$(wc -l < "$buf" | tr -d ' ')
-  check_ledger_append "$state" reserved "$sequence" "$key" "$payload" "$buffer_lines"
+delivery_transcript_baseline_validated() {
+  local baseline transcript offset extra
+  baseline=$(delivery_transcript_baseline "$@" 2>/dev/null) || return 1
+  IFS=$'\t' read -r transcript offset extra <<< "$baseline"
+  [ -n "$transcript" ] && [ "$transcript" != - ] || return 1
+  [ -z "$extra" ] || return 1
+  case "$transcript" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\t%s' "$transcript" "$offset"
 }
 
-check_ledger_reserved_append_present() {  # <state> <sequence-or-empty> <key> <payload> <distilled>
-  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 ledger buf reservation before expected now line line_no
-  ledger="$state/.subsuper-check-ledger"
-  buf="$state/.subsuper-escalations"
-  [ -s "$ledger" ] && [ -s "$buf" ] || return 1
-  reservation=$(awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
-    $1 == "reserved" && $3 == key \
-      && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) {
-        lines=$5
-        original=$4
-      }
-    END { if (lines != "") print lines "\t" original }
-  ' "$ledger")
-  before=${reservation%%$'\t'*}
-  expected=${reservation#*$'\t'}
-  case "$before" in ''|*[!0-9]*) return 1 ;; esac
-  now=$(wc -l < "$buf" | tr -d ' ')
-  line_no=$((before + 1))
-  [ "$now" -ge "$line_no" ] || return 1
-  line=$(sed -n "${line_no}p" "$buf") || return 1
-  [ "$line" = "$expected" ] || [ "$line" = "$distilled" ]
+delivery_transcript_contains_nonce() {  # <harness> <transcript> <nonce> <byte-offset> <buffered-at>
+  local harness=$1 transcript=$2 nonce=$3 offset=$4 buffered_at=$5 size mtime prefix
+  case "$nonce" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) return 1 ;;
+  esac
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  case "$buffered_at" in ''|*[!0-9]*) return 1 ;; esac
+  [ -f "$transcript" ] || return 1
+  size=$(wc -c < "$transcript" 2>/dev/null | tr -d ' ') || return 1
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$size" -ge "$offset" ] || return 1
+  mtime=$(_stat_file_mtime "$transcript") || return 1
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$mtime" -ge "$buffered_at" ] || return 1
+  prefix="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] "
+  case "$harness" in
+    pi|pi-signed)
+      tail -c +$((offset + 1)) "$transcript" | jq -e --arg prefix "$prefix" '
+        select(.type == "message" and .message.role == "user")
+        | [.message.content[]? | select(.type == "text") | .text]
+        | select(any(.[]; if type == "string" then startswith($prefix) else false end))
+        | true
+      ' >/dev/null 2>&1
+      ;;
+    claude*)
+      tail -c +$((offset + 1)) "$transcript" | jq -e --arg prefix "$prefix" '
+        select(.type == "user" and .message.role == "user")
+        | (.message.content // empty) as $content
+        | (if ($content | type) == "string" then [$content]
+           elif ($content | type) == "array" then
+             [$content[]? | if type == "string" then . elif .type == "text" then .text else empty end]
+           else [] end)
+        | select(any(.[]; if type == "string" then startswith($prefix) else false end))
+        | true
+      ' >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
 }
 
-# Append one durable check to the escalation buffer exactly once per away
-# session.
-# A reservation is not a seen record: it lets replay finish a transaction that
-# died before the buffer append without suppressing the original event.
+delivery_witness_confirms() {  # <backend> <target> <harness> <nonce> <transcript> <byte-offset> <buffered-at>
+  local backend=$1 target=$2 harness=$3 nonce=$4 expected_transcript=${5:-} offset=${6:-} buffered_at=${7:-} transcript
+  case "$nonce" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) return 1 ;;
+  esac
+  case "$harness" in pi|pi-signed|claude*) ;; *) return 1 ;; esac
+  [ -n "$expected_transcript" ] && [ "$expected_transcript" != - ] || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  case "$buffered_at" in ''|*[!0-9]*) return 1 ;; esac
+  transcript=
+  if [ "$backend" = herdr ]; then
+    transcript=$(delivery_transcript_from_herdr "$harness" "$target" 2>/dev/null || true)
+  fi
+  [ -n "$transcript" ] \
+    || transcript=$(delivery_transcript_fallback "$harness" 2>/dev/null || true)
+  [ -n "$transcript" ] || return 1
+  [ "$transcript" = "$expected_transcript" ] || return 1
+  delivery_transcript_contains_nonce "$harness" "$transcript" "$nonce" "$offset" "$buffered_at"
+}
+
+# --- journal primitives -----------------------------------------------------
+# Validate every line of the journal against the record schema. An absent or
+# empty journal is valid (nothing buffered). A present-but-corrupt journal
+# returns non-zero so the caller quarantines it instead of guessing.
+journal_valid() {  # <state>
+  local state=$1 journal="$1/$JOURNAL_NAME"
+  [ -s "$journal" ] || return 0
+  jq -e -s '
+    all(.[];
+      type == "object"
+      and ((.nonce | type) == "string")
+      and ((.nonce == "") or (.nonce | test("^[0-9a-f]{12}$")))
+      and (.kind == "escalation" or .kind == "check")
+      and ((.source_key | type) == "string")
+      and ((.text | type) == "string")
+      and (.state == "buffered" or .state == "typed" or .state == "delivered")
+      and (
+        (.state == "buffered" and .nonce == "")
+        or (
+          (.state == "typed" or .state == "delivered")
+          and (.nonce | test("^[0-9a-f]{12}$"))
+        )
+      )
+      and ((.buffered_epoch | type) == "number")
+      and ((.typed_epoch | type) == "number")
+      and ((.delivered_epoch | type) == "number")
+      and ((.witness_transcript | type) == "string")
+      and ((.witness_offset | type) == "number")
+    )
+  ' "$journal" >/dev/null 2>&1
+}
+
+# The one atomic mutation primitive: read all records as a JSON array, pipe them
+# through <jq-program> (array -> array), and write the result back as JSONL via a
+# single temp + rename. Any extra args (e.g. --arg/--argjson) are passed to jq
+# verbatim ahead of the program. The temp name is distinct from the journal path,
+# so a crash mid-write only orphans the temp and never corrupts the journal.
+journal_apply() {  # <state> <jq-program> [jq-args...]
+  local state=$1 prog=$2 journal="$1/$JOURNAL_NAME" tmp
+  shift 2
+  local -a src=(/dev/null)
+  [ -s "$journal" ] && src=("$journal")
+  tmp=$(umask 077; mktemp "$state/.subsuper-delivery.apply.XXXXXX") || return 1
+  if ! jq -s -c "$@" "$prog"' | .[]' "${src[@]}" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -s "$tmp" ]; then
+    mv "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
+  else
+    mv "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
+  fi
+}
+
+# Mark every currently-buffered record as typed under one shared digest nonce,
+# recording the witness baseline. This is the delivered-once commit: it happens
+# (one rename) BEFORE the Enter is sent, so the digest can never be retyped.
+journal_mark_typed() {  # <state> <nonce> <transcript> <offset>
+  local state=$1 nonce=$2 transcript=${3:--} offset=${4:-0} now
+  delivery_nonce_valid "$nonce" || return 1
+  case "$transcript" in ''|*$'\t'*|*$'\r'*|*$'\n'*) transcript=-; offset=0 ;; esac
+  case "$offset" in ''|*[!0-9]*) offset=0 ;; esac
+  now=$(_now)
+  # shellcheck disable=SC2016 # $nonce/$t/$o/$now are jq --arg/--argjson variables.
+  journal_apply "$state" \
+    'map(if .state=="buffered" then .state="typed" | .nonce=$nonce | .witness_transcript=$t | .witness_offset=$o | .typed_epoch=$now else . end)' \
+    --arg nonce "$nonce" --arg t "$transcript" --argjson o "$offset" --argjson now "$now"
+}
+
+journal_bind_typed_witness() {  # <state> <nonce> <transcript> <offset>
+  local state=$1 nonce=$2 transcript=$3 offset=$4
+  delivery_nonce_valid "$nonce" || return 1
+  [ -n "$transcript" ] && [ "$transcript" != - ] || return 1
+  case "$transcript" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  # shellcheck disable=SC2016 # $nonce/$t/$o are jq --arg/--argjson variables.
+  journal_apply "$state" \
+    'map(if .state=="typed" and .nonce==$nonce then .witness_transcript=$t | .witness_offset=$o else . end)' \
+    --arg nonce "$nonce" --arg t "$transcript" --argjson o "$offset"
+}
+
+# Retire (mark delivered) every typed record carrying the given digest nonce.
+# Delivered records stay in the journal so a later identical check still dedups;
+# the journal is cleared on a fresh /afk entry and on return.
+journal_mark_delivered() {  # <state> <nonce>
+  local state=$1 nonce=$2 now
+  delivery_nonce_valid "$nonce" || return 1
+  now=$(_now)
+  # shellcheck disable=SC2016 # $nonce/$now are jq --arg/--argjson variables.
+  journal_apply "$state" \
+    'map(if .nonce==$nonce and .state=="typed" then .state="delivered" | .delivered_epoch=$now else . end)' \
+    --arg nonce "$nonce" --argjson now "$now"
+}
+
+# Confirm a typed digest nonce against the transcript baseline stored on its
+# records. The mtime guard uses typed_epoch (the transcript must be at least as
+# new as the type), and the fresh unique nonce makes a stale match impossible.
+journal_witness_typed() {  # <state> <backend> <target> <harness> <nonce>
+  local state=$1 backend=$2 target=$3 harness=$4 nonce=$5 rec transcript offset typed_epoch baseline baseline_offset extra
+  rec=$(jq -s -c --arg nonce "$nonce" \
+    'map(select(.state=="typed" and .nonce==$nonce)) | .[0] // empty' \
+    "$state/$JOURNAL_NAME" 2>/dev/null)
+  [ -n "$rec" ] || return 1
+  transcript=$(printf '%s' "$rec" | jq -r '.witness_transcript')
+  offset=$(printf '%s' "$rec" | jq -r '.witness_offset')
+  typed_epoch=$(printf '%s' "$rec" | jq -r '.typed_epoch')
+  case "$transcript" in
+    ''|-)
+      case "$harness" in
+        pi|pi-signed|claude*)
+          baseline=$(delivery_transcript_baseline_validated "$backend" "$target" "$harness" 2>/dev/null || true)
+          [ -n "$baseline" ] || return 1
+          IFS=$'\t' read -r transcript baseline_offset extra <<< "$baseline"
+          case "$offset" in ''|*[!0-9]*) offset=$baseline_offset ;; esac
+          journal_bind_typed_witness "$state" "$nonce" "$transcript" "$offset" || return 1
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+  esac
+  delivery_witness_confirms "$backend" "$target" "$harness" "$nonce" \
+    "$transcript" "$offset" "$typed_epoch"
+}
+
+# Age (seconds) of the oldest record NOT yet delivered; a large sentinel if none.
+delivery_oldest_undelivered_age() {  # <state>
+  local state=$1 oldest
+  [ -s "$state/$JOURNAL_NAME" ] || { echo 999999; return; }
+  oldest=$(jq -s -r 'map(select(.state!="delivered") | .buffered_epoch) | min // empty' \
+    "$state/$JOURNAL_NAME" 2>/dev/null)
+  case "$oldest" in ''|*[!0-9]*) echo 999999; return ;; esac
+  echo $(( $(_now) - oldest ))
+}
+
+# Age (seconds) of the oldest BUFFERED record (batch-flush cadence); a large
+# sentinel if nothing is buffered. Measured from the first append, like before.
+delivery_oldest_buffered_age() {  # <state>
+  local state=$1 oldest
+  [ -s "$state/$JOURNAL_NAME" ] || { echo 999999; return; }
+  oldest=$(jq -s -r 'map(select(.state=="buffered") | .buffered_epoch) | min // empty' \
+    "$state/$JOURNAL_NAME" 2>/dev/null)
+  case "$oldest" in ''|*[!0-9]*) echo 999999; return ;; esac
+  echo $(( $(_now) - oldest ))
+}
+
+delivery_has_undelivered() {  # <state>
+  [ -s "$1/$JOURNAL_NAME" ] || return 1
+  jq -s -e 'any(.[]; .state!="delivered")' "$1/$JOURNAL_NAME" >/dev/null 2>&1
+}
+
+# Print the text of every not-yet-delivered record, for the wedge alarm marker
+# and the return catch-up digest.
+delivery_undelivered_texts() {  # <state>
+  [ -s "$1/$JOURNAL_NAME" ] || return 0
+  jq -s -r 'map(select(.state!="delivered") | .text) | .[]' "$1/$JOURNAL_NAME" 2>/dev/null
+}
+
+# --- buffering --------------------------------------------------------------
+# Append one escalation item as a buffered record. Escalations do not dedup; the
+# per-wake seen-status markers already collapse catch-all repeats upstream.
+escalate_add() {  # <state> <distilled-item>
+  local state=$1 item=$2 now
+  case "$item" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  now=$(_now)
+  # shellcheck disable=SC2016 # $text/$now are jq --arg/--argjson variables.
+  journal_apply "$state" \
+    '. + [{nonce:"",kind:"escalation",source_key:"",text:$text,state:"buffered",buffered_epoch:$now,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}]' \
+    --arg text "$item" --argjson now "$now"
+}
+
+# Append one durable check exactly once per away session. Dedup is keyed on the
+# durable source key plus the distilled text, so an exact identity replay is
+# suppressed while a genuinely new observation under the same key is not.
+#   0 -> a new check record was buffered
+#   2 -> this check is already in the journal for this away session
+#   1 -> error
+# The sequence and payload args are unused (the journal append is itself atomic,
+# so no reservation transaction is needed) and kept only for call-site stability.
 check_escalate_once() {  # <state> <sequence> <key> <payload> <distilled>
-  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 exact logical buf
-  buf="$state/.subsuper-escalations"
-  exact=$(check_ledger_state "$state" "$sequence" "$key" "$payload")
-  case "$exact" in
-    buffered|delivered) return 2 ;;
-    reserved)
-      if check_ledger_reserved_append_present \
-        "$state" "$sequence" "$key" "$payload" "$distilled"; then
-        check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
-        return 2
-      fi
-      ;;
-  esac
-
-  logical=$(check_ledger_state "$state" '' "$key" "$payload")
-  case "$logical" in
-    buffered|delivered) return 2 ;;
-    reserved)
-      if check_ledger_reserved_append_present \
-        "$state" '' "$key" "$payload" "$distilled"; then
-        check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
-        return 2
-      fi
-      ;;
-  esac
-
-  check_ledger_reserve "$state" "$sequence" "$key" "$payload" || return 1
-  escalate_add "$state" "$distilled" || return 1
-  check_ledger_append "$state" buffered "$sequence" "$key" "$payload" || return 1
+  local state=$1 sequence=$2 key=$3 payload=$4 distilled=$5 now
+  case "$distilled" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  if [ -s "$state/$JOURNAL_NAME" ] \
+    && jq -s -e --arg key "$key" --arg text "$distilled" \
+      'any(.[]; .kind=="check" and .source_key==$key and .text==$text)' \
+      "$state/$JOURNAL_NAME" >/dev/null 2>&1; then
+    return 2
+  fi
+  now=$(_now)
+  # shellcheck disable=SC2016 # $key/$text/$now are jq --arg/--argjson variables.
+  journal_apply "$state" \
+    '. + [{nonce:"",kind:"check",source_key:$key,text:$text,state:"buffered",buffered_epoch:$now,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}]' \
+    --arg key "$key" --arg text "$distilled" --argjson now "$now" || return 1
   return 0
 }
 
-check_ledger_mark_delivered() {  # <state>
-  local state=$1 ledger buf tmp reservations reservation sequence key payload before line line_no
-  ledger="$state/.subsuper-check-ledger"
-  buf="$state/.subsuper-escalations"
-  [ -s "$ledger" ] || return 0
-  tmp=$(mktemp "$state/.subsuper-check-delivered.XXXXXX") || return 1
-  reservations=$(awk -F '\t' '
-    {
-      id=$2 FS $3 FS $4
-      status[id]=$1
-      sequence[id]=$2
-      key[id]=$3
-      payload[id]=$4
-      before[id]=$5
-    }
-    END {
-      for (id in status) {
-        if (status[id] == "reserved") print sequence[id], key[id], payload[id], before[id]
-      }
-    }
-  ' OFS='\t' "$ledger") || { rm -f "$tmp"; return 1; }
-  while IFS=$'\t' read -r sequence key payload before; do
-    [ -n "$sequence$key$payload$before" ] || continue
-    case "$before" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac
-    line_no=$((before + 1))
-    line=$(sed -n "${line_no}p" "$buf") || { rm -f "$tmp"; return 1; }
-    [ "$line" = "$payload" ] || { rm -f "$tmp"; return 1; }
-  done <<EOF
-$reservations
-EOF
-  while IFS=$'\t' read -r sequence key payload before; do
-    [ -n "$sequence$key$payload$before" ] || continue
-    check_ledger_append "$state" buffered "$sequence" "$key" "$payload" \
-      || { rm -f "$tmp"; return 1; }
-  done <<EOF
-$reservations
-EOF
-  if ! awk -F '\t' '
-    BEGIN { OFS="\t" }
-    {
-      id=$2 OFS $3 OFS $4
-      status[id]=$1
-      sequence[id]=$2
-      key[id]=$3
-      payload[id]=$4
-    }
-    END {
-      for (id in status) {
-        if (status[id] == "buffered") print "delivered", sequence[id], key[id], payload[id]
-      }
-    }
-  ' "$ledger" > "$tmp"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  if [ -s "$tmp" ] && ! cat "$tmp" >> "$ledger"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  rm -f "$tmp"
+# --- quarantine -------------------------------------------------------------
+DELIVERY_LEGACY_ARTIFACTS=(
+  .subsuper-escalations
+  .subsuper-escalations.since
+  .subsuper-escalations.delivery
+  .subsuper-escalations.records
+  .subsuper-check-ledger
+)
+
+journal_quarantine_alarm_write() {  # <state> <reason> <directory>
+  local state=$1 reason=$2 directory=$3 marker_tmp
+  marker_tmp=$(umask 077; mktemp "$state/.subsuper-inject-wedged.XXXXXX") || return 1
+  {
+    printf 'fm away-mode delivery store QUARANTINED: %s as of %s\n' "$reason" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+    printf 'The daemon could not safely interpret its delivery store. Contents preserved at:\n%s\n' "$directory"
+  } > "$marker_tmp" 2>/dev/null || { rm -f "$marker_tmp"; return 1; }
+  mv "$marker_tmp" "$state/.subsuper-inject-wedged" || { rm -f "$marker_tmp"; return 1; }
 }
 
-# Flush the escalation buffer as ONE batched, single-line digest to the
-# supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
-# inject failure (buffer preserved for retry / catch-up).
-escalate_flush() {  # <state>
-  local state=$1 buf item n msg
-  buf="$state/.subsuper-escalations"
-  [ -s "$buf" ] || return 0
-  n=$(wc -l < "$buf" 2>/dev/null || echo 0)
-  # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
-  # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
-  # safety net, but keeping the source single-line makes the intent explicit).
-  msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then
-    check_ledger_mark_delivered "$state" || return 1
-    : > "$buf"
-    rm -f "${buf}.since" "$state/.subsuper-inject-wedged"
-    return 0
+journal_quarantine_and_alarm() {  # <state> <reason> <file...>
+  local state=$1 reason=$2 dir f base destination failed=0 moved=0
+  shift 2
+  if ! dir=$(umask 077; mktemp -d "$state/.subsuper-delivery.quarantine-XXXXXX" 2>/dev/null); then
+    log "ERROR: away-mode delivery store quarantine allocation failed ($reason); source files retained"
+    if journal_quarantine_alarm_write "$state" "$reason; quarantine allocation failed" unavailable; then
+      wedge_alarm_notify "away-mode delivery store quarantine failed ($reason) - source files retained" "$state/.subsuper-inject-wedged"
+    fi
+    return 1
   fi
-  return 1
+  for f in "$@"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then
+      base=${f##*/}
+      destination="$dir/$base"
+      if mv "$f" "$destination" 2>/dev/null \
+        && [ ! -e "$f" ] && [ ! -L "$f" ] \
+        && { [ -e "$destination" ] || [ -L "$destination" ]; }; then
+        moved=$((moved + 1))
+      else
+        failed=$((failed + 1))
+      fi
+    fi
+  done
+  if ! journal_quarantine_alarm_write "$state" "$reason" "$dir"; then
+    log "ERROR: away-mode delivery store quarantine alarm publication failed ($reason); source files retained where moves failed"
+    return 1
+  fi
+  if [ "$failed" -eq 0 ]; then
+    log "ERROR: away-mode delivery store quarantined ($reason); moved $moved file(s) to $dir; raising wedge alarm"
+  else
+    log "ERROR: away-mode delivery store quarantine incomplete ($reason); moved $moved file(s) to $dir; $failed source move(s) failed and remain in place; raising wedge alarm"
+  fi
+  wedge_alarm_notify "away-mode delivery store quarantined ($reason) - see $dir" "$state/.subsuper-inject-wedged"
+  [ "$failed" -eq 0 ]
+}
+
+delivery_quarantine_legacy() {  # <state>
+  local state=$1 artifact path
+  local -a files=()
+  for artifact in "${DELIVERY_LEGACY_ARTIFACTS[@]}"; do
+    path="$state/$artifact"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      files+=("$path")
+    fi
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  journal_quarantine_and_alarm "$state" "pre-journal delivery state is unsupported" "${files[@]}"
+}
+# --- startup reconciliation -------------------------------------------------
+# Witness any typed (sent, unconfirmed) records so a restart immediately
+# confirms an in-flight digest. A corrupt journal is quarantined + alarmed;
+# a typed record that cannot be witnessed stays typed and stalls (never retyped).
+delivery_reconcile_startup() {  # <state> <backend> <target> <harness>
+  local state=$1 backend=$2 target=$3 harness=$4 typed_nonces n
+  if ! journal_valid "$state"; then
+    journal_quarantine_and_alarm "$state" "corrupt delivery journal at startup" "$state/$JOURNAL_NAME"
+    return 1
+  fi
+  [ -s "$state/$JOURNAL_NAME" ] || return 0
+  typed_nonces=$(jq -s -r 'map(select(.state=="typed") | .nonce) | unique | .[]' \
+    "$state/$JOURNAL_NAME" 2>/dev/null)
+  [ -n "$typed_nonces" ] || return 0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    delivery_nonce_valid "$n" || continue
+    if journal_witness_typed "$state" "$backend" "$target" "$harness" "$n"; then
+      log "startup: transcript witness confirmed nonce [d:$n]"
+      journal_mark_delivered "$state" "$n" || return 1
+    fi
+  done <<EOF
+$typed_nonces
+EOF
+}
+
+# Flush the journal to the supervisor pane as ONE batched, single-line digest.
+# Returns 0 when no undelivered work remains (empty, or all confirmed this call),
+# non-zero when undelivered work is still outstanding (a typed digest awaiting
+# witness, or a buffered batch that deferred/failed) so housekeeping's max-defer
+# alarm can surface a genuine stall. A corrupt journal is quarantined + alarmed.
+escalate_flush() {  # <state>
+  local state=$1 journal="$1/$JOURNAL_NAME" target backend harness
+  local typed_nonces n count msg buffered_at nonce transcript offset baseline extra rc
+  target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
+  backend="${FM_SUPERVISOR_BACKEND:-tmux}"
+  harness=$(fm_daemon_primary_harness)
+
+  if ! journal_valid "$state"; then
+    journal_quarantine_and_alarm "$state" "corrupt delivery journal" "$journal"
+    return 1
+  fi
+  [ -s "$journal" ] || { rm -f "$state/.subsuper-inject-wedged"; return 0; }
+
+  # (1) Confirm any already-typed (sent, unconfirmed) records via the witness.
+  typed_nonces=$(jq -s -r 'map(select(.state=="typed") | .nonce) | unique | .[]' \
+    "$journal" 2>/dev/null)
+  if [ -n "$typed_nonces" ]; then
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      delivery_nonce_valid "$n" || continue
+      if journal_witness_typed "$state" "$backend" "$target" "$harness" "$n"; then
+        log "inject delivered: transcript witness confirmed nonce [d:$n]"
+        journal_mark_delivered "$state" "$n" || return 1
+      fi
+    done <<EOF
+$typed_nonces
+EOF
+    # A still-unconfirmed typed digest holds the flush: do not type new work
+    # while a sent digest awaits confirmation. Content is preserved; the
+    # max-defer alarm surfaces a genuine stall.
+    if [ -s "$journal" ] && jq -s -e 'any(.[]; .state=="typed")' "$journal" >/dev/null 2>&1; then
+      return 1
+    fi
+  fi
+
+  # (2) Flush buffered records as ONE batched, single-line digest. Reaching here
+  # means no typed digest is still unconfirmed, so a delivery that clears the
+  # buffer resolves any prior stall - drop the stale wedge marker on success.
+  count=$(jq -s 'map(select(.state=="buffered")) | length' "$journal" 2>/dev/null)
+  case "$count" in ''|*[!0-9]*|0) rm -f "$state/.subsuper-inject-wedged"; return 0 ;; esac
+  msg=$(jq -s -r 'map(select(.state=="buffered") | .text) | join(" | ")' "$journal" 2>/dev/null)
+  buffered_at=$(jq -s -r 'map(select(.state=="buffered") | .buffered_epoch) | min' "$journal" 2>/dev/null)
+  case "$buffered_at" in ''|*[!0-9]*) buffered_at=$(_now) ;; esac
+  nonce=$(delivery_nonce_generate "$state") || { log "inject stalled: could not generate a delivery nonce"; return 1; }
+  msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$count" "$msg")
+  transcript=-
+  offset=0
+  baseline=$(delivery_transcript_baseline_validated "$backend" "$target" "$harness" 2>/dev/null || true)
+  case "$harness" in
+    pi|pi-signed|claude*)
+      if [ -z "$baseline" ]; then
+        log "inject deferred: transcript baseline unavailable; type skipped"
+        return 1
+      fi
+      ;;
+  esac
+  if [ -n "$baseline" ]; then
+    IFS=$'\t' read -r transcript offset extra <<< "$baseline"
+    case "$transcript" in ''|*$'\t'*|*$'\r'*|*$'\n'*) transcript=-; offset=0 ;; esac
+    case "$offset" in ''|*[!0-9]*) transcript=-; offset=0 ;; esac
+  fi
+  inject_msg "$state" "$nonce" "$msg" "$transcript" "$offset" "$buffered_at"
+  rc=$?
+  case "$rc" in
+    0) journal_mark_delivered "$state" "$nonce" || return 1
+       rm -f "$state/.subsuper-inject-wedged"
+       return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # --- backend-independent active wedge alert ---------------------------------
@@ -1196,8 +1648,8 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   fi
   {
     printf 'fm away-mode inject WEDGED: %ss undelivered as of %s\n' "$age" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
-    printf 'The supervisor pane could not accept an escalation. Buffered items:\n'
-    cat "$state/.subsuper-escalations" 2>/dev/null
+    printf 'The supervisor pane could not accept an escalation. Undelivered items:\n'
+    delivery_undelivered_texts "$state" 2>/dev/null
   } 2>/dev/null > "$marker" || true
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
   backend="${FM_SUPERVISOR_BACKEND:-$FM_SUPERVISOR_BACKEND_DEFAULT}"
@@ -1218,23 +1670,13 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   fi
 }
 
-_oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first arrived (sidecar epoch)
-  local f=$1 since
-  [ -s "$f" ] || { echo 999999; return; }
-  since="${f}.since"
-  if [ -r "$since" ]; then
-    echo $(( $(_now) - $(cat "$since" 2>/dev/null || echo 0) ))
-  else
-    echo 999999
-  fi
-}
-
 # --- housekeeping (runs every tick while the watcher is mid-cycle) ----------
 # Four cheap jobs, each guarded so an empty/quiet fleet costs near zero:
-#  1) batch flush: if the escalation buffer's oldest content is older than
+#  1) batch flush: if the journal's oldest buffered record is older than
 #     ESCALATE_BATCH_SECS (or batching is disabled), inject one digest.
-#  1b) max-defer escape: if the buffer is STILL undelivered past MAX_DEFER_SECS,
-#     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
+#  1b) max-defer escape: if anything undelivered remains past MAX_DEFER_SECS,
+#     retry the flush (which witnesses a typed digest without retyping); if it
+#     still cannot confirm, raise the wedge alarm.
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
 #     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
@@ -1253,21 +1695,21 @@ housekeeping() {  # <state>
   if [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ]; then
     escalate_flush "$state" || true
   else
-    due=$(_oldest_line_age "$state/.subsuper-escalations")
+    due=$(delivery_oldest_buffered_age "$state")
     if [ "$due" -ge "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" ]; then
       escalate_flush "$state" || true
     fi
   fi
 
-  # (1b) max-defer escape. If anything is still buffered past MAX_DEFER_SECS,
-  # retry the normal delivery path. If that still cannot confirm, raise a loud
-  # wedge alarm while preserving the buffer.
+  # (1b) max-defer escape. If anything undelivered remains past MAX_DEFER_SECS,
+  # retry the flush (it witnesses a typed digest rather than retyping it). If it
+  # still cannot confirm, raise a loud wedge alarm while preserving the journal.
   max_defer=${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}
-  if afk_active "$state" && [ "$max_defer" -gt 0 ] && [ -s "$state/.subsuper-escalations" ]; then
-    oldest=$(_oldest_line_age "$state/.subsuper-escalations")
+  if afk_active "$state" && [ "$max_defer" -gt 0 ] && delivery_has_undelivered "$state"; then
+    oldest=$(delivery_oldest_undelivered_age "$state")
     # Throttle the alarm to once per max-defer window (the wedge marker doubles
-    # as the throttle). A successful flush clears the buffer; a failed one alarms
-    # and waits.
+    # as the throttle). A successful flush retires the journal work; a failed one
+    # alarms and waits.
     if [ "$oldest" -ge "$max_defer" ] \
        && [ "$(_file_age "$state/.subsuper-inject-wedged")" -ge "$max_defer" ]; then
       if escalate_flush "$state"; then
@@ -1398,28 +1840,36 @@ window_for_task() {  # <task-key> [state]
 
 # --- injection --------------------------------------------------------------
 # inject_msg: send one escalation digest to the supervisor pane.
-# Returns 0 on successful inject (or empty buffer), non-zero if the pane is
-# gone, the supervisor is busy, afk is inactive, or the verified submit cannot
-# be confirmed after bounded retries. On non-zero the caller preserves
-# the buffer so the escalation survives for the next cycle or the catch-up flush.
+# Returns:
+#   0  delivered-confirmed (backend reported `empty`, or the transcript witness
+#      confirmed the nonce after an unknown verdict),
+#   2  sent but unconfirmed - the digest was typed once and its records are now
+#      "typed"; it will be witnessed on a later flush or surfaced by the wedge
+#      alarm, and it is NEVER retyped,
+#   1  not sent (afk off, pane gone, supervisor busy, composer not empty, or the
+#      typed marker could not be committed) - the records stay "buffered" and are
+#      retried on the next cycle.
 #
 # Submit model:
-#   - TYPE ONCE, then submit with Enter. Never retype the digest: a swallowed
-#     Enter leaves our text in the composer, and retyping would concatenate two
-#     sentinel-prefixed digests into one corrupted turn.
+#   - The delivered-once commit is journal_mark_typed BELOW: the batch is flipped
+#     to "typed" (one rename) AFTER the guards pass but BEFORE the Enter is sent,
+#     so a crash after the send finds the record already typed and never retypes
+#     it. Only Enter is retried within one bounded attempt; the digest text is
+#     typed at most once.
 #   - SUBMIT ACK = the backend submit primitive reports `empty` after Enter.
 #     For tmux that means a cleared composer; for non-Claude herdr idle-baseline
 #     paths it can mean native agent-state observed a real turn start, while a
 #     Claude primary requires rendered-transition or cleared-composer proof.
-#     Pending means Enter was swallowed; unknown is treated as undelivered by
-#     this strict daemon path.
+#     Pending means Enter was swallowed. For Pi, pi-signed, and Claude, a user
+#     transcript record containing the nonce confirms delivery when rendering
+#     remains unknown.
 #   - COMPOSER GUARD before typing: if the cursor line already has real content
 #     after dim/faint ghost text and borders are ignored (a human's half-typed
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
-inject_msg() {  # <message> [state]
-  local msg=$1 state target backend harness retries sleep_s verdict composer encoded native_state busy_rc matched_row recovery_polls
-  state="${2:-$(_state_root)}"
+inject_msg() {  # <state> <nonce> <message> <transcript> <offset> <buffered-at>
+  local state=$1 nonce=$2 msg=$3 delivery_transcript=${4:--} delivery_offset=${5:-0} delivery_buffered_at=${6:-0}
+  local target backend harness retries sleep_s verdict composer encoded native_state busy_rc matched_row recovery_polls
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
   # watcher triage. Escalations buffer and survive for the next catch-up flush.
@@ -1429,6 +1879,7 @@ inject_msg() {  # <message> [state]
   # them. Then use the canonical typed envelope so downstream consumers retain
   # the exact away-supervisor kind without interpreting this payload's prose.
   msg=$(_collapse_newlines "$msg")
+  [ -z "$nonce" ] || msg="[d:$nonce] $msg"
   fm_operational_input_encode away-supervisor "$msg" encoded || return 1
   msg=$encoded
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
@@ -1496,22 +1947,39 @@ inject_msg() {  # <message> [state]
     log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input, dead-shell prompt, or unreadable pane; subcause=composer=${composer:-unknown}; native-state=$native_state)"
     return 1
   fi
-  # (4) Type the digest ONCE, then submit with Enter (retry Enter only, never
+  # (4) Guards passed. COMMIT the delivered-once "typed" marker BEFORE sending
+  # (one rename), so a crash after the Enter finds the batch already typed and
+  # never retypes it. If the marker cannot be persisted, do NOT send (a send
+  # without a persisted typed marker is exactly the flood this redesign removes):
+  # leave the records buffered and retry next cycle.
+  harness=$(fm_daemon_primary_harness)
+  if [ -n "$nonce" ]; then
+    if ! journal_mark_typed "$state" "$nonce" "$delivery_transcript" "$delivery_offset"; then
+      log "inject stalled: could not commit the typed delivery marker; type skipped"
+      return 1
+    fi
+  fi
+  # (5) Type the digest ONCE, then submit with Enter (retry Enter only, never
   # retype) via the shared submit primitive. Success = the backend confirms
-  # submit. An unconfirmed/unknown pane does NOT count as delivered, so the
-  # buffer is preserved (strict) rather than cleared.
+  # submit. An unconfirmed/unknown pane does NOT count as delivered - the records
+  # stay "typed" (return 2) for a later witness or the wedge alarm.
   # Dispatches through fm_backend_send_text_submit (bin/fm-backend.sh): for
   # backend=tmux this calls fm_backend_tmux_send_text_submit, a verbatim
   # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
-  harness=${FM_DAEMON_PRIMARY_HARNESS:-unknown}
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s" "" "$harness")
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
-  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
-  return 1
+  if [ -n "$nonce" ] && [ "$delivery_transcript" != - ] \
+    && delivery_witness_confirms "$backend" "$target" "$harness" "$nonce" \
+      "$delivery_transcript" "$delivery_offset" "$delivery_buffered_at"; then
+    log "inject delivered: transcript witness confirmed nonce [d:$nonce] after backend verdict=$verdict"
+    return 0
+  fi
+  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict); digest typed once, will witness or alarm - never retyped"
+  return 2
 }
 
 # --- INJECT_SKIP prefix match (literal prefixes, no regex) ------------------
@@ -1827,6 +2295,15 @@ fm_super_main() {
     exit 1
   fi
 
+  fm_daemon_primary_harness >/dev/null
+  if ! delivery_quarantine_legacy "$STATE"; then
+    log "startup failed: pre-journal delivery state quarantine failed"
+    fm_lock_release "$LOCK" 2>/dev/null || true
+    rm -f "$PIDFILE" 2>/dev/null || true
+    exit 1
+  fi
+  delivery_reconcile_startup "$STATE" "$BACKEND" "$TARGET" "$FM_DAEMON_PRIMARY_HARNESS" \
+    || log "startup: delivered-once reconciliation deferred"
   local afk_status="off"
   afk_active "$STATE" && afk_status="on"
   log "daemon starting (pid $$); target=$TARGET; target_source=$target_source; backend=$BACKEND; backend_source=$backend_source; afk=$afk_status; inject_skip='${FM_INJECT_SKIP:-$INJECT_SKIP_DEFAULT}'; stale_escalate=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}s; batch=${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}s"

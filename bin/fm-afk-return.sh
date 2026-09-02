@@ -119,12 +119,46 @@ print_blockers() {  # <file>
   done < "$file"
 }
 
+return_delivery_journal_valid() {  # <journal-path>
+  local journal=$1
+  [ -e "$journal" ] || return 0
+  [ -f "$journal" ] && [ -r "$journal" ] || return 1
+  [ -s "$journal" ] || return 0
+  jq -e -s '
+    all(.[];
+      type == "object"
+      and ((.nonce | type) == "string")
+      and ((.nonce == "") or (.nonce | test("^[0-9a-f]{12}$")))
+      and (.kind == "escalation" or .kind == "check")
+      and ((.source_key | type) == "string")
+      and ((.text | type) == "string")
+      and (.state == "buffered" or .state == "typed" or .state == "delivered")
+      and (
+        (.state == "buffered" and .nonce == "")
+        or (
+          (.state == "typed" or .state == "delivered")
+          and (.nonce | test("^[0-9a-f]{12}$"))
+        )
+      )
+      and ((.buffered_epoch | type) == "number")
+      and ((.typed_epoch | type) == "number")
+      and ((.delivered_epoch | type) == "number")
+      and ((.witness_transcript | type) == "string")
+      and ((.witness_offset | type) == "number")
+    )
+  ' "$journal" >/dev/null 2>&1
+}
+
+# Clear the away daemon's live delivery store on return. Pre-redesign files are
+# preserved for the daemon's startup quarantine path.
 clear_delivery_artifacts() {
-  rm -f \
-    "$STATE/.subsuper-escalations" \
-    "$STATE/.subsuper-escalations.since" \
-    "$STATE/.subsuper-inject-wedged" \
-    "$STATE/.subsuper-check-ledger"
+  local artifact result=0
+  for artifact in \
+    .subsuper-delivery.jsonl \
+    .subsuper-inject-wedged; do
+    rm -f "$STATE/$artifact" || result=1
+  done
+  return "$result"
 }
 
 return_guard() {
@@ -142,6 +176,7 @@ return_guard() {
 
 return_reconcile() {
   local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge escalations lifecycle_ok=1
+  local journal="$STATE/.subsuper-delivery.jsonl" undelivered_count empty_count
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
   drain_err=$(mktemp "$STATE/.afk-return-drain.XXXXXX") || { rm -f "$evidence" "$blockers"; return 1; }
@@ -173,8 +208,37 @@ return_reconcile() {
     wedge=$(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
     append_evidence wedge "$wedge" "$evidence"
   fi
-  if [ -s "$STATE/.subsuper-escalations" ]; then
-    escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
+  # Undelivered escalation/check items still in the delivery journal are the
+  # "while you were out" catch-up.
+  escalations=""
+  if [ -e "$journal" ]; then
+    if ! return_delivery_journal_valid "$journal"; then
+      append_evidence lifecycle 'away-mode delivery journal is malformed; preserved for retry' "$evidence"
+      lifecycle_ok=0
+    else
+      undelivered_count=$(jq -s '[.[] | select(.state!="delivered")] | length' "$journal" 2>/dev/null) || {
+        append_evidence lifecycle 'away-mode delivery journal could not be read; preserved for retry' "$evidence"
+        lifecycle_ok=0
+        undelivered_count=0
+      }
+      empty_count=$(jq -s '[.[] | select(.state!="delivered" and .text=="")] | length' "$journal" 2>/dev/null) || {
+        append_evidence lifecycle 'away-mode delivery journal could not be read; preserved for retry' "$evidence"
+        lifecycle_ok=0
+        empty_count=0
+      }
+      if [ "$lifecycle_ok" -eq 1 ] && [ "$undelivered_count" -gt 0 ]; then
+        escalations=$(jq -s -r 'map(select(.state!="delivered" and .text!="") | .text) | .[]' "$journal") || {
+          append_evidence lifecycle 'away-mode delivery journal could not be read; preserved for retry' "$evidence"
+          lifecycle_ok=0
+          escalations=""
+        }
+        if [ "$empty_count" -gt 0 ]; then
+          append_evidence escalation "undelivered away-mode delivery record(s) with empty text: $empty_count" "$evidence"
+        fi
+      fi
+    fi
+  fi
+  if [ -n "$escalations" ]; then
     append_evidence escalation "$escalations" "$evidence"
   fi
 
@@ -204,8 +268,15 @@ return_reconcile() {
     return 3
   fi
 
+  if ! clear_delivery_artifacts; then
+    append_evidence lifecycle 'away-mode delivery cleanup failed; preserved for retry' "$evidence"
+    write_gate "$evidence" "$blockers" || { rm -f "$evidence" "$blockers" "$drain_err"; return 1; }
+    printf 'fm-afk-return: delivery cleanup failed; catch-up remains pending\n' >&2
+    print_evidence "$GATE" >&2
+    rm -f "$evidence" "$blockers" "$drain_err"
+    return 3
+  fi
   rm -f "$GATE"
-  clear_delivery_artifacts
   rm -f "$evidence" "$blockers" "$drain_err"
   printf 'fm-afk-return: catch-up clear; ordinary captain work may proceed\n'
   return 0

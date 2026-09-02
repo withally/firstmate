@@ -56,6 +56,12 @@ run_return() {  # <case-dir> <mode>
   FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" "$dir/bin/fm-afk-return.sh" "$mode" 2>&1
 }
 
+run_return_with_path() {  # <case-dir> <mode> <path-prefix>
+  local dir=$1 mode=$2 path_prefix=$3
+  PATH="$path_prefix:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    "$dir/bin/fm-afk-return.sh" "$mode" 2>&1
+}
+
 ack_return() {  # <case-dir> <return-output>
   local dir=$1 output=$2 sequence generation
   sequence=$(printf '%s\n' "$output" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' | tail -1)
@@ -86,6 +92,10 @@ test_return_gate_orders_catchup_before_bearings() {
   seed_live_blocker "$dir" herdr synthetic-dependency
   date +%s > "$dir/home/state/.afk"
   printf 'repair-task.status: blocked synthetic dependency\n' > "$dir/home/state/.subsuper-escalations"
+  jq -cn '{nonce:"",kind:"escalation",source_key:"",text:"repair-task.status: blocked synthetic dependency",state:"buffered",buffered_epoch:1,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' \
+    > "$dir/home/state/.subsuper-delivery.jsonl"
+  : > "$dir/home/state/.subsuper-escalations.delivery"
+  : > "$dir/home/state/.subsuper-escalations.records"
   printf 'fm away-mode inject WEDGED: 4555s undelivered\n' > "$dir/home/state/.subsuper-inject-wedged"
   printf 'delivered\t1\trepair.check.sh\tcheck: repair due\t\n' > "$dir/home/state/.subsuper-check-ledger"
   {
@@ -136,9 +146,11 @@ test_return_gate_orders_catchup_before_bearings() {
   out=$(run_return "$dir" check) || fail "resolved blocker did not clear return catch-up: $out"
   assert_contains "$out" 'catch-up clear' "successful check did not announce that ordinary work may proceed"
   [ ! -e "$gate" ] || fail "successful check left the return gate behind"
-  [ ! -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check left delivered escalation state behind"
+  [ -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check discarded pre-journal escalation state"
+  [ -e "$dir/home/state/.subsuper-escalations.delivery" ] || fail "successful check discarded pre-journal delivery state"
+  [ -e "$dir/home/state/.subsuper-escalations.records" ] || fail "successful check discarded pre-journal records"
   [ ! -e "$dir/home/state/.subsuper-inject-wedged" ] || fail "successful check left the wedge marker behind"
-  [ ! -e "$dir/home/state/.subsuper-check-ledger" ] || fail "successful check left the away-session check ledger behind"
+  [ -e "$dir/home/state/.subsuper-check-ledger" ] || fail "successful check discarded the pre-journal check ledger"
   [ -s "$dir/home/state/.fake-drain" ] || fail "successful return consumed its wake before handling completed"
   [ ! -e "$dir/home/state/.fake-drain-acks" ] || fail "successful return acknowledged its wake inside evidence publication"
   assert_contains "$out" 'WAKE_ACK_REQUIRED: after handling completes' "successful return did not hand acknowledgement to the handling turn"
@@ -277,9 +289,113 @@ test_check_retries_recorded_terminal_teardown() {
   pass "check retries recorded terminal teardown and keeps catch-up gated until success"
 }
 
+test_malformed_delivery_journal_blocks_return_and_preserves_state() {
+  local dir out rc journal gate
+  dir="$TMP_ROOT/malformed-delivery-journal"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  gate="$dir/home/state/.afk-return-catchup"
+  printf '%s\n' '{not-json' > "$journal"
+
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "malformed delivery journal did not block return (rc=$rc): $out"
+  [ -e "$journal" ] || fail "malformed delivery journal was cleared during return"
+  [ "$(cat "$journal")" = '{not-json' ] || fail "malformed delivery journal changed during return"
+  [ -s "$gate" ] || fail "malformed delivery journal did not leave a return gate"
+  assert_contains "$out" 'delivery journal is malformed' "return did not report the malformed delivery journal"
+  assert_contains "$out" 'preserved for retry' "return did not state that the journal was preserved"
+  pass "return catch-up fails closed and preserves a malformed delivery journal"
+}
+
+test_typed_delivery_without_nonce_blocks_return() {
+  local dir out rc journal gate record
+  dir="$TMP_ROOT/typed-empty-nonce"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  gate="$dir/home/state/.afk-return-catchup"
+  jq -cn '{nonce:"",kind:"escalation",source_key:"",text:"stranded typed record",state:"typed",buffered_epoch:1,typed_epoch:2,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' \
+    > "$journal"
+  record=$(cat "$journal")
+
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "typed record without a nonce did not block return (rc=$rc): $out"
+  [ -e "$journal" ] || fail "typed record without a nonce was cleared during return"
+  [ "$(cat "$journal")" = "$record" ] || fail "typed record without a nonce changed during return"
+  [ -s "$gate" ] || fail "typed record without a nonce did not leave a return gate"
+  assert_contains "$out" 'delivery journal is malformed' "return did not report the invalid typed record"
+  pass "return catch-up rejects typed records without nonces and preserves the journal"
+}
+
+test_return_surfaces_empty_delivery_record() {
+  local dir out journal
+  dir="$TMP_ROOT/empty-delivery-record"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  jq -cn '{nonce:"",kind:"escalation",source_key:"",text:"",state:"buffered",buffered_epoch:1,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' > "$journal"
+
+  out=$(run_return "$dir" begin) || fail "return did not complete for an empty delivery record: $out"
+  assert_contains "$out" 'empty text: 1' "return silently omitted an empty delivery record"
+  [ ! -e "$journal" ] || fail "successful return left the caught-up empty delivery journal"
+  pass "return catch-up reports an empty delivery record before clearing it"
+}
+
+test_empty_delivery_journal_is_a_valid_noop() {
+  local dir out journal gate
+  dir="$TMP_ROOT/empty-delivery-journal"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  gate="$dir/home/state/.afk-return-catchup"
+  : > "$journal"
+
+  out=$(run_return "$dir" begin) || fail "an empty delivery journal blocked return: $out"
+  [ ! -e "$gate" ] || fail "an empty delivery journal opened a return gate"
+  [ ! -e "$journal" ] || fail "successful return left the empty delivery journal behind"
+  pass "return catch-up accepts an empty delivery journal as no work"
+}
+
+test_delivery_cleanup_failure_keeps_return_gate() {
+  local dir out rc gate wedge fakebin
+  dir="$TMP_ROOT/delivery-cleanup-failure"
+  install_runner "$dir"
+  gate="$dir/home/state/.afk-return-catchup"
+  wedge="$dir/home/state/.subsuper-inject-wedged"
+  fakebin="$dir/fakebin"
+  mkdir -p "$fakebin"
+  printf 'delivery is still wedged\n' > "$wedge"
+  cat > "$fakebin/rm" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [ "$arg" = "$FM_RETURN_FAIL_RM" ] && exit 1
+done
+exec /bin/rm "$@"
+SH
+  chmod +x "$fakebin/rm"
+
+  set +e
+  out=$(FM_RETURN_FAIL_RM="$wedge" run_return_with_path "$dir" begin "$fakebin")
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "delivery cleanup failure did not keep return gated (rc=$rc): $out"
+  [ -e "$gate" ] || fail "delivery cleanup failure removed the return gate"
+  [ -e "$wedge" ] || fail "delivery cleanup failure removed the uncleared artifact"
+  assert_contains "$out" 'delivery cleanup failed' "return did not report the cleanup failure"
+  pass "delivery cleanup failure preserves the return gate and uncleared state"
+}
+
 test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
+test_malformed_delivery_journal_blocks_return_and_preserves_state
+test_typed_delivery_without_nonce_blocks_return
+test_return_surfaces_empty_delivery_record
+test_empty_delivery_journal_is_a_valid_noop
+test_delivery_cleanup_failure_keeps_return_gate

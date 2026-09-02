@@ -234,7 +234,7 @@ Rendered idle with pending text remains unconfirmed and preserves the escalation
 After a max-defer alarm, only the Herdr+Claude path may reconsider a `rendered-busy` result.
 The exact matched row must include an elapsed duration and remain byte-identical for `FM_RENDERED_BUSY_RECOVERY_POLLS` polls, which defaults to 3, while native state is `idle` or `done`, or is `working` with the tracked daemon-terminal record.
 Only then does the daemon re-read the composer and proceed on an exact `empty` verdict; a changed or durationless row, unknown native state, non-background `working` state, `pending` composer, or `unknown` composer remains deferred.
-The recovery gate admits one submit attempt and resets its stability streak before that attempt; normal verified-submit confirmation remains the only path that clears the escalation buffer.
+The recovery gate admits one submit attempt and resets its stability streak before that attempt; verified confirmation retires the journal records as `delivered` under the [away-mode supervisor contract](#away-mode-supervisor-support).
 For another non-Claude, non-Pi target with an already active or unreadable native baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A known Claude target captures its rendered baseline before each Enter, so a pre-existing active-turn footer cannot serve as submit confirmation.
 A fully unreadable target stops retrying and reports unknown.
@@ -310,6 +310,13 @@ There is still one watcher process; the event reader is a bounded child of that 
 The away daemon supports tmux and Herdr supervisor panes only.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
+`bin/fm-supervise-daemon.sh` owns the delivered-once contract through a single JSONL journal (`state/.subsuper-delivery.jsonl`): each record carries its nonce, kind, source key, text, state, lifecycle epochs, and transcript witness baseline, and every journal mutation reads all records, writes one temp file, and atomically renames it, including an empty result.
+Each digest receives a collision-safe unique 12-hex nonce and is marked `typed` before its one and only type; rendering is the fast confirmation path, Pi/pi-signed and Claude user transcripts are authoritative JSONL nonce witnesses when rendering is unknown, and an unconfirmed attempt stays typed and alarms without ever retyping.
+Within an away session, check records deduplicate on `source_key` plus distilled `text`; delivered records remain in the journal until fresh-entry or return cleanup.
+Pi witness lookup first follows the active pane's canonical `agent_session` when it resolves beneath the configured `PI_CODING_AGENT_DIR` session root or the propagated `PI_CODING_AGENT_SESSION_DIR` override from a configured `--session-dir`; foreign or non-canonical roots are rejected and the transcript's working directory must match.
+Claude uses the cwd-scoped project transcript and validates its working directory.
+Pi and Claude typing defers until a canonical transcript baseline exists, and a typed record carrying `witness_transcript=-` re-resolves and binds a later canonical transcript before witness confirmation.
+At daemon startup, pre-redesign delivery files are never parsed or imported; they are moved verbatim into a unique quarantine and raise the wedge alarm, with sources retained if quarantine creation or a move fails.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
@@ -326,7 +333,7 @@ It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-Fresh-entry cleanup and flag ordering are owned by the AFK skill's stale-artifact lifecycle; an away restart or recovery with `state/.afk` already present preserves the session's escalation buffer, delivery sidecars, and check ledger.
+Fresh-entry cleanup and flag ordering are owned by the AFK skill's stale-artifact lifecycle; an away restart or recovery with `state/.afk` already present preserves the session's delivery journal.
 
 ## Destructive lab safety
 
@@ -367,6 +374,7 @@ tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-daemon.test.sh
+tests/fm-afk-delivery-witness-live-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh

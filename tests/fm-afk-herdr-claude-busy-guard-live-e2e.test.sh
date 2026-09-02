@@ -258,7 +258,7 @@ wait_for_single_delivery() {
     ack_count=$(printf '%s\n' "$screen" | grep -F -c "$ack" || true)
     composer=$(composer_state)
     if [ "$count" -eq 1 ] && [ "$ack_count" -eq 1 ] \
-      && [ "$composer" = empty ] && [ ! -s "$STATE_DIR/.subsuper-escalations" ]; then
+      && [ "$composer" = empty ] && ! delivery_has_undelivered "$STATE_DIR"; then
       return 0
     fi
     sleep 1
@@ -399,7 +399,7 @@ if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ] || [ "$(token_count "$AWAY_ACK_T
   screen_text | tail -n 80 >&2
   fail "the first escalation appeared more than once after the delivery settled"
 fi
-[ ! -s "$STATE_DIR/.subsuper-escalations" ] \
+! delivery_has_undelivered "$STATE_DIR" \
   || fail "the first escalation buffer did not clear after confirmed submission"
 pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: native working with rendered-idle empty composer submits once"
 
@@ -436,7 +436,7 @@ wait_for_rendered_idle_with_pending "$HUMAN_TEXT" \
 
 [ "$(token_count "$ESCALATION_TWO")" -eq 0 ] \
   || fail "the second escalation was injected into the bright human composer"
-if [ ! -s "$STATE_DIR/.subsuper-escalations" ]; then
+if ! delivery_has_undelivered "$STATE_DIR"; then
   echo "second escalation buffer diagnostics:" >&2
   echo "agent_status=$(agent_status) composer=$(composer_state) rendered_busy=$(claude_pane_is_busy; echo $?)" >&2
   echo "daemon log:" >&2

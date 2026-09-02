@@ -155,6 +155,33 @@ fm_afk_launch_entry_cmd() {
   printf '%s' "${FM_AFK_LAUNCH_ENTRY:-$FM_ROOT/bin/fm-afk-start.sh}"
 }
 
+fm_afk_launch_primary_harness() {
+  local harness
+  harness=$(FM_HOME="$FM_HOME" "$FM_AFK_LAUNCH_DIR/fm-harness.sh" 2>/dev/null || true)
+  case "$harness" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) printf '%s' "$harness" ;;
+  esac
+}
+
+fm_afk_launch_daemon_cmd() {  # <captain-target> <captain-backend> <entry> [pi-session-dir]
+  local captain_target=$1 captain_backend=$2 entry=$3 primary_harness pi_agent_dir pi_session_dir daemon_env
+  primary_harness=$(fm_afk_launch_primary_harness)
+  daemon_env=$(printf 'exec env -u FM_DAEMON_PRIMARY_HARNESS FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q' \
+    "$FM_HOME" "$captain_target" "$captain_backend")
+  pi_agent_dir=${PI_CODING_AGENT_DIR:-}
+  if [ -n "$pi_agent_dir" ]; then
+    daemon_env+=" PI_CODING_AGENT_DIR=$(printf '%q' "$pi_agent_dir")"
+  fi
+  pi_session_dir=${4:-${PI_CODING_AGENT_SESSION_DIR:-}}
+  if [ -n "$pi_session_dir" ]; then
+    daemon_env+=" PI_CODING_AGENT_SESSION_DIR=$(printf '%q' "$pi_session_dir")"
+  fi
+  if [ -n "$primary_harness" ]; then
+    daemon_env+=" FM_DAEMON_PRIMARY_HARNESS=$(printf '%q' "$primary_harness")"
+  fi
+  printf '%s %q' "$daemon_env" "$entry"
+}
+
 fm_afk_launch_record_write() {  # <backend> <target> <extra>
   local pending
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
@@ -357,15 +384,14 @@ fm_afk_launch_reconcile() {
 
 fm_afk_launch_restore_backup() {  # <backup> <had-afk>
   local backup=$1 had_afk=$2 artifact result=0
-  rm -f "$FM_AFK_LAUNCH_STATE/.afk" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-escalations" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.since" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-inject-wedged" \
-    "$FM_AFK_LAUNCH_STATE/.subsuper-check-ledger" || result=1
+  rm -f "$FM_AFK_LAUNCH_STATE/.afk" || result=1
+  for artifact in "${FM_AFK_DELIVERY_ARTIFACTS[@]}"; do
+    rm -f "$FM_AFK_LAUNCH_STATE/$artifact" || result=1
+  done
   if [ "$had_afk" -eq 1 ]; then
     cp "$backup/.afk" "$FM_AFK_LAUNCH_STATE/.afk" || result=1
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .subsuper-check-ledger; do
+  for artifact in "${FM_AFK_DELIVERY_ARTIFACTS[@]}"; do
     if [ -e "$backup/$artifact" ]; then
       cp -p "$backup/$artifact" "$FM_AFK_LAUNCH_STATE/$artifact" || result=1
     fi
@@ -415,8 +441,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     IFS=$'\t' read -r wsid pane <<< "$recovered"
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
-    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
+  cmd=$(fm_afk_launch_daemon_cmd "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
     fm_afk_launch_close_terminal herdr "$session:$pane"
@@ -442,8 +467,7 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   nonce="$$-${RANDOM:-0}-$(date '+%s')"
   session="fm-afk-daemon-$hash-$nonce"
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
-    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
+  cmd=$(fm_afk_launch_daemon_cmd "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write tmux "$session" ""; then
     fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
     return 1
@@ -488,7 +512,7 @@ fm_afk_launch_start() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .subsuper-check-ledger; do
+  for artifact in "${FM_AFK_DELIVERY_ARTIFACTS[@]}"; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -548,7 +572,7 @@ fm_afk_launch_start_native() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .subsuper-check-ledger; do
+  for artifact in "${FM_AFK_DELIVERY_ARTIFACTS[@]}"; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi

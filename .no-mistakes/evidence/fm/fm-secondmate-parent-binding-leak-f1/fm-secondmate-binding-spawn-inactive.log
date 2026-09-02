@@ -1,0 +1,63 @@
+FM_TEST_BEGIN 2026-09-02T12:40:33Z tests/fm-spawn-pool-base-freshen.test.sh family=unclassified expected_gate_skip=none
+# observed spawn: spawned pool-current-base-r1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-pool-current-base-r1 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-pool-base-freshen.xDFrRC/current-base/pool merge_authority=captain
+# observed base: HEAD=dd5c46b7c611b4e2963dfb9ccea628c4accc515e origin/main=dd5c46b7c611b4e2963dfb9ccea628c4accc515e advanced-main=must survive a newly spawned branch
+ok - a stale pooled worktree refreshes to current origin/main before a crew branch is created
+ok - a stale pooled worktree resolves and refreshes a non-main default branch
+# observed direct-pr spawn: spawned pool-direct-pr-r3 harness=codex kind=ship mode=direct-PR yolo=off window=firstmate:fm-pool-direct-pr-r3 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-pool-base-freshen.xDFrRC/direct-pr/pool merge_authority=captain
+# observed scout spawn: spawned pool-scout-r3 harness=codex kind=scout window=firstmate:fm-pool-scout-r3 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-pool-base-freshen.xDFrRC/scout/pool
+ok - direct-PR ships and scouts both refresh stale pooled worktrees before launch
+# observed dirty refusal: warning: could not prove freshly acquired worktree '/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-pool-base-freshen.xDFrRC/dirty-refusal/pool' is free of unlanded work; leaving its lease for teardown; preserved=keep this local work
+ok - a dirty pooled worktree is refused without discarding its local work
+ok - an unproven foreign binding retains its lease for inspection
+ok - proven stale foreign bindings are cleared before spawn
+ok - a foreign-binding refusal preserves unlanded pool work for inspection
+# observed unresolved-default refusal: error: could not resolve origin's current default branch for pooled worktree '/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-pool-base-freshen.xDFrRC/unresolved-default/pool'; refusing to launch from a potentially stale base
+ok - an unresolved remote default branch refuses the pooled worktree
+# observed unreachable-origin refusal: warning: could not prove freshly acquired worktree '/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-spawn-pool-base-freshen.xDFrRC/unreachable-origin/pool' is free of unlanded work; leaving its lease for teardown
+ok - an unreachable origin refuses a potentially stale pooled worktree
+# observed stale-pin refusal: error: submodule 'ui' is checked out at a5f20a428a30a9d15bcf39494edfccdd62a5cfaf, but this base records 3c88bdb676ada483068c0246ce27c8505e095ca9
+ok - two consecutive spawns across a moved submodule pin end in a refusal naming both pins and no remedy
+ok - an unpushed submodule commit keeps the uncommitted-work refusal and survives it
+ok - work inside a submodule is still refused as uncommitted work, not called stale
+ok - a stale pin carrying real work is refused conservatively, never called stale
+ok - a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line
+# all fm-spawn-pool-base-freshen tests passed
+FM_TEST_END 2026-09-02T12:41:36Z tests/fm-spawn-pool-base-freshen.test.sh exit=0 duration_ms=62465 gate_skip=false
+FM_TEST_BEGIN 2026-09-02T12:41:36Z tests/fm-inactive-reconcile.test.sh family=watcher-wake-lock expected_gate_skip=none
+actionable: inactive terminal outcome awaiting captain presentation: child=child state=done pr=https://example.test/owner/repo/pull/1
+ok - main direct terminal presentation has a durable receipt
+ok - secondmate reports its own inactive terminal child
+ok - a retired secondmate binding cannot route a newly leased crew's status upward
+ok - inactive status routing preserves specific registry validation diagnostics
+actionable: inactive terminal outcome needs parent report: child=child state=failed (missing or unreadable parent binding .fm-secondmate-parent)
+ok - relative local parent homes fail closed
+ok - invalid secondmate markers block routing and surface the obligation
+ok - remote parent-replies mirror input is durable and idempotent
+ok - reused task ids retain per-incarnation terminal receipts
+ok - legacy metadata rewrites preserve terminal receipt identity
+ok - relaunch cannot replace metadata during terminal snapshot
+actionable: inactive terminal outcome awaiting captain presentation: child=child state=done pr=https://example.test/owner/repo/pull/1
+ok - terminal reconciliation ignores heartbeat backoff state
+actionable: inactive terminal outcome awaiting captain presentation: child=child state=done pr=https://example.test/owner/repo/pull/1
+ok - scan marker replaces a symlink without overwriting its target
+ok - nonterminal and captain-held workers remain outside inactive terminal reporting
+ok - watcher hook wakes for terminal loss and preserves idle secondmate exemption
+actionable: inactive terminal outcome awaiting captain presentation: child=b state=done pr=https://example.test/owner/repo/pull/1
+ok - stalled state reads are bounded without starving later children
+ok - aggregate scan budget includes durable wake operations
+actionable: inactive terminal outcome needs parent report: child=child state=failed (missing or unreadable parent binding .fm-secondmate-parent)
+ok - notice recovery remains idempotent across queue acknowledgement
+/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1GRQZ921SCCNYFJRFAWX89E/bin/fm-inactive-reconcile.sh: line 319: /var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-inactive-reconcile.aXOgh8/notice-payload-recovery/main/state/mate.status: Is a directory
+actionable: inactive terminal outcome needs parent report: child=child state=failed
+actionable: inactive terminal outcome needs parent report: child=child state=failed (missing or unreadable parent binding .fm-secondmate-parent)
+ok - notice recovery preserves changed payloads for the same queue key
+ok - a secondmate home with no parent binding names the missing binding instead of failing quietly
+actionable: inactive terminal outcome awaiting captain presentation: child=child state=done pr=https://example.test/owner/repo/pull/1
+ok - reconciliation makes zero forge or PR API calls
+all inactive reconciliation tests passed
+FM_TEST_END 2026-09-02T12:42:39Z tests/fm-inactive-reconcile.test.sh exit=0 duration_ms=63064 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=125684
+FM_TEST_SUMMARY_FAMILY family=unclassified count=1 duration_ms=62465 failed=0
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=63064 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-inactive-reconcile.test.sh duration_ms=63064
+FM_TEST_SLOWEST rank=2 script=tests/fm-spawn-pool-base-freshen.test.sh duration_ms=62465

@@ -13,10 +13,10 @@ Only `captain` and `firstmate-action` branch outcomes open a turn on main.
 That follow-up turn is itself the captain-visible result, while Pi never separately prints or renders the hidden outcome message.
 The design source is the captain-approved forked-supervision architecture board, a captain-private fleet record (a self-contained HTML explainer with the measured cache and judgment evidence); this document records the shape it landed as, and the delivering PR cites the board artifact itself.
 
-This feature is Pi-only by construction and changes nothing anywhere else:
+The child-terminal mirror and dispatch-progress behavior are Pi-only by construction; the shared classifier only adds backward-compatible support for projected decision-key namespaces, while no other harness enables the mirror or changes its ordinary routing:
 
-- The branch lives in `.pi/extensions/fm-branch-supervision.ts`, which only a Pi primary ever loads; no other harness gains or loses behavior.
-- The bash-side additions (leases, the outcome store, session-start recovery) are inert in a home that never runs the branch: no lease files exist, no actor variable is set, every guard passes silently, and no new state appears (`tests/fm-branch-supervision.test.sh` holds this).
+- The branch lives in `.pi/extensions/fm-branch-supervision.ts`, which only a Pi primary ever loads; non-Pi primaries retain their existing watcher routing.
+- The branch-specific bash-side additions (leases, the outcome store, session-start recovery) are inert in a home that never runs the branch: no lease files exist, no actor variable is set, every guard passes silently, and no new state appears (`tests/fm-branch-supervision.test.sh` holds this).
 - It does not change which harness is primary and never moves a home to Pi.
 
 ## Components and their owners
@@ -70,6 +70,8 @@ If envelope encoding fails, the hidden delivery message degrades to the same run
 Routine outcomes never render in MAIN and never start a captain-facing turn.
 The branch prompt owns the classification criteria.
 In particular, a green local-only worker under standing auto-land or continue authority, a worker waiting on a local merge that MAIN owns, and a `done:` worker whose contracted next step needs no captain call are `firstmate-action`.
+A secondmate parent's dispatch-progress report is also `firstmate-action` while contracted child outcomes remain, including reports that children were spawned, will check in, are both live, or reached a post-dispatch `done corr=` milestone.
+MAIN inventories that mate's child status files before treating the parent report as complete, so report-ready, localhost-ready, blocked, and decision terminals cannot disappear behind a healthy parent progress line.
 An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains.
 Only a genuine captain call is `captain`, while outcomes needing neither a MAIN action nor a captain call are `routine` and unchanged fleet reviews remain silent.
 Both main-bound envelopes forbid re-draining, re-running, or acknowledging the same wake.
@@ -82,6 +84,11 @@ An identical same-text `stale:` repeat for that window opens no immediate branch
 Same-text idle repeats inside the bounded window therefore open at most one branch turn.
 Urgent status-tail bypass applies when the final nonblank line starts with `done:`, `needs-decision:`, `blocked:`, or `failed:`, or contains `login`, `credential`, `credentials`, `PR ready`, `ready for review`, or `checks green`.
 The status-tail check reads only a validated direct child of the home `state/` directory whose filename follows the shared task-id grammar, reads at most 4 KiB through a no-follow, nonblocking descriptor, and treats an unreadable or non-regular target as non-urgent.
+For a Pi primary only, the watcher also scans direct child status files in each validated local secondmate home and mirrors newly appended `done:`, `blocked:`, `needs-decision:`, and `resolved:` events onto that mate's parent status path before ordinary signal classification.
+A registered home that fails the seeded-home identity check is skipped and logged once without scanning or appending child events.
+The mirror carries the child id, binds each cursor and duplicate check to the child file identity, projects decision keys as `[key=<mate-id>/<child-key>]` with bare keys using `<mate-id>/default`, advances only after the captured append is stable and processed, and never mirrors `working:` lines.
+For a mirrored child decision, the mate-home `bin/fm-send.sh --resolve-key <child-key> '<answer>'` writes `resolved` in the mate home ledger, and the parent fold closes when the mirror carries that resolution under its projected key.
+This produces a branch-eligible parent signal instead of an unmapped child signal, while non-Pi primaries do not enable the scan and retain their existing watcher behavior.
 Direct wake text for destructive, irreversible, or security-sensitive work also bypasses the delay, and no watcher-boundary urgency metadata is used.
 An accepted wake remains in the durable wake queue until its drain acknowledgement; shutdown clears only in-memory coalescing state, and a stale generation never falls back into replacement MAIN.
 
@@ -113,6 +120,6 @@ Outside away mode, the bash watcher absorbs routine status and bare turn-ended s
 
 ## Verification
 
-Portable regressions: `tests/fm-pi-branch-extension.test.sh` (dispatch, default-on eligibility, main-only classification, three-way outcome classification and delivery, routine store-only delivery, verdict-specific main envelopes, crash-before-ack replay, duplicate-wake handoff and `wake_seq` idempotency, wake-ack and branch-lease ordering, wake coalescing and urgent bypass, same-text stale handling before and after the active eligible-row snapshot, including the empty no-op and deferred acknowledgement boundaries, pre-turn-end complete-current-request mirroring, fleet-event ownership, main outcome access, eligible-row claim lifecycle, partial pre-drain recheck, fallback, filter, model-visible outcome typing and plain-instruction fallback, cache key, persistence, model pin and searchable picker, effort pin), `tests/fm-branch-supervision.test.sh` (prompt stability, store append-only, leases, guards, non-branch-home invariance), the branch-offer, heartbeat-offer, heartbeat-not-ridden-by-a-check, and main-only-check-class tests in `tests/fm-pi-watch-extension.test.sh`, the recovery test in `tests/fm-session-start.test.sh`, and the per-actor consume regression in `tests/fm-wake-queue.test.sh`).
+Portable regressions: `tests/fm-pi-branch-extension.test.sh` (dispatch, default-on eligibility, main-only classification, three-way outcome classification and delivery, routine store-only delivery, verdict-specific main envelopes, crash-before-ack replay, duplicate-wake handoff and `wake_seq` idempotency, wake-ack and branch-lease ordering, wake coalescing and urgent bypass, same-text stale handling before and after the active eligible-row snapshot, including the empty no-op and deferred acknowledgement boundaries, pre-turn-end complete-current-request mirroring, fleet-event ownership, main outcome access, eligible-row claim lifecycle, partial pre-drain recheck, fallback, filter, model-visible outcome typing and plain-instruction fallback, cache key, persistence, model pin and searchable picker, effort pin), `tests/fm-branch-supervision.test.sh` (prompt stability, store append-only, leases, guards, non-branch-home invariance), the branch-offer, heartbeat-offer, heartbeat-not-ridden-by-a-check, and main-only-check-class tests in `tests/fm-pi-watch-extension.test.sh`, `tests/fm-watch-triage.test.sh` (Pi-only secondmate child-terminal mirroring, terminal classes, working-line silence, identity-bound replay, decision-key projection and resolution, and unseeded-home rejection), the recovery test in `tests/fm-session-start.test.sh`, and the per-actor consume regression in `tests/fm-wake-queue.test.sh`).
 Live guard: `FM_PI_BRANCH_LIVE_E2E=1 tests/fm-pi-branch-live-e2e.test.sh` exercises the real installed Pi SDK's custom-message conversion and branch-session surfaces; its no-model probe isolates ambient Gemini credentials in the child process, and its version-specific result belongs in [docs/verification/runtime-backends.md](verification/runtime-backends.md).
 The strict typecheck in `tests/fm-pi-primary-types.test.sh` pins the extension against the installed Pi package.

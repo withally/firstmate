@@ -642,6 +642,7 @@ for (const requiredRule of [
   "green worker result on a local-only branch under standing auto-land or continue authority",
   "worker waiting on a local merge that main owns",
   "contracted next step needs no captain call",
+  "secondmate parent reports dispatch progress while contracted child next steps remain",
   "Only a genuine captain call uses captain",
   "An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains",
 ]) {
@@ -654,6 +655,7 @@ for (const requiredPromptRule of [
   "A green worker result on a local-only branch under standing auto-land or continue authority",
   "A worker waiting on a local merge that MAIN owns",
   "A worker `done:` whose contracted next step needs no captain call",
+  "A secondmate parent reports dispatch progress while contracted child next steps remain",
   "Only a genuine captain call is verdict captain",
   "An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains",
 ]) {

@@ -223,7 +223,7 @@ test_pi_redundant_tool_call_is_owned_noop() {
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'arm pi=%s\n' "${FM_PI_PRIMARY_WATCH:-unset}" >> "${FM_ARM_LOG:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
@@ -266,6 +266,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("initial arm child did 
 await new Promise((resolve) => setTimeout(resolve, 100));
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 1) throw new Error(`redundant call spawned ${rows.length} arm children`);
+if (!rows[0].includes("pi=1")) throw new Error(`Pi watcher arm did not receive the Pi-primary marker: ${rows[0]}`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )

@@ -670,6 +670,123 @@ test_secondmate_nonterminal_status_absorbed() {
   pass "routine secondmate progress is absorbed in attended supervision"
 }
 
+test_pi_primary_surfaces_secondmate_child_terminals_only() {
+  local dir state fakebin out mate_home pid queue open replacement_tmp count
+  dir=$(make_case pi-secondmate-child-terminals); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  mate_home="$TMP_ROOT/pi-secondmate-child-home"
+  mkdir -p "$mate_home/data" "$mate_home/state" "$mate_home/config" "$mate_home/projects" "$mate_home/bin"
+  printf 'ally\n' > "$mate_home/.fm-secondmate-home"
+  printf '# fixture\n' > "$mate_home/AGENTS.md"
+  fm_write_secondmate_meta "$state/ally.meta" "$mate_home" "test:fm-ally"
+  printf 'working: both tracks live\n' > "$state/ally.status"
+  printf 'working: website pending\n' > "$mate_home/state/website.status"
+  printf 'working: blocker pending\n' > "$mate_home/state/blocked.status"
+  printf 'working: copy pending\n' > "$mate_home/state/copy.status"
+  printf 'working: default pending\n' > "$mate_home/state/bare.status"
+  printf 'working: payload\n' > "$mate_home/state/replacement.status"
+
+  FM_PI_PRIMARY_WATCH=1 watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "Pi watcher did not establish the child cursor before terminal appends"; }
+  printf 'needs-decision [key=copy]: parent copy choice\n' >> "$state/ally.status"
+  printf 'done corr=0123456789abcdef: website available on localhost\n' >> "$state/ally.status"
+  printf 'done corr=0123456789abcdef: website available on localhost\n' >> "$mate_home/state/website.status"
+  printf 'blocked corr=abcdef0123456789 [key=block]: scoring input unavailable\n' >> "$mate_home/state/blocked.status"
+  printf 'needs-decision corr=1234567890abcdef [key=copy]: choose the copy\n' >> "$mate_home/state/copy.status"
+  printf 'needs-decision: choose the default\n' >> "$mate_home/state/bare.status"
+  wait_for_exit "$pid" 100 || fail "Pi watcher did not surface appended secondmate child terminal statuses"
+  grep -F 'done [secondmate-child=website] corr=0123456789abcdef: website available on localhost' "$state/ally.status" >/dev/null \
+    || fail "Pi watcher did not mirror an unbracketed child done status onto its parent"
+  grep -F 'blocked [secondmate-child=blocked] corr=abcdef0123456789 [key=ally/block]: scoring input unavailable' "$state/ally.status" >/dev/null \
+    || fail "Pi watcher did not project a child blocked decision key"
+  grep -F 'needs-decision [secondmate-child=copy] corr=1234567890abcdef [key=ally/copy]: choose the copy' "$state/ally.status" >/dev/null \
+    || fail "Pi watcher did not project a keyed child needs-decision"
+  grep -F 'needs-decision [secondmate-child=bare] [key=ally/default]: choose the default' "$state/ally.status" >/dev/null \
+    || fail "Pi watcher did not project a bare child decision key"
+  grep -F 'scoring underway' "$state/ally.status" >/dev/null \
+    && fail "Pi watcher mirrored a secondmate child working status onto its parent"
+  queue=$(cat "$state/.wake-queue")
+  printf '%s\n' "$queue" | grep "$(printf '\tsignal\tally.status\t')" >/dev/null \
+    || fail "Pi watcher did not queue the mirrored child terminal as its registered secondmate parent"
+  printf '%s\n' "$queue" | grep -E "$(printf '\tsignal\t(website|blocked|copy|bare)\.status\t')" >/dev/null \
+    && fail "Pi watcher queued an unresolvable mate-home child signal instead of its parent"
+  open=$(scan_open_decisions "$state")
+  printf '%s\n' "$open" | grep -F $'ally\tcopy\tneeds-decision\tparent copy choice' >/dev/null \
+    || fail "parent decision key disappeared when a child used the same bare key"
+  printf '%s\n' "$open" | grep -F $'ally\tally/copy\tneeds-decision\tchoose the copy' >/dev/null \
+    || fail "projected child decision key was not visible in the parent fold"
+  printf '%s\n' "$open" | grep -F $'ally\tally/default\tneeds-decision\tchoose the default' >/dev/null \
+    || fail "bare child decision did not use the child namespace"
+
+  printf 'resolved corr=1234567890abcdef [key=copy]: captain chose the copy\n' >> "$mate_home/state/copy.status"
+  FM_PI_PRIMARY_WATCH=1 FM_WATCH_HANDLING_SUCCESSOR=1 watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "Pi watcher did not surface a child resolved status"
+  grep -F 'resolved [secondmate-child=copy] corr=1234567890abcdef [key=ally/copy]: captain chose the copy' "$state/ally.status" >/dev/null \
+    || fail "Pi watcher did not project a child resolved key"
+  open=$(scan_open_decisions "$state")
+  printf '%s\n' "$open" | grep -F $'ally\tally/copy\t' >/dev/null \
+    && fail "mirrored child resolved line did not close its projected parent fold"
+  printf '%s\n' "$open" | grep -F $'ally\tcopy\tneeds-decision\tparent copy choice' >/dev/null \
+    || fail "mirrored child resolution closed the parent decision with the same bare key"
+
+  replacement_tmp="$mate_home/state/replacement.status.tmp"
+  printf 'done: 1234567890\n' > "$replacement_tmp"
+  [ "$(wc -c < "$mate_home/state/replacement.status" | tr -d '[:space:]')" = "$(wc -c < "$replacement_tmp" | tr -d '[:space:]')" ] \
+    || fail "same-size replacement fixture was not actually same-sized"
+  mv -f "$replacement_tmp" "$mate_home/state/replacement.status"
+  FM_PI_PRIMARY_WATCH=1 FM_WATCH_HANDLING_SUCCESSOR=1 watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "Pi watcher dropped a same-size replacement terminal"
+  grep -F 'done [secondmate-child=replacement]: 1234567890' "$state/ally.status" >/dev/null \
+    || fail "Pi watcher did not recover a terminal from a recreated child file"
+  printf 'done: 1234567890\n' > "$replacement_tmp"
+  mv -f "$replacement_tmp" "$mate_home/state/replacement.status"
+  FM_PI_PRIMARY_WATCH=1 FM_WATCH_HANDLING_SUCCESSOR=1 watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "Pi watcher did not process a second child-file incarnation"
+  count=$(grep -F -c 'done [secondmate-child=replacement]: 1234567890' "$state/ally.status" || true)
+  [ "$count" -eq 2 ] || fail "same terminal text from a new child incarnation was deduplicated as old data"
+
+  dir=$(make_case non-pi-secondmate-child-terminal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  mate_home="$TMP_ROOT/non-pi-secondmate-child-home"
+  mkdir -p "$mate_home/data" "$mate_home/state" "$mate_home/config" "$mate_home/projects" "$mate_home/bin"
+  printf 'ally\n' > "$mate_home/.fm-secondmate-home"
+  printf '# fixture\n' > "$mate_home/AGENTS.md"
+  fm_write_secondmate_meta "$state/ally.meta" "$mate_home" "test:fm-ally"
+  printf 'working: both tracks live\n' > "$state/ally.status"
+  printf 'done: website available on localhost\n' > "$mate_home/state/website.status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "non-Pi watcher changed behavior for a secondmate child terminal"; }
+  grep -F 'secondmate-child=' "$state/ally.status" >/dev/null \
+    && fail "non-Pi watcher mirrored a secondmate child terminal"
+  [ ! -s "$state/.wake-queue" ] || fail "non-Pi watcher queued a secondmate child terminal"
+  reap "$pid"
+  pass "Pi surfaces appended secondmate child terminals through valid parent projections while child working and non-Pi primaries stay quiet"
+}
+
+test_pi_primary_skips_unseeded_secondmate_home() {
+  local dir state fakebin out mate_home pid count
+  dir=$(make_case pi-unseeded-secondmate-case); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  mate_home="$TMP_ROOT/pi-unseeded-secondmate-home"
+  mkdir -p "$mate_home/state"
+  fm_write_secondmate_meta "$state/ally.meta" "$mate_home" "test:fm-ally"
+  printf 'working: both tracks live\n' > "$state/ally.status"
+  printf 'done: foreign home must not surface\n' > "$mate_home/state/website.status"
+  FM_PI_PRIMARY_WATCH=1 watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "Pi watcher did not remain alive after rejecting an unseeded home: $(cat "$out")"; }
+  sleep 3
+  grep -F 'secondmate-child=' "$state/ally.status" >/dev/null \
+    && { reap "$pid"; fail "Pi watcher scanned an unseeded secondmate home"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "unseeded secondmate home queued a child wake"; }
+  count=$(grep -F -c 'secondmate ally: skipped: unsafe home:' "$state/.watch-triage.log" 2>/dev/null || true)
+  [ "$count" -eq 1 ] || { reap "$pid"; fail "unseeded secondmate home was logged $count times instead of once"; }
+  reap "$pid"
+  pass "Pi watcher validates and logs an unseeded secondmate home once without scanning it"
+}
+
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
   local dir state fakebin out drain_out status_file pid count
   dir=$(make_case resolved-open-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -3110,6 +3227,8 @@ test_turn_ended_provably_working_absorbed
 test_turn_ended_without_status_is_absorbed
 test_nonterminal_status_absorbed_without_working_evidence
 test_secondmate_nonterminal_status_absorbed
+test_pi_primary_surfaces_secondmate_child_terminals_only
+test_pi_primary_skips_unseeded_secondmate_home
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key
 test_keyed_resolved_survives_interleaved_drain_cursor_advance
 test_absorbed_status_remains_unread_for_next_drain

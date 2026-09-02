@@ -110,6 +110,7 @@ The guard covers the main primary and genuinely marked secondmate homes, exempts
 
 A presence-gated sub-supervisor (`bin/fm-supervise-daemon.sh`) extends this for walk-away supervision: the `/afk` skill starts it through the tracked foreground helper `bin/fm-afk-start.sh`, after which the watcher reverts to daemon-managed one-shot mode and the daemon self-handles routine wakes in bash.
 The watcher and daemon share `bin/fm-classify-lib.sh` for captain-relevant status verbs, declared-wait vocabulary (a `paused:` external wait and a verified `captain-held` transfer alike, through one combined predicate), and status-scan primitives.
+The daemon's catch-all considers only status bytes beyond that library's shared presentation cursor, so attended history settled before away-mode entry stays settled while later appends remain eligible.
 Terminal verbs remain captain-relevant, while a nonterminal progress verb cannot become terminal merely because its prose contains a legacy free-text token such as `merged`; bare legacy free-text lines remain compatible.
 The always-on watcher uses that library's absorb classification on first-sighting stale panes before status-log terminality is trusted, while the daemon maintains distinct wedge and declared-wait recheck cadences.
 The daemon's declared-wait window ages against the crew's own latest status line rather than against pane busy state, because a declared wait can legitimately hold a pane busy, and only a status append that stops declaring the wait ends that routing and restores wedge detection.

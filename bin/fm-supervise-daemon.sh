@@ -1687,7 +1687,7 @@ inject_wedge_alarm() {  # <state> <age-seconds>
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs unread
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1813,6 +1813,11 @@ housekeeping() {  # <state>
     local seen
     while IFS="$(printf '\t')" read -r f task last; do
       [ -n "$f" ] || continue
+      if unread=$(status_new_lines_since_cursor "$f"); then
+        [ -n "$unread" ] || continue
+      else
+        log "catch-all presentation cursor unreadable for $f; escalating fail-safe"
+      fi
       seen="$state/.subsuper-seen-status-$(_stale_key "$task")"
       [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ] && continue
       escalate_add "$state" "$(basename "$f"): $last (catch-all scan)"

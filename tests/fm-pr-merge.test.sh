@@ -2481,6 +2481,8 @@ test_unregistered_local_parent_binding_cannot_escape_case_home() {
     "an unregistered parent binding escaped the case home and wrote outside it"
   assert_grep 'could not report it upward' "$case_dir/stderr" \
     "unregistered parent refusal was silent after the merge landed"
+  assert_grep 'parent binding refused: child mate-x is not registered' "$case_dir/stderr" \
+    "unregistered parent refusal did not log the rejected child identity"
   pass "an unregistered local parent binding cannot redirect merge outcomes outside the case home"
 }
 

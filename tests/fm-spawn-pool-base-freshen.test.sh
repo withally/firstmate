@@ -51,7 +51,8 @@ make_case() {
 
   git init --quiet -b "$default" "$project"
   printf 'base\n' > "$project/README.md"
-  git -C "$project" add README.md
+  printf '.fm-secondmate-parent\n' > "$project/.gitignore"
+  git -C "$project" add README.md .gitignore
   git -C "$project" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
   git clone --quiet --bare "$project" "$origin"
   git -C "$project" remote add origin "file://$origin"
@@ -204,6 +205,29 @@ test_dirty_pool_refuses_without_discarding_work() {
       "$(printf '%s\n' "$out" | tail -n 1)" "$(cat "$POOL_DIR/uncommitted.txt")"
   fi
   pass "a dirty pooled worktree is refused without discarding its local work"
+}
+
+test_foreign_secondmate_parent_binding_refuses_pooled_spawn() {
+  local rec id out status foreign_parent binding_before
+  id='pool-foreign-parent-r12'
+  rec=$(make_case foreign-parent "$id")
+  read_case_record "$rec"
+  foreign_parent="$CASE_DIR/retired-primary-home"
+  mkdir -p "$foreign_parent"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$foreign_parent" \
+    > "$POOL_DIR/.fm-secondmate-parent"
+  binding_before=$(cat "$POOL_DIR/.fm-secondmate-parent")
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn launched a new crew from a pool slot carrying a retired secondmate binding"
+  assert_contains "$out" "foreign .fm-secondmate-parent" \
+    "spawn refusal did not name the foreign secondmate parent binding"
+  [ "$binding_before" = "$(cat "$POOL_DIR/.fm-secondmate-parent")" ] \
+    || fail "spawn changed the foreign binding instead of refusing it"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] \
+    || fail "spawn published task metadata after the foreign-binding refusal"
+  pass "a new crew cannot launch from a pooled worktree carrying a retired secondmate parent binding"
 }
 
 test_unresolved_remote_default_refuses_pool() {
@@ -454,6 +478,7 @@ test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
+test_foreign_secondmate_parent_binding_refuses_pooled_spawn
 test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
 test_stale_submodule_pin_explains_itself

@@ -249,6 +249,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-secondmate-parent-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
@@ -1832,6 +1834,27 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+refuse_spawn_worktree_parent_binding() {  # <source>
+  local source=$1 record="$WT/.fm-secondmate-parent" active_home recorded_parent
+  [ ! -e "$record" ] && [ ! -L "$record" ] && return 0
+  if ! fm_secondmate_parent_record_parse "$record"; then
+    echo "error: $source yielded a worktree with an unreadable .fm-secondmate-parent; refusing to launch" >&2
+    return 1
+  fi
+  active_home=$(real_path_or_raw "$FM_HOME")
+  if [ "$FM_SECONDMATE_PARENT_ROUTE" = local ]; then
+    recorded_parent=$(real_path_or_raw "$FM_SECONDMATE_PARENT_HOME")
+  else
+    recorded_parent="remote:${FM_SECONDMATE_PARENT_HOST:-unknown}"
+  fi
+  if [ "$recorded_parent" != "$active_home" ]; then
+    echo "error: $source yielded a worktree with a foreign .fm-secondmate-parent for $recorded_parent; current home is $active_home; refusing to launch" >&2
+  else
+    echo "error: $source yielded a worktree with an unexpected .fm-secondmate-parent for the current home; refusing to launch" >&2
+  fi
+  return 1
+}
+
 # A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:
 # an earlier refresh moved the superproject and left the submodule checkout on
 # the pin the previous base recorded. The refusal still stands and this gate
@@ -2232,6 +2255,7 @@ EOF
       exit 1
     fi
     validate_spawn_worktree "orca worktree create" "$W"
+    refuse_spawn_worktree_parent_binding "orca worktree create" || exit 1
     if [ -z "$ORCA_TERMINAL" ]; then
       ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
     fi
@@ -2409,6 +2433,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+  refuse_spawn_worktree_parent_binding "treehouse get" || exit 1
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1

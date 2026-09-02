@@ -71,6 +71,8 @@ schema=fm-secondmate-parent.v1
 route=local
 parent_home=$MAIN
 EOF
+    printf -- '- mate - test route (home: %s; scope: test; projects: test; added 2026-08-30)\n' \
+      "$MATE" > "$MAIN/data/secondmates.md"
   else
     cat > "$MATE/.fm-secondmate-parent" <<'EOF'
 schema=fm-secondmate-parent.v1
@@ -147,6 +149,29 @@ test_local_secondmate_reports_terminal_child() {
     || fail "secondmate did not append its durable parent report"
   [ "$(outcome_count "$MATE" reported)" = 1 ] || fail "secondmate report receipt was not durable"
   pass "secondmate reports its own inactive terminal child"
+}
+
+# Reproduce the pooled-slot leak: a retired secondmate binding survives into a
+# newly leased crew worktree, whose terminal fixture must not append into the
+# former primary home's state/mate.status once that child is no longer registered.
+test_retired_binding_cannot_route_new_crew_status_upward() {
+  local out
+  make_world retired-binding; bind_secondmate local
+  : > "$MAIN/data/secondmates.md"
+  write_child "$MATE" new-crew 'done: 13 fixture lines complete'
+
+  out=$(FM_FAKE_CREW_STATE='done' run_reconcile "$MATE" --startup)
+  [ ! -e "$MAIN/state/mate.status" ] \
+    || fail "a stale pooled-worktree binding appended new crew status into the retired parent route"
+  [ "$(outcome_count "$MATE" reported)" = 0 ] \
+    || fail "the refused stale-binding report was recorded as delivered"
+  [ "$(outcome_count "$MATE" pending)" = 1 ] \
+    || fail "the refused stale-binding report did not retain its pending receipt"
+  case "$out" in
+    *"parent binding refused"*"mate is not registered"*) ;;
+    *) fail "the stale-binding refusal was not logged with its unregistered child id: $out" ;;
+  esac
+  pass "a retired secondmate binding cannot route a newly leased crew's status upward"
 }
 
 test_local_secondmate_rejects_relative_parent_home() {
@@ -486,6 +511,7 @@ test_reconciliation_never_calls_forge() {
 
 test_main_direct_terminal_presentation_receipt
 test_local_secondmate_reports_terminal_child
+test_retired_binding_cannot_route_new_crew_status_upward
 test_local_secondmate_rejects_relative_parent_home
 test_invalid_secondmate_marker_blocks_routing
 test_remote_parent_reply_is_idempotent

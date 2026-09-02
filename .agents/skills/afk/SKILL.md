@@ -126,8 +126,8 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 **verified** through the selected backend's submit primitive.
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
-`bin/fm-supervise-daemon.sh` owns the delivered-once guard through a single append-only journal (`state/.subsuper-delivery.jsonl`) that marks a digest `typed` in one atomic rename before its only type, so a Pi or Claude user transcript confirms an otherwise unknown submit and no later flush ever retypes it.
-Pre-journal delivery files are never parsed or imported; daemon startup moves them verbatim into a unique quarantine and raises the wedge alarm.
+`bin/fm-supervise-daemon.sh` owns this delivered-once contract through the single journal described in [`docs/herdr-backend.md`](../../../docs/herdr-backend.md#away-mode-supervisor-support): it commits each batch as `typed` in one atomic rename before its only type, uses rendering first and Pi/Claude transcript nonce witnesses for unknown submits, and leaves unconfirmed records typed for the wedge alarm without retyping.
+Pre-journal delivery files are never parsed or imported; daemon startup quarantines them verbatim and raises the wedge alarm, retaining sources if quarantine cannot complete.
 For tmux that confirmation is normally a proven cleared composer from the shared classifier; an idle baseline transitioning to busy across this submit's own Enter also confirms that the turn started when a working harness hides its composer.
 Without that baseline, busy state never converts an `unknown` composer into confirmation.
 For non-Claude Herdr targets, idle-baseline submits first seek native agent-state showing a real turn started, then use the shared classifier when native state remains idle: a cleared composer confirms delivery, while pending text retries Enter and reaches the shared busy-queue verdict only after the retry budget.
@@ -211,7 +211,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
 - **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
   The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
-- **Session dedupe for checks** - a durable check is one journal record keyed by its source key plus distilled text, so an exact identity replay is suppressed while a genuinely new observation under the same key is not; because each journal append is a single atomic rename, no reservation transaction is needed for crash safety. The dedup survives daemon replacement inside one away session and is cleared on fresh away entry or return.
+- **Session dedupe for checks** - the delivery journal keys a check by its source key plus distilled text, so an exact identity replay is suppressed while a genuinely new observation under the same key is not; see [`docs/herdr-backend.md`](../../../docs/herdr-backend.md#away-mode-supervisor-support) for the owner contract. The dedup survives daemon replacement inside one away session and is cleared on fresh away entry or return.
 - **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
   (tmux vs herdr) and TARGET independently, mirroring
   `bin/fm-backend.sh`'s own runtime auto-detection. Backend: `FM_SUPERVISOR_BACKEND`
@@ -230,7 +230,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 ## Stale-artifact lifecycle
 
 Treat the delivery journal `state/.subsuper-delivery.jsonl` and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
-If a home upgraded mid-away still carries pre-redesign `state/.subsuper-escalations*` or `state/.subsuper-check-ledger` files, daemon startup quarantines them verbatim and never imports them.
+If a home upgraded mid-away still carries the pre-redesign `state/.subsuper-escalations`, `.subsuper-escalations.since`, `.subsuper-escalations.delivery`, `.subsuper-escalations.records`, or `state/.subsuper-check-ledger` files, daemon startup quarantines them verbatim and never imports them.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry with no existing `state/.afk`, and preserves the current session's journal on restart or refresh.
 Fresh entry clears prior delivery artifacts before publishing the new away flag, and a cleanup or flag-write failure stops before daemon startup.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.

@@ -313,12 +313,21 @@ _fm_key_at_note_head() {  # <status-line> -> raw slug
     *) return 1 ;;
   esac
 }
-# 0 when a stated key slug is well-formed: nonempty, A-Za-z0-9._- only.
+# 0 when a stated key slug is well-formed: a local slug or one namespaced local slug.
 _fm_decision_slug_ok() {  # <slug>
+  local namespace value
   case "$1" in
-    ''|*[!A-Za-z0-9._-]*) return 1 ;;
-    *) return 0 ;;
+    ''|*[!A-Za-z0-9._/-]*) return 1 ;;
   esac
+  case "$1" in
+    */*)
+      namespace=${1%%/*}
+      value=${1#*/}
+      case "$namespace" in ''|*/*) return 1 ;; esac
+      case "$value" in ''|*/*) return 1 ;; esac
+      ;;
+  esac
+  return 0
 }
 status_line_note() {  # <status-line> -> text after the first colon, trimmed
   local n k

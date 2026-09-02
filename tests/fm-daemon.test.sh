@@ -1829,6 +1829,7 @@ test_delivery_nonce_avoids_existing_journal_collision() {
     > "$state/.subsuper-delivery.jsonl"
   printf '0\n' > "$attempt_file"
   nonce=$(
+    # shellcheck disable=SC2329 # Invoked indirectly by delivery_nonce_generate.
     od() {
       local attempt
       attempt=$(cat "$attempt_file")

@@ -54,6 +54,7 @@ FM_AFK_FRESH_DELIVERY_ARTIFACTS=(
   .subsuper-inject-wedged
 )
 
+# shellcheck disable=SC2034 # Consumed by fm-afk-launch.sh after sourcing.
 FM_AFK_DELIVERY_ARTIFACTS=(
   .subsuper-delivery.jsonl
   .subsuper-inject-wedged

@@ -158,6 +158,7 @@ unit_detector_miss_leaves_daemon_harness_unset() {
   entry="$st/entry"
   mkdir -p "$st/state" "$detector"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$detector/fm-harness.sh"
+  # shellcheck disable=SC2016 # Variables expand in the generated script, not this test shell.
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
   chmod +x "$detector/fm-harness.sh" "$entry"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
@@ -184,13 +185,14 @@ unit_detector_miss_leaves_daemon_harness_unset() {
 }
 
 unit_daemon_command_carries_configured_pi_agent_dir() {
-  local st detector entry custom session_dir output expected command
+  local st detector entry custom session_dir output expected
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-root.XXXXXX")
   detector="$st/detector"
   entry="$st/entry"
   custom="$st/custom pi agent"
   session_dir="$st/custom pi sessions"
   mkdir -p "$detector" "$custom" "$session_dir"
+  # shellcheck disable=SC2016 # Variables expand in the generated script, not this test shell.
   printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${PI_CODING_AGENT_SESSION_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
   printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
   chmod +x "$entry" "$detector/fm-harness.sh"

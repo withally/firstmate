@@ -30,6 +30,8 @@
 #   parent_status=          absolute path of parent state/<task_id>.status
 #   parent_status_scan_signature=
 #   request_summary=        short sanitized summary (no secrets by design)
+#   request_body_b64=       exact first-request body, base64 encoded
+#   recovery_body_b64=      exact recovery-request body, base64 encoded
 #   created_epoch=          when the expectation was created
 #   delivered_epoch=        when the marked request was confirmed delivered
 #                           (empty until delivery; delivery never resolves)
@@ -213,6 +215,67 @@ fm_pending_reply_set() {  # <record-path> <key> <value>
   mv -f "$tmp" "$rec"
 }
 
+fm_pending_reply_body_key() {  # <request|recovery>
+  case "$1" in
+    request) printf '%s' request_body_b64 ;;
+    recovery) printf '%s' recovery_body_b64 ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_pending_reply_body_field_present() {  # <record-path> <request|recovery>
+  local rec=$1 attempt=$2 key
+  key=$(fm_pending_reply_body_key "$attempt") || return 1
+  [ -f "$rec" ] || return 1
+  grep -q "^${key}=" "$rec" 2>/dev/null
+}
+
+fm_pending_reply_encode_body() {  # <body>
+  local body=$1 encoded
+  encoded=$(
+    printf '%s' "$body" | base64 2>/dev/null || exit 1
+    printf '\001'
+  ) || return 1
+  encoded=${encoded%$'\001'}
+  encoded=${encoded//$'\n'/}
+  encoded=${encoded//$'\r'/}
+  [ -n "$encoded" ] || return 1
+  printf '%s' "$encoded"
+}
+
+fm_pending_reply_decode_body() {  # <base64-body> <result-var>
+  local encoded=$1 result_var=$2 decoded
+  [ -n "$result_var" ] || return 2
+  decoded=$(
+    printf '%s' "$encoded" | base64 --decode 2>/dev/null || exit 1
+    printf '\001'
+  ) || decoded=$(
+    printf '%s' "$encoded" | base64 -D 2>/dev/null || exit 1
+    printf '\001'
+  ) || return 1
+  decoded=${decoded%$'\001'}
+  printf -v "$result_var" '%s' "$decoded"
+}
+
+fm_pending_reply_store_body() {  # <state-dir> <corr-id> <request|recovery> <body>
+  local state=$1 corr=$2 attempt=$3 body=$4 rec key encoded
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  key=$(fm_pending_reply_body_key "$attempt") || return 1
+  [ -f "$rec" ] || return 1
+  encoded=$(fm_pending_reply_encode_body "$body") || return 1
+  fm_pending_reply_set "$rec" "$key" "$encoded"
+}
+
+fm_pending_reply_read_body() {  # <state-dir> <corr-id> <request|recovery> <result-var>
+  local state=$1 corr=$2 attempt=$3 result_var=$4 rec key encoded
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  key=$(fm_pending_reply_body_key "$attempt") || return 1
+  [ -f "$rec" ] || return 1
+  encoded=$(fm_pending_reply_get "$rec" "$key")
+  [ -n "$encoded" ] || return 1
+  fm_pending_reply_decode_body "$encoded" "$result_var" || return 2
+}
+
 # Embed or replace a correlation token after the from-firstmate marker.
 # Idempotent for the same corr; replaces a different leading corr token.
 # Result is assigned to <result-var>.
@@ -275,6 +338,8 @@ parent_home=$parent_home
 parent_status=$status_path
 parent_status_scan_signature=
 request_summary=$summary
+request_body_b64=
+recovery_body_b64=
 created_epoch=$now
 delivered_epoch=
 phase=awaiting_report
@@ -890,6 +955,7 @@ fm_pending_reply_send_recovery() {  # <state-dir> <corr_id>
   fm_pending_reply_missing_report_is_evidence "$state" "$task_id" "$completed" || return 1
   parent_home=$(fm_pending_reply_get "$rec" parent_home)
   msg=$(fm_pending_reply_recovery_message "$rec")
+  fm_pending_reply_store_body "$state" "$corr" recovery "$msg" || return 1
   sender_pid=${BASHPID:-$$}
   sender_identity=$(fm_pending_reply_pid_identity "$sender_pid") || return 1
   fm_pending_reply_set "$rec" recovery_sender_pid "$sender_pid" || return 1
@@ -906,6 +972,7 @@ fm_pending_reply_send_recovery() {  # <state-dir> <corr_id>
     if [ -z "$parent_home" ] || [ ! -d "$parent_home" ]; then
       send_status=1
     elif ! env FM_HOME="$parent_home" FM_PENDING_REPLY_EXISTING_CORR="$corr" \
+      FM_PENDING_REPLY_RECOVERY=1 \
       "$_FM_PENDING_REPLY_LIB_DIR/fm-send.sh" "$task_id" "$msg"; then
       send_status=1
     fi

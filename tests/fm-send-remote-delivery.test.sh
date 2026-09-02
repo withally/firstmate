@@ -198,6 +198,27 @@ remote_inbox_records() {  # <remote-home>
   find "$1/state/parent-route/rsm.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null
 }
 
+record_without_current_carrier() {  # <record-path>
+  local rec=$1 body tmp
+  body=$(fm_task_inbox_body "$rec"; printf x)
+  body=${body%x}
+  case "$body" in
+    *"$FM_OPERATIONAL_SILENT_REPLY_CARRIER") ;;
+    *) return 1 ;;
+  esac
+  body=${body%"$FM_OPERATIONAL_SILENT_REPLY_CARRIER"}
+  tmp="$rec.pre-carrier"
+  sed -n '1,/^--$/p' "$rec" > "$tmp" || return 1
+  printf '%s' "$body" >> "$tmp" || return 1
+  mv "$tmp" "$rec" || return 1
+}
+
+pending_record_without_request_body() {  # <record-path>
+  local rec=$1 tmp="$1.pre-upgrade"
+  awk '$0 !~ /^request_body_b64=/' "$rec" > "$tmp" || return 1
+  mv "$tmp" "$rec"
+}
+
 # The single non-dot pending-reply record in <home>, or empty.
 pending_record() {  # <home>
   find "$1/state/pending-replies" -maxdepth 1 -type f ! -name '.*' 2>/dev/null | head -1
@@ -290,6 +311,12 @@ test_remote_rerun_is_idempotent() {
   [ "$(grep '^phase=' "$pend" | tail -1 | cut -d= -f2-)" = delivery_unknown ] \
     || fail "the preserved expectation must record unknown delivery: $(cat "$pend")"
   corr=$(fm_pending_reply_get "$pend" corr_id)
+  rec=$(remote_inbox_records "$rhome" | head -1)
+  record_without_current_carrier "$rec" \
+    || fail "the remote retry fixture could not model a pre-carrier record"
+  pending_record_without_request_body "$pend" \
+    || fail "the remote retry fixture could not model a pre-upgrade pending record"
+  fm_task_inbox_body "$rec" > "$dir/pre-retry.body"
   printf -v quoted '%q' "$home"
   expected_cmd="FM_HOME=$quoted FM_PENDING_REPLY_EXISTING_CORR=$corr"
   for arg in "$SEND" rsm "please rename the metric"; do
@@ -332,11 +359,14 @@ test_remote_rerun_is_idempotent() {
   rec=$(find "$rhome/state/parent-route/rsm.inbox" -name '*.msg' | head -1)
   grep -F "corr=$corr" "$rec" >/dev/null \
     || fail "the deduplicated remote record did not preserve correlation $corr"
+  fm_task_inbox_body "$rec" > "$dir/post-retry.body"
+  cmp -s "$dir/pre-retry.body" "$dir/post-retry.body" \
+    || fail "the correlation-reusing resend changed the pre-carrier record body"
   [ -n "$(fm_pending_reply_get "$pend" delivered_epoch)" ] \
     || fail "the successful resend did not confirm pending-reply delivery: $(cat "$pend")"
   [ "$(fm_pending_reply_get "$pend" phase)" = awaiting_report ] \
     || fail "the successful resend did not restore awaiting_report: $(cat "$pend")"
-  pass "fm-send remote: the printed correlation-reusing resend deduplicates onto the same record"
+  pass "fm-send remote: correlation reuse preserves pre-carrier bytes and deduplicates"
 }
 
 test_remote_retry_failure_preserves_ambiguous_expectation() {

@@ -234,7 +234,7 @@ Rendered idle with pending text remains unconfirmed and preserves the escalation
 After a max-defer alarm, only the Herdr+Claude path may reconsider a `rendered-busy` result.
 The exact matched row must include an elapsed duration and remain byte-identical for `FM_RENDERED_BUSY_RECOVERY_POLLS` polls, which defaults to 3, while native state is `idle` or `done`, or is `working` with the tracked daemon-terminal record.
 Only then does the daemon re-read the composer and proceed on an exact `empty` verdict; a changed or durationless row, unknown native state, non-background `working` state, `pending` composer, or `unknown` composer remains deferred.
-The recovery gate admits one submit attempt and resets its stability streak before that attempt; normal verified-submit confirmation remains the only path that clears the escalation buffer.
+The recovery gate admits one submit attempt and resets its stability streak before that attempt; verified confirmation retires the journal records as `delivered` under the [away-mode supervisor contract](#away-mode-supervisor-support).
 For another non-Claude, non-Pi target with an already active or unreadable native baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A known Claude target captures its rendered baseline before each Enter, so a pre-existing active-turn footer cannot serve as submit confirmation.
 A fully unreadable target stops retrying and reports unknown.

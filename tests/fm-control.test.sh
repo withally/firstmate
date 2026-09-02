@@ -93,6 +93,11 @@ case "${1:-}" in
     payload=${1:-}
     if [ "$literal" = 1 ]; then
       printf '%s\n' "$payload" >> "$D/literal"
+      if [ "$payload" = /exit ] || [ "$payload" = /quit ]; then
+        if grep -q 'restored pending text' "$D/pane" 2>/dev/null; then
+          : > "$D/exit-into-pending"
+        fi
+      fi
       if [ -z "${FM_FAKE_NEVER_DIES:-}" ] \
          && { [ "$payload" = /exit ] || [ "$payload" = /quit ]; }; then
         printf 'zsh' > "$D/command"
@@ -102,6 +107,14 @@ case "${1:-}" in
       esac
     else
       printf '%s\n' "$payload" >> "$D/keys"
+      if [ "$payload" = C-u ] && [ -e "$D/clear-composer" ]; then
+        printf '╭────╮\n│    │\n╰────╯\n' > "$D/pane"
+        if [ -n "${FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT:-}" ] \
+           && [ ! -e "$D/muse-restored" ]; then
+          : > "$D/muse-restored"
+          printf '╭────╮\n│ restored pending text │\n╰────╯\n' > "$D/pane"
+        fi
+      fi
       if [ -n "${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" ] \
          && { [ "$payload" = Escape ] || [ "$payload" = C-c ]; }; then
         printf 'zsh' > "$D/command"
@@ -196,6 +209,7 @@ run_control() {
     FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_FAKE_MUSE_LOG="${FM_FAKE_MUSE_LOG:-}" \
     FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK="${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" \
+    FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT="${FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT:-}" \
     FM_FAKE_INTERRUPT_STOPS_AGENT="${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" \
     "$CONTROL" "$@" 2>&1
 }
@@ -358,6 +372,19 @@ test_backend_key_capability_matrix() {
   fm_control_backend_supports_key orca C-c || fail "orca should deliver C-c"
   fm_control_backend_supports_key orca Enter || fail "orca should deliver Enter"
   pass "fm-control-lib: the backend key matrix matches each adapter's real send-key surface"
+}
+
+test_harness_composer_clear_key_matrix() {
+  local harness
+  for harness in claude codex pi pi-signed grok kimi cursor muse; do
+    [ "$(fm_control_composer_clear_key "$harness")" = C-u ] \
+      || fail "$harness should clear transient composer input with C-u"
+  done
+  fm_control_composer_clear_key opencode \
+    && fail "OpenCode must not claim an unverified composer-clear key"
+  fm_control_composer_clear_key someagent \
+    && fail "an unverified harness must not receive a guessed composer-clear key"
+  pass "fm-control-lib: only harnesses with verified composer-clear mechanics have a clear key"
 }
 
 # A verified adapter is not automatically verified for every task kind, and the
@@ -680,6 +707,138 @@ test_busy_agent_is_interrupted_before_the_exit_command() {
   pass "fm-control exit: a busy agent receives interrupt delivery before the exit command"
 }
 
+test_busy_interrupt_rechecks_composer_before_exit_command() {
+  local dir root log out rc
+  dir=$(new_case busy-restores)
+  add_task "$dir" t1 muse
+  alive_as "$dir" muse
+  root="$dir/muse-sessions"
+  log="$root/2026/08/08/session-1/session.jsonl"
+  mkdir -p "$(dirname "$log")"
+  printf '%s\n' \
+    "{\"schema_version\":1,\"payload_type\":\"runtime.session.metadata\",\"payload\":{\"kind\":\"metadata\",\"record\":{\"workspace_root\":\"$dir/wt-t1\"}}}" \
+    '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"started","prompt":"work"}}}' > "$log"
+  printf 'sessions_root=%s\nworkspace_root=%s\nbinding_id=test\n' \
+    "$root" "$dir/wt-t1" > "$dir/home/state/t1.muse-session"
+  : > "$dir/fake/clear-composer"
+
+  out=$(FM_FAKE_MUSE_LOG="$log" FM_FAKE_MUSE_RESTORE_AFTER_INTERRUPT=1 \
+    run_control "$dir" t1 exit); rc=$?
+
+  expect_code 0 "$rc" "exit should recheck and clear composer text restored by the busy interrupt"$'\n'"$out"
+  [ "$(keys_sent "$dir")" = $'Escape\nC-u\nC-u' ] \
+    || fail "exit should clear the restored composer after interrupt, got: $(keys_sent "$dir")"
+  [ "$(literals "$dir")" = /exit ] \
+    || fail "exit should type only its command after the restored composer is cleared"
+  [ ! -e "$dir/fake/exit-into-pending" ] \
+    || fail "exit was typed into composer text restored after the interrupt"
+  assert_contains "$out" "pending composer excerpt: restored pending text" \
+    "the restored text should be retained in control-plane output"
+  pass "fm-control exit: a busy interrupt cannot reintroduce pending composer text before exit"
+}
+
+test_pending_composer_is_cleared_before_exit_is_typed() {
+  local dir out rc
+  dir=$(new_case pending-clear)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  printf '╭────╮\n│ draft doorbell line waiting to be sent │\n╰────╯\n' > "$dir/fake/pane"
+  : > "$dir/fake/clear-composer"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 0 "$rc" "exit should clear a pending composer before typing its command"$'\n'"$out"
+  [ "$(keys_sent "$dir")" = C-u ] \
+    || fail "exit should clear pending composer text with C-u before typing, got: $(keys_sent "$dir")"
+  [ "$(literals "$dir")" = /exit ] \
+    || fail "exit should type only its command after the composer is proven empty"
+  assert_contains "$out" "pending composer excerpt: draft doorbell line waiting to be sent" \
+    "the operator should receive a bounded copy of the transient text that was cleared"
+  pass "fm-control exit: pending composer text is cleared and reported before the exit command is typed"
+}
+
+test_unclearable_pending_composer_refuses_without_typing_exit() {
+  local dir out rc
+  dir=$(new_case pending-refuse)
+  add_task "$dir" t1 pi
+  alive_as "$dir" pi
+  printf '────────\nforeign pending text\n────────\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 1 "$rc" "exit should refuse when pending composer text cannot be cleared"$'\n'"$out"
+  assert_contains "$out" "composer remained 'pending'" \
+    "the refusal should name the final composer state"
+  assert_contains "$out" "keys sent: C-u, BSpace" \
+    "the refusal should name the clear attempts"
+  assert_contains "$out" "pending composer excerpt: foreign pending text" \
+    "the refusal should preserve the pending text excerpt"
+  [ -z "$(literals "$dir")" ] \
+    || fail "a dirty composer must receive no exit command, got: $(literals "$dir")"
+  pass "fm-control exit: an unclearable composer refuses with concrete state and key evidence"
+}
+
+test_pending_composer_without_excerpt_refuses_before_clear() {
+  local dir out rc
+  dir=$(new_case pending-no-excerpt)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  printf '╭────╮\n│ draft text │\n╰────╯\n╭────╮\n' > "$dir/fake/pane"
+  : > "$dir/fake/clear-composer"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 1 "$rc" "exit should refuse before clearing when the pending state cannot supply an excerpt"$'\n'"$out"
+  assert_contains "$out" "pending composer excerpt is unavailable" \
+    "the refusal should name the missing excerpt proof"
+  [ -z "$(keys_sent "$dir")" ] \
+    || fail "an unavailable pending excerpt must refuse before sending clear keys"
+  [ -z "$(literals "$dir")" ] \
+    || fail "an unavailable pending excerpt must receive no exit command"
+  pass "fm-control exit: an unreadable pending excerpt fails closed before clearing"
+}
+
+test_opencode_pending_composer_refuses_without_verified_clear_key() {
+  local dir out rc
+  dir=$(new_case opencode-no-clear)
+  add_task "$dir" t1 opencode
+  alive_as "$dir" opencode
+  printf '╭────╮\n│ > draft text │\n╰────╯\n' > "$dir/fake/pane"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 1 "$rc" "OpenCode pending composer text should refuse without a verified clear key"$'\n'"$out"
+  assert_contains "$out" "harness opencode has no verified composer-clear key" \
+    "the refusal should name OpenCode's missing clear verification"
+  [ -z "$(keys_sent "$dir")" ] \
+    || fail "OpenCode should receive no guessed clear key"
+  [ -z "$(literals "$dir")" ] \
+    || fail "OpenCode should receive no exit command when its composer cannot be cleared"
+  pass "fm-control exit: OpenCode pending composer refuses without a verified clear key"
+}
+
+test_inbox_ring_defers_when_excerpt_output_is_enabled() {
+  local dir rec out rc
+  dir=$(new_case inbox-ring-excerpt)
+  rec="$dir/001.msg"
+  printf 'schema=fm-task-inbox.v1\n--\npayload\n' > "$rec"
+  printf '╭────────────╮\n│ ❯ draft    │\n╰────────────╯\n' > "$dir/fake/pane"
+
+  out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    FM_COMPOSER_STATE_OUTPUT=state-and-excerpt ROOT="$ROOT" REC="$rec" \
+    bash -c '
+      . "$ROOT/bin/fm-task-inbox-lib.sh"
+      fm_task_inbox_ring tmux fmses:fm-t1 "$REC" fm-t1 claude
+    '); rc=$?
+
+  expect_code 1 "$rc" "the inbox ring should defer when an ambient excerpt mode is enabled"$'\n'"$out"
+  [ -z "$(literals "$dir")" ] \
+    || fail "a pending composer must not receive the doorbell literal"
+  [ -z "$(keys_sent "$dir")" ] \
+    || fail "a pending composer must not receive an Enter for the doorbell"
+  pass "fm-task-inbox-ring: pending remains an exact defer verdict with ambient excerpt mode"
+}
+
 test_idle_agent_is_not_interrupted() {
   local dir out rc gen
   dir=$(new_case idle)
@@ -880,6 +1039,7 @@ test_unverified_harness_is_refused
 test_harness_family_resolution
 test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix
+test_harness_composer_clear_key_matrix
 test_harness_kind_capability
 test_orca_refuses_an_escape_harness_interrupt
 test_unverified_state_backends_refuse_stop_verbs
@@ -898,6 +1058,12 @@ test_missing_endpoint_refuses
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses
 test_busy_agent_is_interrupted_before_the_exit_command
+test_busy_interrupt_rechecks_composer_before_exit_command
+test_pending_composer_is_cleared_before_exit_is_typed
+test_unclearable_pending_composer_refuses_without_typing_exit
+test_pending_composer_without_excerpt_refuses_before_clear
+test_opencode_pending_composer_refuses_without_verified_clear_key
+test_inbox_ring_defers_when_excerpt_output_is_enabled
 test_idle_agent_is_not_interrupted
 test_interrupt_without_acknowledgement_preserves_busy_state
 test_muse_interrupt_confirms_adapter_acknowledgement

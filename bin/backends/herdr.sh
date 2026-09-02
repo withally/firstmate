@@ -2549,18 +2549,20 @@ fm_backend_herdr_send_literal() {  # <target> <text>
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
-# Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
-# herdr's `pane send-keys` names. Verified empirically: enter, escape/esc, and
-# both ctrl+c/C-c all work (case-insensitive on herdr's side, but normalize
-# explicitly rather than relying on that).
+# Escape, C-c, C-u, and BSpace, as used by fm-send.sh, fm-control.sh, and
+# stuck-crewmate-recovery) onto herdr's `pane send-keys` names. Verified
+# empirically: enter, escape/esc, and both ctrl+c/C-c all work
+# (case-insensitive on herdr's side, but normalize explicitly rather than
+# relying on that).
 fm_backend_herdr_normalize_key() {  # <key>
   case "$1" in
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+C) printf 'ctrl+c' ;;
-    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
-    # drop the prompt muse restores into the composer after Escape.
+    # C-u clears a composer line. fm-send.sh's muse interrupt path and
+    # fm-control.sh's exit guard use it for composer safety.
     C-u|c-u|ctrl+u|Ctrl+U) printf 'ctrl+u' ;;
+    BSpace|Backspace|backspace) printf 'backspace' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2641,15 +2643,15 @@ fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
 # only when the classifier reports the verdict depends on it (a pi separator
 # pair below every other candidate), preserving this adapter's original
 # consult-only-when-needed behavior.
-fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
-  local target=$1 cap caps verdict identity
-  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+fm_backend_herdr_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
+  local target=$1 cap caps verdict identity output=${3-}
+  fm_backend_herdr_parse_target "$target" || { fm_composer_state_output unknown '' '' "$output"; return 0; }
   if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   elif cap=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES"); then
     caps=$(printf 'styled=0\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   else
-    printf 'unknown'
+    fm_composer_state_output unknown '' '' "$output"
     return 0
   fi
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
@@ -2660,7 +2662,7 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
     verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
   fi
-  printf '%s' "$verdict"
+  fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }
 
 # fm_backend_herdr_rendered_busy_state: busy|idle|unknown from the pane's

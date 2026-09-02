@@ -922,7 +922,7 @@ test_escalate_batches_into_one_digest() {
   escalate_add "$state" "event A: done: PR 1"
   escalate_add "$state" "event B: done: PR 2"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+  FM_DAEMON_PRIMARY_HARNESS=unknown PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \
     || fail "escalate_flush failed"
   grep -F 'FIRSTMATE_OP: v1 away-supervisor: ' "$sent" >/dev/null \
@@ -948,7 +948,7 @@ test_escalate_batch_age_uses_first_append() {
   escalate_add "$state" "event B: done: PR 2"
   journal_backdate_buffered "$state" "$(( $(date +%s) - 100 ))"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+  FM_DAEMON_PRIMARY_HARNESS=unknown PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=90 FM_HOUSEKEEPING_TICK=0 \
     housekeeping "$state"
   grep -F 'event A: done: PR 1 | event B: done: PR 2' "$sent" >/dev/null \
@@ -1634,7 +1634,7 @@ test_delivery_witness_requires_exact_envelope_and_new_transcript_offset() {
 }
 
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
-  local dir state home user_home sent
+  local dir state home user_home sent slug transcript_dir transcript
   dir=$(make_supercase delivery-witness-missing)
   state="$dir/state"
   home="$dir/home"
@@ -1642,6 +1642,11 @@ test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
   sent="$dir/sent.log"
   mkdir -p "$home" "$user_home"
   home=$(cd "$home" && pwd -P)
+  slug=${home#/}; slug=${slug//\//-}
+  transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+  transcript="$transcript_dir/session.jsonl"
+  mkdir -p "$transcript_dir"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
   : > "$sent"
   escalate_add "$state" "needs-decision: witness absent"
   journal_backdate_buffered "$state" "$(( $(date +%s) - 600 ))"
@@ -1671,7 +1676,80 @@ test_unknown_submit_without_witness_stalls_and_alarms_without_retype() {
     || fail "an unconfirmed digest was not left in the typed state for later witness/alarm"
   [ -s "$state/.subsuper-inject-wedged" ] \
     || fail "an unconfirmed delivered-once stall did not raise the existing wedge alarm"
-  pass "an unknown submit with no transcript witness stalls and alarms without retyping"
+  pass "an unknown submit without a transcript nonce witness stalls and alarms without retyping"
+}
+
+test_flush_defers_without_transcript_baseline() {
+  local dir state home user_home sent
+  dir=$(make_supercase delivery-baseline-missing)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  sent="$dir/sent.log"
+  mkdir -p "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  : > "$sent"
+  escalate_add "$state" "needs-decision: baseline unavailable"
+  afk_enter "$state"
+
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_send_text_submit() { fail "submit ran without a transcript baseline"; }
+    if HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+      FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state"; then
+      fail "flush succeeded without a transcript baseline"
+    fi
+  ) || fail "missing transcript baseline subshell failed"
+
+  [ ! -s "$sent" ] || fail "flush submitted without a transcript baseline"
+  [ "$(jq -s -r 'map(select(.state=="buffered")) | length' "$state/.subsuper-delivery.jsonl")" -eq 1 ] \
+    || fail "flush changed the record before a transcript baseline existed"
+  [ "$(jq -s -r '.[0].witness_transcript' "$state/.subsuper-delivery.jsonl")" = - ] \
+    || fail "flush stored a non-canonical witness without a transcript baseline"
+  pass "supported harnesses defer delivery until a transcript baseline exists"
+}
+
+test_typed_record_rebinds_missing_baseline() {
+  local dir state home user_home nonce slug transcript_dir transcript text sent
+  dir=$(make_supercase delivery-rebind-baseline)
+  state="$dir/state"
+  home="$dir/home"
+  user_home="$dir/user-home"
+  nonce=abcdef123456
+  sent="$dir/sent.log"
+  mkdir -p "$state" "$home" "$user_home"
+  home=$(cd "$home" && pwd -P)
+  slug=${home#/}; slug=${slug//\//-}
+  transcript_dir="$user_home/.pi/agent/sessions/--${slug}--"
+  transcript="$transcript_dir/session.jsonl"
+  mkdir -p "$transcript_dir"
+  jq -cn --arg cwd "$home" '{type:"session",cwd:$cwd}' > "$transcript"
+  text="${FM_OPERATIONAL_HEADER_PREFIX}away-supervisor: [d:$nonce] recovered delivery"
+  jq -cn --arg text "$text" \
+    '{type:"message",message:{role:"user",content:[{type:"text",text:$text}]}}' \
+    >> "$transcript"
+  jq -cn --arg nonce "$nonce" '{nonce:$nonce,kind:"escalation",source_key:"",text:"recovered delivery",state:"typed",buffered_epoch:0,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' \
+    > "$state/.subsuper-delivery.jsonl"
+  : > "$sent"
+
+  (
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_send_text_submit() { fail "a rebinding witness path retyped the digest"; }
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=pi \
+      FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="named:w1:p2" \
+      escalate_flush "$state" || fail "typed record was not retired after baseline rebinding"
+  ) || fail "typed baseline rebinding subshell failed"
+
+  [ ! -s "$sent" ] || fail "baseline rebinding submitted a second digest"
+  [ "$(jq -s -r '.[0].state' "$state/.subsuper-delivery.jsonl")" = delivered ] \
+    || fail "typed record with a missing baseline was not retired after rebinding"
+  [ "$(jq -s -r '.[0].witness_transcript' "$state/.subsuper-delivery.jsonl")" != - ] \
+    || fail "later baseline was not persisted before witness confirmation"
+  pass "typed records with missing baselines rebind and retire without retyping"
 }
 
 test_prejournal_delivery_state_is_quarantined_verbatim() {
@@ -1768,6 +1846,27 @@ test_delivery_nonce_avoids_existing_journal_collision() {
   pass "delivery nonce allocation retries a journal collision"
 }
 
+test_typed_record_without_nonce_is_quarantined() {
+  local dir state journal qdir
+  dir=$(make_supercase delivery-typed-empty-nonce)
+  state="$dir/state"
+  journal="$state/.subsuper-delivery.jsonl"
+  mkdir -p "$state"
+  jq -cn '{nonce:"",kind:"escalation",source_key:"",text:"stranded typed record",state:"typed",buffered_epoch:1,typed_epoch:2,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' \
+    > "$journal"
+
+  if FM_WEDGE_ALARM_EXEC=discard escalate_flush "$state"; then
+    fail "flush accepted a typed record without a nonce"
+  fi
+  [ ! -e "$journal" ] || fail "invalid typed record remained live after quarantine"
+  qdir=$(find "$state" -maxdepth 1 -type d -name '.subsuper-delivery.quarantine-*' | head -1)
+  [ -n "$qdir" ] || fail "invalid typed record was not quarantined"
+  [ "$(jq -s -r '.[0].state + ":" + .[0].nonce' "$qdir/.subsuper-delivery.jsonl")" = 'typed:' ] \
+    || fail "quarantine changed the invalid typed record"
+  [ -s "$state/.subsuper-inject-wedged" ] || fail "invalid typed record did not raise a wedge alarm"
+  pass "typed records without nonces are quarantined instead of clearing the wedge"
+}
+
 test_journal_empty_apply_commits_empty_file() {
   local dir state journal
   dir=$(make_supercase delivery-empty-apply)
@@ -1799,7 +1898,7 @@ test_delivery_mark_failure_preserves_typed_record() {
     fm_backend_herdr_cli() { return 1; }
     fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$sent"; printf 'empty'; }
     journal_mark_delivered() { return 1; }
-    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=claude \
+    HOME="$user_home" FM_HOME="$home" FM_DAEMON_PRIMARY_HARNESS=unknown \
       FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET='named:w1:p2' \
       FM_INJECT_CONFIRM_RETRIES=1 FM_INJECT_CONFIRM_SLEEP=0 \
       escalate_flush "$state" && fail "flush succeeded after delivery retirement failed"
@@ -2008,7 +2107,7 @@ test_max_defer_empty_swallow_types_once_and_alarms() {
   escalate_add "$state" "needs-decision: pick A"
   journal_backdate_buffered "$state" "$(( $(date +%s) - 600 ))"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+  FM_DAEMON_PRIMARY_HARNESS=unknown PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
     FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 housekeeping "$state"
   [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
@@ -2029,7 +2128,7 @@ test_max_defer_flushes_empty_idle_pane() {
   escalate_add "$state" "done: PR https://x/y/pull/1"
   journal_backdate_buffered "$state" "$(( $(date +%s) - 600 ))"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+  FM_DAEMON_PRIMARY_HARNESS=unknown PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_INJECT_CONFIRM_SLEEP=0.05 \
     housekeeping "$state"
   ! journal_has_buffered "$state" || fail "buffer not cleared after a recovered max-defer flush"
@@ -2046,7 +2145,7 @@ test_max_defer_pending_composer_alarms_without_typing() {
   escalate_add "$state" "needs-decision: pick B"
   journal_backdate_buffered "$state" "$(( $(date +%s) - 600 ))"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+  FM_DAEMON_PRIMARY_HARNESS=unknown PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_INJECT_CONFIRM_SLEEP=0.05 \
     housekeeping "$state"
   [ ! -s "$sent" ] || fail "max-defer typed into a pending composer"
@@ -2064,7 +2163,7 @@ test_normal_flush_clears_stale_wedge_marker() {
   printf 'old wedge\n' > "$state/.subsuper-inject-wedged"
   escalate_add "$state" "done: PR https://x/y/pull/2"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+  FM_DAEMON_PRIMARY_HARNESS=unknown PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_INJECT_CONFIRM_SLEEP=0.05 escalate_flush "$state" \
     || fail "normal escalate_flush failed"
   ! journal_has_buffered "$state" || fail "buffer not cleared after normal flush"
@@ -3136,10 +3235,13 @@ test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_prejournal_delivery_state_is_quarantined_verbatim
 test_prejournal_quarantine_failure_preserves_source
 test_delivery_nonce_avoids_existing_journal_collision
+test_typed_record_without_nonce_is_quarantined
 test_journal_empty_apply_commits_empty_file
 test_delivery_mark_failure_preserves_typed_record
 test_journal_partial_apply_temp_is_ignored
 test_typed_record_retires_on_later_witness_without_retype
+test_flush_defers_without_transcript_baseline
+test_typed_record_rebinds_missing_baseline
 test_delivery_transcript_root_honors_configured_pi_agent_dir
 test_max_defer_empty_swallow_types_once_and_alarms
 test_max_defer_flushes_empty_idle_pane

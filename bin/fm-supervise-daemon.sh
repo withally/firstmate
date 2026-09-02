@@ -956,6 +956,17 @@ delivery_transcript_baseline() {  # <backend> <target> <harness> -> <transcript>
   printf '%s\t%s' "$transcript" "$offset"
 }
 
+delivery_transcript_baseline_validated() {
+  local baseline transcript offset extra
+  baseline=$(delivery_transcript_baseline "$@" 2>/dev/null) || return 1
+  IFS=$'\t' read -r transcript offset extra <<< "$baseline"
+  [ -n "$transcript" ] && [ "$transcript" != - ] || return 1
+  [ -z "$extra" ] || return 1
+  case "$transcript" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\t%s' "$transcript" "$offset"
+}
+
 delivery_transcript_contains_nonce() {  # <harness> <transcript> <nonce> <byte-offset> <buffered-at>
   local harness=$1 transcript=$2 nonce=$3 offset=$4 buffered_at=$5 size mtime prefix
   case "$nonce" in
@@ -1034,6 +1045,13 @@ journal_valid() {  # <state>
       and ((.source_key | type) == "string")
       and ((.text | type) == "string")
       and (.state == "buffered" or .state == "typed" or .state == "delivered")
+      and (
+        (.state == "buffered" and .nonce == "")
+        or (
+          (.state == "typed" or .state == "delivered")
+          and (.nonce | test("^[0-9a-f]{12}$"))
+        )
+      )
       and ((.buffered_epoch | type) == "number")
       and ((.typed_epoch | type) == "number")
       and ((.delivered_epoch | type) == "number")
@@ -1080,6 +1098,18 @@ journal_mark_typed() {  # <state> <nonce> <transcript> <offset>
     --arg nonce "$nonce" --arg t "$transcript" --argjson o "$offset" --argjson now "$now"
 }
 
+journal_bind_typed_witness() {  # <state> <nonce> <transcript> <offset>
+  local state=$1 nonce=$2 transcript=$3 offset=$4
+  delivery_nonce_valid "$nonce" || return 1
+  [ -n "$transcript" ] && [ "$transcript" != - ] || return 1
+  case "$transcript" in *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;; esac
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  # shellcheck disable=SC2016 # $nonce/$t/$o are jq --arg/--argjson variables.
+  journal_apply "$state" \
+    'map(if .state=="typed" and .nonce==$nonce then .witness_transcript=$t | .witness_offset=$o else . end)' \
+    --arg nonce "$nonce" --arg t "$transcript" --argjson o "$offset"
+}
+
 # Retire (mark delivered) every typed record carrying the given digest nonce.
 # Delivered records stay in the journal so a later identical check still dedups;
 # the journal is cleared on a fresh /afk entry and on return.
@@ -1097,7 +1127,7 @@ journal_mark_delivered() {  # <state> <nonce>
 # records. The mtime guard uses typed_epoch (the transcript must be at least as
 # new as the type), and the fresh unique nonce makes a stale match impossible.
 journal_witness_typed() {  # <state> <backend> <target> <harness> <nonce>
-  local state=$1 backend=$2 target=$3 harness=$4 nonce=$5 rec transcript offset typed_epoch
+  local state=$1 backend=$2 target=$3 harness=$4 nonce=$5 rec transcript offset typed_epoch baseline baseline_offset extra
   rec=$(jq -s -c --arg nonce "$nonce" \
     'map(select(.state=="typed" and .nonce==$nonce)) | .[0] // empty' \
     "$state/$JOURNAL_NAME" 2>/dev/null)
@@ -1105,7 +1135,20 @@ journal_witness_typed() {  # <state> <backend> <target> <harness> <nonce>
   transcript=$(printf '%s' "$rec" | jq -r '.witness_transcript')
   offset=$(printf '%s' "$rec" | jq -r '.witness_offset')
   typed_epoch=$(printf '%s' "$rec" | jq -r '.typed_epoch')
-  [ -n "$transcript" ] && [ "$transcript" != - ] || return 1
+  case "$transcript" in
+    ''|-)
+      case "$harness" in
+        pi|pi-signed|claude*)
+          baseline=$(delivery_transcript_baseline_validated "$backend" "$target" "$harness" 2>/dev/null || true)
+          [ -n "$baseline" ] || return 1
+          IFS=$'\t' read -r transcript baseline_offset extra <<< "$baseline"
+          case "$offset" in ''|*[!0-9]*) offset=$baseline_offset ;; esac
+          journal_bind_typed_witness "$state" "$nonce" "$transcript" "$offset" || return 1
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+  esac
   delivery_witness_confirms "$backend" "$target" "$harness" "$nonce" \
     "$transcript" "$offset" "$typed_epoch"
 }
@@ -1326,7 +1369,15 @@ EOF
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$count" "$msg")
   transcript=-
   offset=0
-  baseline=$(delivery_transcript_baseline "$backend" "$target" "$harness" 2>/dev/null || true)
+  baseline=$(delivery_transcript_baseline_validated "$backend" "$target" "$harness" 2>/dev/null || true)
+  case "$harness" in
+    pi|pi-signed|claude*)
+      if [ -z "$baseline" ]; then
+        log "inject deferred: transcript baseline unavailable; type skipped"
+        return 1
+      fi
+      ;;
+  esac
   if [ -n "$baseline" ]; then
     IFS=$'\t' read -r transcript offset extra <<< "$baseline"
     case "$transcript" in ''|*$'\t'*|*$'\r'*|*$'\n'*) transcript=-; offset=0 ;; esac

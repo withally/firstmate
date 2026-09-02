@@ -133,6 +133,13 @@ return_delivery_journal_valid() {  # <journal-path>
       and ((.source_key | type) == "string")
       and ((.text | type) == "string")
       and (.state == "buffered" or .state == "typed" or .state == "delivered")
+      and (
+        (.state == "buffered" and .nonce == "")
+        or (
+          (.state == "typed" or .state == "delivered")
+          and (.nonce | test("^[0-9a-f]{12}$"))
+        )
+      )
       and ((.buffered_epoch | type) == "number")
       and ((.typed_epoch | type) == "number")
       and ((.delivered_epoch | type) == "number")

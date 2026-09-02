@@ -310,6 +310,28 @@ test_malformed_delivery_journal_blocks_return_and_preserves_state() {
   pass "return catch-up fails closed and preserves a malformed delivery journal"
 }
 
+test_typed_delivery_without_nonce_blocks_return() {
+  local dir out rc journal gate record
+  dir="$TMP_ROOT/typed-empty-nonce"
+  install_runner "$dir"
+  journal="$dir/home/state/.subsuper-delivery.jsonl"
+  gate="$dir/home/state/.afk-return-catchup"
+  jq -cn '{nonce:"",kind:"escalation",source_key:"",text:"stranded typed record",state:"typed",buffered_epoch:1,typed_epoch:2,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' \
+    > "$journal"
+  record=$(cat "$journal")
+
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "typed record without a nonce did not block return (rc=$rc): $out"
+  [ -e "$journal" ] || fail "typed record without a nonce was cleared during return"
+  [ "$(cat "$journal")" = "$record" ] || fail "typed record without a nonce changed during return"
+  [ -s "$gate" ] || fail "typed record without a nonce did not leave a return gate"
+  assert_contains "$out" 'delivery journal is malformed' "return did not report the invalid typed record"
+  pass "return catch-up rejects typed records without nonces and preserves the journal"
+}
+
 test_return_surfaces_empty_delivery_record() {
   local dir out journal
   dir="$TMP_ROOT/empty-delivery-record"
@@ -373,6 +395,7 @@ test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
 test_malformed_delivery_journal_blocks_return_and_preserves_state
+test_typed_delivery_without_nonce_blocks_return
 test_return_surfaces_empty_delivery_record
 test_empty_delivery_journal_is_a_valid_noop
 test_delivery_cleanup_failure_keeps_return_gate

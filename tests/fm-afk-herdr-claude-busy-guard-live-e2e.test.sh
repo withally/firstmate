@@ -251,35 +251,18 @@ token_count() {
 }
 
 wait_for_single_delivery() {
-  local token=$1 ack=$2 count ack_count composer screen
+  local token=$1 ack=$2 count ack_count composer screen native_status
   for _ in $(seq 1 60); do
     screen=$(screen_text)
     count=$(printf '%s\n' "$screen" | grep -F -c "$token" || true)
     ack_count=$(printf '%s\n' "$screen" | grep -F -c "$ack" || true)
     composer=$(composer_state)
+    native_status=$(agent_status)
     if [ "$count" -eq 1 ] && [ "$ack_count" -eq 1 ] \
-      && [ "$composer" = empty ] && ! delivery_has_undelivered "$STATE_DIR"; then
+      && [ "$composer" = empty ] && [ "$native_status" = working ] \
+      && ! delivery_has_undelivered "$STATE_DIR"; then
       return 0
     fi
-    sleep 1
-  done
-  return 1
-}
-
-wait_for_digest_visible() {
-  local token=$1
-  for _ in $(seq 1 30); do
-    [ "$(token_count "$token")" -eq 1 ] && return 0
-    sleep 0.1
-  done
-  return 1
-}
-
-wait_for_digest_queued_or_visible() {
-  local token=$1
-  for _ in $(seq 1 60); do
-    [ "$(token_count "$token")" -eq 1 ] && return 0
-    delivery_has_undelivered "$STATE_DIR" && return 0
     sleep 1
   done
   return 1
@@ -421,21 +404,16 @@ wait_for_wrapped_idle_background_footer \
 emit_verdict_evidence idle-post-afk
 
 ESCALATION_ONE="FM_AFK_CLAUDE_GUARD_ONE_$$"
-printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR/crew-one.status"
-wait_for_digest_queued_or_visible "$ESCALATION_ONE" \
-  || fail "the watcher did not queue the first escalation within the live observation window"
 DELIVERY_STARTED=$(date +%s)
-wait_for_digest_visible "$ESCALATION_ONE" \
+printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR/crew-one.status"
+wait_for_single_delivery "$ESCALATION_ONE" "$AWAY_ACK_TOKEN" \
   || {
-    echo "one-tick delivery diagnostics:" >&2
     sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
-    fail "the queued first escalation was not visible within one housekeeping tick"
+    fail "the first escalation was not confirmed exactly once while the native background job remained running"
   }
 DELIVERY_ELAPSED=$(( $(date +%s) - DELIVERY_STARTED ))
 [ "$DELIVERY_ELAPSED" -le 2 ] \
   || fail "the first escalation took ${DELIVERY_ELAPSED}s to appear instead of one 1s housekeeping cadence"
-wait_for_single_delivery "$ESCALATION_ONE" "$AWAY_ACK_TOKEN" \
-  || fail "native Herdr working plus rendered-idle Claude did not submit the first escalation exactly once"
 sleep 3
 if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ] || [ "$(token_count "$AWAY_ACK_TOKEN")" -ne 1 ]; then
   echo "first-delivery diagnostics: token-count=$(token_count "$ESCALATION_ONE") ack-count=$(token_count "$AWAY_ACK_TOKEN") agent_status=$(agent_status) composer=$(composer_state)" >&2

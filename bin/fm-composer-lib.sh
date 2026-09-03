@@ -316,7 +316,8 @@ FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[
 FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
 FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX='Press up to edit queued messages'
 FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX='Running…[[:space:]]+\([0-9]+[smh].*timeout'
-FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass permissions on([[:space:]]|$)'
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass[[:space:]]+permissions[[:space:]]+on([[:space:]]|$)'
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass[[:space:]]+permissions[[:space:]]+on([[:space:]]+[(]shift[+]tab[[:space:]]+to[[:space:]]+cycle[)]|[[:space:]]+·[[:space:]]+(←[[:space:]]+[[:digit:]]+[[:space:]]+agent([[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage)?|[[:digit:]]+[[:space:]]+shell([[:space:]]+·[[:space:]]+esc[[:space:]]+to[[:space:]]+interrupt)?[[:space:]]+·[[:space:]]+←[[:space:]]+[[:digit:]]+[[:space:]]+(agent|a…)([[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage)?))[[:space:]]*$'
 FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX='^[[:space:]]*(/rc|●[[:space:]]+(low|medium|high)[[:space:]]+·[[:space:]]+/effort)[[:space:]]*$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
@@ -365,15 +366,16 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local capture_caps=${1:-} lines plain footer footer_row footer_start composer screen caps verdict active_rows preceding screen_verdict
+  local capture_caps=${1:-} lines plain footer footer_row footer_shape footer_start composer screen caps verdict active_rows preceding screen_verdict
   local active_hint=0 active_tool=0
   FM_CLAUDE_BUSY_MATCHED_ROW=
   [ -n "$capture_caps" ] || capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
-  footer_start=$(printf '%s\n' "$plain" | awk \
+  footer_shape=$(printf '%s\n' "$plain" | awk \
     -v primary="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX" \
+    -v prefix="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX" \
     -v continuation="$FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX" '
       { rows[NR]=$0 }
       function previous_nonblank(from, row) {
@@ -388,9 +390,14 @@ fm_claude_current_footer_busy() {
           count++
           row=previous_nonblank(row - 1)
         }
-        if (row > 0 && rows[row] ~ primary) print row
+        if (row > 0 && rows[row] ~ primary) print "valid:" row
+        else if (count > 0 || (row > 0 && rows[row] ~ prefix)) print "invalid"
       }
     ')
+  case "$footer_shape" in
+    valid:*) footer_start=${footer_shape#valid:} ;;
+    invalid) return 2 ;;
+  esac
   if [ -n "$footer_start" ]; then
     footer=$(printf '%s\n' "$plain" | awk -v start="$footer_start" 'NR == start { print; exit }')
     footer_row=$((footer_start - 1))

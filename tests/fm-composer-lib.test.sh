@@ -778,9 +778,10 @@ test_claude_plain_capture_active_hint_uses_actual_capabilities() {
 test_claude_plain_capture_active_hint_uses_actual_capabilities
 
 test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
-  local idle busy pending garbled dead rc
+  local idle busy garbled pending dead rc
   idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt")")
   busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt")")
+  garbled=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/garbled-suffix-background-narrow.ansi.txt")")
 
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
     fail "Claude's captured idle background-shell footer must not read busy"
@@ -804,14 +805,13 @@ test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
   [ "$rc" -eq 1 ] \
     || fail "Claude's pending composer must route to the composer guard, got rc=$rc"
 
-  garbled="$idle"$'\nforeign footer damage'
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$garbled"; then
-    fail "a garbled row below Claude's status footer must not read busy"
+    fail "a garbled Claude status suffix must not read idle or busy"
   else
     rc=$?
   fi
   [ "$rc" -eq 2 ] \
-    || fail "a garbled row below Claude's status footer must remain unreadable, got rc=$rc"
+    || fail "a garbled Claude status suffix must remain unreadable, got rc=$rc"
 
   dead=${idle/❯ /\$}
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$dead"; then

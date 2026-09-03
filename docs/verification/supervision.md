@@ -245,7 +245,7 @@ bin/fm-test-run.sh \
   tests/fm-daemon.test.sh \
   tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
 
-HERDR_LAB_HELPER='/Users/ivan/Projects/firstmate/bin/fm-herdr-lab.sh' \
+HERDR_LAB_HELPER="$(git rev-parse --show-toplevel)/bin/fm-herdr-lab.sh" \
   FM_AFK_HERDR_CLAUDE_LIVE=1 \
   bin/fm-test-run.sh tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
 # verdict: idle-post-afk agent_status=idle composer=empty pane_is_busy_rc=1 broad_match_rc=1 scoped_match_rc=1 subcause=idle native-state=working matched-row=none

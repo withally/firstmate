@@ -715,3 +715,22 @@ test_queued_enter_verdict_does_not_convert_other_states() {
 test_queued_enter_verdict_busy_pending_is_empty
 test_queued_enter_verdict_idle_pending_stays_pending
 test_queued_enter_verdict_does_not_convert_other_states
+
+test_claude_current_footer_requires_selected_composer_adjacency() {
+  local foreign genuine rc
+  foreign=$'────────────────────────\n❯\n────────────────────────\nClaude 4.1\n✲ Working… (4s)\n'
+  if printf '%s' "$foreign" | fm_claude_current_footer_busy; then
+    fail "a foreign Working row below an idle Claude composer must not read busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] \
+    || fail "a foreign Working row outside the selected composer boundary must read unknown, got rc=$rc"
+
+  genuine=$'────────────────────────\n❯\n────────────────────────\n✲ Pollinating… (16s · ↓ 1.1k tokens)\n'
+  printf '%s' "$genuine" | fm_claude_current_footer_busy \
+    || fail "a genuine Claude mid-turn footer immediately below its composer must read busy"
+  pass "fm_claude_current_footer_busy: the footer belongs to the selected composer boundary"
+}
+
+test_claude_current_footer_requires_selected_composer_adjacency

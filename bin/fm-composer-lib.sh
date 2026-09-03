@@ -1053,11 +1053,12 @@ _fm_composer_leftbar_floor_row() {  # <trimmed-row>
 }
 
 _fm_composer_select_cursorless() {
-  local plain=$1 generic=-1 next boundary raw trimmed
+  local plain=$1 generic=-1 next boundary=-1 raw trimmed
   FM_COMPOSER_SELECTED_KIND=
   FM_COMPOSER_SELECTED_FIRST=-1
   FM_COMPOSER_SELECTED_LAST=-1
   FM_COMPOSER_SELECTED_AMBIG=0
+  FM_COMPOSER_SELECTED_BOUNDARY=-1
   if [ "$FM_COMPOSER_SCAN_BOX_BOTTOM" -ge 0 ]; then
     generic=$FM_COMPOSER_SCAN_BOX_BOTTOM
     FM_COMPOSER_SELECTED_KIND=box
@@ -1133,6 +1134,19 @@ _fm_composer_select_cursorless() {
       return 1
     fi
   fi
+  case "$FM_COMPOSER_SELECTED_KIND" in
+    box|leftbar) ;;
+    bare)
+      boundary=$FM_COMPOSER_SELECTED_LAST
+      next=$((boundary + 1))
+      raw=$(_fm_composer_screen_row "$next" "$plain")
+      trimmed=$raw
+      fm_composer_normalize_trim_var trimmed
+      if [ -n "$trimmed" ] && fm_composer_row_has_edge "$trimmed"; then boundary=$next; fi
+      ;;
+    pi) boundary=$FM_COMPOSER_SCAN_PI_CLOSE ;;
+  esac
+  FM_COMPOSER_SELECTED_BOUNDARY=$boundary
   [ -n "$FM_COMPOSER_SELECTED_KIND" ]
 }
 

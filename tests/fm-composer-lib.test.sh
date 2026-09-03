@@ -778,9 +778,10 @@ test_claude_plain_capture_active_hint_uses_actual_capabilities() {
 test_claude_plain_capture_active_hint_uses_actual_capabilities
 
 test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
-  local idle busy garbled pending dead rc
+  local idle busy spinner garbled pending dead rc
   idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt")")
   busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt")")
+  spinner=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/active-spinner-wrapped-narrow.ansi.txt")")
   garbled=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/garbled-suffix-background-narrow.ansi.txt")")
 
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
@@ -795,6 +796,11 @@ test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
     || fail "Claude's captured foreground Bash turn must remain rendered busy"
   [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
     || fail "Claude's wrapped busy fixture did not expose its spinner row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
+
+  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$spinner" \
+    || fail "Claude's current spinner immediately above a wrapped footer must remain busy"
+  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
+    || fail "Claude's wrapped spinner fixture did not expose its exact matched row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
 
   pending=${idle/❯ /❯ bright-human-draft}
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$pending"; then

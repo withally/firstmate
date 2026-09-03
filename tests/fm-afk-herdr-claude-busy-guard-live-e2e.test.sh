@@ -272,8 +272,22 @@ wait_for_wrapped_idle_background_footer() {
   local screen
   for _ in $(seq 1 30); do
     screen=$(screen_text)
-    if printf '%s\n' "$screen" | grep -Eq '1 shell .*↓ to manage' \
-      && printf '%s\n' "$screen" | grep -Eq '^[[:space:]]*/rc[[:space:]]*$'; then
+    if printf '%s\n' "$screen" | awk '
+      { rows[NR] = $0 }
+      function previous_nonblank(from, row) {
+        for (row = from; row >= 1; row--)
+          if (rows[row] !~ /^[[:space:]]*$/) return row
+        return 0
+      }
+      END {
+        continuation = previous_nonblank(NR)
+        primary = previous_nonblank(continuation - 1)
+        if (continuation > 0 && primary > 0 \
+            && rows[continuation] ~ /^[[:space:]]*\/rc[[:space:]]*$/ \
+            && rows[primary] ~ /^[[:space:]]*⏵⏵ bypass permissions on[[:space:]]+·[[:space:]]+1 shell[[:space:]]+·[[:space:]]+←[[:space:]]+1 agent[[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage[[:space:]]*$/) exit 0
+        exit 1
+      }
+    '; then
       return 0
     fi
     sleep 0.2

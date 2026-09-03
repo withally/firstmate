@@ -663,7 +663,7 @@ test_operational_inputs_are_silent_in_every_worker_scaffold() {
   local home kind id brief content reply_rule rule_count
   home="$TMP_ROOT/silent-operational-input-home"
   mkdir -p "$home/data"
-  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: reply only with the required status-file line, or nothing; never send captain-addressed chat, because "captain" is reserved for the main firstmate.'
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
 
   for kind in ship scout secondmate; do
     id="silent-operational-input-$kind"

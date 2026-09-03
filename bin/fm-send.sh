@@ -96,10 +96,11 @@
 #
 # From-firstmate marker: when the resolved target is a task selector whose meta
 # records kind=secondmate, the message uses the live-charter-compatible
-# from-firstmate carrier owned by bin/fm-operational-input.sh so the secondmate
-# routes its reply via its status file or a status-pointed doc instead of
-# stranding it in chat the main firstmate never reads. On the inbox plane the
-# marker travels verbatim inside the recorded body. A crewmate/scout target,
+# from-firstmate carrier owned by bin/fm-operational-input.sh; worker-bound
+# messages also carry that owner's recipient-aware silent-reply suffix so the
+# secondmate routes its reply via its status file or a status-pointed doc
+# instead of stranding it in chat the main firstmate never reads. On the inbox
+# plane the marker travels verbatim inside the recorded body. A crewmate/scout target,
 # an explicit backend-target escape-hatch target, and the --key path are never
 # marked - their behavior is unchanged.
 #
@@ -118,11 +119,13 @@
 # failed enqueue discards the expectation. On the typed plane, exit 3 and an
 # exit 1 with visibly retained text keep it armed rather than dropping it, and
 # only a proven send failure discards it.
-# Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending a recovery request
-# for an already-open expectation so a second record is not created. Direct
-# unmarked captain input never creates one. A marked secondmate instruction
-# sent with --fire-and-forget <16-hex-delivery-id> uses the same inbox transport
-# without creating a reply expectation; its delivery id makes uncertain retries
+# Set FM_PENDING_REPLY_EXISTING_CORR=<id> when re-sending an existing request
+# or recovery attempt for an already-open expectation so a second record is not
+# created. Set FM_PENDING_REPLY_RECOVERY=1 with it when re-sending a recovery
+# attempt so the persisted recovery body is used. Direct unmarked captain input
+# never creates one. A marked secondmate instruction sent with
+# --fire-and-forget <16-hex-delivery-id> uses the same inbox transport without
+# creating a reply expectation; its delivery id makes uncertain retries
 # idempotent while allowing a later identical instruction to be distinct.
 #
 # Remote secondmate delivery: the send crosses fm-on.sh to a host-local leg
@@ -699,7 +702,7 @@ else
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
   if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ -n "$FIRE_AND_FORGET_ID" ]; then
-    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
+    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE secondmate
     MESSAGE="${FM_FROMFIRST_MARK}delivery=${FIRE_AND_FORGET_ID} ${MESSAGE#"$FM_FROMFIRST_MARK"}"
     FM_SEND_IDEMPOTENT=1
   elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
@@ -729,7 +732,35 @@ else
         || { echo "error: failed to create parent pending-reply expectation for $TARGET_TASK_ID" >&2; exit 1; }
       PENDING_REPLY_CREATED=1
     fi
-    fm_pending_reply_embed_corr "$MESSAGE" "$PENDING_REPLY_CORR" MESSAGE
+    pending_reply_attempt=request
+    [ "${FM_PENDING_REPLY_RECOVERY:-0}" = 1 ] && pending_reply_attempt=recovery
+    retry_body_status=1
+    fm_pending_reply_read_body "$STATE" "$PENDING_REPLY_CORR" "$pending_reply_attempt" MESSAGE \
+      || retry_body_status=$?
+    case "$retry_body_status" in
+      0) ;;
+      1)
+        pending_reply_rec=$(fm_pending_reply_path "$STATE" "$PENDING_REPLY_CORR")
+        pending_reply_recipient=secondmate
+        if [ "$pending_reply_attempt" = request ] \
+          && [ "$PENDING_REPLY_CREATED" != 1 ] \
+          && ! fm_pending_reply_body_field_present "$pending_reply_rec" request; then
+          pending_reply_recipient=main
+        fi
+        fm_pending_reply_embed_corr "$MESSAGE" "$PENDING_REPLY_CORR" MESSAGE "$pending_reply_recipient"
+        fm_pending_reply_store_body "$STATE" "$PENDING_REPLY_CORR" "$pending_reply_attempt" "$MESSAGE" \
+          || {
+            [ "$PENDING_REPLY_CREATED" != 1 ] \
+              || fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+            echo "error: failed to persist the exact pending-reply body for correlation $PENDING_REPLY_CORR" >&2
+            exit 1
+          }
+        ;;
+      *)
+        echo "error: persisted pending-reply body for correlation $PENDING_REPLY_CORR could not be decoded; refusing to re-encode the resend" >&2
+        exit 1
+        ;;
+    esac
     if [ "$PENDING_REPLY_CREATED" != 1 ] \
       && fm_pending_reply_delivery_attempt_unresolved "$STATE" "$PENDING_REPLY_CORR"; then
       if [ "$TARGET_BACKEND" = remote ]; then
@@ -858,6 +889,9 @@ else
       if [ "${FM_STATE_OVERRIDE+x}" = x ]; then
         resend_state=$(cd "$STATE" 2>/dev/null && pwd) || resend_state=$STATE
         printf 'FM_STATE_OVERRIDE=%q ' "$resend_state" >&2
+      fi
+      if [ "$pending_reply_attempt" = recovery ]; then
+        printf 'FM_PENDING_REPLY_RECOVERY=1 ' >&2
       fi
       printf 'FM_PENDING_REPLY_EXISTING_CORR=%q %q' "$PENDING_REPLY_CORR" "$SCRIPT_DIR/fm-send.sh" >&2
       for resend_arg in "${FM_SEND_ORIGINAL_ARGS[@]}"; do

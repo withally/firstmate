@@ -29,6 +29,8 @@
 #      slash) keeps its exit-3 delivered-unconfirmed contract, never closes a
 #      --resolve-key decision unconfirmed, and keeps a marked expectation
 #      armed.
+#   9. A recovery transport-loss resend command carries its recovery attempt
+#      discriminator so a manual retry selects the persisted recovery body.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -198,6 +200,27 @@ remote_inbox_records() {  # <remote-home>
   find "$1/state/parent-route/rsm.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null
 }
 
+record_without_current_carrier() {  # <record-path>
+  local rec=$1 body tmp
+  body=$(fm_task_inbox_body "$rec"; printf x)
+  body=${body%x}
+  case "$body" in
+    *"$FM_OPERATIONAL_WORKER_CARRIER") ;;
+    *) return 1 ;;
+  esac
+  body=${body%"$FM_OPERATIONAL_WORKER_CARRIER"}
+  tmp="$rec.pre-carrier"
+  sed -n '1,/^--$/p' "$rec" > "$tmp" || return 1
+  printf '%s' "$body" >> "$tmp" || return 1
+  mv "$tmp" "$rec" || return 1
+}
+
+pending_record_without_request_body() {  # <record-path>
+  local rec=$1 tmp="$1.pre-upgrade"
+  awk '$0 !~ /^request_body_b64=/' "$rec" > "$tmp" || return 1
+  mv "$tmp" "$rec"
+}
+
 # The single non-dot pending-reply record in <home>, or empty.
 pending_record() {  # <home>
   find "$1/state/pending-replies" -maxdepth 1 -type f ! -name '.*' 2>/dev/null | head -1
@@ -290,6 +313,12 @@ test_remote_rerun_is_idempotent() {
   [ "$(grep '^phase=' "$pend" | tail -1 | cut -d= -f2-)" = delivery_unknown ] \
     || fail "the preserved expectation must record unknown delivery: $(cat "$pend")"
   corr=$(fm_pending_reply_get "$pend" corr_id)
+  rec=$(remote_inbox_records "$rhome" | head -1)
+  record_without_current_carrier "$rec" \
+    || fail "the remote retry fixture could not model a pre-carrier record"
+  pending_record_without_request_body "$pend" \
+    || fail "the remote retry fixture could not model a pre-upgrade pending record"
+  fm_task_inbox_body "$rec" > "$dir/pre-retry.body"
   printf -v quoted '%q' "$home"
   expected_cmd="FM_HOME=$quoted FM_PENDING_REPLY_EXISTING_CORR=$corr"
   for arg in "$SEND" rsm "please rename the metric"; do
@@ -332,11 +361,43 @@ test_remote_rerun_is_idempotent() {
   rec=$(find "$rhome/state/parent-route/rsm.inbox" -name '*.msg' | head -1)
   grep -F "corr=$corr" "$rec" >/dev/null \
     || fail "the deduplicated remote record did not preserve correlation $corr"
+  fm_task_inbox_body "$rec" > "$dir/post-retry.body"
+  cmp -s "$dir/pre-retry.body" "$dir/post-retry.body" \
+    || fail "the correlation-reusing resend changed the pre-carrier record body"
   [ -n "$(fm_pending_reply_get "$pend" delivered_epoch)" ] \
     || fail "the successful resend did not confirm pending-reply delivery: $(cat "$pend")"
   [ "$(fm_pending_reply_get "$pend" phase)" = awaiting_report ] \
     || fail "the successful resend did not restore awaiting_report: $(cat "$pend")"
-  pass "fm-send remote: the printed correlation-reusing resend deduplicates onto the same record"
+  pass "fm-send remote: correlation reuse preserves pre-carrier bytes and deduplicates"
+}
+
+test_remote_recovery_resend_command_preserves_attempt() {
+  local dir fb ssh_log home rhome rc err pend corr recovery expected
+  dir="$TMP_ROOT/remote-recovery-resend"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); ssh_log="$dir/ssh.log"; : > "$ssh_log"
+  rhome=$(setup_remote_secondmate_home remote-recovery-resend)
+  home=$(setup_remote_parent_home remote-recovery-resend "$rhome")
+
+  send_env "$fb" "$home" "$ssh_log" \
+    "$SEND" rsm "original request" >"$dir/original.out" 2>"$dir/original.err" \
+    || fail "the original request could not seed its pending expectation"
+  pend=$(pending_record "$home")
+  [ -n "$pend" ] || fail "the original request did not create a pending expectation"
+  corr=$(fm_pending_reply_get "$pend" corr_id)
+  recovery=$(fm_pending_reply_recovery_message "$pend")
+  fm_pending_reply_store_body "$home/state" "$corr" recovery "$recovery" \
+    || fail "the recovery body could not be persisted"
+
+  rc=0
+  send_env "$fb" "$home" "$ssh_log" FM_FAKE_SSH_AMBIGUOUS=1 \
+    FM_PENDING_REPLY_EXISTING_CORR="$corr" FM_PENDING_REPLY_RECOVERY=1 \
+    "$SEND" rsm "$recovery" >"$dir/recovery.out" 2>"$dir/recovery.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "an ambiguous recovery transport must print a retry command"
+  err=$(cat "$dir/recovery.err")
+  printf -v expected '%q' "$corr"
+  assert_contains "$err" "FM_PENDING_REPLY_RECOVERY=1 FM_PENDING_REPLY_EXISTING_CORR=$expected" \
+    "a recovery retry command must preserve its recovery attempt discriminator"
+  pass "fm-send remote: recovery retry commands preserve the recovery body selector"
 }
 
 test_remote_retry_failure_preserves_ambiguous_expectation() {
@@ -780,6 +841,7 @@ test_local_pending_does_not_close_resolve_key() {
 
 test_remote_steer_lands_in_remote_inbox
 test_remote_rerun_is_idempotent
+test_remote_recovery_resend_command_preserves_attempt
 test_remote_retry_failure_preserves_ambiguous_expectation
 test_remote_fire_and_forget_never_arms_reply_recovery
 test_remote_send_revalidates_after_retirement_lock

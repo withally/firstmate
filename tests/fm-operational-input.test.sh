@@ -22,15 +22,25 @@ kind_cli() {
   printf '%s' "$1" | "$OWNER" kind 2>/dev/null
 }
 
+count_literal() {  # <text> <literal>
+  local rest=$1 needle=$2 count=0
+  while [ "${rest#*"$needle"}" != "$rest" ]; do
+    rest=${rest#*"$needle"}
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
 test_current_generic_matrix() {
-  local kind body encoded parsed stripped prefix_hex
+  local kind body encoded parsed stripped prefix_hex reply_rule rule_count
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
   prefix_hex=$(printf '%s' "$FM_OPERATIONAL_PREFIX" | od -An -tx1 | tr -d ' \n')
   [ "$prefix_hex" = e281a346495253544d4154455f4f503a20 ] \
     || fail "current operational prefix lost the landed U+2063 FIRSTMATE_OP bytes: $prefix_hex"
 
   for kind in session-start watcher turn-end-guard away-supervisor launch-brief branch-outcome; do
     body="CURRENT_BODY_FOR_${kind}"
-    fm_operational_input_encode "$kind" "$body" encoded \
+    fm_operational_input_encode "$kind" "$body" encoded secondmate \
       || fail "could not encode current $kind fixture"
     fm_operational_input_kind "$encoded" parsed \
       || fail "could not parse current $kind fixture"
@@ -40,6 +50,9 @@ test_current_generic_matrix() {
       || fail "cross-language CLI lost current $kind"
     [ "$(classify_cli "$encoded")" = "$kind" ] \
       || fail "classifier lost current $kind"
+    rule_count=$(count_literal "$encoded" "$reply_rule")
+    [ "$rule_count" = 1 ] \
+      || fail "current $kind carrier must include the silent operational-input rule exactly once, found $rule_count"
     fm_operational_input_body "$encoded" stripped \
       || fail "could not recover current $kind body"
     [ "$stripped" = "$body" ] \
@@ -48,10 +61,61 @@ test_current_generic_matrix() {
   pass "operational input: every current generic envelope retains its exact structured kind"
 }
 
+test_main_recipient_preserves_captain_boundary() {
+  local body encoded parsed stripped rule_count
+  body='This outcome is captain-facing: give the captain a visible response now.'
+  encoded=$(printf '%s' "$body" | "$OWNER" encode branch-outcome main) \
+    || fail "main-bound branch outcome could not be encoded"
+  fm_operational_input_kind "$encoded" parsed \
+    || fail "main-bound branch outcome did not remain current operational input"
+  [ "$parsed" = branch-outcome ] \
+    || fail "main-bound branch outcome became $parsed"
+  rule_count=$(count_literal "$encoded" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$rule_count" = 0 ] \
+    || fail "main-bound branch outcome carried the worker-only silent rule"
+  fm_operational_input_body "$encoded" stripped \
+    || fail "main-bound branch outcome body could not be recovered"
+  [ "$stripped" = "$body" ] \
+    || fail "main-bound branch outcome body changed during encoding"
+  pass "operational input: main-bound branch outcomes retain their visible-response instruction"
+}
+
+test_main_body_preserves_literal_carrier_suffix() {
+  local body kind encoded stripped
+  body="main-bound body${FM_OPERATIONAL_SILENT_REPLY_CARRIER}"
+  for kind in watcher from-firstmate; do
+    encoded=$(printf '%s' "$body" | "$OWNER" encode "$kind" main) \
+      || fail "main-bound $kind body could not be encoded"
+    stripped=$(printf '%s' "$encoded" | "$OWNER" body) \
+      || fail "main-bound $kind body could not be parsed"
+    [ "$stripped" = "$body" ] \
+      || fail "main-bound $kind body lost its literal carrier suffix"
+  done
+  pass "operational input: main-bound bodies preserve a literal carrier-like suffix"
+}
+
+test_default_main_and_explicit_worker_carriers() {
+  local body main_encoded mate_encoded main_count mate_count
+  # shellcheck disable=SC2016 # Backticks are intentional literal prompt bytes.
+  body='Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.'
+  main_encoded=$(printf '%s' "$body" | "$OWNER" encode session-start) \
+    || fail "main-bound session-start nudge could not be encoded"
+  mate_encoded=$(printf '%s' "$body" | "$OWNER" encode session-start secondmate) \
+    || fail "secondmate session-start nudge could not be encoded"
+  main_count=$(count_literal "$main_encoded" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$main_count" = 0 ] \
+    || fail "main-bound session-start nudge carried the worker-only silent rule"
+  mate_count=$(count_literal "$mate_encoded" "$FM_OPERATIONAL_SILENT_REPLY_RULE")
+  [ "$mate_count" = 1 ] \
+    || fail "secondmate session-start nudge must carry the silent rule exactly once, found $mate_count"
+  pass "operational input: main-bound nudges stay captain-facing while explicit mate inputs carry silence"
+}
+
 test_current_from_firstmate_carrier() {
-  local encoded parsed separator
+  local encoded parsed separator stripped reply_rule rule_count
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
   separator=$(printf '\342\201\243')
-  fm_message_mark_from_firstmate "corr=0123456789abcdef inspect the report" encoded
+  fm_message_mark_from_firstmate "corr=0123456789abcdef inspect the report" encoded secondmate
   [ "${encoded#"[fm-from-firstmate]$separator"}" != "$encoded" ] \
     || fail "from-firstmate lost its live-charter-compatible leading carrier"
   fm_operational_input_kind "$encoded" parsed \
@@ -60,6 +124,13 @@ test_current_from_firstmate_carrier() {
     || fail "from-firstmate current carrier became $parsed"
   [ "$(classify_cli "$encoded")" = from-firstmate ] \
     || fail "cross-language classifier lost from-firstmate"
+  rule_count=$(count_literal "$encoded" "$reply_rule")
+  [ "$rule_count" = 1 ] \
+    || fail "from-firstmate carrier must include the silent operational-input rule exactly once, found $rule_count"
+  fm_operational_input_body "$encoded" stripped \
+    || fail "could not recover the from-firstmate body"
+  [ "$stripped" = 'corr=0123456789abcdef inspect the report' ] \
+    || fail "from-firstmate body changed while carrying the silent reply rule"
   pass "operational input: the established from-firstmate carrier remains structurally typed and byte-compatible"
 }
 
@@ -152,6 +223,9 @@ test_invalid_current_encodings_are_rejected() {
 }
 
 test_current_generic_matrix
+test_main_recipient_preserves_captain_boundary
+test_main_body_preserves_literal_carrier_suffix
+test_default_main_and_explicit_worker_carriers
 test_current_from_firstmate_carrier
 test_landed_untyped_prefix_is_explicitly_legacy
 test_isolated_legacy_matrix

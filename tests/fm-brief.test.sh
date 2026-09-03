@@ -170,6 +170,15 @@ exit 0;
 PERL
 }
 
+count_literal() {  # <text> <literal>
+  local rest=$1 needle=$2 count=0
+  while [ "${rest#*"$needle"}" != "$rest" ]; do
+    rest=${rest#*"$needle"}
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
 test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
@@ -650,6 +659,35 @@ test_secondmate_marked_request_reporting_contract() {
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
 }
 
+test_operational_inputs_are_silent_in_every_worker_scaffold() {
+  local home kind id brief content reply_rule rule_count
+  home="$TMP_ROOT/silent-operational-input-home"
+  mkdir -p "$home/data"
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
+
+  for kind in ship scout secondmate; do
+    id="silent-operational-input-$kind"
+    case "$kind" in
+      ship)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+        ;;
+      scout)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_SECONDMATE_CHARTER='Handle routed domain work.' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    content=$(cat "$brief")
+    rule_count=$(count_literal "$content" "$reply_rule")
+    [ "$rule_count" = 1 ] \
+      || fail "$kind scaffold must carry the silent operational-input rule exactly once, found $rule_count"
+  done
+  pass "fm-brief.sh: every worker scaffold handles operational inputs without captain-voice chat"
+}
+
 test_secondmate_directory_paths_are_absolute_and_output_is_stable() {
   local root home data_override state_override brief baseline err status
   root="$TMP_ROOT/relative-directory-inputs"
@@ -855,6 +893,7 @@ test_documented_global_replace_leaves_the_herdr_gate_intact
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
+test_operational_inputs_are_silent_in_every_worker_scaffold
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy

@@ -425,11 +425,19 @@
       "audience": "public-product"
     },
     {
+      "path": "tests/fixtures/claude-herdr-2.1.258/active-spinner-tip-wrapped-narrow.ansi.txt",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "tests/fixtures/claude-herdr-2.1.258/active-spinner-wrapped-narrow.ansi.txt",
       "audience": "maintainer-verification"
     },
     {
       "path": "tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/claude-herdr-2.1.258/attached-garbled-suffix-background-narrow.ansi.txt",
       "audience": "maintainer-verification"
     },
     {

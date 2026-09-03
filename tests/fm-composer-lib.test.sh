@@ -778,11 +778,13 @@ test_claude_plain_capture_active_hint_uses_actual_capabilities() {
 test_claude_plain_capture_active_hint_uses_actual_capabilities
 
 test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
-  local idle busy spinner garbled pending dead rc
+  local idle busy spinner spinner_tip garbled attached_garbled pending dead rc
   idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt")")
   busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt")")
   spinner=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/active-spinner-wrapped-narrow.ansi.txt")")
+  spinner_tip=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/active-spinner-tip-wrapped-narrow.ansi.txt")")
   garbled=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/garbled-suffix-background-narrow.ansi.txt")")
+  attached_garbled=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/attached-garbled-suffix-background-narrow.ansi.txt")")
 
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
     fail "Claude's captured idle background-shell footer must not read busy"
@@ -802,6 +804,11 @@ test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
   [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
     || fail "Claude's wrapped spinner fixture did not expose its exact matched row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
 
+  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$spinner_tip" \
+    || fail "Claude's current spinner must remain busy when a tip row follows it"
+  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
+    || fail "Claude's spinner-plus-tip fixture did not expose its exact matched row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
+
   pending=${idle/❯ /❯ bright-human-draft}
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$pending"; then
     fail "Claude's wrapped status footer must not outrank pending composer text"
@@ -818,6 +825,14 @@ test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
   fi
   [ "$rc" -eq 2 ] \
     || fail "a garbled Claude status suffix must remain unreadable, got rc=$rc"
+
+  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$attached_garbled"; then
+    fail "an attached-garbled Claude status prefix must not fall through to idle"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] \
+    || fail "an attached-garbled Claude status prefix must remain unreadable, got rc=$rc"
 
   dead=${idle/❯ /\$}
   if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$dead"; then

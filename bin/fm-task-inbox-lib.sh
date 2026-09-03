@@ -13,7 +13,7 @@
 #
 # Design (captain-adopted, data/fm-send-reliability-reframe-s1/report.md): the
 # payload moves to the filesystem, which is reliable; the terminal carries only
-# a short constant doorbell line, which does not need to be reliable because
+# a self-describing doorbell line, which does not need to be reliable because
 # ringing it again is free. A duplicated doorbell is a no-op by construction
 # (the worker finds the inbox empty or already handled), a swallowed doorbell
 # is detected by the absence of the worker's acknowledgement and re-rung on a
@@ -71,6 +71,8 @@ _FM_TASK_INBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_TASK_INBOX_LIB_DIR/fm-wake-lib.sh"
 # shellcheck source=/dev/null
 . "$_FM_TASK_INBOX_LIB_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-operational-input.sh
+. "$_FM_TASK_INBOX_LIB_DIR/fm-operational-input.sh"
 
 FM_TASK_INBOX_SCHEMA='fm-task-inbox.v1'
 FM_TASK_INBOX_GRACE_DEFAULT=90
@@ -250,8 +252,8 @@ fm_task_inbox_body() {  # <record-path>
 fm_task_inbox_doorbell_line() {  # <record-path>
   local dir=${1%/*} abs
   abs=$(cd "$dir" 2>/dev/null && pwd) || abs=$dir
-  printf 'Firstmate instruction waiting: list %s/*.msg and, in numeric order, read and act on each, then mv each handled file to %s/handled/.' \
-    "$abs" "$abs"
+  printf 'Firstmate instruction waiting: list %s/*.msg and, in numeric order, read and act on each, then mv each handled file to %s/handled/.%s' \
+    "$abs" "$abs" "$FM_OPERATIONAL_SILENT_REPLY_CARRIER"
 }
 
 # Ring the doorbell, best-effort: one advisory composer pre-check, then the

@@ -491,7 +491,7 @@ render_record() { # <record-line>
   body=$(printf '%s\n\n%s: %s' "$body" "$task" "$summary")
   encoder=${FM_OPERATIONAL_INPUT_SCRIPT-}
   [ -n "$encoder" ] || encoder="$SCRIPT_DIR/fm-operational-input.sh"
-  if encoded=$(printf '%s' "$body" | "$encoder" encode branch-outcome 2>/dev/null); then
+  if encoded=$(printf '%s' "$body" | "$encoder" encode branch-outcome main 2>/dev/null); then
     printf '%s\n' "$encoded"
   else
     printf '%s\n' "$body"

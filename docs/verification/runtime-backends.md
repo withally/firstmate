@@ -690,7 +690,7 @@ Real captures verified these active distinctions:
 - A bare shell prompt has no safe agent-composer container and is unknown.
 
 `tests/fm-composer-ghost.test.sh`, `tests/fm-composer-lib.test.sh`, and the Herdr composer cases pin the exact captured ANSI bytes.
-The U+2063 operational and routed-request separators were exercised through a real Pi-on-Herdr path; the byte-exact active regression is:
+The U+2063 operational and routed-request separators and the worker-recipient carrier were exercised through a real Pi-on-Herdr path; the byte-exact active regression is:
 
 ```sh
 FM_SEND_MARKER_HERDR_E2E=1 \

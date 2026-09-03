@@ -965,7 +965,7 @@ export default function (pi: ExtensionAPI) {
     const listed = rows.map((row) => `[seq ${row.seq}] ${row.task}: ${row.summary}`).join("\n");
     const body = `${PROCESSING_INSTRUCTION.replace("{N}", String(through))}\n\n${listed}`;
     try {
-      return encodeFirstmateOperationalInput("branch-outcome", body);
+      return encodeFirstmateOperationalInput("branch-outcome", body, "main");
     } catch {
       return body;
     }

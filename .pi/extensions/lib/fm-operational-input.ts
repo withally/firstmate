@@ -19,12 +19,17 @@ export const FIRSTMATE_CURRENT_OPERATIONAL_KINDS = [
 export type FirstmateCurrentOperationalKind =
   (typeof FIRSTMATE_CURRENT_OPERATIONAL_KINDS)[number];
 
+export type FirstmateOperationalRecipient = "crewmate" | "secondmate" | "main";
+
 function runOperationalInputCommand(
   command: "encode" | "classify" | "kind",
   content: string,
   kind?: FirstmateCurrentOperationalKind,
+  recipient?: FirstmateOperationalRecipient,
 ): string | undefined {
-  const args = command === "encode" ? [command, kind ?? ""] : [command];
+  const args = command === "encode"
+    ? [command, kind ?? "", ...(recipient ? [recipient] : [])]
+    : [command];
   const result = spawnSync(operationalInputScript, args, {
     encoding: "utf8",
     input: content,
@@ -37,8 +42,9 @@ function runOperationalInputCommand(
 export function encodeFirstmateOperationalInput(
   kind: FirstmateCurrentOperationalKind,
   content: string,
+  recipient?: FirstmateOperationalRecipient,
 ): string {
-  const encoded = runOperationalInputCommand("encode", content, kind);
+  const encoded = runOperationalInputCommand("encode", content, kind, recipient);
   if (encoded === undefined) {
     throw new Error(`could not encode Firstmate operational input kind ${kind}`);
   }

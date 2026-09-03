@@ -1,0 +1,8 @@
+target=943b3aee74e61847f3420fa3e0cd7804bb64fe4c
+behavior=shared Claude footer/composer execution
+fixture=idle-background-narrow composer=empty footer_rc=1 matched=none
+fixture=busy-background-narrow composer=empty footer_rc=0 matched=✳ Effecting… (1m 27s · ↓ 1.4k tokens)
+fixture=active-spinner-wrapped-narrow composer=empty footer_rc=0 matched=✳ Effecting… (1m 27s · ↓ 1.4k tokens)
+fixture=active-spinner-tip-wrapped-narrow composer=empty footer_rc=0 matched=✳ Effecting… (1m 27s · ↓ 1.4k tokens)
+fixture=garbled-suffix-background-narrow composer=empty footer_rc=2 matched=none
+fixture=attached-garbled-suffix-background-narrow composer=empty footer_rc=2 matched=none

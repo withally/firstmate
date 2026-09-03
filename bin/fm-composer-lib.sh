@@ -366,7 +366,7 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local capture_caps=${1:-} lines plain footer footer_row footer_shape footer_start composer screen caps verdict active_rows preceding screen_verdict preceding_row
+  local capture_caps=${1:-} lines plain footer footer_row footer_shape footer_start='' composer screen caps verdict active_rows preceding screen_verdict preceding_row
   local active_hint=0 active_tool=0
   FM_CLAUDE_BUSY_MATCHED_ROW=
   [ -n "$capture_caps" ] || capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'

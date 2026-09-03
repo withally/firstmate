@@ -96,10 +96,11 @@
 #
 # From-firstmate marker: when the resolved target is a task selector whose meta
 # records kind=secondmate, the message uses the live-charter-compatible
-# from-firstmate carrier owned by bin/fm-operational-input.sh so the secondmate
-# routes its reply via its status file or a status-pointed doc instead of
-# stranding it in chat the main firstmate never reads. On the inbox plane the
-# marker travels verbatim inside the recorded body. A crewmate/scout target,
+# from-firstmate carrier owned by bin/fm-operational-input.sh; worker-bound
+# messages also carry that owner's recipient-aware silent-reply suffix so the
+# secondmate routes its reply via its status file or a status-pointed doc
+# instead of stranding it in chat the main firstmate never reads. On the inbox
+# plane the marker travels verbatim inside the recorded body. A crewmate/scout target,
 # an explicit backend-target escape-hatch target, and the --key path are never
 # marked - their behavior is unchanged.
 #

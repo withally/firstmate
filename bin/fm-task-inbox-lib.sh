@@ -13,7 +13,7 @@
 #
 # Design (captain-adopted, data/fm-send-reliability-reframe-s1/report.md): the
 # payload moves to the filesystem, which is reliable; the terminal carries only
-# a short constant doorbell line, which does not need to be reliable because
+# a self-describing doorbell line, which does not need to be reliable because
 # ringing it again is free. A duplicated doorbell is a no-op by construction
 # (the worker finds the inbox empty or already handled), a swallowed doorbell
 # is detected by the absence of the worker's acknowledgement and re-rung on a

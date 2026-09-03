@@ -316,6 +316,9 @@ FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[
 FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
 FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX='Press up to edit queued messages'
 FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX='Running…[[:space:]]+\([0-9]+[smh].*timeout'
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass[[:space:]]+permissions[[:space:]]+on'
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass[[:space:]]+permissions[[:space:]]+on([[:space:]]+[(]shift[+]tab[[:space:]]+to[[:space:]]+cycle[)]|[[:space:]]+·[[:space:]]+(←[[:space:]]+[[:digit:]]+[[:space:]]+agent([[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage)?|[[:digit:]]+[[:space:]]+shell([[:space:]]+·[[:space:]]+esc[[:space:]]+to[[:space:]]+interrupt)?[[:space:]]+·[[:space:]]+←[[:space:]]+[[:digit:]]+[[:space:]]+(agent|a…)([[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage)?))[[:space:]]*$'
+FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX='^[[:space:]]*(/rc|●[[:space:]]+(low|medium|high)[[:space:]]+·[[:space:]]+/effort)[[:space:]]*$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -377,7 +380,7 @@ fm_claude_current_footer_busy() {
   ')
   _fm_composer_scan_screen "$composer" ''
   _fm_composer_select_cursorless "$composer" || return 2
-  screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$lines")
+  screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$screen")
   active_rows=$(printf '%s\n' "$composer" | awk \
     -v first="$FM_COMPOSER_SELECTED_FIRST" -v last="$FM_COMPOSER_SELECTED_LAST" \
     'NR - 1 >= first && NR - 1 <= last { print }')
@@ -386,6 +389,19 @@ fm_claude_current_footer_busy() {
     | grep -v '^[[:space:]]*$' | tail -8)
   printf '%s\n' "$active_rows" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX" && active_hint=1
   printf '%s\n' "$preceding" | grep -qE "$FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX" && active_tool=1
+  if [ "$screen_verdict" = empty ] && [ -n "$footer_start" ]; then
+    while IFS= read -r preceding_row; do
+      case "$preceding_row" in
+        *'✳ '*)
+          if fm_busy_lines_match claude <<< "$preceding_row"; then
+            # shellcheck disable=SC2034 # Output read by sourcing callers after this function returns.
+            FM_CLAUDE_BUSY_MATCHED_ROW=${FM_BUSY_MATCHED_ROW:-unknown}
+            return 0
+          fi
+          ;;
+      esac
+    done <<< "$preceding"
+  fi
   if { [ "$screen_verdict" = empty ] \
        || { [ "$screen_verdict" = pending ] && [ "$active_hint" = 1 ]; }; } \
      && { [ "$active_hint" = 1 ] \

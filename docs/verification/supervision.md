@@ -232,6 +232,28 @@ HERDR_LAB_HELPER="$(git rev-parse --show-toplevel)/bin/fm-herdr-lab.sh" \
 # evidence: native=working rendered=idle composer=empty delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1
 ```
 
+### Herdr+Claude wrapped away-mode footer, 2026-09-03
+
+The named isolated lab reproduced Claude Code 2.1.258 at 66 columns with a live native background shell, an `empty` composer, native `working`, and a two-row footer whose standalone `/rc` continuation made the pre-fix busy guard return `unreadable`.
+The committed ANSI fixtures in `tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt` and `tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt` preserve that idle screen and its active foreground-Bash counterpart.
+The refreshed live guard passed on Herdr 0.8.2 and Claude Code 2.1.259: the wrapped idle footer returned rendered-idle, a queued digest appeared in the same housekeeping pass (`delivery-seconds=0`) exactly once, the foreground spinner returned `rendered-busy`, and bright pending composer text remained unchanged.
+The portable run completed with `FM_TEST_SUMMARY total=3 failed=0 skipped_gate=1`, where the one skip was the separately invoked opt-in live guard; the live run completed with `FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0`.
+
+```sh
+bin/fm-test-run.sh \
+  tests/fm-composer-lib.test.sh \
+  tests/fm-daemon.test.sh \
+  tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
+
+HERDR_LAB_HELPER="$(git rev-parse --show-toplevel)/bin/fm-herdr-lab.sh" \
+  FM_AFK_HERDR_CLAUDE_LIVE=1 \
+  bin/fm-test-run.sh tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
+# verdict: idle-post-afk agent_status=idle composer=empty pane_is_busy_rc=1 broad_match_rc=1 scoped_match_rc=1 subcause=idle native-state=working matched-row=none
+# verdict: active-foreground agent_status=working composer=empty pane_is_busy_rc=0 broad_match_rc=0 scoped_match_rc=0 subcause=rendered-busy native-state=working matched-row=✶ Generating… (12s · ↓ 119 tokens)
+# verdict: pending-human-text agent_status=idle composer=pending pane_is_busy_rc=1 broad_match_rc=1 scoped_match_rc=1 subcause=idle native-state=idle matched-row=none
+# evidence: native=working rendered=idle composer=empty wrapped-footer=1 delivery-seconds=0 delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1
+```
+
 ## Turn-end guard
 
 The blocking and bounded-follow-up mechanisms were validated across six harnesses on 2026-07-08 through 2026-08-13, with Claude's replacement Stop-owned path revalidated on 2026-07-24 and Cursor's stop-hook park validated on 2026-08-13.

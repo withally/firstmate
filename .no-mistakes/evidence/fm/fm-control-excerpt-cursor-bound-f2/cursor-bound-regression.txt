@@ -1,0 +1,10 @@
+fixture=two-box-cursor-selected
+screen=complete pending box under cursor followed by stale lower box
+
+baseline=958572d5
+classifier_with_cursor=pending-unproven
+state_and_excerpt_without_cursor_context=pending-unproven	available	stale lower text
+
+target=81b06f90
+classifier_with_cursor=pending-unproven
+state_and_excerpt_with_cursor_context=pending-unproven	available	pending under cursor

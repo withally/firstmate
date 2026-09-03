@@ -1,0 +1,8 @@
+fixture=two-box-cursor-selected
+source=tests/fm-control.test.sh fake tmux provider
+screen=complete pending box under cursor followed by stale lower box
+exit_code=0
+pending composer excerpt: pending under cursor
+keys_sent=C-u
+literals_sent=/exit
+assertion=stale lower text was not reported; clear preceded exit

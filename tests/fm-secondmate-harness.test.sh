@@ -48,6 +48,8 @@ set -u
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-ff-lib.sh"
 # shellcheck source=/dev/null
+. "$ROOT/bin/fm-operational-input.sh"
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-config-inherit-lib.sh"
 
 # The harness-detection cases below fake `ps` so process ancestry is fully
@@ -1157,6 +1159,21 @@ inbox_stream() {  # <parent-state-dir> <task-id>
   done
 }
 
+reread_pointers_from_inbox() {  # <parent-state-dir> <task-id>
+  local body parsed corr pointer
+  while IFS= read -r body; do
+    [ -n "$body" ] || continue
+    fm_operational_input_body "$body" parsed || continue
+    case "$parsed" in
+      corr=*' CONFIG_REREAD: '*)
+        corr=${parsed%% *}
+        pointer=${parsed#"$corr "}
+        printf '%s\n' "${pointer#CONFIG_REREAD: }"
+        ;;
+    esac
+  done < <(inbox_stream "$1" "$2")
+}
+
 reread_instruction_path() {
   local home=$1 state path latest=
   state="$(cd "$home/state" && pwd -P)"
@@ -1980,7 +1997,7 @@ SH
 
 test_config_reread_write_failure_retains_exact_retry_generation() {
   local w head fakebin real_mv retry_dir out status stage_path log retry_out retry_status instr
-  local old_instr new_instr
+  local old_instr new_instr pointers
   w=$(new_world config-reread-write-retry)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -2023,8 +2040,9 @@ SH
   expect_code 0 "$retry_status" "a later changed push should retry an instruction-write failure"
   assert_contains "$retry_out" "config-reread: sent" \
     "later changed push did not deliver the retained exact generation"
-  old_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | head -n 1 | sed 's/.*CONFIG_REREAD: //')
-  new_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
+  pointers=$(reread_pointers_from_inbox "$w/home/state" sm)
+  old_instr=${pointers%%$'\n'*}
+  new_instr=${pointers##*$'\n'}
   [ -n "$old_instr" ] && [ -n "$new_instr" ] && [ "$old_instr" != "$new_instr" ] \
     || fail "later changed push did not deliver both generations"
   instr="$old_instr"
@@ -2039,7 +2057,7 @@ SH
 
 test_config_reread_exact_temp_survives_adoption_failure() {
   local w head fakebin real_mv real_cp retry_dir out status stage_path log retry_out retry_status
-  local old_instr new_instr
+  local old_instr new_instr pointers
   w=$(new_world config-reread-exact-temp-fallback)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -2092,8 +2110,9 @@ SH
   log="$w/config-reread-exact-temp-fallback.tmux.log"
   retry_out=$(run_config_push "$w" "$log" 2>/dev/null); retry_status=$?
   expect_code 0 "$retry_status" "later push should deliver retained exact temporary bytes"
-  old_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | head -n 1 | sed 's/.*CONFIG_REREAD: //')
-  new_instr=$(inbox_stream "$w/home/state" sm | grep 'CONFIG_REREAD:' | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
+  pointers=$(reread_pointers_from_inbox "$w/home/state" sm)
+  old_instr=${pointers%%$'\n'*}
+  new_instr=${pointers##*$'\n'}
   [ -n "$old_instr" ] && [ -n "$new_instr" ] && [ "$old_instr" != "$new_instr" ] \
     || fail "later push did not deliver both exact generations"
   assert_contains "$(cat "$old_instr")" \

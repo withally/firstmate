@@ -1,0 +1,6 @@
+scenario=two-box-cursor-bound-exit
+exit_code=127
+control_output=
+keys_sent=
+literals_sent=
+final_agent_command=

@@ -1,0 +1,41 @@
+FM_TEST_BEGIN 2026-09-03T00:27:17Z tests/fm-composer-matrix-live-e2e.test.sh family=live-harness-optin expected_gate_skip=optin-env
+ok - claude (2.1.259 (Claude Code)): real idle composer classifies empty
+# codex pane tail at failure:
+#     Hooks need review
+#     4 hooks are new or changed.
+#     Hooks can run outside the sandbox after you trust them.
+#   › 1. Review hooks
+#     2. Trust all and continue
+#     3. Continue without trusting (hooks won't run)
+#     Press enter to confirm or esc to go back
+not ok - codex (codex-cli 0.150.1): idle composer never classified empty (last verdict: unknown)
+ok - opencode (1.18.25): real idle composer classifies empty
+# pi pane tail at failure:
+#    This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.
+#    → Trust
+#      Trust parent folder (/Users/ivan/.no-mistakes/worktrees/37852af5566c)
+#      Trust (this session only)
+#      Do not trust
+#      Do not trust (this session only)
+#    ↑↓ navigate  enter select  escape/ctrl+c cancel
+#   ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+not ok - pi (0.84.2): idle composer never classified empty (last verdict: unknown)
+# grok pane tail at failure:
+#     detached worktree ~/.no-mistakes/worktrees/37852af5566c/01M1J64W1HHB0J0WRG3J4PSQ7E (worktree of ~/.no-mistakes/repos)
+#                                                                                           Do you trust the contents of this directory?
+#                                                                            /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1J64W1HHB0J0WRG3J4PSQ7E
+#                                                                                     Grok Build may run or modify contents in this directory,
+#                                                                                                      posing security risks.
+#                                                                                                  Yes, proceed                 y
+#                                                                                                  No, quit                     n
+#                                                                                                                                                                                                            Grok Build  1.0.13
+not ok - grok (grok 1.0.13 (5e9a58528b76)): idle composer never classified empty (last verdict: unknown)
+# harness absent, not verified here: kimi
+# harness absent, not verified here: muse
+ok - strict posture live: a blank shell row classifies unknown and injection defers
+# harness absent, not verified here: zellij (false-positive regression not exercised)
+not ok - live composer-matrix guard observed failures above
+FM_TEST_END 2026-09-03T00:30:14Z tests/fm-composer-matrix-live-e2e.test.sh exit=1 duration_ms=177526 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=177631
+FM_TEST_SUMMARY_FAMILY family=live-harness-optin count=1 duration_ms=177526 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-composer-matrix-live-e2e.test.sh duration_ms=177526

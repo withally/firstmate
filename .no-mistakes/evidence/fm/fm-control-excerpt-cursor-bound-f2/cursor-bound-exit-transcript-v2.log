@@ -1,0 +1,7 @@
+scenario=two-box-cursor-bound-exit
+exit_code=0
+--- direct fm-control output ---
+pending composer excerpt: pending under cursor
+stopped t1 harness=claude backend=tmux endpoint=fmses:fm-t1 worktree=/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T/fm-control.3GE5YM/evidence-cursor-box-17150/wt-t1
+--- observed transport ---
+keys_sent=C-u,Enterliterals_sent=/exitfinal_agent_command=zsh

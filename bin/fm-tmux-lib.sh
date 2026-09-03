@@ -138,7 +138,7 @@ EOF
 # it (a pi separator pair under the cursor), so the common read never pays
 # for the process probe.
 fm_tmux_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
-  local target=$1 cy pane verdict identity caps output=${3-}
+  local target=$1 cy pane verdict identity='' caps output=${3-}
   caps=$(fm_tmux_composer_caps)
   cy=$(fm_tmux_composer_cursor_row "$target") || { fm_composer_state_output unknown "$caps" '' "$output"; return 0; }
   case "$cy" in ''|*[!0-9]*) fm_composer_state_output unknown "$caps" '' "$output"; return 0 ;; esac

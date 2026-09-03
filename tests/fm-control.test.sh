@@ -757,6 +757,24 @@ test_pending_composer_is_cleared_before_exit_is_typed() {
   pass "fm-control exit: pending composer text is cleared and reported before the exit command is typed"
 }
 
+test_pending_composer_excerpt_uses_the_cursor_selected_box() {
+  local dir out rc
+  dir=$(new_case pending-cursor-box)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  printf '╭────────────╮\n│ pending under cursor │\n╰────────────╯\n\n╭────────────╮\n│ stale lower text │\n╰────────────╯\n' > "$dir/fake/pane"
+  : > "$dir/fake/clear-composer"
+
+  out=$(run_control "$dir" t1 exit); rc=$?
+
+  expect_code 0 "$rc" "exit should clear the composer selected by the tmux cursor"$'\n'"$out"
+  assert_contains "$out" "pending composer excerpt: pending under cursor" \
+    "the excerpt should come from the same cursor-selected box as the pending verdict"
+  assert_not_contains "$out" "pending composer excerpt: stale lower text" \
+    "a lower stale box must not replace the cursor-selected composer excerpt"
+  pass "fm-control exit: excerpt stays bound to the cursor-selected composer box"
+}
+
 test_unclearable_pending_composer_refuses_without_typing_exit() {
   local dir out rc
   dir=$(new_case pending-refuse)
@@ -778,9 +796,9 @@ test_unclearable_pending_composer_refuses_without_typing_exit() {
   pass "fm-control exit: an unclearable composer refuses with concrete state and key evidence"
 }
 
-test_pending_composer_without_excerpt_refuses_before_clear() {
+test_pending_composer_with_lower_incomplete_box_uses_cursor_excerpt() {
   local dir out rc
-  dir=$(new_case pending-no-excerpt)
+  dir=$(new_case pending-lower-incomplete)
   add_task "$dir" t1 claude
   alive_as "$dir" claude
   printf '╭────╮\n│ draft text │\n╰────╯\n╭────╮\n' > "$dir/fake/pane"
@@ -788,14 +806,14 @@ test_pending_composer_without_excerpt_refuses_before_clear() {
 
   out=$(run_control "$dir" t1 exit); rc=$?
 
-  expect_code 1 "$rc" "exit should refuse before clearing when the pending state cannot supply an excerpt"$'\n'"$out"
-  assert_contains "$out" "pending composer excerpt is unavailable" \
-    "the refusal should name the missing excerpt proof"
-  [ -z "$(keys_sent "$dir")" ] \
-    || fail "an unavailable pending excerpt must refuse before sending clear keys"
-  [ -z "$(literals "$dir")" ] \
-    || fail "an unavailable pending excerpt must receive no exit command"
-  pass "fm-control exit: an unreadable pending excerpt fails closed before clearing"
+  expect_code 0 "$rc" "a lower incomplete box should not hide the cursor-selected excerpt"$'\n'"$out"
+  assert_contains "$out" "pending composer excerpt: draft text" \
+    "the excerpt should remain available from the cursor-selected complete box"
+  [ "$(keys_sent "$dir")" = C-u ] \
+    || fail "the cursor-selected pending composer should be cleared before exit"
+  [ "$(literals "$dir")" = /exit ] \
+    || fail "exit should be typed only after the selected composer is cleared"
+  pass "fm-control exit: lower incomplete box cannot hide cursor-selected excerpt"
 }
 
 test_opencode_pending_composer_refuses_without_verified_clear_key() {
@@ -1060,8 +1078,9 @@ test_ambiguous_endpoint_refuses
 test_busy_agent_is_interrupted_before_the_exit_command
 test_busy_interrupt_rechecks_composer_before_exit_command
 test_pending_composer_is_cleared_before_exit_is_typed
+test_pending_composer_excerpt_uses_the_cursor_selected_box
 test_unclearable_pending_composer_refuses_without_typing_exit
-test_pending_composer_without_excerpt_refuses_before_clear
+test_pending_composer_with_lower_incomplete_box_uses_cursor_excerpt
 test_opencode_pending_composer_refuses_without_verified_clear_key
 test_inbox_ring_defers_when_excerpt_output_is_enabled
 test_idle_agent_is_not_interrupted

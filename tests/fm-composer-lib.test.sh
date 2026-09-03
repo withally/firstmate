@@ -476,7 +476,7 @@ test_lower_dead_shell_invalidates_cursorless_candidate() {
 }
 
 test_cursorless_bare_wrap_region_classifies() {
-  local activity status bounded ghost out
+  local activity status bounded bounded_wrap ghost out
   activity=$'❯\nWorking on request...'
   assert_screen "cursorless activity below bare row on herdr" pending "$CAPS_STYLED" "$activity"
   assert_screen "cursorless activity below bare row on zellij" pending "$CAPS_STYLED_NOID" "$activity"
@@ -491,6 +491,9 @@ test_cursorless_bare_wrap_region_classifies() {
   assert_screen "rule-bounded claude footer on herdr" empty "$CAPS_STYLED" "$bounded" '' probe-absent
   assert_screen "rule-bounded claude footer on zellij" empty "$CAPS_STYLED_NOID" "$bounded"
   assert_screen "rule-bounded claude footer on cmux/orca" empty "$CAPS_PLAIN" "$bounded"
+
+  bounded_wrap=$'────────────────────────\n❯\ncontinuation text\n────────────────────────'
+  assert_screen "cursorless bare wrap inside Pi pair on zellij" pending "$CAPS_STYLED_NOID" "$bounded_wrap"
 
   ghost=$'❯ '"${ESC}[2ma long rotating suggestion that${ESC}[0m"$'\n'"${ESC}[2mwraps onto the next line${ESC}[0m"
   out=$(fm_composer_classify_screen "$CAPS_STYLED" "$ghost")

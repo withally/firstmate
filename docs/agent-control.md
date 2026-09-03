@@ -45,7 +45,7 @@ The clear is refused before anything is sent when the recorded backend cannot de
 
 Before `exit` types its harness command, including the stop phase of `relaunch`, the control plane reads the composer through the shared classifier and requires a proven `empty` result.
 For a busy agent, it repeats that guard after interrupt delivery and immediately before submitting the exit command.
-Pending or pending-unproven input is transient rather than durable; the same state read captures up to its first 80 complete UTF-8 code points for control-plane output under both `LC_ALL=C` and a UTF-8 locale, and missing excerpt proof refuses before any clear key is sent.
+Pending or pending-unproven input is transient rather than durable; the same state read captures up to its first 80 complete UTF-8 code points for control-plane output under both `LC_ALL=C` and a UTF-8 locale, preserving the classifier's selected shape and bounds on cursor-aware tmux reads rather than reselecting a cursorless candidate, and missing excerpt proof refuses before any clear key is sent.
 With an available excerpt, the control plane sends the harness's verified clear key, re-reads boundedly, and uses a bounded Backspace fallback while the state remains `pending` or `pending-unproven`.
 A harness without a verified pre-exit clear key - currently OpenCode - refuses to clear a pending composer rather than guessing a key.
 If the composer cannot be proven empty, or sending an interrupt key or its required follow-up clear key fails, the lifecycle action re-reads and refuses through the shared composer reporting boundary with the observed state, a fresh first-80-character pending excerpt when available, and only successfully sent keys, so an exit command is never appended to foreign text.

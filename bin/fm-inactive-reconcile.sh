@@ -232,6 +232,10 @@ queue_key_exists() { # <key>
   printf '%s\n' "$queued" | grep -Fx -- "$key" >/dev/null 2>&1
 }
 
+queue_check_exists() { # <key> <payload>
+  fm_wake_check_queued "$1" "$2"
+}
+
 publish_actionable() { # <key> <payload>
   local key=$1 payload=$2
   queue_key_exists "$key" && return 1
@@ -240,14 +244,17 @@ publish_actionable() { # <key> <payload>
 }
 
 queue_notice_once() { # <record> <key> <payload>
-  local record=$1 key=$2 payload=$3 notified rc=0
+  local record=$1 key=$2 payload=$3 notified
   notified=$(record_value "$record" notice_emitted)
   [ "$notified" = 1 ] && return 1
-  publish_actionable "$key" "$payload" || rc=$?
-  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+  if queue_check_exists "$key" "$payload"; then
     record_field_set "$record" notice_emitted 1 || return 2
+    return 1
   fi
-  return "$rc"
+  fm_wake_append check "$key" "$payload" || return 2
+  record_field_set "$record" notice_emitted 1 || return 2
+  printf 'actionable: %s\n' "$payload"
+  return 0
 }
 
 queue_presentation() { # <record> <fingerprint> <payload>

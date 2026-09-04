@@ -1114,7 +1114,11 @@ actionable_pending_status_files() {  # reads scan_signals rows on stdin
     case "$f" in *.status) ;; *) continue ;; esac
     prior_sig=$(cat "$sf" 2>/dev/null || true)
     prior_size=$(fm_wake_signal_seen_offset "$prior_sig")
-    captured_size=${sig%%:*}
+    # Status reported-state signatures are opaque observed-state records, not
+    # the legacy "size:mtime" shape. Let the classifier capture the current
+    # byte endpoint itself; trying to parse the signature as a size turns the
+    # leading `r1` into an invalid endpoint and can absorb unreadable files.
+    captured_size=
     candidate=$(_fm_signal_open_keys_pending_path "$f" "$FM_SIGNAL_OPEN_KEYS_PENDING_TOKEN")
     if status_append_is_captain_relevant "$f" "$prior_size" "$captured_size" "$candidate"; then
       printf '%s\n' "$f"
@@ -1296,6 +1300,7 @@ signal_files_actionable() {  # <status-file> ...
       # again once it is readable. The wake signature still advances, which is
       # what bounds this to one report per distinct file state.
       found=0
+      FM_SIGNAL_ACTIONABLE_FILES="${FM_SIGNAL_ACTIONABLE_FILES}${f}"$'\n'
       continue
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}

@@ -560,7 +560,7 @@ print_status_sections() {
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' preserve_unpresented=${FM_WAKE_DRAIN_PRESERVE_UNREAD_STATUS:-0} informational_only=1 rc=0
-  local lock_rc holder_pid
+  local lock_rc holder_pid task cursor _endpoint _ident
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -578,6 +578,22 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
     rc=1
   }
+  # A cursor-cache read failure forces the decision fold to rebuild from the
+  # authoritative log. Surface the full newly unread span in that recovery
+  # turn as well; the empty-queue routine filter is valid only when every
+  # existing cache was read successfully.
+  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
+    while IFS=$(printf '\t') read -r task _endpoint _ident; do
+      [ -n "$task" ] || continue
+      cursor="$STATE/.$task.open-decisions-cursor"
+      if { [ -e "$cursor" ] || [ -L "$cursor" ]; } && ! cat "$cursor" >/dev/null 2>&1; then
+        informational_only=0
+        break
+      fi
+    done <<EOF
+$snapshot
+EOF
+  fi
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
     informational_only=0
     fm_wake_print_annotations "$rows" "$snapshot" || rc=1

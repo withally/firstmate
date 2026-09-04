@@ -274,6 +274,7 @@ afk_active() {  # <state>
 # so recovery (§5) re-enters afk if it is present after a restart.
 afk_enter() {  # <state>
   mkdir -p "$1"
+  status_seed_daemon_seen_from_presentation "$1" || return 1
   date '+%s' > "$1/$AFK_FLAG_NAME"
 }
 
@@ -676,23 +677,7 @@ _seen_status_path() {  # <state> <task>
 # An absent, malformed, identity-mismatched, or legacy marker reads 0, so the
 # whole log is classified and uncertainty prefers a duplicate over event loss.
 status_seen_offset() {  # <state> <task>
-  local state=$1 task=$2 file marker daemon_offset presented_offset ident
-  file="$state/$task.status"
-  marker=$(_seen_status_path "$state" "$task")
-  daemon_offset=$(status_presentation_marker_offset \
-    "$marker" "$file") || return 1
-  presented_offset=$(status_presentation_cursor_offset "$file") || return 1
-  if [ "$daemon_offset" -ge "$presented_offset" ]; then
-    printf '%s' "$daemon_offset"
-  else
-    # The attended presentation cursor is stronger evidence than a legacy or
-    # stale daemon marker. Rebind the daemon marker to that proven byte boundary
-    # so old line-based markers migrate once without replaying handled history.
-    ident=$(_fm_open_decisions_file_ident "$file") || return 1
-    status_presentation_marker_commit "$marker" "$file" \
-      "$presented_offset" "$ident" || return 1
-    printf '%s' "$presented_offset"
-  fi
+  status_presentation_marker_offset "$(_seen_status_path "$1" "$2")" "$1/$2.status"
 }
 
 # Commit <task>'s successfully classified endpoint, so the heartbeat catch-all
@@ -2211,8 +2196,9 @@ is_wake_reason() {  # <reason>
 
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
-handle_wake() {  # <reason> <state>
-  local reason=$1 state=$2 decision action distilled task last stale_detail
+handle_wake() {  # <reason> <state> [durable-key] [durable-sequence]
+  local reason=$1 state=$2 durable_key=${3:-} durable_sequence=${4:-}
+  local decision action distilled task last stale_detail check_rc
   local capture="$state/.subsuper-classified-end.$$" span_record='' span_rc='' endpoint ident rest sig marker
   local kind="" arg="" classification_failed=0 span_failure_repeat=0
   : > "$capture" || return 1
@@ -2306,15 +2292,12 @@ handle_wake() {  # <reason> <state>
         escalate_add "$state" "$distilled" || return 1
       fi
       log "escalate: $reason -> $distilled"
-      if escalate_add "$state" "$distilled"; then
-        # A terminal-stale escalate must not leave a persistence marker behind, or
-        # housekeeping re-escalates the same pane as a false wedge later.
-        [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
-        mark_escalated_seen "$state" "$capture" || classification_failed=1
-        [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ] && { escalate_flush "$state" || true; }
-      else
-        classification_failed=1
-      fi
+      # The check and ordinary escalation paths above have already appended
+      # exactly one journal record. Commit the classification only after that
+      # append; do not append the same digest a second time here.
+      [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
+      mark_escalated_seen "$state" "$capture" || classification_failed=1
+      [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ] && { escalate_flush "$state" || true; }
       ;;
     pause)
       # Declared wait, an external-wait pause or a verified captain-held transfer:

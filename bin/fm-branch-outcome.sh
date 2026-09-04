@@ -662,8 +662,9 @@ case "$CMD" in
     [ -n "$SUMMARY" ] || usage
     case "$VERDICT" in routine|captain|firstmate-action) ;; *) usage ;; esac
     case "$SILENT" in true|false) ;; *) usage ;; esac
-    if [ "$VERDICT" != routine ]; then
-      SILENT=false
+    if [ "$SILENT" = true ] && [ "$VERDICT" != routine ]; then
+      echo "error: silent outcomes must be routine outcomes" >&2
+      exit 2
     fi
     fm_lock_acquire_wait "$LOCK"
     if ! LAST_SEQ=$(last_seq); then

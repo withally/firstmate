@@ -77,7 +77,7 @@ Report verdict firstmate-action when MAIN has an already-authorized downstream a
 - A worker waiting on a local merge that MAIN owns.
 - A worker `done:` whose contracted next step needs no captain call, such as building a review board or dispatching the next plan task.
 These outcomes are not complete merely because the wake was handled; MAIN must take the next contracted action.
-Keep an unsolicited outcome as verdict routine only when it needs neither a MAIN action nor a captain call, including a healthy result with no contracted next step.
+Keep an unsolicited routine outcome as verdict routine only when it needs neither a MAIN action nor a captain call, including a healthy result with no contracted next step.
 Keep an unchanged fleet review silent as instructed above.
 Do not use captain merely because an outcome is noteworthy.
 If durable records do not establish whether the next action is authorized, that unresolved authority question is itself a genuine captain call and uses captain.

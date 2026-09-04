@@ -23,6 +23,27 @@ make_case() {
   publisher="$case_dir/publisher"
   lease="$case_dir/lease"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  mv "$fakebin/tmux" "$fakebin/tmux-base"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_TMUX_LOG:-/dev/null}"
+if [ "${1:-}" = send-keys ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      'treehouse get')
+        : > "${FM_FAKE_TREEHOUSE_LEASE:-/dev/null}"
+        printf '%s\n' "$arg" >> "${FM_FAKE_TREEHOUSE_LOG:-/dev/null}"
+        ;;
+      'treehouse return'*)
+        rm -f -- "${FM_FAKE_TREEHOUSE_LEASE:-/dev/null}"
+        printf '%s\n' "$arg" >> "${FM_FAKE_TREEHOUSE_LOG:-/dev/null}"
+        ;;
+    esac
+  done
+fi
+exec "$(dirname "$0")/tmux-base" "$@"
+SH
+  chmod +x "$fakebin/tmux"
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
@@ -56,6 +77,10 @@ EOF
 
 run_spawn() {
   local id=$1
+  local FM_FAKE_TREEHOUSE_LEASE="$LEASE_FILE"
+  local FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/treehouse.log"
+  local FM_FAKE_TMUX_LOG="$CASE_DIR/tmux.log"
+  export FM_FAKE_TREEHOUSE_LEASE FM_FAKE_TREEHOUSE_LOG FM_FAKE_TMUX_LOG
   shift
   fm_test_run_spawn "$HOME_DIR" "$POOL_DIR" "$FAKEBIN_DIR" \
     "$id" "$PROJECT_DIR" "$@"

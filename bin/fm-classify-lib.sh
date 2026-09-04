@@ -1055,6 +1055,24 @@ status_daemon_seen_marker_path() {  # <state> <task-id>
   printf '%s/.subsuper-seen-status-%s' "$1" "$(printf '%s' "$2" | tr ':/.' '___')"
 }
 
+# Begin a fresh away session at the attended presentation boundary. Only rows
+# already presented to the primary are copied; status appended before away mode
+# but not yet presented remains eligible for daemon routing.
+status_seed_daemon_seen_from_presentation() {  # <state>
+  local state=$1 f task offset ident marker
+  for f in "$state"/*.status; do
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
+    offset=$(status_presentation_cursor_offset "$f") || return 1
+    case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$offset" -gt 0 ] || continue
+    ident=$(_fm_open_decisions_file_ident "$f") || return 1
+    task=${f##*/}
+    task=${task%.status}
+    marker=$(status_daemon_seen_marker_path "$state" "$task")
+    status_presentation_marker_commit "$marker" "$f" "$offset" "$ident" || return 1
+  done
+}
+
 _status_presentation_signature_valid() {
   local value=$1 size ident encoded
   [ "$value" = unverifiable ] && return 0
@@ -1345,6 +1363,107 @@ EOF
   done <<EOF
 $snapshot
 EOF
+}
+
+status_append_is_captain_relevant() {  # <status-file> <prior-size> [<captured-size>]
+  local f=$1 prior=$2 size=${3:-} candidate=${4:-} state_file state_data state_first
+  local state_rest state_offset_line state_ident_line state_offset=0 state_ident='' state_open='' state_valid=0
+  local actual_size cur_ident seed_offset=0 seed_chunk delta_chunk open='' line verb key resolve held actionable=1 tmp
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  actual_size=$(_fm_status_file_size "$f") || return 0
+  actual_size=${actual_size//[[:space:]]/}
+  case "$actual_size" in ''|*[!0-9]*) return 0 ;; esac
+  if [ -z "$size" ]; then size=$actual_size; fi
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$actual_size" ] || return 0
+  case "$prior" in ''|*[!0-9]*) prior=0 ;; esac
+  [ "$prior" -le "$size" ] || prior=0
+  [ "$size" -gt "$prior" ] || return 1
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || return 0
+  [ -n "$cur_ident" ] || return 0
+  state_file=$(_fm_signal_open_keys_path "$f")
+  if [ -e "$state_file" ] || [ -L "$state_file" ]; then
+    [ -f "$state_file" ] && [ -r "$state_file" ] && [ ! -L "$state_file" ] || return 0
+    state_data=$(LC_ALL=C command cat "$state_file" 2>/dev/null) || return 0
+    state_first=${state_data%%$'\n'*}
+    if [ "$state_first" = "version=$FM_OPEN_DECISIONS_FOLD_VERSION" ]; then
+      state_rest=${state_data#*$'\n'}
+      state_offset_line=${state_rest%%$'\n'*}
+      case "$state_offset_line" in
+        offset=*) state_offset=${state_offset_line#offset=} ;;
+        *) state_offset=0; state_rest=invalid ;;
+      esac
+      case "$state_offset" in
+        ''|*[!0-9]*) state_rest=invalid ;;
+      esac
+      case "$state_rest" in
+        invalid) ;;
+        *$'\n'*)
+          state_rest=${state_rest#*$'\n'}
+          state_ident_line=${state_rest%%$'\n'*}
+          case "$state_ident_line" in
+            ident=*) state_ident=${state_ident_line#ident=} ;;
+            *) state_rest=invalid ;;
+          esac
+          case "$state_rest" in
+            invalid) ;;
+            *$'\n'*) state_open=${state_rest#*$'\n'}; state_valid=1 ;;
+            *) state_open=''; state_valid=1 ;;
+          esac
+          ;;
+        *) ;;
+      esac
+    fi
+  fi
+  if [ "$state_valid" -eq 1 ] && [ "$state_ident" = "$cur_ident" ] \
+    && [ "$state_offset" -le "$prior" ]; then
+    seed_offset=$state_offset
+    open=$state_open
+  fi
+
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  if [ "$seed_offset" -lt "$prior" ]; then
+    seed_chunk=$(mktemp "${state_file}.read.XXXXXX") || return 0
+    _fm_status_read_span "$f" "$seed_offset" "$((prior - seed_offset))" > "$seed_chunk" 2>/dev/null \
+      || { rm -f "$seed_chunk"; return 0; }
+    while IFS= read -r line || [ -n "$line" ]; do
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    done < "$seed_chunk"
+    rm -f "$seed_chunk"
+  fi
+
+  delta_chunk=$(mktemp "${state_file}.read.XXXXXX") || return 0
+  _fm_status_read_span "$f" "$prior" "$((size - prior))" > "$delta_chunk" 2>/dev/null \
+    || { rm -f "$delta_chunk"; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    status_is_captain_relevant "$line" && actionable=0
+    verb=$(status_line_verb "$line")
+    if [ "$verb" = "$resolve" ] \
+      && { _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; }; then
+      key=$(_fm_decision_key "$line") || key=''
+      if [ -n "$key" ] \
+        && _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+        && _fm_open_set_has "$open" "$key"; then
+        actionable=0
+      fi
+    fi
+    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+  done < "$delta_chunk"
+  rm -f "$delta_chunk"
+
+  if [ -n "$candidate" ]; then
+    tmp="$candidate.tmp.$$"
+    {
+      printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
+      printf 'offset=%s\n' "$size"
+      printf 'ident=%s\n' "$cur_ident"
+      printf '%s' "$open"
+    } > "$tmp" || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$candidate" || { rm -f "$tmp"; return 0; }
+  fi
+  [ "$actionable" -eq 0 ]
 }
 
 # --- unread status lines since the presentation cursor ----------------------

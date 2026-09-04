@@ -42,8 +42,8 @@ test_presented_status_before_away_entry_is_not_escalated() {
   pass "catch-all ignores a status line presented before away-mode entry"
 }
 
-test_legacy_ident_prefixed_marker_is_settled_and_migrated() {
-  local dir state status line snapshot presented_offset marker out marker_offset
+test_legacy_ident_prefixed_marker_is_reclassified() {
+  local dir state status line snapshot marker out marker_offset
   dir=$(make_supercase legacy-ident-marker)
   state="$dir/state"
   status="$state/pilo-continuity-s1.status"
@@ -54,21 +54,19 @@ test_legacy_ident_prefixed_marker_is_settled_and_migrated() {
     || fail "could not snapshot the attended presentation boundary"
   status_commit_presentation_snapshot "$state" "$snapshot" \
     || fail "could not commit the attended presentation boundary"
-  presented_offset=${snapshot#*$'\t'}
-  presented_offset=${presented_offset%%$'\t'*}
   marker="$state/.subsuper-seen-status-pilo-continuity-s1"
   printf '%s' "$line" > "$marker"
 
   out=$(FM_STATE_OVERRIDE="$state" classify_signal "$status" "$state")
   case "$out" in
-    self\|*) ;;
-    *) fail "legacy ident-prefixed marker re-escalated a settled status: $out" ;;
+    escalate\|*) ;;
+    *) fail "legacy ident-prefixed marker suppressed unproven status history: $out" ;;
   esac
   marker_offset=$(status_presentation_marker_offset "$marker" "$status") \
-    || fail "could not read the migrated seen marker"
-  [ "$marker_offset" = "$presented_offset" ] \
-    || fail "legacy marker was not migrated to the current append-aware identity form"
-  pass "legacy ident-prefixed markers settle and migrate"
+    || fail "could not inspect the legacy seen marker"
+  [ "$marker_offset" = 0 ] \
+    || fail "legacy marker was trusted as an append-aware classification boundary"
+  pass "legacy ident-prefixed markers are reclassified instead of trusted"
 }
 
 test_repeated_identical_append_after_seen_marker_is_escalated() {
@@ -202,7 +200,7 @@ test_status_appended_after_away_entry_remains_a_candidate() {
 }
 
 test_presented_status_before_away_entry_is_not_escalated
-test_legacy_ident_prefixed_marker_is_settled_and_migrated
+test_legacy_ident_prefixed_marker_is_reclassified
 test_repeated_identical_append_after_seen_marker_is_escalated
 test_reused_task_id_does_not_inherit_seen_marker
 test_captured_seen_offset_keeps_racing_append_eligible

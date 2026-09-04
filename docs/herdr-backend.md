@@ -205,6 +205,10 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 The adapter starts and polls a named server before workspace, tab, pane, or agent calls.
 Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the environment and passes an explicit trailing `--session <name>`.
 An environment variable alone is not reliable when another Herdr server is running.
+When the selected named server is not running, the adapter launches it without inherited Firstmate home and directory overrides, harness identity markers, or the supervision-model override.
+Herdr passes its server startup environment to every later pane, so retaining those values could misroute panes for another Firstmate home or harness.
+An already-running server is reused without restart or environment changes.
+Explicit named-session routing and unrelated launch environment remain intact.
 
 Literal text and Enter are separate operations on `fm-send.sh`'s typed plane; ordinary local text steers instead use the durable steering inbox and send only its best-effort constant doorbell through this adapter.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
@@ -224,12 +228,7 @@ Long Pi literals use the same bounded structural observation as short literals, 
 A valid non-empty Pi pair must also contain bounded leading and trailing anchors from the current literal; a mismatch reports `text-not-typed` before Enter instead of treating another retained draft as the current message.
 A Pi message still visibly present after the final wait reports `not-submitted` when it is a proven pending composer state; an otherwise unproven send reports `pending-unproven` and exits 3, as does a cleared or unreadable surface without either positive signal.
 For a known Claude target, Herdr's native `working` signal is not that generating proof because a tracked background shell can keep it set after the foreground turn ends.
-Claude's away-mode busy guard and queued-Enter confirmation use the same position- and shape-aware current-context predicate owned by `bin/fm-composer-lib.sh`.
-It accepts an active-turn signature only when the selected composer boundary and its adjacent activity rows form a verified Claude context, including the structural closing edge the shared classifier proves for that screen shape.
-A status footer by itself, nested or quoted busy text outside that context, or an elapsed token without that context is not busy.
-A styled capture's capability descriptor is passed into the predicate, so dim suggestions and dark truecolor ghosts cannot become bright typed text, while an unstyled fallback remains conservative.
-A footer-like row outside that boundary is structurally ambiguous and returns `unknown`, including a foreign `Working` row below an idle Claude composer.
-The Enter is confirmed only when that predicate changes from idle immediately before the Enter to busy after it, or when the composer clears; native `working` alone and a pre-existing rendered-busy footer never prove that Enter.
+Claude's away-mode busy guard and queued-Enter confirmation use the same position- and shape-aware current-footer predicate, which accepts an active-turn signature only on the current final nonblank footer row after the shared classifier proves its composer context: the Enter is confirmed only when that predicate changes from idle immediately before the Enter to busy after it, or when the composer clears; native `working` alone and a pre-existing rendered-busy footer never prove that Enter.
 Rendered idle with pending text remains unconfirmed and preserves the escalation for retry.
 After a max-defer alarm, only the Herdr+Claude path may reconsider a `rendered-busy` result.
 The exact matched row must include an elapsed duration and remain byte-identical for `FM_RENDERED_BUSY_RECOVERY_POLLS` polls, which defaults to 3, while native state is `idle` or `done`, or is `working` with the tracked daemon-terminal record.
@@ -320,8 +319,7 @@ At daemon startup, pre-redesign delivery files are never parsed or imported; the
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 For a Herdr primary whose detected harness is Claude, native `agent_status=working` is diagnostic only during away-mode injection because Claude's tracked background daemon shell can keep that value working after the foreground turn ends.
-`pane_is_busy` therefore uses that shared current-footer predicate; footer-like text outside the selected composer boundary is inert, including nested worker output that can quote another harness's busy footer.
-Claude may wrap its bottom status area across a primary `⏵⏵ bypass permissions on` row and up to two verified continuation rows such as `/rc` or the effort control; the shared classifier removes that bounded furniture before evaluating the composer and active-turn context, while any unrecognized continuation remains unreadable and defers.
+`pane_is_busy` therefore uses that shared current-footer predicate; matching text higher in the transcript is inert because nested worker output can quote another harness's busy footer.
 When the rendered pane is idle, injection falls through to the affirmative `empty` composer guard, while an unreadable capture or any non-`empty` composer verdict still defers.
 Each busy or composer deferral records the sub-cause as `native-busy`, `rendered-busy`, or `composer=<verdict>`; a `rendered-busy` record includes the exact matched row, and an unreadable busy-guard capture is logged as `unreadable` and also defers.
 The Herdr `busy` adapter result is logged as its native `working` label; for Claude this preserves diagnostic evidence without making it a busy verdict.

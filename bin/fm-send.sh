@@ -165,15 +165,12 @@
 # line. On the inbox plane the close happens at ENQUEUE time, because enqueue
 # is durable delivery to the task's record; the worker reading the answer late
 # is covered by the acknowledgement re-ring ladder. On the typed plane it
-# still waits for the confirmed submit. For parent-level decisions, the close
-# is a LOCAL append for every target kind - crewmate, scout, local secondmate,
-# and remote secondmate alike - because the open-decision ledger fm-wake-drain
-# folds lives in this home's own state dir (a remote mate's escalations reach it
-# through the parent-replies ingest); only the answer message crosses the
-# backend or remote transport. A Pi-mirrored secondmate child decision is closed
-# in the mate-home ledger with its local key, then the Pi parent watcher mirrors
-# that resolved line into the parent fold under its projected key; see
-# docs/pi-supervision-branch.md.
+# still waits for the confirmed submit. The close is a LOCAL append for every
+# target kind - crewmate, scout, local secondmate, and remote secondmate alike
+# - because the open-decision ledger fm-wake-drain folds lives in this home's
+# own state dir (a remote mate's escalations reach it through the
+# parent-replies ingest); only the answer message crosses the backend or
+# remote transport.
 #
 # Chat is also a channel that carries keyed captain answers, so the same flag
 # feeds bin/fm-captain-hold.sh's one keyed-answer intake for any key that names

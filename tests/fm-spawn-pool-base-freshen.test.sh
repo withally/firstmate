@@ -8,49 +8,10 @@
 # unreachable.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
-SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
-
-make_spawn_fakebin() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:?FM_FAKE_PANE_PATH unset}"; exit 0 ;;
-esac
-case "${1:-}" in
-  display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows|has-session|new-session|new-window|kill-window|send-keys)
-    printf '%s\n' "$*" >> "${FM_FAKE_TMUX_LOG:-/dev/null}"
-    if [ "${1:-}" = send-keys ] && printf '%s' "$*" | grep -Fq 'treehouse get'; then
-      [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || printf '%s\n' "${FM_FAKE_TREEHOUSE_HOLDER:-unknown}" > "$FM_FAKE_TREEHOUSE_LEASE_FILE"
-    fi
-    exit 0
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-  cat > "$fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-printf 'treehouse %s\n' "$*" >> "${FM_FAKE_TREEHOUSE_LOG:-/dev/null}"
-case "${1:-}" in
-  return)
-    [ -z "${FM_FAKE_TREEHOUSE_RETURN_FAIL:-}" ] || exit 17
-    [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || rm -f "$FM_FAKE_TREEHOUSE_LEASE_FILE"
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/treehouse"
-  printf '%s\n' "$fakebin"
-}
 
 make_case() {
   local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial lease
@@ -62,10 +23,31 @@ make_case() {
   publisher="$case_dir/publisher"
   lease="$case_dir/lease"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  mv "$fakebin/tmux" "$fakebin/tmux-base"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_TMUX_LOG:-/dev/null}"
+if [ "${1:-}" = send-keys ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      'treehouse get')
+        : > "${FM_FAKE_TREEHOUSE_LEASE:-/dev/null}"
+        printf '%s\n' "$arg" >> "${FM_FAKE_TREEHOUSE_LOG:-/dev/null}"
+        ;;
+      'treehouse return'*)
+        rm -f -- "${FM_FAKE_TREEHOUSE_LEASE:-/dev/null}"
+        printf '%s\n' "$arg" >> "${FM_FAKE_TREEHOUSE_LOG:-/dev/null}"
+        ;;
+    esac
+  done
+fi
+exec "$(dirname "$0")/tmux-base" "$@"
+SH
+  chmod +x "$fakebin/tmux"
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_spawn_brief "$home" "$id"
   touch "$home/state/.last-watcher-beat"
 
   git init --quiet -b "$default" "$project"
@@ -95,15 +77,13 @@ EOF
 
 run_spawn() {
   local id=$1
+  local FM_FAKE_TREEHOUSE_LEASE="$LEASE_FILE"
+  local FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/treehouse.log"
+  local FM_FAKE_TMUX_LOG="$CASE_DIR/tmux.log"
+  export FM_FAKE_TREEHOUSE_LEASE FM_FAKE_TREEHOUSE_LOG FM_FAKE_TMUX_LOG
   shift
-  FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
-    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
-    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
-    FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_FAKE_PANE_PATH="$POOL_DIR" \
-    FM_FAKE_TMUX_LOG="$CASE_DIR/tmux.log" FM_FAKE_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" \
-    FM_FAKE_TREEHOUSE_LEASE_FILE="$LEASE_FILE" FM_FAKE_TREEHOUSE_HOLDER="$id" \
-    PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJECT_DIR" "$@" 2>&1
+  fm_test_run_spawn "$HOME_DIR" "$POOL_DIR" "$FAKEBIN_DIR" \
+    "$id" "$PROJECT_DIR" "$@"
 }
 
 test_stale_pool_base_refreshes_before_branching() {
@@ -127,8 +107,7 @@ test_stale_pool_base_refreshes_before_branching() {
   fi
 
   id='pool-current-base-repeat-r1'
-  mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  fm_test_spawn_brief "$HOME_DIR" "$id"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
@@ -366,7 +345,7 @@ make_submodule_case() {  # <name> <id>
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_spawn_brief "$home" "$id"
   touch "$home/state/.last-watcher-beat"
 
   git init --quiet -b main "$sub"
@@ -413,8 +392,7 @@ EOF
 # starts from residue this code path actually produced rather than a hand-built one.
 strand_submodule_pin_via_spawn() {  # <seed-id>
   local id=$1 out status
-  mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  fm_test_spawn_brief "$HOME_DIR" "$id"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"

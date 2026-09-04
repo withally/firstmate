@@ -366,7 +366,8 @@ FM_SECONDMATE_CHARTER='Failing seed charter.' FM_SECONDMATE_SCOPE='failed seed' 
 seed_fail_pid=$!
 seed_wait=0
 while [ ! -f "$TMP_ROOT/seed.entered" ]; do
-  kill -0 "$seed_fail_pid" 2>/dev/null || fail "failing seed exited before remote provisioning"
+  kill -0 "$seed_fail_pid" 2>/dev/null \
+    || fail "failing seed exited before remote provisioning"$'\n'"$(cat "$TMP_ROOT/seed-fail.out")"
   seed_wait=$((seed_wait + 1))
   [ "$seed_wait" -le 250 ] || fail "failing seed never reached remote provisioning"
   sleep 0.02
@@ -449,19 +450,34 @@ pass "remote seeding proceeds once the repair closes every gap"
 # Seeding must not need a copy of the project in this home: firstmate names the
 # origin it already resolved, the seed validates and transports it, and the
 # primary project tree is left exactly as it was found.
-projects_snapshot() { # <dir>
+# Shared unchanged-tree comparison for every assertion below that a directory
+# survived an operation byte-identical. It records each entry's own type - a
+# symlink by its literal target, a regular file by its digest - so the
+# comparison never depends on how `cp -R` and `diff -ru` treat links or
+# non-regular entries, and it fails closed when the directory is missing so a
+# deleted tree can never read as an unchanged one.
+tree_snapshot() { # <dir>
   local dir=$1 path
+  if [ ! -d "$dir" ]; then
+    printf 'tree_snapshot: %s is not a directory\n' "$dir" >&2
+    return 1
+  fi
   (
-    cd "$dir" 2>/dev/null || exit 0
+    cd "$dir" || exit 1
     find . -print | LC_ALL=C sort | while IFS= read -r path; do
-      if [ -f "$path" ] && [ ! -L "$path" ]; then
-        printf '%s %s\n' "$path" "$(sha256_file "$path")"
+      if [ -L "$path" ]; then
+        printf 'link %s -> %s\n' "$path" "$(readlink "$path")"
+      elif [ -f "$path" ]; then
+        printf 'file %s %s\n' "$path" "$(sha256_file "$path")"
+      elif [ -d "$path" ]; then
+        printf 'dir %s\n' "$path"
       else
-        printf '%s\n' "$path"
+        printf 'other %s\n' "$path"
       fi
     done
   )
 }
+projects_snapshot() { tree_snapshot "$1"; }
 mkdir -p "$TMP_ROOT/seed-parent/projects"
 fm_git_init_commit "$TMP_ROOT/seed-parent/projects/resident"
 git init -q --bare "$TMP_ROOT/beta.git"
@@ -474,7 +490,8 @@ cat > "$TMP_ROOT/seed-parent/data/projects.md" <<'EOF'
 - delta [local-only] - delta project (added 2026-08-06)
 EOF
 BETA_ORIGIN="file://$TMP_ROOT/beta.git"
-PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects")
+PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "the primary project tree was missing before seeding"
 
 if FM_SECONDMATE_CHARTER='Unsupplied origin charter.' FM_SECONDMATE_SCOPE='unsupplied origin' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noorigin remote-mac "$REMOTE_ROOT" \
@@ -530,7 +547,9 @@ assert_grep '- beta [direct-PR]' "$TMP_ROOT/seed-noclone-home/data/projects.md" 
   "the remote home did not publish the project's registered posture"
 assert_absent "$TMP_ROOT/seed-parent/projects/beta" \
   "seeding cloned the project into the primary project tree"
-[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+PROJECTS_AFTER=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "seeding removed the primary project tree"
+[ "$PROJECTS_AFTER" = "$PROJECTS_BEFORE" ] \
   || fail "seeding changed the primary project tree"
 pass "remote seeding provisions a supplied origin without touching the primary project tree"
 
@@ -634,7 +653,9 @@ done
 [ "$(cat "$FORGE_HOME/projects/scp-app/ORIGIN.txt")" = \
   'served from git@host.internal:group/scp-app.git' ] \
   || fail "the scp-like route did not clone its own origin"
-[ "$(projects_snapshot "$TMP_ROOT/seed-parent/projects")" = "$PROJECTS_BEFORE" ] \
+PROJECTS_AFTER=$(projects_snapshot "$TMP_ROOT/seed-parent/projects") \
+  || fail "seeding non-GitHub projects removed the primary project tree"
+[ "$PROJECTS_AFTER" = "$PROJECTS_BEFORE" ] \
   || fail "seeding non-GitHub projects changed the primary project tree"
 assert_grep '- seed-forge ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
   "the multi-forge route was not registered"
@@ -1024,15 +1045,20 @@ resolve_ios_pending() {
 }
 resolve_ios_pending
 
-# Structured fleet state comes from each home's own snapshot. The remote host is
-# explicit, and the local route remains alongside it.
+# Structured fleet state comes from each home's published ledger. The remote
+# host is explicit, and the local route remains alongside it.
+FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$LOCAL_HOME" \
+  "$ROOT/bin/fm-home-summary-refresh.sh" >/dev/null \
+  || fail "local fixture did not publish its home ledger"
+remote_env "$ROOT/bin/fm-on.sh" ios fm-home-summary-refresh.sh >/dev/null \
+  || fail "remote fixture did not publish its home ledger"
 SNAPSHOT=$(remote_env "$ROOT/bin/fm-fleet-snapshot.sh" --json)
 if ! printf '%s' "$SNAPSHOT" | jq -e '.secondmate_current.records | any(.id == "ios" and .remote == true and .host == "remote-mac" and .provenance.selected == "structured-home")' >/dev/null; then
   printf 'secondmate projection:\n%s\n' "$(printf '%s' "$SNAPSHOT" | jq '.secondmate_current')" >&2
   fail "fleet snapshot did not select the remote structured-home projection"
 fi
-printf '%s' "$SNAPSHOT" | jq -e '.tasks[] | select(.id == "ios") | .paths.home.present == true' >/dev/null \
-  || fail "remote structured observation did not prove the remote home present"
+printf '%s' "$SNAPSHOT" | jq -e '.tasks[] | select(.id == "ios") | .paths.home.present == null and .endpoint.agent_alive == "unknown"' >/dev/null \
+  || fail "the fleet snapshot performed or invented a remote endpoint-liveness probe"
 printf '%s' "$SNAPSHOT" | jq -e '.secondmate_current.records | any(.id == "local" and .remote == false)' >/dev/null \
   || fail "fleet snapshot lost the existing local secondmate route"
 pass "fleet snapshot projects mixed local and remote structured state"
@@ -1054,6 +1080,30 @@ assert_contains "$UPDATE_OUT" 'synced:' "remote update did not report a host-loc
   || fail "remote persistent home did not fast-forward to its code-root commit"
 assert_present "$REMOTE_HOME/REMOTE_UPDATE_PROBE" "remote update did not materialize the code-root commit"
 pass "remote update imports and fast-forwards the persistent home on its configured host"
+
+# The remote restart verb is not a second implementation: its host-local leg runs
+# the ORDINARY control plane against a record that is plain and local on that
+# host. These two refusals can only come from that plane's own pre-stop
+# capability tables, and they leave the live agent exactly as it was - which is
+# the whole safety property of asking before anything is stopped.
+RELAUNCH_UNVERIFIED=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh \
+  relaunch ios notaharness - - 2>&1) && fail "an unverified runtime should refuse a remote restart"
+assert_contains "$RELAUNCH_UNVERIFIED" 'unverified remote secondmate harness' \
+  "the remote restart verb did not refuse an unverified runtime"
+RELAUNCH_ROUTE_META="$REMOTE_HOME/state/parent-route/ios.meta"
+cp "$RELAUNCH_ROUTE_META" "$TMP_ROOT/ios-before-relaunch.meta"
+mkdir -p "$TMP_ROOT/not-a-checkout"
+sed "s|^worktree=.*|worktree=$TMP_ROOT/not-a-checkout|" \
+  "$TMP_ROOT/ios-before-relaunch.meta" > "$RELAUNCH_ROUTE_META"
+RELAUNCH_CHECKPOINT=$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh \
+  relaunch ios codex - - 2>&1) && fail "a restart with no accountable checkout should refuse"
+assert_contains "$RELAUNCH_CHECKPOINT" 'refusing to relaunch without a checkout whose unlanded work can be accounted for' \
+  "the host-local restart did not reach the control plane's own pre-stop checkpoint"
+cp "$TMP_ROOT/ios-before-relaunch.meta" "$RELAUNCH_ROUTE_META"
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
+  || fail "a refused remote restart must leave the running agent untouched"
+pass "the remote restart verb delegates to the host-local control plane and refuses before stopping anything"
+
 
 rm -f "$TMP_ROOT/doctor.repaired"
 : > "$DOCTOR_LOG"
@@ -1107,7 +1157,11 @@ mv -f "$TMP_ROOT/remote-ios-before-liveness-legacy.meta" "$remote_route_meta"
 rm -f "$TMUX_STATE"
 pass "startup reports alive legacy backends without changing their routes"
 
-# Host loss maps to unknown/unavailable and never creates a local replacement.
+# Host loss never creates a local replacement. Remove both the published ledger
+# and its parent-side cache so the structured-home read degrades explicitly;
+# endpoint liveness remains the startup supervisor's concern.
+rm -f -- "$REMOTE_HOME/state/home-summary.json"
+rm -rf -- "$PARENT/state/secondmate-summary-cache"
 launches_before=$(grep -c '^tab create' "$HERDR_LOG" || true)
 rm -rf -- "$PARENT/state/.watch.lock"
 rm -f -- "$PARENT/state/.last-watcher-beat"
@@ -1115,16 +1169,18 @@ BOOT_UNAVAILABLE=$(FM_FAKE_SSH_MODE=unreachable remote_env "$ROOT/bin/fm-bootstr
 assert_contains "$BOOT_UNAVAILABLE" 'SECONDMATE_LIVENESS: secondmate ios: skipped: remote host unavailable or endpoint state unknown' \
   "bootstrap did not preserve an unreachable remote endpoint as unknown"
 UNAVAILABLE=$(FM_FAKE_SSH_MODE=unreachable remote_env "$ROOT/bin/fm-fleet-snapshot.sh" --json)
-printf '%s' "$UNAVAILABLE" | jq -e '.secondmate_current.records | any(.id == "ios" and .current.state == "unknown")' >/dev/null \
-  || fail "unreachable remote host was not projected unknown"
-printf '%s' "$UNAVAILABLE" | jq -e '.tasks[] | select(.id == "ios") | .paths.home.present == null' >/dev/null \
-  || fail "unreachable remote home presence was not projected unknown"
+printf '%s' "$UNAVAILABLE" | jq -e '.secondmate_current.records | any(.id == "ios"
+  and .current.state == "unknown" and .provenance.selected != "structured-home"
+  and (.current.reason | test("home ledger.*(timed out|missing|unreadable|invalid)")))' >/dev/null \
+  || fail "unreachable no-ledger remote home did not degrade to explicit unknown state"
+printf '%s' "$UNAVAILABLE" | jq -e '.tasks[] | select(.id == "ios") | .paths.home.present == null and .endpoint.agent_alive == "unknown"' >/dev/null \
+  || fail "unreachable remote endpoint liveness was not left to supervision"
 rm -f "$PARENT/state/.wake-queue"
 launches_after=$(grep -c '^tab create' "$HERDR_LOG" || true)
 [ "$launches_before" -eq "$launches_after" ] || fail "unreachable projection attempted a replacement launch"
 assert_present "$PARENT/state/ios.meta" "unreachable readiness removed the parent route metadata"
 assert_grep '- ios ' "$PARENT/data/secondmates.md" "unreachable readiness removed the registry route"
-pass "unreachable remote state remains unknown with no local respawn or failover"
+pass "unreachable no-ledger remote state remains explicit with no local respawn or failover"
 
 # Retirement delegates its safety check to the remote home. An in-flight child
 # record refuses cleanup and preserves both machines' durable routes.

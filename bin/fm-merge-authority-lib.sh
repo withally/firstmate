@@ -13,7 +13,7 @@ _FM_MERGE_AUTHORITY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev
 FM_MERGE_AUTHORITY_SCRIPT_DIR="${FM_MERGE_AUTHORITY_SCRIPT_DIR:-$_FM_MERGE_AUTHORITY_LIB_DIR}"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$_FM_MERGE_AUTHORITY_LIB_DIR/fm-classify-lib.sh"
-if ! type fm_merge_outcome_home_id >/dev/null 2>&1; then
+if ! type fm_parent_channel_home_id >/dev/null 2>&1; then
   # shellcheck source=bin/fm-merge-outcome-lib.sh
   . "$_FM_MERGE_AUTHORITY_LIB_DIR/fm-merge-outcome-lib.sh"
 fi
@@ -86,7 +86,7 @@ fm_merge_authority_require_landing() {  # <home> <task-id> <meta>
       ;;
   esac
 
-  if ! mate=$(fm_merge_outcome_home_id "$home"); then
+  if ! mate=$(fm_parent_channel_home_id "$home"); then
     echo "error: task $id requires parent-firstmate approval, but this home has no valid secondmate identity" >&2
     return 1
   fi

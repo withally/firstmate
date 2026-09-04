@@ -107,10 +107,8 @@ test_no_open_decisions_prints_nothing() {
   dir=$(make_case none-open)
   state="$dir/state"
   out="$dir/drain.out"
-  # Keep this fixture terminal-only: nonterminal progress is intentionally
-  # retained in UNREAD STATUS even when there are no open decisions.
-  printf 'done: shipped clean\n' > "$state/task4.status"
-  printf 'done: shipped clean\n' > "$state/task5.status"
+  printf 'working: on it\n' > "$state/task4.status"
+  printf 'resolved: shipped clean\n' > "$state/task5.status"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with no open decisions"
 

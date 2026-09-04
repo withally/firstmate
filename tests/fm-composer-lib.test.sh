@@ -282,7 +282,7 @@ test_matrix_herdr_halfblock_rule_bounds_bare_wrap() {
   case "$plain" in *"Run Everything"*) : ;; *) fail "fixture lost its footer content" ;; esac
   ESC_LOCAL=$(printf '\033')
   screen=$'transcript\n ▄▄▄▄▄▄▄▄\n'"  ${ESC_LOCAL}[2m→ ${ESC_LOCAL}[0;7mA${ESC_LOCAL}[0;2mdd a follow-up${ESC_LOCAL}[0m"$'\n ▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 6.7%   Run Everything\n  ~/wt · 64cdd3a'
-  out=$(fm_composer_classify_screen "$CAPS_STYLED" "$screen")
+  out=$(fm_composer_classify_screen "$CAPS_STYLED" "$(printf '%b' "$screen")")
   [ "$out" = empty ] \
     || fail "an idle cursor composer inside herdr half-block rules must read empty, got '$out'"
   pass "matrix: herdr half-block rules bound a bare composer's wrap region"
@@ -695,180 +695,6 @@ test_selected_content_is_composer_scoped_and_wrap_normalized
 test_pi_submit_observation_honors_pair_bound
 test_pi_submit_observation_rejects_nonmatching_pending_literal
 
-test_claude_current_footer_requires_selected_composer_adjacency() {
-  local foreign genuine rc
-  foreign=$'────────────────────────\n❯\n────────────────────────\nClaude 4.1\n✲ Working… (4s)\n'
-  if printf '%s' "$foreign" | fm_claude_current_footer_busy "$CAPS_PLAIN"; then
-    fail "a foreign Working row below an idle Claude composer must not read busy"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 2 ] \
-    || fail "a foreign Working row outside the selected composer boundary must read unknown, got rc=$rc"
-
-  genuine=$'────────────────────────\n❯\n────────────────────────\n✲ Pollinating… (16s · ↓ 1.1k tokens)\n'
-  printf '%s' "$genuine" | fm_claude_current_footer_busy "$CAPS_PLAIN" \
-    || fail "a genuine Claude mid-turn footer immediately below its composer must read busy"
-  pass "fm_claude_current_footer_busy: the footer belongs to the selected composer boundary"
-}
-
-test_claude_current_footer_requires_selected_composer_adjacency
-
-test_claude_incident_b_footer_matrix_stays_idle() {
-  local base screen counterfactual rc
-  base=$'tool output:\n• Working (4s • esc to interrupt)\n────────────────────────\n❯\n────────────────────────'
-  for screen in \
-    "$base"$'\n  ⏵⏵ bypass permissions on (shift+tab to cycle)' \
-    "$base"$'\n  ⏵⏵ bypass permissions on · ← 1 agent' \
-    "$base"$'\n  ✔ Update installed · Restart to update' \
-    "$base"$'\n\033[2m  Try “write tests”\033[0m' \
-    "$base"$'\n\033[38;2;72;72;72m  Try “write tests”\033[39m'; do
-    if printf '%s' "$screen" | fm_claude_current_footer_busy "$CAPS_STYLED"; then
-      fail "incident-B nested busy text plus an idle Claude footer must not read busy"
-    else
-      rc=$?
-    fi
-    [ "$rc" -eq 1 ] \
-      || fail "incident-B footer fixture must return the idle verdict rc=1, got rc=$rc"
-  done
-
-  printf '%s' "$base" | fm_busy_lines_match claude \
-    || fail "the pre-#94 broad matcher must reproduce the incident-B false positive"
-  counterfactual=${base/esc to interrupt/turn finished}
-  if printf '%s' "$counterfactual" | fm_busy_lines_match claude; then
-    fail "removing only the incident-B esc-to-interrupt token must flip the broad matcher idle"
-  fi
-
-  printf '%s' $'────────────────────────\n❯\n────────────────────────\nesc to interrupt' \
-    | fm_claude_current_footer_busy "$CAPS_PLAIN" \
-    || fail "a genuine current Claude esc-to-interrupt footer must remain busy"
-  printf '%s' $'────────────────────────\n❯\n────────────────────────\n✲ Pollinating… (16s · ↓ 1.1k tokens)' \
-    | fm_claude_current_footer_busy "$CAPS_PLAIN" \
-    || fail "a genuine current Claude spinner footer must remain busy"
-  pass "fm_claude_current_footer_busy: incident-B footer and ghost variants stay idle while genuine current turns stay busy"
-}
-
-test_claude_incident_b_footer_matrix_stays_idle
-
-test_claude_active_spinner_pairs_with_active_composer() {
-  local active idle pending rc
-  active=$'tool output:\n  ⏺ Running… (43s · timeout 3m 20s)\n     (ctrl+b to run in background)\n\n✶ Jitterbugging… (45s · ↓ 127 tokens)\n  ⎿ Tip: Send messages to Claude while it works\n\n────────────────────────\n❯ \033[2mPress up to edit queued messages\033[0m\n────────────────────────\n  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage'
-  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$active" \
-    || fail "a real Claude spinner paired with the active composer hint must read busy"
-  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✶ Jitterbugging… (45s · ↓ 127 tokens)' ] \
-    || fail "the active Claude verdict did not expose its exact matched spinner row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
-
-  idle=${active/Press up to edit queued messages/}
-  idle=${idle/Running… (43s · timeout 3m 20s)/Running in the background (↓ to manage)}
-  idle=${idle/(ctrl+b to run in background)/}
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
-    fail "the same stale spinner above a bare idle composer must not read busy"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 1 ] \
-    || fail "a bare idle composer with the shell footer should read idle, got rc=$rc"
-  printf '%s' "$idle" | fm_busy_lines_match claude \
-    || fail "the incident-B broad matcher must still reproduce on the idle shell footer"
-
-  pending=${active/$'\033[2mPress up to edit queued messages\033[0m'/bright-human-draft}
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$pending"; then
-    fail "stale active-tool rows must not outrank bright pending composer text"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 1 ] \
-    || fail "bright pending composer text must route to the composer guard, got rc=$rc"
-  pass "fm_claude_current_footer_busy: active context distinguishes a live turn while idle and pending composers stay injectable-safe"
-}
-
-test_claude_active_spinner_pairs_with_active_composer
-
-test_claude_plain_capture_active_hint_uses_actual_capabilities() {
-  local active rc
-  active=$'tool output:\n  ⏺ Running… (43s · timeout 3m 20s)\n     (ctrl+b to run in background)\n\n✶ Jitterbugging… (45s · ↓ 127 tokens)\n  ⎿ Tip: Send messages to Claude while it works\n\n────────────────────────\n❯ Press up to edit queued messages\n────────────────────────\n  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage'
-  if fm_claude_current_footer_busy "$CAPS_PLAIN" <<< "$active"; then
-    fail "a plain Herdr capture without styling proof must not read the dim active hint as busy"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 2 ] \
-    || fail "a plain active-context capture must remain unreadable without styling proof, got rc=$rc"
-  pass "fm_claude_current_footer_busy: a plain capture carries its real capability into active-context classification"
-}
-
-test_claude_plain_capture_active_hint_uses_actual_capabilities
-
-test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts() {
-  local idle busy spinner spinner_tip garbled attached_garbled pending dead rc
-  idle=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/idle-background-narrow.ansi.txt")")
-  busy=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/busy-background-narrow.ansi.txt")")
-  spinner=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/active-spinner-wrapped-narrow.ansi.txt")")
-  spinner_tip=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/active-spinner-tip-wrapped-narrow.ansi.txt")")
-  garbled=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/garbled-suffix-background-narrow.ansi.txt")")
-  attached_garbled=$(printf '%b' "$(cat "$ROOT/tests/fixtures/claude-herdr-2.1.258/attached-garbled-suffix-background-narrow.ansi.txt")")
-
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$idle"; then
-    fail "Claude's captured idle background-shell footer must not read busy"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 1 ] \
-    || fail "Claude's wrapped /rc footer must preserve rendered idle, got rc=$rc"
-
-  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$busy" \
-    || fail "Claude's captured foreground Bash turn must remain rendered busy"
-  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
-    || fail "Claude's wrapped busy fixture did not expose its spinner row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
-
-  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$spinner" \
-    || fail "Claude's current spinner immediately above a wrapped footer must remain busy"
-  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
-    || fail "Claude's wrapped spinner fixture did not expose its exact matched row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
-
-  fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$spinner_tip" \
-    || fail "Claude's current spinner must remain busy when a tip row follows it"
-  [ "$FM_CLAUDE_BUSY_MATCHED_ROW" = '✳ Effecting… (1m 27s · ↓ 1.4k tokens)' ] \
-    || fail "Claude's spinner-plus-tip fixture did not expose its exact matched row: ${FM_CLAUDE_BUSY_MATCHED_ROW:-unset}"
-
-  pending=${idle/❯ /❯ bright-human-draft}
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$pending"; then
-    fail "Claude's wrapped status footer must not outrank pending composer text"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 1 ] \
-    || fail "Claude's pending composer must route to the composer guard, got rc=$rc"
-
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$garbled"; then
-    fail "a garbled Claude status suffix must not read idle or busy"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 2 ] \
-    || fail "a garbled Claude status suffix must remain unreadable, got rc=$rc"
-
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$attached_garbled"; then
-    fail "an attached-garbled Claude status prefix must not fall through to idle"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 2 ] \
-    || fail "an attached-garbled Claude status prefix must remain unreadable, got rc=$rc"
-
-  dead=${idle/❯ /\$}
-  if fm_claude_current_footer_busy "$CAPS_STYLED_NOID" <<< "$dead"; then
-    fail "a dead shell above Claude-like status furniture must not read busy"
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 2 ] \
-    || fail "a dead shell above Claude-like status furniture must remain unreadable, got rc=$rc"
-  pass "fm_claude_current_footer_busy: captured wrapped background footers preserve idle, busy, pending, garbled, and dead-shell safety"
-}
-
-test_claude_wrapped_status_footer_preserves_idle_and_busy_verdicts
-
 test_submit_retry_reports_send_failed_before_any_enter() {
   local out
   submit_key_always_fails() { return 1; }
@@ -911,3 +737,22 @@ test_queued_enter_verdict_does_not_convert_other_states() {
 test_queued_enter_verdict_busy_pending_is_empty
 test_queued_enter_verdict_idle_pending_stays_pending
 test_queued_enter_verdict_does_not_convert_other_states
+
+test_claude_current_footer_requires_selected_composer_adjacency() {
+  local foreign genuine rc
+  foreign=$'────────────────────────\n❯\n────────────────────────\nClaude 4.1\n✲ Working… (4s)\n'
+  if printf '%s' "$foreign" | fm_claude_current_footer_busy; then
+    fail "a foreign Working row below an idle Claude composer must not read busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] \
+    || fail "a foreign Working row outside the selected composer boundary must read unknown, got rc=$rc"
+
+  genuine=$'────────────────────────\n❯\n────────────────────────\n✲ Pollinating… (16s · ↓ 1.1k tokens)\n'
+  printf '%s' "$genuine" | fm_claude_current_footer_busy \
+    || fail "a genuine Claude mid-turn footer immediately below its composer must read busy"
+  pass "fm_claude_current_footer_busy: the footer belongs to the selected composer boundary"
+}
+
+test_claude_current_footer_requires_selected_composer_adjacency

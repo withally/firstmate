@@ -191,6 +191,9 @@ fm_afk_launch_record_write() {  # <backend> <target> <extra>
 }
 
 fm_afk_launch_flag_write() {
+  if [ ! -e "$FM_AFK_LAUNCH_STATE/.afk" ]; then
+    fm_afk_seed_daemon_seen "$FM_AFK_LAUNCH_STATE" || return 1
+  fi
   fm_afk_flag_write "$FM_AFK_LAUNCH_STATE"
 }
 

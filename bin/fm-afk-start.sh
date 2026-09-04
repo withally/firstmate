@@ -147,6 +147,11 @@ fm_afk_flag_write() {  # <state-dir>
   return 1
 }
 
+fm_afk_seed_daemon_seen() {  # <state-dir>
+  _fm_wake_require_classify || return 1
+  status_seed_daemon_seen_from_presentation "$1"
+}
+
 fm_afk_start_main() {
   case "${1:-}" in
     '' ) ;;
@@ -166,6 +171,7 @@ fm_afk_start_main() {
   pid=$(daemon_lock_pid 2>/dev/null || true)
   if daemon_lock_held_by_live_daemon; then
     if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ] && [ "$had_afk" -eq 0 ]; then
+      fm_afk_seed_daemon_seen "$FM_AFK_STATE" || { echo "afk: failed to seed away-mode status boundary" >&2; return 1; }
       fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
     fi
     echo "afk: daemon already running pid=$pid"
@@ -183,6 +189,7 @@ fm_afk_start_main() {
       echo "afk: failed to clear stale away-mode artifacts" >&2
       return 1
     }
+    fm_afk_seed_daemon_seen "$FM_AFK_STATE" || { echo "afk: failed to seed away-mode status boundary" >&2; return 1; }
     fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
   fi
 

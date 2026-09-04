@@ -137,6 +137,33 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
+PROJECT_PATH=$(awk -F= '$1 == "project" { value=substr($0, index($0, "=") + 1) } END { print value }' "$META")
+PROJECT_NAME=${PROJECT_PATH##*/}
+if [ -n "$PROJECT_NAME" ]; then
+  REGISTERED_AUTHORITY=$(FM_DATA_OVERRIDE="$DATA" \
+    FM_HOME="$FM_HOME" \
+    "$FM_ROOT/bin/fm-project-mode.sh" --authority "$PROJECT_NAME") || {
+    echo "error: could not resolve merge authority for project $PROJECT_NAME; refusing promotion" >&2
+    exit 1
+  }
+  BRIEF_PROJECT_PATH=$PROJECT_PATH
+else
+  REGISTERED_AUTHORITY=captain
+  BRIEF_PROJECT_PATH=project
+fi
+if [ "$YOLO" = on ]; then
+  MERGE_AUTHORITY=self
+else
+  MERGE_AUTHORITY=$REGISTERED_AUTHORITY
+fi
+case "$MERGE_AUTHORITY:$YOLO" in
+  captain:off|firstmate:off|self:on) ;;
+  *)
+    echo "error: resolved merge authority $MERGE_AUTHORITY conflicts with --yolo $YOLO for task $ID" >&2
+    exit 1
+    ;;
+esac
+
 SCOUT_BRIEF="$DATA/$ID/brief.md"
 if fm_brief_task_placeholders_present "$SCOUT_BRIEF"; then
   echo "error: $SCOUT_BRIEF still contains {TASK} or {FIRSTMATE_SPEC}; preserve the original ask in ## Captain's intent and fill the scout-time ## Firstmate spec; promotion generates a separate ship-time spec" >&2
@@ -196,6 +223,55 @@ EOF
 mv "$TMP" "$INSTRUCTIONS"
 TMP=
 [ -f "$INSTRUCTIONS" ] && [ -r "$INSTRUCTIONS" ] || { echo "error: ship instructions were not published as a readable file: $INSTRUCTIONS" >&2; exit 1; }
+
+BRIEF_TMP="$DATA/$ID/.brief.promote.${BASHPID:-$$}"
+FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_STATE_OVERRIDE="$STATE" \
+  FM_BRIEF_OUTPUT_OVERRIDE="$BRIEF_TMP" \
+  "$FM_ROOT/bin/fm-brief.sh" "$ID" "$BRIEF_PROJECT_PATH" --mode "$MODE" \
+  --merge-authority "$MERGE_AUTHORITY" >/dev/null || {
+    echo "error: could not render the ship brief for task $ID; refusing promotion" >&2
+    exit 1
+  }
+PROMOTE_BRIEF_AUTHORITY=$(awk '
+  $0 == "<!-- fm-merge-authority-contract:start -->" {
+    starts++
+    if (in_section) invalid=1
+    in_section=1
+    next
+  }
+  $0 == "<!-- fm-merge-authority-contract:end -->" {
+    if (!in_section) invalid=1
+    ends++
+    in_section=0
+    next
+  }
+  in_section && $0 ~ /^Merge authority: / {
+    authorities++
+    if ($0 !~ /^Merge authority: (captain|firstmate|self)$/) {
+      invalid=1
+    } else {
+      value=$0
+      sub(/^Merge authority: /, "", value)
+    }
+  }
+  END {
+    if (starts != 1 || ends != 1 || in_section || authorities != 1 || invalid) exit 1
+    print value
+  }
+' "$BRIEF_TMP") || {
+  echo "error: rendered ship brief for task $ID has no valid merge-authority contract; refusing promotion" >&2
+  exit 1
+}
+[ "$PROMOTE_BRIEF_AUTHORITY" = "$MERGE_AUTHORITY" ] || {
+  echo "error: rendered ship brief for task $ID disagrees with merge authority $MERGE_AUTHORITY; refusing promotion" >&2
+  exit 1
+}
+grep -qx "Delivery contract: mode=$MODE" "$BRIEF_TMP" || {
+  echo "error: rendered ship brief for task $ID has no delivery contract; refusing promotion" >&2
+  exit 1
+}
+mv -f -- "$BRIEF_TMP" "$SCOUT_BRIEF"
+BRIEF_TMP=
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^merge_authority=' "$META" > "$TMP"

@@ -366,18 +366,55 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local lines plain footer composer caps verdict
+  local capture_caps=${1:-} lines plain footer footer_row footer_shape footer_start='' composer screen caps verdict active_rows preceding screen_verdict preceding_row
+  local active_hint=0 active_tool=0
+  FM_CLAUDE_BUSY_MATCHED_ROW=
+  [ -n "$capture_caps" ] || capture_caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
-  footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
+  footer_shape=$(printf '%s\n' "$plain" | awk \
+    -v primary="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX" \
+    -v prefix="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX" \
+    -v continuation="$FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX" '
+      { rows[NR]=$0 }
+      function previous_nonblank(from, row) {
+        for (row=from; row >= 1; row--)
+          if (rows[row] !~ /^[[:space:]]*$/) return row
+        return 0
+      }
+      END {
+        row=previous_nonblank(NR)
+        count=0
+        while (row > 0 && count < 2 && rows[row] ~ continuation) {
+          count++
+          row=previous_nonblank(row - 1)
+        }
+        if (row > 0 && rows[row] ~ primary) print "valid:" row
+        else if (count > 0 || (row > 0 && rows[row] ~ prefix)) print "invalid"
+      }
+    ')
+  case "$footer_shape" in
+    valid:*) footer_start=${footer_shape#valid:} ;;
+    invalid) return 2 ;;
+  esac
+  if [ -n "$footer_start" ]; then
+    footer=$(printf '%s\n' "$plain" | awk -v start="$footer_start" 'NR == start { print; exit }')
+    footer_row=$((footer_start - 1))
+    composer=$(printf '%s\n' "$plain" | awk -v start="$footer_start" 'NR < start { print }')
+    screen=$(printf '%s\n' "$lines" | awk -v start="$footer_start" 'NR < start { print }')
+  else
+    footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
+    footer_row=$(printf '%s\n' "$plain" | awk 'NF { row=NR - 1 } END { if (row != "") print row }')
+    composer=$(printf '%s\n' "$plain" | awk '
+      { rows[NR]=$0 }
+      NF { last=NR }
+      END { for (row=1; row < last; row++) print rows[row] }
+    ')
+    screen=$lines
+  fi
   fm_composer_normalize_trim_var footer
-  [ -n "$footer" ] || return 2
-  composer=$(printf '%s\n' "$plain" | awk '
-    { rows[NR]=$0 }
-    NF { last=NR }
-    END { for (row=1; row < last; row++) print rows[row] }
-  ')
+  [ -n "$footer" ] && [ -n "$footer_row" ] || return 2
   _fm_composer_scan_screen "$composer" ''
   _fm_composer_select_cursorless "$composer" || return 2
   screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$screen")
@@ -420,6 +457,7 @@ fm_claude_current_footer_busy() {
   caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
   verdict=$(fm_composer_classify_screen "$caps" "$composer")
   [ "$verdict" = empty ] || return 2
+  [ "$footer_row" -eq $((FM_COMPOSER_SELECTED_BOUNDARY + 1)) ] || return 2
   if [ -n "${FM_BUSY_REGEX:-}" ]; then
     if printf '%s\n' "$footer" | fm_busy_lines_match claude; then
       FM_CLAUDE_BUSY_MATCHED_ROW=$footer

@@ -112,6 +112,7 @@ STORE="$STATE/branch-outcomes.jsonl"
 CURSOR="$STATE/.branch-outcomes-cursor"
 PROCESSED="$STATE/.branch-outcomes-processed"
 LOCK="$STATE/.branch-outcomes.lock"
+ACTION_DIR="$STATE/branch-action"
 MAX_SAFE_SEQ=9007199254740991
 OUTCOME_INDEX_VERSION=fm-branch-outcome-index-v1
 OUTCOME_INDEX_MAX_BYTES=512
@@ -199,12 +200,20 @@ last_seq() {
           and ((.statusEndpoint | type) == "number" and .statusEndpoint >= 0 and .statusEndpoint <= 9007199254740991 and .statusEndpoint == (.statusEndpoint | floor))
           and ((.statusIdent | type) == "string" and (.statusIdent | test("[\\t\\n]") | not))
         )
+        or (
+          keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake", "wake_seq"]
+          and (.silent | type) == "boolean"
+          and .verdict == "firstmate-action"
+          and ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor))
+          and ((.statusEndpoint | type) == "number" and .statusEndpoint >= 0 and .statusEndpoint <= 9007199254740991 and .statusEndpoint == (.statusEndpoint | floor))
+          and ((.statusIdent | type) == "string" and (.statusIdent | test("[\\t\\n]") | not))
+        )
       )
       and ((.seq | type) == "number" and .seq >= 1 and .seq <= 9007199254740991 and .seq == (.seq | floor))
       and ((.epoch | type) == "number" and .epoch >= 0 and .epoch == (.epoch | floor))
       and ((.task | type) == "string" and (.wake | type) == "string")
-      and ((.summary | type) == "string" and (.verdict == "routine" or .verdict == "captain"))
-      and (.silent != true or (.task == "fleet" and .verdict == "routine"));
+      and ((.summary | type) == "string" and (.verdict == "routine" or .verdict == "captain" or .verdict == "firstmate-action"))
+      and (.silent != true or .verdict == "routine");
     if endswith("\n") then split("\n")[:-1]
     else error("unterminated outcome store")
     end
@@ -329,15 +338,24 @@ record_for_seq() { # <seq>
 
 append_record_locked() { # <task> <verdict> <summary> <wake> <silent> <seq> [<wake-seq>]
   local task=$1 verdict=$2 summary=$3 wake=$4 silent=$5 seq=$6 wake_seq=${7:-}
+  capture_status_position "$task"
+  rm -f -- "$OUTCOME_INDEX_READY" || return 1
   if [ "$verdict" = firstmate-action ] && [ -n "$wake_seq" ]; then
-    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"wake_seq":%s}\n' \
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s","wake_seq":%s}\n' \
       "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
-      "$verdict" "$(json_escape "$summary")" "$silent" "$wake_seq" >> "$STORE"
+      "$verdict" "$(json_escape "$summary")" "$silent" "$CAPTURED_STATUS_ENDPOINT" \
+      "$(json_escape "$CAPTURED_STATUS_IDENT")" "$wake_seq" >> "$STORE"
   else
-    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s}\n' \
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s"}\n' \
       "$seq" "$(date +%s)" "$(json_escape "$task")" "$(json_escape "$wake")" \
-      "$verdict" "$(json_escape "$summary")" "$silent" >> "$STORE"
+      "$verdict" "$(json_escape "$summary")" "$silent" "$CAPTURED_STATUS_ENDPOINT" \
+      "$(json_escape "$CAPTURED_STATUS_IDENT")" >> "$STORE"
   fi
+  if { [ -e "$STATE/$task.meta" ] || [ -e "$STATE/$task.status" ]; } \
+      && ! write_outcome_index "$task" "$seq"; then
+    return 1
+  fi
+  publish_outcome_index_ready "$seq"
 }
 
 action_marker_path_for_wake() { # <wake-seq>
@@ -644,9 +662,8 @@ case "$CMD" in
     [ -n "$SUMMARY" ] || usage
     case "$VERDICT" in routine|captain|firstmate-action) ;; *) usage ;; esac
     case "$SILENT" in true|false) ;; *) usage ;; esac
-    if [ "$SILENT" = true ] && { [ "$TASK" != fleet ] || [ "$VERDICT" != routine ]; }; then
-      echo "error: silent outcomes must be routine fleet outcomes" >&2
-      exit 2
+    if [ "$VERDICT" != routine ]; then
+      SILENT=false
     fi
     fm_lock_acquire_wait "$LOCK"
     if ! LAST_SEQ=$(last_seq); then
@@ -699,6 +716,7 @@ case "$CMD" in
       esac
     done
     [ -n "$TASK" ] || usage
+    outcome_index_path "$TASK" >/dev/null || usage
     [ -n "$SUMMARY" ] || usage
     WAKE_SEQ=$(canonical_positive_sequence "$WAKE_SEQ") || usage
     fm_lock_acquire_wait "$LOCK"

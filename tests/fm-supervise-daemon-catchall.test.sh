@@ -43,7 +43,7 @@ test_presented_status_before_away_entry_is_not_escalated() {
 }
 
 test_legacy_ident_prefixed_marker_is_settled_and_migrated() {
-  local dir state status line snapshot offset ident marker out marker_data expected_marker
+  local dir state status line snapshot presented_offset marker out marker_offset
   dir=$(make_supercase legacy-ident-marker)
   state="$dir/state"
   status="$state/pilo-continuity-s1.status"
@@ -54,10 +54,8 @@ test_legacy_ident_prefixed_marker_is_settled_and_migrated() {
     || fail "could not snapshot the attended presentation boundary"
   status_commit_presentation_snapshot "$state" "$snapshot" \
     || fail "could not commit the attended presentation boundary"
-  offset=$(status_last_line_offset "$status") \
-    || fail "could not read the legacy marker candidate offset"
-  ident=$(_fm_open_decisions_file_ident "$status") \
-    || fail "could not read the legacy marker candidate identity"
+  presented_offset=${snapshot#*$'\t'}
+  presented_offset=${presented_offset%%$'\t'*}
   marker="$state/.subsuper-seen-status-pilo-continuity-s1"
   printf '%s' "$line" > "$marker"
 
@@ -66,11 +64,10 @@ test_legacy_ident_prefixed_marker_is_settled_and_migrated() {
     self\|*) ;;
     *) fail "legacy ident-prefixed marker re-escalated a settled status: $out" ;;
   esac
-  marker_data=$(LC_ALL=C command cat "$marker" 2>/dev/null) \
+  marker_offset=$(status_presentation_marker_offset "$marker" "$status") \
     || fail "could not read the migrated seen marker"
-  expected_marker=$(printf 'ident=%s\noffset=%s\n%s' "$ident" "$offset" "$line")
-  [ "$marker_data" = "$expected_marker" ] \
-    || fail "legacy marker was not migrated to append-aware identity form"
+  [ "$marker_offset" = "$presented_offset" ] \
+    || fail "legacy marker was not migrated to the current append-aware identity form"
   pass "legacy ident-prefixed markers settle and migrate"
 }
 
@@ -88,7 +85,9 @@ test_repeated_identical_append_after_seen_marker_is_escalated() {
     || fail "could not commit the attended presentation boundary"
   mark_status_seen "$state" pilo-continuity-s1 "$line" \
     || fail "could not record the canonical seen marker"
-  status_seen_matches "$state" pilo-continuity-s1 "$status" "$line" \
+  [ "$(status_presentation_marker_offset \
+    "$state/.subsuper-seen-status-pilo-continuity-s1" "$status")" = \
+    "$(status_last_line_offset "$status" record | sed -n '1p')" ] \
     || fail "canonical seen marker did not match its current status event"
 
   afk_enter "$state"
@@ -112,6 +111,7 @@ test_reused_task_id_does_not_inherit_seen_marker() {
   line='done: replacement task completed'
   printf '%s\n' "$line" > "$status"
 
+  # shellcheck disable=SC2034 # Sourced status helpers consume this test override.
   FM_STATUS_IDENT_READER=fm_test_status_identity_reader
   FM_TEST_STATUS_IDENTITY=incarnation-a
   snapshot=$(status_presentation_snapshot "$state") \
@@ -137,7 +137,7 @@ test_reused_task_id_does_not_inherit_seen_marker() {
 }
 
 test_captured_seen_offset_keeps_racing_append_eligible() {
-  local dir state status snapshot line candidate_offset candidate_ident marker marker_data expected_marker buffered
+  local dir state status snapshot line candidate_offset candidate_ident marker marker_offset expected_offset buffered
   dir=$(make_supercase captured-candidate)
   state="$dir/state"
   status="$state/pilo-continuity-s1.status"
@@ -158,11 +158,10 @@ test_captured_seen_offset_keeps_racing_append_eligible() {
     "$candidate_offset" "$candidate_ident" \
     || fail "could not record the captured candidate identity"
   marker="$state/.subsuper-seen-status-pilo-continuity-s1"
-  marker_data=$(LC_ALL=C command cat "$marker" 2>/dev/null) \
+  marker_offset=$(status_presentation_marker_offset "$marker" "$status") \
     || fail "could not read the captured candidate marker"
-  expected_marker=$(printf 'ident=%s\noffset=%s\n%s' \
-    "$candidate_ident" "$candidate_offset" "$line")
-  [ "$marker_data" = "$expected_marker" ] \
+  expected_offset=$((candidate_offset + ${#line} + 1))
+  [ "$marker_offset" = "$expected_offset" ] \
     || fail "seen marker did not preserve the captured candidate identity"
 
   afk_enter "$state"

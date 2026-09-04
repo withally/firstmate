@@ -596,6 +596,10 @@ test_secondmate_hold_stays_in_authoritative_home() {
 EOF
   fakebin=$(fm_fakebin "$mate")
   fm_fake_exit0 "$fakebin" tmux treehouse no-mistakes gh gh-axi
+  printf -- '- sample-mate - synthetic scope (home: %s; scope: sample reviews; projects: sample; added 2026-07-14)\n' \
+    "$mate" > "$parent/data/secondmates.md"
+  fm_write_secondmate_meta "$parent/state/sample-mate.meta" "$mate" \
+    "firstmate:fm-sample-mate" sample
   origin=sample-mate-review
   mkdir -p "$mate/data/$origin"
   tasks_in "$mate" add "$origin" "Investigate secondmate sample" --kind scout --repo sample --start >/dev/null
@@ -609,10 +613,6 @@ EOF
     || fail "secondmate-owned completion failed"
   # The parent registers the mate before its children are ever torn down;
   # teardown resolves that registration to deliver the scout's final line.
-  printf -- '- sample-mate - synthetic scope (home: %s; scope: sample reviews; projects: sample; added 2026-07-14)\n' \
-    "$mate" > "$parent/data/secondmates.md"
-  fm_write_secondmate_meta "$parent/state/sample-mate.meta" "$mate" \
-    "firstmate:fm-sample-mate" sample
   run_teardown "$mate" "$origin" >/dev/null 2> "$mate/teardown.err" \
     || fail "secondmate investigation teardown failed: $(cat "$mate/teardown.err")"
   tasks_in "$mate" "done" "$origin" --report "data/$origin/report.md" --keep 0 >/dev/null
@@ -653,6 +653,10 @@ test_secondmate_home_publishes_holds_and_answers() {
 EOF
   fakebin=$(fm_fakebin "$mate")
   fm_fake_exit0 "$fakebin" tmux treehouse no-mistakes gh gh-axi
+  printf -- '- channel-mate - synthetic scope (home: %s; scope: sample reviews; projects: sample; added 2026-07-14)\n' \
+    "$mate" > "$parent/data/secondmates.md"
+  fm_write_secondmate_meta "$parent/state/channel-mate.meta" "$mate" \
+    "firstmate:fm-channel-mate" sample
   channel="$parent/state/channel-mate.status"
   decision="$mate/decision.txt"
 

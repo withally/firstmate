@@ -1281,6 +1281,7 @@ run_check_capture() {
 signal_files_actionable() {  # <status-file> ...
   local f task record rest endpoint ident rc found=1
   FM_SIGNAL_SURFACE_ENDPOINTS=''
+  FM_SIGNAL_ACTIONABLE_FILES=''
   for f in "$@"; do
     case "$f" in *.status) ;; *) continue ;; esac
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -1299,7 +1300,10 @@ signal_files_actionable() {  # <status-file> ...
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
     FM_SIGNAL_SURFACE_ENDPOINTS="${FM_SIGNAL_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
-    [ "$rc" -eq 0 ] && found=0
+    if [ "$rc" -eq 0 ]; then
+      found=0
+      FM_SIGNAL_ACTIONABLE_FILES="${FM_SIGNAL_ACTIONABLE_FILES}${f}"$'\n'
+    fi
   done
   return "$found"
 }
@@ -1810,14 +1814,44 @@ EOF
     # ordering evaluates them ONLY for a non-afk signal with no captain-relevant
     # status span, and the capture only once the authoritative verdict comes up short.
     FM_SIGNAL_SURFACE_ENDPOINTS=''
+    FM_SIGNAL_ACTIONABLE_FILES=''
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     signal_files_actionable $files
     signal_actionable=$?
+    surface_files=''
+    if afk_present; then
+      surface_files=$files
+    elif [ "$signal_actionable" -eq 0 ]; then
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        surface_files="$surface_files $f"
+      done <<EOF
+$FM_SIGNAL_ACTIONABLE_FILES
+EOF
+      for f in $files; do
+        case "$f" in *.turn-ended) surface_files="$surface_files $f" ;; esac
+      done
+    else
+      turnend_files=''
+      for f in $files; do
+        case "$f" in *.turn-ended) turnend_files="$turnend_files $f" ;; esac
+      done
+      # A routine status append is self-describing progress and is absorbed
+      # without an expensive pane read. Bare turn-end markers retain the
+      # evidence-driven working/churn gate.
+      if [ -n "$turnend_files" ]; then
+        # shellcheck disable=SC2086 # task paths carry no spaces.
+        if ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; then
+          surface_files=$files
+        fi
+      fi
+    fi
     # shellcheck disable=SC2086  # same space-separated status-path list
-    if afk_present || [ "$signal_actionable" -eq 0 ] \
-      || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
+    if [ -n "$surface_files" ]; then
+      reason="signal:$surface_files"
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
+        case " $surface_files " in *" $f "*) ;; *) continue ;; esac
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
       done <<EOF
 $pending
@@ -1831,10 +1865,16 @@ EOF
         [ -n "$sf" ] || continue
         case "$f" in
           *.status)
-            fm_wake_status_reported_commit "$STATE" "$f" "$sig" || true
-            mark_surface_reported "$f" "$sig" || true
+            case " $surface_files " in
+              *" $f "*)
+                fm_wake_status_reported_commit "$STATE" "$f" "$sig" || true
+                mark_surface_reported "$f" "$sig" || true
+                ;;
+            esac
             ;;
-          *) printf '%s' "$sig" > "$sf" ;;
+          *)
+            case " $surface_files " in *" $f "*) printf '%s' "$sig" > "$sf" ;; esac
+            ;;
         esac
       done <<EOF
 $pending
@@ -1842,7 +1882,10 @@ EOF
       while IFS=$(printf '\t') read -r f surface_end surface_ident; do
         [ -n "$f" ] || continue
         fm_wake_status_seen_commit "$STATE" "$f" "$surface_end" "$surface_ident" || true
-        mark_surfaced "$f" "$surface_end" "$surface_ident"
+        case " $surface_files " in
+          *" $f "*) mark_surfaced "$f" "$surface_end" "$surface_ident" ;;
+          *) triage_log "absorbed benign signal: $f" ;;
+        esac
       done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS
 EOF

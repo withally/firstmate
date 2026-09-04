@@ -191,6 +191,14 @@ const PROCESSING_INSTRUCTION =
   "Process each outcome now as firstmate: give the captain a visible response where one is due, answer or escalate a decision, act on a blocker or failure, or record that no further action is needed. " +
   "When every outcome below is processed, call fm_branch_processed with through={N} exactly once. " +
   "Until that call the outcomes stay open and are presented again; an answer that does not make that call never counts as processing.";
+const FIRSTMATE_ACTION_OUTCOME_INSTRUCTION =
+  "This is a supervision outcome delivered automatically by the supervision branch. " +
+  "It was not typed by the captain. " +
+  "The wake is already acknowledged: do not re-drain, re-run, or acknowledge it. " +
+  "The downstream authorized action is not done. " +
+  "Perform that action now, then report the result. " +
+  "Do not merely relay this worker outcome. " +
+  "Use the standing authority and contracted next step already in fleet context; stop only if the action reaches a genuine captain-only boundary.";
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
 type Verdict = "routine" | "captain" | "firstmate-action";
@@ -511,7 +519,7 @@ function parseOutcomeRow(value: unknown): OutcomeRow | null {
   if (typeof row.summary !== "string" || !row.summary) return null;
   if (row.silent !== undefined && typeof row.silent !== "boolean") return null;
   const silent = row.silent === true;
-  if (silent && (row.task !== "fleet" || row.verdict !== "routine")) return null;
+  if (silent && row.verdict !== "routine") return null;
   return { seq: row.seq, task: row.task, verdict: row.verdict, summary: row.summary, silent };
 }
 
@@ -637,6 +645,8 @@ export default function (pi: ExtensionAPI) {
   let wakeCoalesceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingWakeGeneration = -1;
   const pendingWakeMessages: string[] = [];
+  const pendingWakeSettlements: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
+  let pendingWakeRecoveryProbe = false;
   const lastDeliveredStaleByWindow = new Map<string, string>();
   // One same-text offer can arrive after the active turn's eligible-row
   // snapshot. Remember only the newest signal per window and re-run the normal
@@ -1038,7 +1048,7 @@ export default function (pi: ExtensionAPI) {
         if (!row || !generationOwnsLock(expectedGeneration)) return false;
         if (row.verdict === "captain") {
           if (!ensureVisibleCaptainOutcome(row)) return false;
-        } else {
+        } else if (row.verdict !== "routine") {
           deliverRoutineOutcome(row);
         }
         if (!generationOwnsLock(expectedGeneration)) return false;
@@ -1056,17 +1066,113 @@ export default function (pi: ExtensionAPI) {
     return `report refused: the wake being handled (row ${rows}) names ${named}, not ${task}; report only that task, never fleet or a task from memory`;
   }
 
+  function firstmateActionInput(task: string, summary: string): string {
+    const body = `${FIRSTMATE_ACTION_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
+    try {
+      return encodeFirstmateOperationalInput("branch-outcome", body, "main");
+    } catch {
+      return body;
+    }
+  }
+
+  function wakeRowsAcknowledged(seqs: readonly string[]): boolean {
+    if (seqs.length === 0) return true;
+    try {
+      const queue = readFileSync(join(state, ".wake-queue"), "utf8");
+      const pending = new Set(seqs);
+      return queue
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0)
+        .every((line) => {
+          const fields = line.split("\t");
+          return fields.length < 2 || !pending.has(fields[1]);
+        });
+    } catch {
+      return false;
+    }
+  }
+
+  function rehydratePendingActionDeliveries(expectedGeneration: number): boolean {
+    const result = runOutcomeScript(["action-pending"]);
+    if (!result.ok) return false;
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line) as {
+          outcome_seq?: unknown;
+          wake_seq?: unknown;
+          task?: unknown;
+          summary?: unknown;
+        };
+        const seq = String(record.outcome_seq ?? "");
+        const wakeSeq = canonicalWakeSequence(String(record.wake_seq ?? ""));
+        if (!/^[1-9][0-9]*$/.test(seq) || !wakeSeq || typeof record.task !== "string" || typeof record.summary !== "string") continue;
+        pendingActionDeliveries.set(seq, {
+          generation: expectedGeneration,
+          wakeSeq,
+          task: record.task,
+          summary: record.summary,
+        });
+      } catch {}
+    }
+    return true;
+  }
+
+  function activatePendingActionDeliveries(expectedGeneration: number): void {
+    if (rehydratedActionGeneration === expectedGeneration) return;
+    if (!rehydratePendingActionDeliveries(expectedGeneration)) return;
+    rehydratedActionGeneration = expectedGeneration;
+    const acknowledgedWakeSeqs = [...new Set(
+      [...pendingActionDeliveries.values()]
+        .filter((pending) => pending.generation === expectedGeneration && wakeRowsAcknowledged([pending.wakeSeq]))
+        .map((pending) => pending.wakeSeq),
+    )];
+    if (acknowledgedWakeSeqs.length > 0) deliverPendingActionDeliveries(expectedGeneration, acknowledgedWakeSeqs);
+  }
+
+  function deliverPendingActionDeliveries(
+    expectedGeneration: number,
+    eligibleWakeSeqs: readonly string[],
+  ): void {
+    const eligible = new Set(
+      eligibleWakeSeqs
+        .map((wakeSeq) => canonicalWakeSequence(wakeSeq))
+        .filter((wakeSeq): wakeSeq is string => wakeSeq !== null),
+    );
+    for (const [seq, pending] of pendingActionDeliveries) {
+      if (pending.generation !== expectedGeneration || !eligible.has(pending.wakeSeq)) continue;
+      if (!actingAsOwner(expectedGeneration)) return;
+      const status = runOutcomeScript(["action-status", "--seq", seq]);
+      if (!status.ok) continue;
+      if (status.stdout === "started") {
+        if (runOutcomeScript(["mark-read", "--through", seq]).ok) pendingActionDeliveries.delete(seq);
+        continue;
+      }
+      if (status.stdout !== "pending") continue;
+      const message = {
+        customType: "fm-branch-merge",
+        content: firstmateActionInput(pending.task, pending.summary),
+        display: false,
+        details: { outcomeSeq: seq, wakeSeq: pending.wakeSeq, verdict: "firstmate-action" },
+      };
+      try {
+        if (!actingAsOwner(expectedGeneration)) return;
+        pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+      } catch {}
+    }
+  }
+
   function createReportTool(toolGeneration: number): ToolDefinition {
     return {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge it into the captain-facing main conversation. verdict captain persists an exact visible entry and opens one sequence-keyed processing turn on main that stays open until main acknowledges it; routine notes render unless silent marks a no-change heartbeat.",
+        "Record the outcome of one handled fleet event: write every outcome durably to the store, keep routine outcomes out of main, surface captain-only outcomes, and hand already-authorized downstream work to main with firstmate-action.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain"), Type.Literal("firstmate-action")], {
           description:
-            "Use captain or routine exactly as the \"Verdict: routine or captain\" section of your system prompt decides; that section is the one owner of the rule.",
+            "Use captain unconditionally for an outcome that directly answers an explicit captain request, regardless of whether it is healthy, routine, measured, actionable, or requires a decision. An intermediate worker completion is not the answer to an explicit captain request while an authorized contracted next step remains. Use firstmate-action for a green worker result on a local-only branch under standing auto-land or continue authority, a worker waiting on a local merge that main owns, a worker done: whose contracted next step needs no captain call, or when a secondmate parent reports dispatch progress while contracted child next steps remain. Parent progress includes spawned, will check in, both tracks live, and post-dispatch done corr= reports; main must inventory the mate's child status files and surface terminal results or blocks. Only a genuine captain call uses captain: an explicit captain request, work ready for captain review, a captain-only decision, an exhausted blocker or failure, a needed credential, or a destructive, irreversible, or security-sensitive boundary. Use routine only when no main action or captain call remains.",
         }),
         summary: Type.String({
           description:
@@ -1095,11 +1201,32 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const verdict = verdictRaw as Verdict;
+        if (verdict === "firstmate-action") {
+          if (!wakeSeq && activeWakeContext?.generation === toolGeneration && activeWakeContext.eligibleSeqs.length === 1) {
+            wakeSeq = activeWakeContext.eligibleSeqs[0];
+          }
+          const canonicalWakeSeq = canonicalWakeSequence(wakeSeq);
+          if (
+            !canonicalWakeSeq ||
+            !activeWakeContext ||
+            activeWakeContext.generation !== toolGeneration ||
+            !activeWakeContext.eligibleSeqs.some((candidate) => canonicalWakeSequence(candidate) === canonicalWakeSeq)
+          ) {
+            return {
+              content: [{ type: "text", text: "invalid firstmate-action report: wake_seq must name the current wake-drain row" }],
+              details: undefined,
+              isError: true,
+            };
+          }
+          wakeSeq = canonicalWakeSeq;
+        }
         const scopeRefusal = wakeScopeRefusal(task);
         if (scopeRefusal) {
           return { content: [{ type: "text", text: scopeRefusal }], details: undefined, isError: true };
         }
-        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(silent)];
+        const appendArgs = verdict === "firstmate-action"
+          ? ["append-action", "--task", task, "--wake-seq", wakeSeq, "--summary", summary]
+          : ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
         if (wake) appendArgs.push("--wake", wake);
         if (!actingAsOwner(toolGeneration)) {
           return {
@@ -1118,7 +1245,16 @@ export default function (pi: ExtensionAPI) {
         }
         durableReportRevision += 1;
         const seq = Number(appended.stdout);
-        if (!Number.isSafeInteger(seq) || seq < 1 || !reconcileUnreadOutcomes(toolGeneration)) {
+        if (!Number.isSafeInteger(seq) || seq < 1) {
+          return {
+            content: [{ type: "text", text: `recorded invalid outcome sequence ${appended.stdout}` }],
+            details: undefined,
+            isError: true,
+          };
+        }
+        if (verdict === "firstmate-action") {
+          pendingActionDeliveries.set(String(seq), { generation: toolGeneration, wakeSeq, task, summary });
+        } else if (!reconcileUnreadOutcomes(toolGeneration)) {
           return {
             content: [{ type: "text", text: `recorded seq ${appended.stdout}, but visible delivery or cursor advancement failed` }],
             details: undefined,
@@ -1317,7 +1453,24 @@ ${context.command}
     }
   }
 
-  function enqueueWake(message: string, acceptedGeneration: number, recoveryProbe = false): Promise<void> {
+  pi.on?.("message_end", (event) => {
+    const message = (event as { message?: { customType?: unknown; details?: unknown } }).message;
+    if (!message || message.customType !== "fm-branch-merge") return;
+    const details = message.details as { outcomeSeq?: unknown; wakeSeq?: unknown; verdict?: unknown } | undefined;
+    if (details?.verdict !== "firstmate-action") return;
+    const seq = String(details.outcomeSeq ?? "");
+    const pending = pendingActionDeliveries.get(seq);
+    if (!pending || pending.generation !== generation) return;
+    const wakeSeq = canonicalWakeSequence(String(details.wakeSeq ?? ""));
+    if (!wakeSeq || wakeSeq !== pending.wakeSeq) return;
+    if (!actingAsOwner(generation)) return;
+    if (!runOutcomeScript(["action-started", "--seq", seq], "main").ok) return;
+    if (!runOutcomeScript(["mark-read", "--through", seq]).ok) return;
+    pendingActionDeliveries.delete(seq);
+  });
+
+  function enqueueWake(messages: readonly string[], acceptedGeneration: number, recoveryProbe = false): Promise<void> {
+    const message = wakeBatchMessage(messages);
     const acceptedSelectionRevision = branchSelectionRevision;
     const delivery = branchChain
       .then(async () => {
@@ -1370,6 +1523,7 @@ ${context.command}
           );
         } finally {
           wakeTaskScope = null;
+          if (activeWakeContext === wakeContext) activeWakeContext = null;
         }
         const providerError = settledPromptProviderError(sessionManager, entryOffset);
         if (providerError) {
@@ -1412,16 +1566,23 @@ ${context.command}
     }
     if (pendingWakeMessages.length === 0) return;
     const messages = pendingWakeMessages.splice(0);
+    const settlements = pendingWakeSettlements.splice(0);
     const acceptedGeneration = pendingWakeGeneration;
+    const recoveryProbe = pendingWakeRecoveryProbe;
     pendingWakeGeneration = -1;
+    pendingWakeRecoveryProbe = false;
     for (const candidate of messages) {
       const window = staleWakeWindow(candidate);
       if (window) lastDeliveredStaleByWindow.set(window, candidate);
     }
-    enqueueWake(messages, acceptedGeneration);
+    const delivery = enqueueWake(messages, acceptedGeneration, recoveryProbe);
+    delivery.then(
+      () => settlements.forEach(({ resolve }) => resolve()),
+      (error) => settlements.forEach(({ reject }) => reject(error)),
+    );
   }
 
-  function queueWake(message: string, acceptedGeneration: number): void {
+  function queueWake(message: string, acceptedGeneration: number, recoveryProbe = false): Promise<void> {
     if (pendingWakeMessages.length > 0 && pendingWakeGeneration !== acceptedGeneration) {
       flushPendingWakes();
     }
@@ -1432,14 +1593,20 @@ ${context.command}
     }
     if (staleWindow) deferredStaleRechecks.delete(staleWindow);
     pendingWakeGeneration = acceptedGeneration;
+    pendingWakeRecoveryProbe ||= recoveryProbe;
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
+    const settlement = new Promise<void>((resolve, reject) => {
+      pendingWakeSettlements.push({ resolve, reject });
+    });
+    settlement.catch(() => {});
     if (urgentWake(message)) {
       flushPendingWakes();
-      return;
+      return settlement;
     }
     if (!wakeCoalesceTimer) {
       wakeCoalesceTimer = setTimeout(flushPendingWakes, wakeCoalesceMs);
     }
+    return settlement;
   }
 
   // A model or effort change applies to the next branch turn without waiting
@@ -1512,7 +1679,7 @@ ${context.command}
     }
     if (!collectCurrentMainDialog()) return;
     if (recoveryProbe && providerRecovery) providerRecovery.probeInFlight = true;
-    offer.accept(enqueueWake(offer.message, generation, recoveryProbe));
+    offer.accept(queueWake(offer.message, generation, recoveryProbe));
   });
 
   pi.on?.("before_agent_start", (event, ctx) => {

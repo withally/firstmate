@@ -367,7 +367,7 @@ EOF
 # when the fold later advances the cursor. Prints nothing when nothing is
 # unread, which is the common case.
 print_unread_status_section() {
-  local snapshot=${1:-} unread task line shown=0
+  local snapshot=${1:-} informational_only=${2:-0} unread task line shown=0 verb key prefix keep
 
   if [ -n "$snapshot" ]; then
     unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
@@ -379,6 +379,20 @@ print_unread_status_section() {
   while IFS=$(printf '\t') read -r task line; do
     [ -n "$task" ] || continue
     [ -n "$line" ] || continue
+    if [ "$informational_only" = 1 ]; then
+      verb=$(status_line_verb "$line")
+      keep=0
+      case "$verb" in
+        note) keep=1 ;;
+        "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
+          key=$(_fm_decision_key "$line" 2>/dev/null || true)
+          for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+            case "$key" in "$prefix"*) keep=1; break ;; esac
+          done
+          ;;
+      esac
+      [ "$keep" = 1 ] || continue
+    fi
     line="$task $line"
     if [ "$shown" -eq 0 ]; then
       printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' || return 1
@@ -515,13 +529,14 @@ EOF
 }
 
 print_status_sections() {
-  local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
+  local snapshot=${1:-} fully_presented=${2:-} preserve_unpresented=${3:-0} informational_only=${4:-0} acknowledged prepared
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
+  acknowledged=$(status_acknowledge_presented_snapshot \
+    "$STATE" "$snapshot" "$fully_presented" "$preserve_unpresented") || return 1
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
   if ! {
-    print_unread_status_section "$snapshot" \
+    { [ "$preserve_unpresented" = 1 ] || print_unread_status_section "$snapshot" "$informational_only"; } \
       && print_status_outcome_backstop_section "$snapshot" \
       && print_open_decisions_section "$snapshot" \
       && print_record_divergence_section
@@ -544,7 +559,7 @@ print_status_sections() {
 }
 
 print_status_presentation() {  # [<deduped-raw-rows>]
-  local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
+  local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' preserve_unpresented=${FM_WAKE_DRAIN_PRESERVE_UNREAD_STATUS:-0} informational_only=1 rc=0
   local lock_rc holder_pid
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
@@ -564,6 +579,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
+    informational_only=0
     fm_wake_print_annotations "$rows" "$snapshot" || rc=1
     if [ "$rc" -eq 0 ]; then
       annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
@@ -571,7 +587,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" "$preserve_unpresented" || rc=1
+    print_status_sections "$snapshot" "$fully_presented" "$preserve_unpresented" "$informational_only" || rc=1
   fi
   fm_lock_release "$lock"
   return "$rc"

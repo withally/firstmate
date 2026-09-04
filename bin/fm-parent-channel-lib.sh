@@ -58,6 +58,8 @@
 _FM_PARENT_CHANNEL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$_FM_PARENT_CHANNEL_LIB_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$_FM_PARENT_CHANNEL_LIB_DIR/fm-secondmate-registry-lib.sh"
 
 # shellcheck disable=SC2034 # Output globals read by sourcing callers.
 FM_PARENT_CHANNEL_ID=
@@ -143,8 +145,35 @@ fm_parent_channel_append_once() {  # <path> <line>
 
 # Publish one parent-facing line from <home>. See the return codes above.
 fm_parent_channel_report() {  # <home> <state> <line>
-  local home=$1 state=$2 line=$3 destination rc=0
-  destination=$(fm_parent_channel_destination "$home" "$state") || rc=$?
+  local home=$1 state=$2 line=$3 destination id rc=0 lock='' lock_held=0
+  id=$(fm_parent_channel_home_id "$home") || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
-  fm_parent_channel_append_once "$destination" "$line" || return 4
+  fm_secondmate_parent_record_parse "$home/.fm-secondmate-parent" || return 3
+  case "$FM_SECONDMATE_PARENT_ROUTE" in
+    local)
+      [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 3
+      if ! type fm_lock_acquire_wait >/dev/null 2>&1; then
+        # shellcheck source=bin/fm-wake-lib.sh
+        . "$_FM_PARENT_CHANNEL_LIB_DIR/fm-wake-lib.sh"
+      fi
+      lock=$(secondmate_registry_lock_path "$FM_SECONDMATE_PARENT_HOME/state") || return 3
+      fm_lock_acquire_wait "$lock" || return 3
+      lock_held=1
+      if ! secondmate_registry_validate_bindings \
+        "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
+        secondmate_registry_path_key "$id" "$home" \
+        || [ "$SECONDMATE_REGISTRY_MATCH_REMOTE" -ne 0 ]; then
+        secondmate_registry_error_sanitize
+        printf 'parent binding refused: %s\n' "$SECONDMATE_REGISTRY_ERROR" >&2
+        fm_lock_release "$lock" || true
+        return 3
+      fi
+      destination="$FM_SECONDMATE_PARENT_HOME/state/$id.status"
+      ;;
+    remote) destination="$state/parent-replies.status" ;;
+    *) return 3 ;;
+  esac
+  fm_parent_channel_append_once "$destination" "$line" || rc=4
+  if [ "$lock_held" -eq 1 ] && ! fm_lock_release "$lock"; then rc=4; fi
+  return "$rc"
 }

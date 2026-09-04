@@ -63,6 +63,118 @@ SH
   printf '%s\n' "$fb"
 }
 
+# Stateful fake for submit confirmation through the public Herdr adapter.
+# It models Pi's real busy queue surface instead of pinning adapter call order:
+# send-text fills the separator composer, Enter either moves the message to a
+# `Steering:` queue echo and clears the composer, or leaves the text visibly
+# pending. FM_FAKE_HERDR_DELAY_READS keeps the pending surface for that many
+# post-Enter pane reads before the queue redraw appears.
+make_herdr_pi_submit_fakebin() {  # <dir> -> echoes fakebin dir
+  local dir=$1 fb="$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+LOG="${FM_HERDR_LOG:?}"
+STATE="${FM_FAKE_HERDR_STATE:?}"
+MODE="${FM_FAKE_HERDR_MODE:-queued}"
+DELAY="${FM_FAKE_HERDR_DELAY_READS:-0}"
+mkdir -p "$STATE"
+{
+  printf 'HERDR_SESSION=%s' "${HERDR_SESSION:-}"
+  for a in "$@"; do printf '\x1f%s' "$a"; done
+  printf '\n'
+} >> "$LOG"
+case "${1:-} ${2:-}" in
+  "status --json")
+    printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n'
+    ;;
+  "pane send-text")
+    printf '%s' "${4:-}" > "$STATE/text"
+    rm -f "$STATE/entered" "$STATE/read-count" "$STATE/enter-count"
+    ;;
+  "pane send-keys")
+    if [ "${4:-}" = enter ]; then
+      : > "$STATE/entered"
+      enter_count=$(cat "$STATE/enter-count" 2>/dev/null || echo 0)
+      printf '%s\n' "$((enter_count + 1))" > "$STATE/enter-count"
+    fi
+    ;;
+  "agent get")
+    agent_status=${FM_FAKE_HERDR_AGENT_STATUS:-working}
+    if [ "$MODE" = unknown-late-landing ]; then
+      enter_count=$(cat "$STATE/enter-count" 2>/dev/null || echo 0)
+      [ "$enter_count" -ge 2 ] && agent_status=working
+    fi
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"%s"}}}\n' "$agent_status"
+    ;;
+  "pane read")
+    text=$(cat "$STATE/text" 2>/dev/null || true)
+    first=$(printf '%s\n' "$text" | sed -n '1p')
+    if [ "$MODE" = pre-echo ] && [ ! -f "$STATE/entered" ]; then
+      printf 'Steering: %s\n' "$first"
+      printf '↳ Option+Up to edit all queued messages\n'
+      printf 'Working...\n'
+      printf '─────────────────────────────────────────────────────\n'
+      printf '\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
+    fi
+    if [ "$MODE" = different-pending ]; then
+      printf '─────────────────────────────────────────────────────\n'
+      printf 'different retained draft\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
+    fi
+    if [ "$MODE" = truncated-pending ]; then
+      printf '─────────────────────────────────────────────────────\n'
+      printf '%s\n' "$text" | LC_ALL=C cut -c 1-48
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
+    fi
+    if [ "$MODE" = unknown-pending ]; then
+      [ -f "$STATE/entered" ] || exit 1
+    fi
+    if [ "$MODE" = unknown-late-landing ]; then
+      enter_count=$(cat "$STATE/enter-count" 2>/dev/null || echo 0)
+      [ "$enter_count" -ge 2 ] || exit 1
+      printf '─────────────────────────────────────────────────────\n'
+      printf '\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
+    fi
+    if [ -f "$STATE/entered" ] && [ "$MODE" = landed ]; then
+      printf '%s\n' "$text"
+      printf '─────────────────────────────────────────────────────\n'
+      printf '\n'
+      printf '─────────────────────────────────────────────────────\n'
+      exit 0
+    fi
+    if [ -f "$STATE/entered" ] && [ "$MODE" = queued ]; then
+      reads=$(cat "$STATE/read-count" 2>/dev/null || echo 0)
+      reads=$((reads + 1))
+      printf '%s\n' "$reads" > "$STATE/read-count"
+      if [ "$reads" -gt "$DELAY" ]; then
+        printf 'Steering: %s\n' "$first"
+        printf '↳ Option+Up to edit all queued messages\n'
+        printf 'Working...\n'
+        printf '─────────────────────────────────────────────────────\n'
+        printf '\n'
+        printf '─────────────────────────────────────────────────────\n'
+        exit 0
+      fi
+    fi
+    printf '─────────────────────────────────────────────────────\n'
+    printf '%s\n' "$text"
+    printf '─────────────────────────────────────────────────────\n'
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
+}
+
 # make_herdr_server_env_fakebin: a stateful server stub that records only the
 # long-lived server launch environment, then reports the server as running.
 make_herdr_server_env_fakebin() {  # <dir> -> echoes fakebin dir

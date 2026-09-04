@@ -209,6 +209,12 @@ EOF
     || fail "the executable brief generator did not scaffold a legacy-compatible brief"
   assert_no_grep 'Merge authority:' "$home/data/delivery-authority-generated-b7/brief.md" \
     "an omitted --merge-authority rendered a line into the generated brief"
+  sed -e 's/{TASK}/Exercise legacy merge authority/' \
+    -e 's/{FIRSTMATE_SPEC}/Use the generated compatibility path/' \
+    "$home/data/delivery-authority-generated-b7/brief.md" \
+    > "$home/data/delivery-authority-generated-b7/brief.tmp"
+  mv "$home/data/delivery-authority-generated-b7/brief.tmp" \
+    "$home/data/delivery-authority-generated-b7/brief.md"
   out=$(run_spawn "$home" "$fakebin" delivery-authority-generated-b7 "$proj" claude \
     --mode no-mistakes --yolo on)
   assert_contains "$out" "records no merge authority line" \

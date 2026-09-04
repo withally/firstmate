@@ -34,6 +34,8 @@ _FM_MERGE_OUTCOME_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-parent-channel-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$_FM_MERGE_OUTCOME_LIB_DIR/fm-secondmate-registry-lib.sh"
 
 # shellcheck disable=SC2034 # Public result consumed by sourcing callers.
 FM_MERGE_OUTCOME_ALREADY_RECORDED=false
@@ -53,7 +55,8 @@ FM_MERGE_OUTCOME_ALREADY_RECORDED=false
 # than treat it as success: the merge landed and the record did not.
 fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   local home=$1 state=$2 id=$3 url=$4 origin=$5
-  local self_rc=0 destination='' line lock status=0
+  local self='' self_rc=0 destination='' line lock status=0
+  local parent_registry_lock='' parent_registry_lock_held=0
   local provider host path number
   # shellcheck disable=SC2034 # Sourced wake helpers consume these scoped globals.
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
@@ -70,12 +73,36 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   # shellcheck source=bin/fm-wake-lib.sh
   . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-wake-lib.sh"
 
-  if destination=$(fm_parent_channel_destination "$home" "$state"); then
+  if self=$(fm_parent_channel_home_id "$home"); then
+    fm_secondmate_parent_record_parse "$home/.fm-secondmate-parent" || return 3
+    case "$FM_SECONDMATE_PARENT_ROUTE" in
+      local)
+        [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 3
+        parent_registry_lock=$(secondmate_registry_lock_path \
+          "$FM_SECONDMATE_PARENT_HOME/state") || return 3
+        fm_lock_acquire_wait "$parent_registry_lock" || return 3
+        parent_registry_lock_held=1
+        if ! secondmate_registry_validate_bindings \
+          "$FM_SECONDMATE_PARENT_HOME/data/secondmates.md" \
+          secondmate_registry_path_key "$self" "$home"; then
+          fm_lock_release "$parent_registry_lock"
+          parent_registry_lock_held=0
+          return 3
+        fi
+        if [ "$SECONDMATE_REGISTRY_MATCH_REMOTE" -ne 0 ]; then
+          fm_lock_release "$parent_registry_lock"
+          parent_registry_lock_held=0
+          return 3
+        fi
+        destination="$FM_SECONDMATE_PARENT_HOME/state/$self.status"
+        ;;
+      remote) destination="$state/parent-replies.status" ;;
+      *) return 3 ;;
+    esac
     line="done [key=merged-$id]: merged $id $FM_PR_URL"
   else
     self_rc=$?
     [ "$self_rc" -eq 1 ] || return 3
-    destination=''
   fi
 
   lock="$state/$id.pr-poll-merge-notified.lock"

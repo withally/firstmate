@@ -676,14 +676,57 @@ _seen_status_path() {  # <state> <task>
 # An absent, malformed, identity-mismatched, or legacy marker reads 0, so the
 # whole log is classified and uncertainty prefers a duplicate over event loss.
 status_seen_offset() {  # <state> <task>
-  status_presentation_marker_offset "$(_seen_status_path "$1" "$2")" "$1/$2.status"
+  local state=$1 task=$2 file marker daemon_offset presented_offset ident
+  file="$state/$task.status"
+  marker=$(_seen_status_path "$state" "$task")
+  daemon_offset=$(status_presentation_marker_offset \
+    "$marker" "$file") || return 1
+  presented_offset=$(status_presentation_cursor_offset "$file") || return 1
+  if [ "$daemon_offset" -ge "$presented_offset" ]; then
+    printf '%s' "$daemon_offset"
+  else
+    # The attended presentation cursor is stronger evidence than a legacy or
+    # stale daemon marker. Rebind the daemon marker to that proven byte boundary
+    # so old line-based markers migrate once without replaying handled history.
+    ident=$(_fm_open_decisions_file_ident "$file") || return 1
+    status_presentation_marker_commit "$marker" "$file" \
+      "$presented_offset" "$ident" || return 1
+    printf '%s' "$presented_offset"
+  fi
 }
 
 # Commit <task>'s successfully classified endpoint, so the heartbeat catch-all
 # scan does not re-read events already handled by the per-wake or scan path.
-mark_status_seen() {  # <state> <task> <captured-end-offset> <captured-identity>
-  status_presentation_marker_commit "$(_seen_status_path "$1" "$2")" \
-    "$1/$2.status" "$3" "$4"
+mark_status_seen() {  # <state> <task> <captured-end-offset> <captured-identity>, or legacy line form
+  local state=$1 task=$2 third=$3 fourth=${4-} endpoint ident file record line line_bytes
+  if [ "$#" -ne 4 ] || { case "$third" in ''|*[!0-9]*) true ;; *) false ;; esac; }; then
+    # Compatibility for retained fork callers that still supply the event
+    # line and optional file/offset/identity arguments.
+    line=$third
+    file=${fourth:-$state/$task.status}
+    endpoint=${5-}
+    ident=${6-}
+    if [ -z "$endpoint" ]; then
+      record=$(status_last_line_offset "$file" record) || return 1
+      case "$record" in *$'\n'*) ;; *) return 1 ;; esac
+      endpoint=${record%%$'\n'*}
+      [ "${record#*$'\n'}" = "$line" ] || return 1
+    else
+      # The legacy explicit offset names the start of the line. Current span
+      # markers store the byte immediately after its terminating newline.
+      line_bytes=$(printf '%s' "$line" | LC_ALL=C wc -c) || return 1
+      line_bytes=${line_bytes//[[:space:]]/}
+      case "$endpoint:$line_bytes" in *[!0-9:]*) return 1 ;; esac
+      endpoint=$((endpoint + line_bytes + 1))
+    fi
+    [ -n "$ident" ] || ident=$(_fm_open_decisions_file_ident "$file") || return 1
+  else
+    endpoint=$third
+    ident=$fourth
+    file="$state/$task.status"
+  fi
+  status_presentation_marker_commit "$(_seen_status_path "$state" "$task")" \
+    "$file" "$endpoint" "$ident"
 }
 
 # Advance the offset for every task a per-wake classification escalated, so the
@@ -1818,7 +1861,7 @@ inject_wedge_alarm() {  # <state> <age-seconds>
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs unread candidate candidate_offset candidate_ident
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs candidate candidate_offset candidate_ident
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 

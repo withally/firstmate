@@ -688,10 +688,10 @@ const untouched = cacheHandler({ type: "before_provider_request", payload: { mod
 if (untouched !== undefined) throw new Error("cache-key hook rewrote a provider payload with no prompt_cache_key");
 console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 
-// 4. Two-stage filter, stage 2: routine while main is idle appends with no
-// turn; routine while main is busy defers to after the captain's next prompt;
-// captain-relevant persists a visible entry with no model turn. Store rows are
-// written before delivery and marked read only after it.
+// 4. Two-stage filter, stage 2: routine outcomes stay in the durable store,
+// firstmate-action waits for the branch wake acknowledgement before opening
+// one hidden turn on main, and captain-relevant outcomes keep upstream's
+// exact visible-entry plus sequence-keyed processing contract.
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
 const r1 = await report.execute("call-1", { task: "branch-driver", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
@@ -700,15 +700,49 @@ finishWakePrompt();
 // wait for the wake to settle so its task scope has been cleared.
 await offer.settlement;
 globalThis.__fmOnBranchPrompt = undefined;
-if (sentToMain.length !== 1) throw new Error("routine report did not merge exactly one note");
-if (sentToMain[0].message.customType !== "fm-branch-merge") throw new Error("merge note has the wrong custom type");
-if (sentToMain[0].options.triggerTurn) throw new Error("routine idle merge must not trigger a turn");
-if (sentToMain[0].options.deliverAs) throw new Error("routine idle merge must append immediately");
+if (sentToMain.length !== 0) throw new Error("routine report entered main instead of remaining store-only");
 fire("agent_start", {});
 await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy", silent: true }, undefined, undefined, {});
 if (sentToMain.length !== 0) throw new Error("routine report entered busy main instead of remaining store-only");
 fire("agent_end", {});
-await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const runFleetCommand = async (args) => {
+    const result = await bash.execute("action-wake", { command: ["bin/fm-wake-drain.sh", ...args].join(" ") });
+    if (result.isError) throw new Error(`fleet command failed: ${JSON.stringify(result)}`);
+    return result.details;
+  };
+  const drained = await runFleetCommand([]);
+  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stderr}`);
+  const action = await report.execute(
+    "call-3",
+    {
+      task: "branch-driver",
+      verdict: "firstmate-action",
+      summary: "green local-only worker result is ready for its standing auto-land and then the next plan task",
+      wake: "signal: action result",
+      wake_seq: ack[1],
+    },
+    undefined,
+    undefined,
+    {},
+  );
+  if (action.isError) throw new Error(`firstmate-action report failed: ${JSON.stringify(action)}`);
+  if (sentToMain.length !== 0) throw new Error("firstmate-action opened main before wake acknowledgement");
+  await runFleetCommand(["--ack-through", ack[1], "--recovery-generation", ack[2]]);
+};
+const actionOffer = dispatch("signal: action result");
+if (!actionOffer.accepted) throw new Error("firstmate-action wake was not accepted");
+await settle(() => sentToMain.length === 1, "firstmate-action delivery after wake acknowledgement");
+await actionOffer.settlement;
+globalThis.__fmOnBranchPrompt = undefined;
+if (sentToMain[0].options.triggerTurn !== true || sentToMain[0].options.deliverAs !== "followUp") {
+  throw new Error(`firstmate-action merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[0].options)}`);
+}
+if (sentToMain[0].message.display !== false) throw new Error("firstmate-action note must never be rendered");
+const captainResult = await report.execute("call-4", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
+if (captainResult.isError) throw new Error(`captain report failed: ${JSON.stringify(captainResult)}`);
 // A captain outcome opens exactly ONE sequence-keyed processing turn: a
 // hidden, typed request that names the sequence and carries the exact stored
 // summary. No unkeyed turn ever opens, and routine delivery is untouched.
@@ -719,30 +753,20 @@ if (processingRequest.options.triggerTurn !== true || processingRequest.options.
   throw new Error(`the processing request must open one follow-up turn: ${JSON.stringify(processingRequest.options)}`);
 }
 if (processingRequest.message.display !== false) throw new Error("the processing request must stay hidden: the visible entry is the display");
-if (!processingRequest.message.content.includes("[seq 3] task-9: PR https://example.com/pr/9 checks green, ready for review")) {
+if (!processingRequest.message.content.includes("[seq 4] task-9: PR https://example.com/pr/9 checks green, ready for review")) {
   throw new Error(`the processing request lost its sequence key or exact summary: ${processingRequest.message.content}`);
 }
-if (sentToMain.some((sent) => sent.options.triggerTurn && sent.message.customType !== "fm-branch-process")) {
+if (sentToMain.some((sent) => sent.options.triggerTurn && !["fm-branch-process", "fm-branch-merge"].includes(sent.message.customType))) {
   throw new Error("an unkeyed turn opened on main");
 }
-if (sentToMain.length !== 3) throw new Error(`captain delivery changed routine delivery: ${JSON.stringify(sentToMain)}`);
+if (sentToMain.length !== 2) throw new Error(`captain delivery changed routine or action delivery: ${JSON.stringify(sentToMain)}`);
 writeFileSync(`${home}/state/delivered-processing-request`, processingRequest.message.content);
-if (typeof sentToMain[0].message.content !== "string" || !sentToMain[0].message.content.startsWith("⛵ ")) {
-  throw new Error(`routine note missing sailboat prefix: ${sentToMain[0].message.content}`);
-}
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
-  throw new Error(`routine note still has boilerplate: ${sentToMain[0].message.content}`);
-}
-// A routine note is rendered as a custom message. A captain outcome is a
-// versioned custom session entry whose exact store summary is its payload.
-if (sentToMain[0].message.display !== true) {
-  throw new Error(`routine note must render: display=${sentToMain[0].message.display}`);
-}
-writeFileSync(`${home}/state/delivered-routine-note`, sentToMain[0].message.content);
+// A captain outcome remains a versioned custom session entry whose exact
+// store summary is its payload.
 const captainEntries = mainEntries.filter((entry) => entry.customType === "fm-branch-visible-outcome");
 if (captainEntries.length !== 1) throw new Error(`captain delivery count was ${captainEntries.length}, not 1`);
 const captainRecord = captainEntries[0].data;
-if (captainRecord.version !== 1 || captainRecord.seq !== 3 || captainRecord.task !== "task-9" || captainRecord.verdict !== "captain") {
+if (captainRecord.version !== 1 || captainRecord.seq !== 4 || captainRecord.task !== "task-9" || captainRecord.verdict !== "captain") {
   throw new Error(`captain entry lost its identity: ${JSON.stringify(captainRecord)}`);
 }
 if (captainRecord.summary !== "PR https://example.com/pr/9 checks green, ready for review") {
@@ -861,13 +885,13 @@ const assertRenderedNote = (note, glyph) => {
     throw new Error(`note remainder must be dim: ${JSON.stringify(fgCalls)}`);
   }
 };
-assertRenderedNote(sentToMain[0].message.content, "⛵");
+assertRenderedNote("⛵ task-9: historical routine note", "⛵");
 const captainRendered = entryRenderers.get("fm-branch-visible-outcome")(
   captainEntries[0],
   { expanded: false },
   renderTheme,
 );
-if (captainRendered.text !== "⚓ [seq 3] task-9: PR https://example.com/pr/9 checks green, ready for review") {
+if (captainRendered.text !== "⚓ [seq 4] task-9: PR https://example.com/pr/9 checks green, ready for review") {
   throw new Error(`captain renderer changed the exact visible outcome: ${captainRendered.text}`);
 }
 process.exit(0);
@@ -893,17 +917,14 @@ EOF
   body=$(./bin/fm-operational-input.sh body < "$home/state/delivered-processing-request") \
     || fail "the processing request envelope carries no readable body"
   case "$body" in
-    *"delivered automatically by the supervision branch."*"It was not typed by the captain."*"[seq 3] task-9: PR https://example.com/pr/9 checks green, ready for review"*) ;;
+    *"delivered automatically by the supervision branch."*"It was not typed by the captain."*"[seq 4] task-9: PR https://example.com/pr/9 checks green, ready for review"*) ;;
     *) fail "the processing request body lost its self-description or the outcome itself: $body" ;;
   esac
   case "$body" in
-    *"do not re-drain, re-run, or acknowledge the wake."*"call fm_branch_processed with through=3 exactly once."*"never counts as processing."*) ;;
+    *"do not re-drain, re-run, or acknowledge the wake."*"call fm_branch_processed with through=4 exactly once."*"never counts as processing."*) ;;
     *) fail "the processing request body lost the event-ownership boundary or the sequence-bound acknowledgement duty: $body" ;;
   esac
-  if ./bin/fm-operational-input.sh kind < "$home/state/delivered-routine-note" >/dev/null 2>&1; then
-    fail "routine note must stay plain rendered text, not typed operational input"
-  fi
-  pass "a captain outcome reaches main's model as one typed, sequence-keyed processing request while routine notes stay plain"
+  pass "a captain outcome reaches main's model as one typed, sequence-keyed processing request while routine outcomes stay store-only"
 }
 
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
@@ -968,9 +989,9 @@ globalThis.__fmOnBranchPrompt = async ({ session }) => {
   if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stderr}`);
   const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
   const verdictDescription = report.parameters.properties.verdict.description;
-  if (!verdictDescription.includes("Verdict: routine or captain") ||
-      !verdictDescription.includes("one owner of the rule") ||
-      verdictDescription.includes("unconditionally")) {
+  if (!verdictDescription.includes("Use captain unconditionally") ||
+      !verdictDescription.includes("Use firstmate-action") ||
+      !verdictDescription.includes("Use routine only")) {
     throw new Error(`branch provider received conflicting verdict semantics: ${verdictDescription}`);
   }
   const result = await report.execute(
@@ -1030,11 +1051,6 @@ await settle(() => fleetOperations.length === 2, "unsolicited result acknowledge
 if (sentToMain.length !== 0) {
   throw new Error(`unsolicited healthy result opened a main turn: ${JSON.stringify(sentToMain)}`);
 }
-const sailboat = sentToMain[0];
-if (sailboat.message.display !== true || !sailboat.message.content.startsWith("⛵ branch-driver:")) {
-  throw new Error(`unsolicited healthy result was not a rendered sailboat note: ${JSON.stringify(sailboat)}`);
-}
-
 const outcomes = mainTools.find((tool) => tool.name === "fm_branch_outcomes");
 if (!outcomes) throw new Error("main did not receive its outcome-reading permission surface");
 const visibleToMain = await outcomes.execute("main-reads-sailboat", { recent: 1 }, undefined, undefined, {});
@@ -1081,7 +1097,7 @@ if (mirroredCaptainText.some((text) =>
 }
 if ((globalThis.__fmPrompts ?? []).length !== 5) throw new Error("a handled fleet wake was rerun");
 let processingRequests = sentToMain.filter((sent) => sent.message.customType === "fm-branch-process");
-if (sentToMain.length !== 1 + processingRequests.length) {
+if (sentToMain.length !== processingRequests.length) {
   throw new Error(`captain results entered model delivery as unkeyed messages: ${JSON.stringify(sentToMain)}`);
 }
 if (processingRequests.length !== 1 || processingRequests[0].options.triggerTurn !== true) {
@@ -1932,7 +1948,7 @@ if (existsSync(`${home}/state/.branch-eligible-rows`)) {
 const healthy = dispatch("signal: healthy branch turn");
 if (!healthy.accepted) throw new Error("one provider error latched the branch prematurely");
 await healthy.settlement;
-await settle(() => attempt === 2 && sentToMain.length === 1, "healthy branch report");
+await settle(() => attempt === 2, "healthy branch report");
 if (mainUserMessages.length !== 0) throw new Error("a healthy reported turn fell back to main");
 
 const third = dispatch("signal: provider error after reset");
@@ -1995,7 +2011,7 @@ if (dispatch("signal: inside extended cooldown").accepted) {
 now += 5 * 60 * 1000;
 const recoveryProbe = dispatch("signal: recovery probe after extended cooldown");
 if (!recoveryProbe.accepted) throw new Error("the branch did not re-probe after the extended cooldown elapsed");
-await settle(() => attempt === 6 && sentToMain.some((sent) => sent.message.content.includes("cooldown probe recovered the branch")), "successful recovery probe");
+await settle(() => attempt === 6 && sentToMain.some((sent) => sent.message.content.includes("Supervision branch recovered after a successful cooldown probe")), "successful recovery probe");
 if (mainUserMessages.length !== 0) throw new Error("a successful recovery probe also fell back to main");
 const recoveryNotes = sentToMain.filter((sent) => sent.message.content.includes("Supervision branch recovered after a successful cooldown probe"));
 if (recoveryNotes.length !== 1 || recoveryNotes[0].message.content.includes("\n")) {
@@ -2017,7 +2033,7 @@ if (existsSync(`${home}/state/.branch-eligible-rows`)) {
 }
 const afterRecoveryHealthy = dispatch("signal: healthy turn after one post-recovery error");
 if (!afterRecoveryHealthy.accepted) throw new Error("the successful probe did not clear the provider-error streak");
-await settle(() => attempt === 8 && sentToMain.some((sent) => sent.message.content.includes("post-recovery report proved")), "post-recovery healthy report");
+await settle(() => attempt === 8, "post-recovery healthy report");
 process.exit(0);
 EOF
   status=$?

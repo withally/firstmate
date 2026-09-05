@@ -672,8 +672,12 @@ test_secondmate_no_projects_charter() {
     "secondmate charter no longer says the chat is unread"
   assert_grep 'in this home it IS the captain' "$brief" \
     "secondmate charter no longer names the parent channel as the captain"
-  assert_grep 'When a message carries that marker, perform only fleet supervision yourself: dispatch any project-specific investigation, planning, audit, copy, visual design, review-artifact authorship, code, build, test, branch repair, or PR-content repair request to the owning worker or scout, then relay the child result via the STATUS/ESCALATION path below, never only in this chat: the main firstmate does not read your chat, so a chat-only reply is lost.' "$brief" \
-    "marked project requests were not routed to an owning worker or scout"
+  assert_grep 'dispatch project-specific investigation, audit, diagnosis, comparison, planning, or design requests to a scout; dispatch project-specific code, build or test, copy, visual changes, review-artifact authorship, branch repair, or PR-content repair to the owning worker - the task' "$brief" \
+    "marked project requests were not routed by deliverable role"
+  assert_grep "the task's live worker or a ship worker when none is live" "$brief" \
+    "marked implementation requests did not name the owning worker"
+  assert_no_grep 'review-artifact authorship, code, build, test, branch repair, or PR-content repair request to the owning worker or scout' "$brief" \
+    "marked implementation requests still allow report-only scout routing"
   assert_no_grep 'When a message carries that marker, do the work' "$brief" \
     "marked project requests still authorize secondmate self-work"
   assert_grep 'For a detailed child result (an investigation, a plan, or an audit), relay the child-authored document pointer in a status line' "$brief" \

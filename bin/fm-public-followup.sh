@@ -117,8 +117,9 @@
 #
 #   fm-public-followup.sh retire <obligation-id> --reason "<why the loop is done>" [--force]
 #       The only close. Drops the registration after recording --reason.
-#       --force is the explicit discard-approved escape hatch for an unresolved
-#       or missing obligation. --reason is required. --force never covers
+#       --force requires the captain to explicitly authorize discarding the
+#       exact named obligation under hard rule 3 in AGENTS.md. --reason is
+#       required. --force never covers
 #       clearing the bound legacy X link: a loop whose link is still verifiably
 #       in place is retained for reconciliation either way. When the bound work
 #       lives in a REMOTE secondmate home, that clear runs over the route's SSH

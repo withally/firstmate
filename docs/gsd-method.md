@@ -28,7 +28,7 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 
 - Rule: every phase starts with research in fresh-context researchers, one per stream, and one synthesizer that reads the researcher reports plus the authoritative CONTEXT/rulings document, nothing else.
 - Mechanism: each researcher and the synthesizer is a scout spawned from a `bin/fm-brief.sh --scout` brief in its own worktree, so no researcher inherits another's context or the planner's sunk cost.
-- Artifact and owner: each researcher leaves one `data/<task>/report.md`, and the synthesizer scout's single `data/<task>/report.md` is the durable synthesis artifact; the Blockvalley `RESEARCH-0.md` was a verbatim copy of that report, and the governing firstmate or secondmate owns the phase plan that names the streams.
+- Artifact and owner: each researcher leaves one `data/<task>/report.md`, and the synthesizer scout's single `data/<task>/report.md` is the durable synthesis artifact; the Blockvalley `RESEARCH-0.md` was a verbatim copy of that report, and the synthesizer scout authors the phase plan that names the streams while the governing firstmate or secondmate routes and records it.
 
 ### 3.2 Claim provenance
 
@@ -75,8 +75,8 @@ The mechanisms are referenced, not restated; their owners are `AGENTS.md` sectio
 
 - Rule: every scope cut produces one signed scope-delta artifact whose authoritative rows are `kept`, `changed`, or `parked`, and no affected work continues until every live worker acknowledges its row.
 - Why: the Blockvalley Phase 1 retro found live briefs still requesting work that a later scope cut had parked.
-- Mechanism: the governing firstmate or secondmate tombstones superseded acceptance criteria, rewrites affected live briefs, records each worker acknowledgment, and blocks dispatch, execution, and landing until the matrix is reconciled.
-- Artifact and owner: the governing firstmate or secondmate owns the signed scope-delta artifact as the single post-cut matrix, while the captain owns the ruling it records.
+- Mechanism: the owning worker or scout authors the scope delta and updates any affected live brief, while the governing firstmate or secondmate routes the result, records each worker acknowledgment, and blocks dispatch, execution, and landing until the matrix is reconciled.
+- Artifact and owner: the owning worker or scout authors the signed scope-delta artifact as the single post-cut matrix, while the governing firstmate or secondmate routes it and records the captain's ruling.
 
 ### 4.3 WRITE, CHECK, PATCH
 

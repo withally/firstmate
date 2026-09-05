@@ -26,7 +26,7 @@ With a non-empty inventory it appends a `captain-held [key=<key>]: tracked by <i
 
 Scout teardown calls the read-only `verify` subcommand after checking for the report and before removing any source state.
 `verify` requires the recorded attestation, requires every recorded inventory entry to still be durable (actively captain-held, or carrying a recorded answer), and fails on any keyed status decision that opened after the last `complete`, which makes re-running `complete` the repair.
-The `--force` path remains the explicit captain-approved discard escape hatch.
+The `--force` path remains the explicit captain-authorized named-discard escape hatch in hard rule 3 of [`AGENTS.md`](../AGENTS.md).
 
 ## Cleanup never closes a captain call
 
@@ -34,7 +34,7 @@ The policy prefers holding the very work item a question gates, so the backlog r
 `bin/fm-teardown.sh` therefore asks the read-only `open` subcommand before its automatic close: exit 0 means the row is still an open captain call (not Done, `hold_kind: captain`), 1 means it is not, and 2 means the answer could not be established, which teardown treats as a refusal before any destructive step rather than as permission to close.
 On 0 only the close changes: after cleanup and still under the task's own lock, teardown records one `Deliverable of the finished work: ...` line at the end of the task body and runs `tasks-axi reopen`, so the row returns to Queued with its hold intact and lands in Captain's Call instead of reading as work still under way.
 The pending-close record teardown already stages before destructive cleanup carries that intent as a `mode=retain` line, so an interrupted cleanup replays the retention at the next session start through the same record, validator, and lock as an ordinary close and never closes the row; an answer that closed the row first simply retires the record.
-`--force` does not lift the deferral, because it authorizes discarding unlanded work, never the captain's question, and `answer` remains the only act that closes the call.
+`--force` does not lift the deferral, because it may discard only the explicitly named unlanded work under hard rule 3, never the captain's question, and `answer` remains the only act that closes the call.
 `bin/fm-backlog-transition-lib.sh` owns the transition and its record, and `bin/fm-captain-hold.sh --help` owns the predicate's contract.
 
 ## Answer-time closure

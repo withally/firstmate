@@ -25,10 +25,10 @@
 # the very work item a question gates and cleanup must never retire the
 # captain's own question. The same pending-close record carries that intent as
 # `mode=retain`, so an interrupted cleanup replays the retention rather than a
-# close. "Cannot tell" refuses before any destructive step, --force does not
-# lift the deferral (it authorizes discarding unlanded WORK, never the
-# captain's question), and bin/fm-captain-hold.sh answer stays the only act
-# that closes the call.
+# close. "Cannot tell" refuses before any destructive step, and --force does not
+# lift the deferral: it may discard only the exact unlanded work the captain
+# names under hard rule 3 in AGENTS.md, never the captain's question. The
+# answer through bin/fm-captain-hold.sh stays the only act that closes the call.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so

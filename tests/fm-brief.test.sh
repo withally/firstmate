@@ -672,6 +672,22 @@ test_secondmate_no_projects_charter() {
     "secondmate charter no longer says the chat is unread"
   assert_grep 'in this home it IS the captain' "$brief" \
     "secondmate charter no longer names the parent channel as the captain"
+  assert_grep 'That authority governs the request, not who executes project work; route execution to a worker or a main-authored contract.' "$brief" \
+    "secondmate charter lost the direct-captain-input execution boundary"
+  assert_grep 'Handle routine fleet supervision yourself; dispatch every project deliverable and every review-artifact content change.' "$brief" \
+    "secondmate charter did not limit routine self-work to fleet supervision"
+  assert_grep 'Run guarded fleet custody as one script receipt per outcome.' "$brief" \
+    "secondmate charter lost batched governing-home custody"
+  assert_grep '## Self-work boundary' "$brief" \
+    "secondmate charter lost the self-work boundary paragraph"
+  assert_grep 'A stop or exit instruction never implies discard authority' "$brief" \
+    "secondmate charter lost the stop-versus-discard boundary"
+  assert_grep 'dispatch an open-ended comparison, audit, diagnosis, design synthesis, or multi-file search as a scout.' "$brief" \
+    "secondmate charter lost the bounded project-read rule"
+  assert_grep 'Every status line that reports a project-output change must name the child task and its outcome receipt' "$brief" \
+    "secondmate charter lost the child outcome receipt rule"
+  assert_grep 'These boundaries yield only to an explicit captain decision naming the exception.' "$brief" \
+    "secondmate charter lost the explicit captain-decision carve-out"
   assert_grep 'working [key=<work-slug>]' "$brief" \
     "secondmate charter did not key material routed-work phases"
   assert_grep 'resolved [key=<work-slug>]' "$brief" \

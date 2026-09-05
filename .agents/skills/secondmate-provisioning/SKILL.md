@@ -255,4 +255,4 @@ With `--force`, teardown is the explicit discard path.
 It kills child windows, discards child work and state inside the secondmate home, removes the route, releases the lease, and removes the retired secondmate home.
 If forced teardown contends with a fresh task publication in any affected home, one command refuses without publishing or removing task state; treat that refusal as terminal and inspect the other operation before retrying.
 Relaunch and non-forced teardown remain outside that serialization.
-Never use `--force` after a refusal unless the captain explicitly names the exact contents to discard; hard rule 3 in `AGENTS.md` owns this boundary.
+Never use `--force` unless the captain explicitly authorized discarding and named the exact contents to discard; hard rule 3 in `AGENTS.md` owns this boundary.

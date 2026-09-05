@@ -104,12 +104,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
+  if [ "$(uname -s 2>/dev/null || true)" != Darwin ]; then
+    cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
+  fi
   cat > "$fakebin/muse" <<'SH'
 #!/usr/bin/env bash
 set -u
 [ -n "${FM_FAKE_HARNESS_RESULT:-}" ] || exit 0
-exec "$FM_FAKE_MUSE_VERSIONED" -c 'result=$($FM_FAKE_HARNESS_PROBE); printf "%s" "$result" > "$FM_FAKE_HARNESS_RESULT"'
+if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  exec -a muse-bin-test-version bash -c 'result=$($FM_FAKE_HARNESS_PROBE); printf "%s" "$result" > "$FM_FAKE_HARNESS_RESULT"'
+else
+  exec "$FM_FAKE_MUSE_VERSIONED" -c 'result=$($FM_FAKE_HARNESS_PROBE); printf "%s" "$result" > "$FM_FAKE_HARNESS_RESULT"'
+fi
 SH
   chmod +x "$fakebin/muse"
   fm_fake_exit0 "$fakebin" treehouse gh-axi gh
@@ -176,15 +182,36 @@ run_muse_spawn() {  # <home> <proj> <wt> <fakebin> <id> [extra args...]
 # lets the shell exec the probe in place, which REPLACES the muse-bin-* process
 # name the walk is supposed to find. Real muse keeps its TUI process alive and
 # runs tools as children, so forcing a fork is what reproduces that shape.
+run_muse_ancestry_probe() {  # <process-name> <fixture-dir>
+  local process_name=$1 fixture_dir=$2 probe
+  probe='r=$("$FM_MUSE_HARNESS_PROBE"); printf "%s" "$r"'
+
+  # macOS kills a copied signed /bin/bash before it can run (exit 137). Bash's
+  # argv0 facility gives ps the same versioned process identity without
+  # duplicating the signed executable; Linux keeps the copied-binary shape.
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin)
+      env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+        -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
+        FM_MUSE_HARNESS_PROBE="$HARNESS" \
+        bash -c 'exec -a "$1" "$2" -c "$3"' _ "$process_name" \
+        "$(command -v bash)" "$probe"
+      ;;
+    *)
+      cp "$(command -v bash)" "$fixture_dir/$process_name"
+      env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+        -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
+        "$fixture_dir/$process_name" -c "r=\$(\"$HARNESS\"); printf '%s' \"\$r\""
+      ;;
+  esac
+}
+
 test_detects_versioned_process_ancestor() {
   local dir bin out
   dir="$TMP_ROOT/detect"
   mkdir -p "$dir"
   for bin in muse-bin-0.1.0-R708.1 muse-bin-9.9.9-RZZZ.9 muse; do
-    cp "$(command -v bash)" "$dir/$bin"
-    out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-      -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
-      "$dir/$bin" -c "r=\$(\"$HARNESS\"); printf '%s' \"\$r\"")
+    out=$(run_muse_ancestry_probe "$bin" "$dir")
     [ "$out" = muse ] || fail "fm-harness.sh under process '$bin' reported '$out', expected muse"
   done
   pass "muse is detected through any versioned muse-bin ancestor"
@@ -197,10 +224,7 @@ test_detection_is_anchored() {
   dir="$TMP_ROOT/detect-neg"
   mkdir -p "$dir"
   for bin in musescore amuse notmuse-bin muse-binary muse-bind; do
-    cp "$(command -v bash)" "$dir/$bin"
-    out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-      -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
-      "$dir/$bin" -c "r=\$(\"$HARNESS\"); printf '%s' \"\$r\"")
+    out=$(run_muse_ancestry_probe "$bin" "$dir")
     [ "$out" != muse ] || fail "fm-harness.sh misdetected unrelated process '$bin' as muse"
   done
   pass "muse detection does not claim unrelated muse-containing commands"

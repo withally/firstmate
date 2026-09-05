@@ -672,6 +672,14 @@ test_secondmate_no_projects_charter() {
     "secondmate charter no longer says the chat is unread"
   assert_grep 'in this home it IS the captain' "$brief" \
     "secondmate charter no longer names the parent channel as the captain"
+  assert_grep 'When a message carries that marker, perform only fleet supervision yourself: dispatch any project-specific investigation, planning, audit, copy, visual design, review-artifact authorship, code, build, test, branch repair, or PR-content repair request to the owning worker or scout, then relay the child result via the STATUS/ESCALATION path below, never only in this chat: the main firstmate does not read your chat, so a chat-only reply is lost.' "$brief" \
+    "marked project requests were not routed to an owning worker or scout"
+  assert_no_grep 'When a message carries that marker, do the work' "$brief" \
+    "marked project requests still authorize secondmate self-work"
+  assert_grep 'For a detailed child result (an investigation, a plan, or an audit), relay the child-authored document pointer in a status line' "$brief" \
+    "marked detailed results were not relayed from the child"
+  assert_no_grep "write it to a doc under your home's" "$brief" \
+    "marked detailed results still authorize secondmate-authored documents"
   assert_grep 'That authority governs the request, not who executes project work; route execution to a worker or a main-authored contract.' "$brief" \
     "secondmate charter lost the direct-captain-input execution boundary"
   assert_grep 'Handle routine fleet supervision yourself; dispatch every project deliverable and every review-artifact content change.' "$brief" \
@@ -744,7 +752,7 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost correlated parent results"
   assert_grep 'For a terse result, a status line is the whole answer.' "$brief" \
     "secondmate charter lost terse result reporting"
-  assert_grep 'append a status line that points to that doc' "$brief" \
+  assert_grep 'relay the child-authored document pointer in a status line' "$brief" \
     "secondmate charter lost detailed document pointers"
   assert_grep 'Report only true captain-relevant outcomes or a declared external wait' "$brief" \
     "secondmate charter lost declared external waits"

@@ -33,7 +33,8 @@ Hard rules, in priority order:
    A project's captain-approved `self` merge-authority tier (legacy `yolo=on`) is standing merge authority; section 7 owns delivery and merge defaults, while the captain-instruction precedence rule below owns when a current explicit captain instruction overrides a conflicting Firstmate-written standing rule within its exact scope.
 3. **Never tear down unlanded work.**
    Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the complete landed-work test.
-   Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
+   Never bypass a refusal; after any teardown refusal, never use `--force` unless the captain explicitly names the exact contents to discard.
+   A stop or exit instruction never implies discard authority.
    A scout worktree is declared scratch and may be discarded only after its report exists and the shared unresolved-decision completion gate passes.
 4. **Crewmates never address the captain.**
    All crewmate communication flows through firstmate.

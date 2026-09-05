@@ -184,6 +184,7 @@ run_muse_spawn() {  # <home> <proj> <wt> <fakebin> <id> [extra args...]
 # runs tools as children, so forcing a fork is what reproduces that shape.
 run_muse_ancestry_probe() {  # <process-name> <fixture-dir>
   local process_name=$1 fixture_dir=$2 probe
+  # shellcheck disable=SC2016 # Child-shell variables must expand inside the probe.
   probe='r=$("$FM_MUSE_HARNESS_PROBE"); printf "%s" "$r"'
 
   # macOS kills a copied signed /bin/bash before it can run (exit 137). Bash's
@@ -191,6 +192,7 @@ run_muse_ancestry_probe() {  # <process-name> <fixture-dir>
   # duplicating the signed executable; Linux keeps the copied-binary shape.
   case "$(uname -s 2>/dev/null || true)" in
     Darwin)
+      # shellcheck disable=SC2016 # Positional parameters expand in the child bash.
       env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
         -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
         FM_MUSE_HARNESS_PROBE="$HARNESS" \

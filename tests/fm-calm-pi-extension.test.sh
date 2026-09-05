@@ -15,6 +15,24 @@ WATCH_EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 OPERATIONAL_INPUT="$ROOT/bin/fm-operational-input.sh"
 PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+PI_PACKAGE_READY=
+
+pi_package_is_usable() {
+  if [ -n "$PI_PACKAGE_READY" ]; then
+    [ "$PI_PACKAGE_READY" = yes ]
+    return
+  fi
+  if [ ! -f "$PI_PACKAGE_DIR/package.json" ] || \
+    [ ! -f "$PI_PACKAGE_DIR/dist/index.js" ] || \
+    ! command -v node >/dev/null 2>&1 || \
+    ! node --input-type=module -e 'import(process.argv[1])' "$PI_PACKAGE_DIR/dist/index.js" >/dev/null 2>&1; then
+    PI_PACKAGE_READY=no
+  else
+    PI_PACKAGE_READY=yes
+  fi
+  [ "$PI_PACKAGE_READY" = yes ]
+}
+
 TMUX_SOCKET="fm-calm-$$"
 TMUX_SESSION="fm-calm-e2e"
 # Verified against Pi 0.81.1 and 0.82.0 (docs/calm-mode-feasibility.md). This is
@@ -77,8 +95,8 @@ test_home_resolution() {
     echo "skip: node or npm not found for Pi calm home-resolution test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -203,8 +221,8 @@ test_pi_compat_degraded_adapter() {
     echo "skip: node or npm not found for Pi calm degraded-adapter test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
 
@@ -360,8 +378,8 @@ test_builtin_gate_load_time() {
     echo "skip: node or npm not found for Pi calm gate test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
 
@@ -447,8 +465,8 @@ test_calm_activation_collision_and_regression_bound() {
     echo "skip: node or npm not found for Pi calm activation test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
 
@@ -662,8 +680,8 @@ test_rendering_and_session_lifecycle() {
     echo "skip: node or npm not found for Pi calm renderer test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -1363,8 +1381,8 @@ test_calm_mid_turn_working_notes() {
     echo "skip: node or npm not found for Pi calm mid-turn renderer test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -2135,7 +2153,7 @@ TS
   i=0
   while [ "$i" -lt 120 ]; do
     capture_geometry_viewport "$snapshot"
-    tail -12 "$snapshot" | grep -Fq "Working..." || break
+    tail -12 "$snapshot" | grep -Fq "Working" || break
     sleep 0.05
     i=$((i + 1))
   done
@@ -2218,8 +2236,8 @@ test_working_ship_geometry_and_lifecycle() {
     echo "skip: node or npm not found for Pi Calm working-ship test"
     return 0
   fi
-  if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+  if ! pi_package_is_usable; then
+    echo "skip: installed @earendil-works/pi-coding-agent package is unavailable or incomplete"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -3660,7 +3678,7 @@ JS
   done
   cp "$working_snapshot" "$boat_frame_one"
   assert_contains "$(cat "$boat_frame_one")" '\__/' "Calm did not show the working ship during a real provider wait"
-  assert_not_contains "$(cat "$boat_frame_one")" "Working..." "Calm left Pi's stock working row visible while the ship was shown"
+  assert_not_contains "$(cat "$boat_frame_one")" "Working" "Calm left Pi's stock working row visible while the ship was shown"
   assert_not_contains "$(cat "$boat_frame_one")" "calm transcript" "the real provider wait showed a persistent Calm status row"
   assert_not_contains "$(cat "$boat_frame_one")" "FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status" "the real provider wait restored a hidden operational row"
   boat_hull_line=$(grep -F '\__/' "$boat_frame_one" | head -1)
@@ -3866,7 +3884,7 @@ JS
     || fail "the second working period reset the boat from column $boat_freeze_column to $boat_resume_column instead of resuming"
   [ "$boat_resume_sail" = "$boat_freeze_sail" ] \
     || fail "the second working period changed sail from $boat_freeze_sail to $boat_resume_sail"
-  assert_not_contains "$(cat "$boat_resume_snapshot")" "Working..." \
+  assert_not_contains "$(cat "$boat_resume_snapshot")" "Working" \
     "the second working period left Pi's stock working row visible"
 
   # Clear the resumed run before the Calm-off stock-row probe.
@@ -3899,13 +3917,13 @@ JS
   active_screen_wait=0
   while [ "$active_screen_wait" -lt 200 ]; do
     tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$working_snapshot"
-    if grep -Fq "Working..." "$working_snapshot"; then
+    if grep -Fq "Working" "$working_snapshot"; then
       break
     fi
     sleep 0.025
     active_screen_wait=$((active_screen_wait + 1))
   done
-  assert_contains "$(cat "$working_snapshot")" "Working..." "Calm off did not keep Pi's stock working row"
+  assert_contains "$(cat "$working_snapshot")" "Working" "Calm off did not keep Pi's stock working row"
   assert_not_contains "$(cat "$working_snapshot")" '\__/' "Calm off showed the working ship"
   wait_for_text "$working_response_snapshot" "CALM_WORKING_E2E_RESPONSE" \
     || fail "the deterministic provider did not settle after proving Pi's stock working row"

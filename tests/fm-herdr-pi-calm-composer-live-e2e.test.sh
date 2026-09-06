@@ -41,8 +41,15 @@ TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-pi-calm-compose
   || fail "could not create the live-test temporary root"
 CALM_HOME="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
-mkdir -p "$CALM_HOME/config" "$FAKEBIN"
+PI_AGENT_ROOT=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+PI_MCP_EXTENSION="$PI_AGENT_ROOT/npm/node_modules/pi-mcp-adapter/index.ts"
+[ -f "$PI_MCP_EXTENSION" ] \
+  || fail "FM_HERDR_PI_CALM_COMPOSER_LIVE=1 but pi-mcp-adapter is not installed at $PI_MCP_EXTENSION"
+PI_RUNTIME_AGENT_DIR="$TMP_ROOT/pi-agent"
+mkdir -p "$CALM_HOME/config" "$FAKEBIN" "$PI_RUNTIME_AGENT_DIR"
 printf 'on\n' > "$CALM_HOME/config/calm"
+printf '%s\n' '{"mcpServers":{"synthetic":{"command":"/usr/bin/true","lifecycle":"lazy"}}}' \
+  > "$CALM_HOME/mcp.json"
 export HERDR_LAB_HELPER HERDR_LAB_SESSION
 
 # Install the exact isolation teardown before provisioning; the richer cleanup
@@ -102,7 +109,7 @@ PI_VERSION=$(PATH="$ORIGINAL_PATH" pi --version 2>/dev/null | head -1 || printf 
 HERDR_VERSION=$(PATH="$ORIGINAL_PATH" herdr --version 2>/dev/null | head -1 || printf 'unknown')
 
 lab pane run "$PANE" \
-  "cd '$ROOT' && FM_ROOT_OVERRIDE='$CALM_HOME' pi --approve --no-session --no-context-files --no-extensions -e '$ROOT/.pi/extensions/fm-calm.ts' --model openai-codex/gpt-5.6-sol --thinking medium --tools bash" \
+  "cd '$ROOT' && env PI_CODING_AGENT_DIR='$PI_RUNTIME_AGENT_DIR' FM_ROOT_OVERRIDE='$CALM_HOME' pi --offline --approve --no-session --no-context-files --no-extensions -e '$ROOT/.pi/extensions/fm-calm.ts' -e '$PI_MCP_EXTENSION' --mcp-config '$CALM_HOME/mcp.json' --model openai-codex/gpt-5.6-sol --thinking medium --tools bash" \
   >/dev/null \
   || fail "could not launch Pi ($PI_VERSION) with Calm on under Herdr ($HERDR_VERSION)"
 

@@ -1121,7 +1121,7 @@ _fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
           return 1
         fi
         status_seen=1
-        phase=done
+        phase='done'
         ;;
       done)
         [ -z "$trimmed" ] || return 1

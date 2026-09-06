@@ -1111,6 +1111,156 @@ EOF
   pass "pending firstmate-action blocks later reconciliation until its handoff starts"
 }
 
+test_legacy_action_without_wake_seq_replays_visibly_without_migration() {
+  local repo home out status
+  repo="$TMP_ROOT/action-legacy-no-wake-root"
+  home="$TMP_ROOT/action-legacy-no-wake-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, sentToMain, outcomeScript, defaultSessionCtx, home, realRoot }; })()`);
+const { fire, sentToMain, outcomeScript, defaultSessionCtx, home, realRoot } = globalThis.__t;
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+
+const state = `${home}/state`;
+writeFileSync(`${state}/.lock`, `${process.ppid}\n`);
+writeFileSync(
+  `${state}/branch-outcomes.jsonl`,
+  `${JSON.stringify({
+    seq: 1,
+    epoch: 1,
+    task: "legacy-action",
+    wake: "signal: legacy-action",
+    verdict: "firstmate-action",
+    summary: "legacy visible action",
+  })}\n`,
+);
+writeFileSync(`${state}/.branch-outcomes-cursor`, "0\n");
+writeFileSync(`${state}/legacy-action.meta`, "kind=crew\n");
+const storeBefore = readFileSync(`${state}/branch-outcomes.jsonl`, "utf8");
+
+const replay = spawnSync("bash", [`${realRoot}/bin/fm-branch-outcome.sh`, "startup-replay"], {
+  encoding: "utf8",
+  env: { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: state },
+});
+if (replay.status !== 0) throw new Error(`legacy startup replay failed: ${replay.stderr}`);
+if (!replay.stdout.includes("BRANCH OUTCOMES") || !replay.stdout.includes("legacy visible action")) {
+  throw new Error(`legacy no-wake action was not visibly replayed: ${replay.stdout}`);
+}
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "1") {
+  throw new Error("legacy no-wake startup replay did not advance its visible row");
+}
+if (readFileSync(`${state}/branch-outcomes.jsonl`, "utf8") !== storeBefore) {
+  throw new Error("legacy no-wake startup replay rewrote the outcome store");
+}
+if (existsSync(`${state}/branch-action/wake-1.json`) || existsSync(`${state}/branch-action/outcome-1.json`)) {
+  throw new Error("legacy no-wake startup replay created an action marker");
+}
+
+writeFileSync(`${state}/.branch-outcomes-cursor`, "0\n");
+fire("session_start", {}, defaultSessionCtx);
+const visible = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge");
+if (visible.length !== 1 || visible[0].message.display !== true || !visible[0].message.content.includes("legacy visible action")) {
+  throw new Error(`legacy no-wake reconciliation was not a visible delivery: ${JSON.stringify(sentToMain)}`);
+}
+if (outcomeScript(["unread"]) !== "") throw new Error("legacy no-wake reconciliation left the row unread");
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "1") {
+  throw new Error("legacy no-wake reconciliation did not acknowledge the visible row");
+}
+if (readFileSync(`${state}/branch-outcomes.jsonl`, "utf8") !== storeBefore) {
+  throw new Error("legacy no-wake reconciliation rewrote the outcome store");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "legacy firstmate-action without wake_seq must replay visibly: $out"
+  [ -z "$out" ] || fail "legacy no-wake replay regression printed output: $out"
+  pass "legacy firstmate-action without wake_seq replays visibly without migration"
+}
+
+test_pending_action_send_failure_retries_on_later_reconciliation() {
+  local repo home out status
+  repo="$TMP_ROOT/action-send-failure-root"
+  home="$TMP_ROOT/action-send-failure-home"
+  mkdir -p "$home/state/branch-action" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, settle, sentToMain, outcomeScript, defaultSessionCtx, home }; })()`);
+const { fire, settle, sentToMain, outcomeScript, defaultSessionCtx, home } = globalThis.__t;
+import { readFileSync, writeFileSync } from "node:fs";
+
+const state = `${home}/state`;
+writeFileSync(`${state}/.lock`, `${process.ppid}\n`);
+writeFileSync(`${state}/.wake-queue`, "");
+writeFileSync(
+  `${state}/branch-outcomes.jsonl`,
+  `${JSON.stringify({
+    seq: 1,
+    epoch: 1,
+    task: "retry-action",
+    wake: "signal: retry-action",
+    verdict: "firstmate-action",
+    summary: "retryable authorized action",
+    silent: false,
+    wake_seq: 41,
+  })}\n`,
+);
+writeFileSync(`${state}/.branch-outcomes-cursor`, "0\n");
+writeFileSync(
+  `${state}/branch-action/wake-41.json`,
+  `${JSON.stringify({
+    version: "fm-branch-action-v1",
+    wake_seq: 41,
+    outcome_seq: 1,
+    state: "pending",
+    task: "retry-action",
+    verdict: "firstmate-action",
+    summary: "retryable authorized action",
+    wake: "signal: retry-action",
+    silent: false,
+  })}\n`,
+);
+
+globalThis.__fmSendMessageError = "synthetic send failure";
+fire("session_start", {}, defaultSessionCtx);
+if (sentToMain.length !== 0) throw new Error("the failed hidden send was recorded as delivered");
+if (outcomeScript(["action-status", "--seq", "1"]) !== "pending") {
+  throw new Error("the failed hidden send changed the action marker");
+}
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "0") {
+  throw new Error("the failed hidden send advanced the outcome cursor");
+}
+if (!outcomeScript(["unread"]).includes('"seq":1')) throw new Error("the failed hidden send hid the action outcome");
+
+globalThis.__fmSendMessageError = undefined;
+fire("turn_end", {}, defaultSessionCtx);
+await settle(() => sentToMain.some((sent) => sent.message.details?.verdict === "firstmate-action"), "retried action handoff");
+await settle(() => outcomeScript(["action-status", "--seq", "1"]) === "started", "retried action start marker");
+if (sentToMain.filter((sent) => sent.message.details?.verdict === "firstmate-action").length !== 1) {
+  throw new Error(`retry delivered the action an unexpected number of times: ${JSON.stringify(sentToMain)}`);
+}
+if (outcomeScript(["unread"]) !== "") throw new Error("retried action remained unread");
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "1") {
+  throw new Error("retried action did not advance the cursor");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "pending action send failure must retry: $out"
+  case "$out" in
+    *"synthetic send failure"*) ;;
+    *) fail "pending action send failure was not logged: $out" ;;
+  esac
+  pass "pending action send failure remains pending and retries on reconciliation"
+}
+
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
   local repo home out status
   repo="$TMP_ROOT/requested-outcome-root"
@@ -4218,6 +4368,8 @@ test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_firstmate_action_startup_recovery_hands_off_legacy_row
 test_pending_firstmate_action_blocks_later_outcome_reconciliation
+test_legacy_action_without_wake_seq_replays_visibly_without_migration
+test_pending_action_send_failure_retries_on_later_reconciliation
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
 test_captain_outcome_is_exactly_once_across_crash_reload_and_unrelated_response
 test_captain_outcome_processing_turn_is_sequence_keyed_and_re_presented

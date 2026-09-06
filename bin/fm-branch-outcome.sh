@@ -98,9 +98,9 @@
 #     Session-start recovery: print the leading routine unread records under a
 #     labeled header into the locked startup digest, skip rows whose `silent`
 #     field is true, and mark those leading routine rows read. Stop before the
-#     first captain or firstmate-action row because Pi's sequence-keyed visible
-#     or hidden handoff must acknowledge those rows. Prints nothing when
-#     nothing replayable is unread.
+#     first captain or handoff-eligible firstmate-action row because Pi's
+#     sequence-keyed visible or hidden handoff must acknowledge those rows.
+#     Prints nothing when nothing replayable is unread.
 #     Run it only when the session holds the lock (fm-session-start.sh owns the
 #     call site).
 set -eu
@@ -1040,11 +1040,11 @@ case "$CMD" in
     UNREAD=$(print_unread)
     if [ -n "$UNREAD" ]; then
       REPLAYABLE=$(printf '%s\n' "$UNREAD" | jq -sc '
-        map(.verdict) as $verdicts
-        | ([($verdicts | index("captain")), ($verdicts | index("firstmate-action"))]
-           | map(select(. != null))
-           | if length == 0 then null else min end) as $barrier
-        | .[0:($barrier // length)][]
+        . as $rows
+        | ($rows | to_entries
+           | map(select(.value.verdict == "captain" or (.value.verdict == "firstmate-action" and .value.wake_seq != null)))
+           | .[0].key) as $barrier
+        | $rows[0:($barrier // length)][]
       ')
       VISIBLE=$(printf '%s\n' "$REPLAYABLE" | jq -c 'select(.silent != true)')
       if [ -n "$VISIBLE" ]; then

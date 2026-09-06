@@ -367,11 +367,14 @@ let tool = null;
 let deliveryStarted = false;
 let rowsAtDelivery = 0;
 let releaseDelivery = () => {};
+const handlers = new Map();
 const deliveryBlocked = new Promise((resolve) => {
   releaseDelivery = resolve;
 });
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -388,6 +391,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-continuity", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 for (let i = 0; i < 250; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
@@ -464,6 +472,7 @@ async function runScenario(withAcceptor) {
   let mainPrompt = "";
   let tool = null;
   const handlers = new Map();
+  const piHandlers = new Map();
   const bus = {
     on(channel, handler) {
       handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
@@ -480,7 +489,9 @@ async function runScenario(withAcceptor) {
     });
   }
   const pi = {
-    on() {},
+    on(event, handler) {
+      piHandlers.set(event, handler);
+    },
     events: bus,
     registerCommand() {},
     registerTool(candidate) {
@@ -493,6 +504,11 @@ async function runScenario(withAcceptor) {
   const mod = await import(`${pathToFileURL(process.env.PLUGIN).href}?scenario=${withAcceptor}`);
   mod.default(pi);
   await tool.execute("tool-call-branch-offer", {}, undefined, undefined, {});
+  await piHandlers.get("agent_settled")?.({}, {
+    ui: { setStatus() {} },
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+  });
   for (let i = 0; i < 250; i += 1) {
     const settled = withAcceptor ? offers.length > 0 : mainPrompt !== "";
     if (settled) break;
@@ -652,6 +668,7 @@ const offers = [];
 let prompt = "";
 let tool = null;
 const handlers = new Map();
+const piHandlers = new Map();
 const bus = {
   on(channel, handler) {
     handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
@@ -666,7 +683,9 @@ bus.on("fm-branch-supervision:dispatch", (offer) => {
   if (offer.eligible) offer.accept();
 });
 const pi = {
-  on() {},
+  on(event, handler) {
+    piHandlers.set(event, handler);
+  },
   events: bus,
   registerCommand() {},
   registerTool(candidate) {
@@ -763,8 +782,11 @@ bus.on("fm-branch-supervision:dispatch", (offer) => {
   offers.push({ message: offer.message, eligible: offer.eligible });
   if (offer.eligible) offer.accept();
 });
+const piHandlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    piHandlers.set(event, handler);
+  },
   events: bus,
   registerCommand() {},
   registerTool(candidate) {
@@ -784,6 +806,11 @@ writeFileSync(
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-main-only-check", {}, undefined, undefined, {});
+await piHandlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 for (let i = 0; i < 250 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -851,8 +878,11 @@ bus.on("fm-branch-supervision:dispatch", (offer) => {
   offers.push({ message: offer.message, heartbeat: offer.heartbeat });
   offer.accept();
 });
+const piHandlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    piHandlers.set(event, handler);
+  },
   events: bus,
   registerCommand() {},
   registerTool(candidate) {
@@ -866,6 +896,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-heartbeat-restoration-failure", {}, undefined, undefined, {});
+await piHandlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -989,8 +1024,11 @@ import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -1003,6 +1041,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-handling-fail", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 for (let i = 0; i < 250 && !prompt.includes("handling delivery confirmation was rejected"); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -1057,8 +1100,11 @@ import { pathToFileURL } from "node:url";
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -1074,6 +1120,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 // Three unready successors each cost the full readiness budget, so wait well
 // past their sum. The wait ends as soon as the wake lands.
 for (let i = 0; i < 1500 && !prompt; i += 1) {
@@ -1131,8 +1182,11 @@ import { pathToFileURL } from "node:url";
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -1148,6 +1202,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -1236,6 +1295,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-late-close", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
@@ -1249,21 +1313,19 @@ if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallba
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
+  if (rows().length >= 3) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
-if (process.env.FM_LATE_KIND === "actionable") {
-  if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
-} else if (prompts.length !== 1) {
-  throw new Error(`late non-actionable close sent an extra wake: ${prompts.join(" | ")}`);
+if (prompts.length !== 1) {
+  throw new Error(`ambiguous first delivery allowed an extra wake turn: ${prompts.join(" | ")}`);
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback: $out"
     [ -z "$out" ] || fail "Pi late-$kind test printed output: $out"
   done
   pass "Pi late unretired closes resume classified supervision"
@@ -1349,8 +1411,11 @@ import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -1402,8 +1467,11 @@ import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -1417,6 +1485,11 @@ writeFileSync(lock, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-lock-close", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
   writeFileSync(lock, `${other.pid}\n`);
@@ -1858,6 +1931,11 @@ const replacementStart = replacement.handlers.get("session_start")?.({
   reason: "new",
   previousSessionFile: "/tmp/previous.jsonl",
 }, {});
+await replacement.handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 await new Promise((resolve) => setTimeout(resolve, 50));
 await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "replacement arm before old delivery settlement");
 if (replacement.prompts.some((message) => message.includes("signal: replacement-race actionable outcome"))) {
@@ -1901,144 +1979,35 @@ process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi session replacement must auto-arm and carry an in-flight actionable close"
+  expect_code 0 "$status" "Pi session replacement must auto-arm and carry an in-flight actionable close: $out"
   [ -z "$out" ] || fail "Pi session-replacement handoff test printed output: $out"
   pass "Pi session replacement auto-arms and carries its in-flight actionable close"
 }
 
-test_pi_streaming_followup_is_replayed_after_replacement() {
-  local repo home plugin trigger out status
-  repo="$TMP_ROOT/pi-streaming-followup-replacement-root"
-  home="$TMP_ROOT/pi-streaming-followup-replacement-home"
-  trigger="$TMP_ROOT/pi-streaming-followup-replacement.trigger"
-  mkdir -p "$repo/bin" "$home/state" "$home/config"
-  install_pi_watch_extension_fixture "$repo"
-  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
-  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
-#!/usr/bin/env bash
-trap 'exit 0' TERM INT
-printf 'watcher: started pid=%s\n' "$$"
-while :; do
-  if [ -e "$FM_TRIGGER_FILE" ]; then
-    rm -f "$FM_TRIGGER_FILE"
-    printf 'signal: streaming queued actionable outcome\n'
-    exit 0
-  fi
-  sleep 0.02
-done
-SH
-  chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_TRIGGER_FILE="$trigger" node --input-type=module 2>&1 <<'EOF'
-import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-
-function makePi() {
-  const handlers = new Map();
-  const prompts = [];
-  let tool = null;
-  const pi = {
-    on(event, handler) {
-      handlers.set(event, handler);
-    },
-    registerCommand() {},
-    registerTool(candidate) {
-      if (candidate.name === "fm_watch_arm_pi") tool = candidate;
-    },
-    sendUserMessage: async (message) => {
-      prompts.push(message);
-    },
-    events: { on() {}, emit() {} },
-  };
-  return { pi, handlers, prompts, getTool: () => tool };
-}
-
-async function waitFor(pred, label) {
-  for (let i = 0; i < 500; i += 1) {
-    if (pred()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`timeout waiting for ${label}`);
-}
-
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-const originalMod = await import(pathToFileURL(process.env.PLUGIN).href);
-const original = makePi();
-originalMod.default(original.pi);
-await original.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
-original.handlers.get("agent_start")?.({}, {});
-writeFileSync(process.env.FM_TRIGGER_FILE, "trigger\n");
-await waitFor(
-  () => original.prompts.some((message) => message.includes("signal: streaming queued actionable outcome")),
-  "old-session queued follow-up",
-);
-await original.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
-
-const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=streaming-followup`);
-const replacement = makePi();
-replacementMod.default(replacement.pi);
-await replacement.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
-await waitFor(
-  () => replacement.prompts.some((message) => message.includes("signal: streaming queued actionable outcome")),
-  "replacement-session replay",
-);
-if (replacement.prompts.filter((message) => message.includes("signal: streaming queued actionable outcome")).length !== 1) {
-  throw new Error(`replacement did not replay the unconsumed follow-up exactly once: ${replacement.prompts.join(" | ")}`);
-}
-await replacement.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
-
-const finalMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=idle-followup`);
-const finalSession = makePi();
-finalMod.default(finalSession.pi);
-const { unlinkSync } = await import("node:fs");
-unlinkSync(`${process.env.FM_HOME}/state/.lock`);
-await finalSession.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
-if (finalSession.prompts.length !== 0) throw new Error("lockless replacement adopted its handoff early");
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-const reclaimed = await finalSession.getTool().execute("reclaimed-arm", {}, undefined, undefined, {});
-if (!reclaimed.details?.ok) throw new Error(`reclaimed arm failed: ${JSON.stringify(reclaimed.details)}`);
-await waitFor(
-  () => finalSession.prompts.some((message) => message.includes("signal: streaming queued actionable outcome")),
-  "second replacement replay before idle consumption",
-);
-if (finalSession.prompts.filter((message) => message.includes("signal: streaming queued actionable outcome")).length !== 1) {
-  throw new Error(`second replacement did not replay the idle queued follow-up exactly once: ${finalSession.prompts.join(" | ")}`);
-}
-finalSession.handlers.get("before_agent_start")?.({ prompt: finalSession.prompts[0] }, {});
-await new Promise((resolve) => setTimeout(resolve, 20));
-process.exit(0);
-EOF
-)
-  status=$?
-  expect_code 0 "$status" "Pi replacement must replay a streaming follow-up before consumption"
-  [ -z "$out" ] || fail "Pi streaming follow-up replacement test printed output: $out"
-  pass "Pi replacement replays a streaming follow-up before consumption"
-}
-
-# The 2026-09-02 incident: a wake delivered while main was mid-turn never raised
-# before_agent_start, the extension waited for it, and every later actionable
-# close was dropped. Continuity must settle on Pi accepting the follow-up, while
-# consumption still decides what a replacement replays.
-test_pi_streaming_time_delivery_keeps_the_successor_chain() {
+# Pi 0.85.0 cannot acknowledge extension-originated user-message delivery.
+# Temporary containment therefore submits once from a verified idle boundary,
+# keeps that one submission ambiguous until exact lifecycle consumption, and
+# leaves replacement recovery to the parent doorbell instead of replaying it.
+test_pi_ambiguous_self_delivery_is_never_retried() {
   local repo home plugin log trigger out status
-  repo="$TMP_ROOT/pi-streaming-chain-root"
-  home="$TMP_ROOT/pi-streaming-chain-home"
-  log="$TMP_ROOT/pi-streaming-chain.log"
-  trigger="$TMP_ROOT/pi-streaming-chain.trigger"
+  repo="$TMP_ROOT/pi-ambiguous-self-delivery-root"
+  home="$TMP_ROOT/pi-ambiguous-self-delivery-home"
+  log="$TMP_ROOT/pi-ambiguous-self-delivery.log"
+  trigger="$TMP_ROOT/pi-ambiguous-self-delivery.trigger"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = --handling-delivered ]; then
-  printf 'confirmed=%s\n' "$2" >> "${FM_ARM_LOG:?}"
-  exit 0
-fi
-printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
-count=$(grep -c '^arm=' "$FM_ARM_LOG")
-printf 'watcher: started pid=%s (beacon fresh) recovery-generation=chain-%s\n' "$$" "$count"
+count=0
+[ ! -f "$FM_ARM_LOG" ] || count=$(grep -c '^arm=' "$FM_ARM_LOG")
+count=$((count + 1))
+printf 'arm=%s\n' "$count" >> "$FM_ARM_LOG"
+printf 'watcher: started pid=%s\n' "$$"
 trap 'exit 0' TERM INT
 while [ ! -e "$FM_TRIGGER_FILE.$count" ]; do sleep 0.02; done
-printf 'signal: streaming chain wake %s\n' "$count"
+rm -f "$FM_TRIGGER_FILE.$count"
+printf 'signal: ambiguous self-delivery wake %s\n' "$count"
 exit 0
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -2047,29 +2016,26 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const handlers = new Map();
-const prompts = [];
-let streaming = false;
-let beforeAgentStarts = 0;
+const sends = [];
+const statuses = [];
 const pi = {
   on(event, handler) {
     handlers.set(event, handler);
   },
   registerCommand() {},
   registerTool() {},
-  // The real Pi prompt path: a follow-up sent while the agent is streaming is
-  // queued for the running run and raises no before_agent_start; only a send
-  // to an idle agent starts a run and raises it with the exact text.
-  sendUserMessage: async (message) => {
-    prompts.push(message);
-    if (streaming) return;
-    beforeAgentStarts += 1;
-    handlers.get("before_agent_start")?.({ prompt: message }, {});
+  sendUserMessage(message, options) {
+    sends.push({ message, options });
   },
   events: { on() {}, emit() {} },
 };
-// The running run reaching a queued follow-up: Pi emits the user message.
-const consumeQueued = (message) =>
-  handlers.get("message_start")?.({ message: { role: "user", content: [{ type: "text", text: message }] } }, {});
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pending = { ui, isIdle: () => true, hasPendingMessages: () => true };
 const arms = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n").filter((row) => row.startsWith("arm=")).length
   : 0;
@@ -2078,53 +2044,86 @@ async function waitFor(pred, label) {
     if (pred()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`timeout waiting for ${label}`);
+  throw new Error(`timeout waiting for ${label}; sends=${JSON.stringify(sends)}`);
 }
-const wakes = (text) => prompts.filter((message) => message.includes(text)).length;
 
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
-await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
-await waitFor(() => arms() === 1, "first arm");
-streaming = true;
+await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, idle);
+await waitFor(() => arms() === 1, "initial watcher arm");
 writeFileSync(`${process.env.FM_TRIGGER_FILE}.1`, "close\n");
-await waitFor(() => prompts.length === 1, "first wake delivered while main streams");
-if (wakes("signal: streaming chain wake 1") !== 1) throw new Error(`wrong first wake: ${prompts.join(" | ")}`);
-await waitFor(() => arms() === 2, "successor after the streaming-time delivery");
-writeFileSync(`${process.env.FM_TRIGGER_FILE}.2`, "close\n");
-await waitFor(() => prompts.length === 2, "second wake delivered while main still streams");
-if (wakes("signal: streaming chain wake 2") !== 1) throw new Error(`wrong second wake: ${prompts.join(" | ")}`);
-await waitFor(() => arms() === 3, "successor after the second streaming-time delivery");
-if (beforeAgentStarts !== 0) throw new Error(`streaming follow-ups raised before_agent_start ${beforeAgentStarts} times`);
+await waitFor(() => arms() === 2, "successor watcher arm");
+await new Promise((resolve) => setTimeout(resolve, 50));
+if (sends.length !== 0) throw new Error("wake submitted without an authoritative idle boundary");
 
-// The run reaches the first queued follow-up; the second is still queued when
-// the captain replaces the session, so only the second rides the handoff.
-consumeQueued(prompts[0]);
-await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
+await handlers.get("agent_settled")?.({}, pending);
+if (sends.length !== 0) throw new Error("wake submitted while Pi still had pending messages");
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 1, "one idle-boundary self-delivery");
+const first = sends[0].message;
+if (!first.includes("Firstmate self-delivery token:")) throw new Error(`wake lacks a unique token: ${first}`);
+if (!statuses.some(({ value }) => String(value).includes("self-delivery was ambiguous") && String(value).includes("parent doorbell owns recovery"))) {
+  throw new Error(`ambiguous delivery status was not explicit: ${JSON.stringify(statuses)}`);
+}
+
+// Late preflight consumption: every aggregate edge before the exact prompt is
+// forbidden from retrying the one fire-and-forget submission.
+await handlers.get("agent_settled")?.({}, idle);
+await handlers.get("session_compact")?.({}, idle);
+await new Promise((resolve) => setTimeout(resolve, 50));
+if (sends.length !== 1) throw new Error(`late before_agent_start caused ${sends.length} submissions`);
+handlers.get("before_agent_start")?.({ prompt: first }, idle);
+await handlers.get("agent_settled")?.({}, idle);
+if (sends.length !== 1) throw new Error("consumed delivery was submitted again");
+
+// Compaction beginning after submission cannot turn ambiguity into a retry.
+writeFileSync(`${process.env.FM_TRIGGER_FILE}.2`, "close\n");
+await waitFor(() => arms() === 3, "compaction-race successor arm");
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 2, "compaction-race self-delivery");
+const compacting = sends[1].message;
+await handlers.get("session_before_compact")?.({}, idle);
+await handlers.get("session_compact")?.({}, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await new Promise((resolve) => setTimeout(resolve, 50));
+if (sends.length !== 2) throw new Error(`compaction mid-preflight caused ${sends.length} submissions`);
+handlers.get("message_start")?.({
+  message: { role: "user", content: [{ type: "text", text: compacting }] },
+}, idle);
+
+// A replacement preserves the ambiguous row but never replays it. A late old
+// preflight may still start, so the parent doorbell is the only recovery owner.
+writeFileSync(`${process.env.FM_TRIGGER_FILE}.3`, "close\n");
+await waitFor(() => arms() === 4, "replacement-race successor arm");
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 3, "replacement-race self-delivery");
+const replacing = sends[2].message;
+const oldBeforeAgentStart = handlers.get("before_agent_start");
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, idle);
 const handoffPath = `${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`;
 const handoff = JSON.parse(readFileSync(handoffPath, "utf8"));
-if (handoff.pending.length !== 1 || handoff.pending[0].delivered || !handoff.pending[0].message.includes("signal: streaming chain wake 2")) {
-  throw new Error(`replacement handoff did not carry exactly the unconsumed wake: ${JSON.stringify(handoff)}`);
+if (!handoff.pending.some((item) => item.message.includes("signal: ambiguous self-delivery wake 3"))) {
+  throw new Error(`replacement did not preserve the ambiguous durable wake: ${JSON.stringify(handoff)}`);
 }
-streaming = false;
-const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=streaming-chain`);
+const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=ambiguous-containment`);
 replacementMod.default(pi);
-await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
-await waitFor(() => prompts.length === 3, "replacement replay of the unconsumed wake");
-if (wakes("signal: streaming chain wake 2") !== 2 || wakes("signal: streaming chain wake 1") !== 1) {
-  throw new Error(`replacement replayed the wrong wakes: ${prompts.join(" | ")}`);
-}
-if (beforeAgentStarts !== 1) throw new Error(`idle replay raised before_agent_start ${beforeAgentStarts} times`);
-await waitFor(() => arms() === 4, "replacement arm");
-await waitFor(() => !existsSync(handoffPath), "consumed replay clears its handoff record");
+await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await new Promise((resolve) => setTimeout(resolve, 80));
+if (sends.length !== 3) throw new Error(`replacement replayed an ambiguous submission: ${JSON.stringify(sends)}`);
+oldBeforeAgentStart?.({ prompt: replacing }, idle);
+await new Promise((resolve) => setTimeout(resolve, 30));
+if (sends.length !== 3) throw new Error("late old-session consumption created another turn");
 process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi streaming-time wake delivery must keep the successor chain and replay only unconsumed wakes"
-  [ -z "$out" ] || fail "Pi streaming-time delivery chain test printed output: $out"
-  pass "Pi streaming-time wake delivery keeps the successor chain and replays only unconsumed wakes"
+  if [ "$status" -ne 0 ]; then
+    fail "Pi ambiguous self-delivery must preserve at-most-one-turn across late preflight, compaction, and replacement: output=$out"
+  fi
+  [ -z "$out" ] || fail "Pi ambiguous self-delivery test printed output: $out"
+  pass "Pi ambiguous self-delivery preserves at-most-one-turn across late preflight, compaction, and replacement"
 }
 
 # A verified successor can die while the wake it was started for is still
@@ -2310,6 +2309,11 @@ const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?r
 const replacement = makePi();
 replacementMod.default(replacement.pi);
 await replacement.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+await replacement.handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 await waitFor(
   () => replacement.prompts.some((message) => message.includes("signal: late retiring actionable outcome")),
   "late actionable delivery to replacement",
@@ -2482,6 +2486,11 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 const armed = await tool.execute("initial-arm", {}, undefined, undefined, {});
 if (!armed.details?.ok) throw new Error(`initial arm failed: ${JSON.stringify(armed.details)}`);
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 await waitFor(() => deliveryStarted && existsSync(process.env.FM_CHILD_MARKER), "blocked delivery and successor child");
 writeFileSync(`${process.env.FM_HOME}/state/extensions`, "block handoff directory\n");
 let shutdownError = null;
@@ -2497,12 +2506,14 @@ unlinkSync(`${process.env.FM_HOME}/state/extensions`);
 const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=persistence-failure`);
 replacementMod.default(pi);
 await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
-await waitFor(() => prompts.length >= 2, "in-process handoff after persistence failure");
-if (!prompts[1].includes("signal: persistence failure actionable outcome")) {
-  throw new Error(`replacement lost the in-process actionable outcome: ${prompts.join(" | ")}`);
-}
-if (!prompts[1].includes("could not persist a replacement-session actionable wake")) {
-  throw new Error(`replacement did not surface the persistence failure: ${prompts[1]}`);
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (prompts.length !== 1) {
+  throw new Error(`replacement replayed the ambiguous in-process handoff: ${prompts.join(" | ")}`);
 }
 handlers.get("before_agent_start")?.({ prompt: prompts[1] }, {});
 process.exit(0);
@@ -3623,8 +3634,7 @@ test_pi_actionable_close_rechecks_session_lock
 test_pi_arm_distinguishes_session_lock_ownership
 test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
-test_pi_streaming_followup_is_replayed_after_replacement
-test_pi_streaming_time_delivery_keeps_the_successor_chain
+test_pi_ambiguous_self_delivery_is_never_retried
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_late_retiring_actionable_reaches_replacement
 test_pi_replacement_tokens_are_process_unique

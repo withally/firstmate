@@ -11,22 +11,19 @@
 // Terminal quit leaves the final generation stopped so late callbacks cannot rearm.
 // Stale callbacks from a prior generation are no-ops against the active replacement.
 //
-// Delivery versus consumption (stated once here):
-// A main follow-up is delivered once Pi accepts it (sendUserMessage resolves).
-// The successor pipeline never waits for the model to read it: a follow-up
-// queued while main is streaming joins the running run without ever raising
-// before_agent_start, so waiting on that event stalls every later close.
-// Consumption is tracked only so a replacement can replay a follow-up Pi had
-// not consumed. An idle main consumes at before_agent_start; a streaming main
-// consumes at the user message_start carrying the exact wake text; either
-// event finishes the pending record, and a still-unconsumed record rides the
-// replacement handoff.
+// Temporary Pi 0.85 delivery containment (full contract and limit owner:
+// docs/watcher-continuity.md): a main self-wake is submitted once only from an
+// authoritative idle settlement or post-compaction boundary. Pi's public API
+// gives no acknowledgement, so the tokenized submission remains ambiguous
+// until its exact before_agent_start or user message_start. Aggregate events,
+// timers, compaction, and replacement never retry it; the durable row remains
+// queued and the parent doorbell owns recovery.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
@@ -59,6 +56,7 @@ type PendingActionableClose = {
   message: string;
   predecessorArmPid: string;
   delivered?: true;
+  ambiguous?: true;
 };
 
 type ReplacementActionableHandoff = {
@@ -77,10 +75,12 @@ type WatchToolRenderContext = {
   isPartial: boolean;
 };
 
-type UnconsumedWake = {
+type AmbiguousWake = {
   content: string;
   pending: PendingActionableClose;
 };
+
+type DeliveryBoundary = Pick<ExtensionContext, "hasPendingMessages" | "isIdle" | "ui">;
 
 type SessionGeneration = {
   id: number;
@@ -94,11 +94,11 @@ type SessionGeneration = {
   seq: number;
   pendingActionables: PendingActionableClose[];
   cleanupFailure: string;
-  // Main follow-ups Pi has accepted but not yet consumed, by pending token.
-  // Never cleared at shutdown: a delivery continuation that runs after the
-  // replacement began reads it to tell a main-queued wake (replayed) from a
-  // branch-handled one (finished).
-  unconsumedWakes: Map<string, UnconsumedWake>;
+  // One fire-and-forget main submission remains ambiguous until exact
+  // lifecycle consumption. It is never cleared or retried by aggregate state.
+  ambiguousWakes: Map<string, AmbiguousWake>;
+  deliveryBoundary: DeliveryBoundary | null;
+  statusUi: Pick<ExtensionContext["ui"], "setStatus"> | null;
   // A verified successor's failure close that arrived while the pipeline was
   // still delivering the wake it was started for; its bounded retry runs once
   // that delivery settles instead of being skipped by the single-flight guard.
@@ -149,6 +149,7 @@ const armReadyTimeoutMs = positiveInteger(
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
+const ambiguousDeliveryStatusKey = "firstmate-wake-delivery";
 
 let nextGenerationId = 0;
 let nextHandoffId = 0;
@@ -289,7 +290,9 @@ function validatePendingActionable(value: unknown): PendingActionableClose {
     typeof (value as { predecessorArmPid?: unknown }).predecessorArmPid !== "string" ||
     !/^[0-9]*$/.test((value as { predecessorArmPid: string }).predecessorArmPid) ||
     ((value as { delivered?: unknown }).delivered !== undefined &&
-      (value as { delivered?: unknown }).delivered !== true)
+      (value as { delivered?: unknown }).delivered !== true) ||
+    ((value as { ambiguous?: unknown }).ambiguous !== undefined &&
+      (value as { ambiguous?: unknown }).ambiguous !== true)
   ) {
     throw new Error(`invalid Pi replacement actionable handoff at ${actionableHandoff}`);
   }
@@ -420,7 +423,9 @@ function createGeneration(): SessionGeneration {
     seq: 0,
     pendingActionables: [],
     cleanupFailure: "",
-    unconsumedWakes: new Map(),
+    ambiguousWakes: new Map(),
+    deliveryBoundary: null,
+    statusUi: null,
     deferredClose: null,
   };
 }
@@ -511,42 +516,95 @@ export default function (pi: ExtensionAPI) {
     !calmPresentation.stockExportRendering &&
     !calmTranscriptClassIsVisible(itemClass);
 
+  function ambiguousDeliveryStatus(token: string): string {
+    return `watcher: self-delivery was ambiguous and the parent doorbell owns recovery for durable wake ${token}`;
+  }
+
+  function showAmbiguousDelivery(owner: SessionGeneration, token: string): void {
+    owner.statusUi?.setStatus(ambiguousDeliveryStatusKey, ambiguousDeliveryStatus(token));
+  }
+
+  function clearAmbiguousDeliveryStatus(owner: SessionGeneration): void {
+    if (owner.ambiguousWakes.size === 0 && !owner.pendingActionables.some((pending) => pending.ambiguous)) {
+      owner.statusUi?.setStatus(ambiguousDeliveryStatusKey, undefined);
+    }
+  }
+
+  function deliveryBoundaryIsSafe(boundary: DeliveryBoundary | null): boundary is DeliveryBoundary {
+    if (!boundary) return false;
+    try {
+      return boundary.isIdle() === true && boundary.hasPendingMessages() === false;
+    } catch {
+      return false;
+    }
+  }
+
+  function rememberDeliveryBoundary(owner: SessionGeneration, ctx: ExtensionContext): void {
+    owner.statusUi = ctx.ui;
+    owner.deliveryBoundary = deliveryBoundaryIsSafe(ctx) ? ctx : null;
+    if (owner.deliveryBoundary) void processPendingActionables(owner);
+  }
+
+  function invalidateDeliveryBoundary(owner: SessionGeneration): void {
+    owner.deliveryBoundary = null;
+  }
+
   async function sendWake(
     owner: SessionGeneration,
     message: string,
     pending?: PendingActionableClose,
   ): Promise<boolean> {
     if (!generationIsLive(owner)) return false;
+    if (pending) {
+      if (pending.ambiguous || owner.ambiguousWakes.size > 0) {
+        showAmbiguousDelivery(owner, pending.token);
+        return false;
+      }
+      if (!deliveryBoundaryIsSafe(owner.deliveryBoundary)) {
+        owner.deliveryBoundary = null;
+        return false;
+      }
+      owner.deliveryBoundary = null;
+    }
     const content = encodeFirstmateOperationalInput(
       "watcher",
-      `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
+      `FIRSTMATE WATCHER WAKE: ${message}${pending ? `\n\nFirstmate self-delivery token: ${pending.token}` : ""}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
-    if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
-    try {
-      await pi.sendUserMessage(content, { deliverAs: "followUp" });
-    } catch (error) {
-      if (pending) owner.unconsumedWakes.delete(pending.token);
-      throw error;
+    if (pending) {
+      pending.ambiguous = true;
+      owner.ambiguousWakes.set(pending.token, { content, pending });
+      showAmbiguousDelivery(owner, pending.token);
     }
-    // Accepted by Pi. A generation replaced while Pi was accepting it may
-    // have lost the follow-up with the old session, so report it undelivered
-    // and let the replacement replay the still-pending record.
-    return generationIsLive(owner);
+    try {
+      pi.sendUserMessage(content, { deliverAs: "followUp" });
+    } catch {
+      // A synchronous exception is clearer than Pi's ordinary asynchronous
+      // ambiguity, but the at-most-one-turn containment still never retries.
+    }
+    return true;
   }
 
-  // Pi consumed a main follow-up: an idle main at before_agent_start, a
-  // streaming main at the user message_start that joins the running run.
+  // Exact tokenized prompt consumption is the only event that resolves an
+  // ambiguous self-delivery. Aggregate idle, error, and compaction state does
+  // not change it.
   function consumeWake(owner: SessionGeneration, text: string): void {
-    for (const [token, wake] of owner.unconsumedWakes) {
+    for (const [token, wake] of owner.ambiguousWakes) {
       if (wake.content !== text) continue;
-      owner.unconsumedWakes.delete(token);
+      owner.ambiguousWakes.delete(token);
+      delete wake.pending.ambiguous;
       wake.pending.delivered = true;
       try {
         finishPendingActionable(owner, wake.pending);
       } catch (error) {
-        surfaceCleanupFailure(owner, error);
+        const detail = error instanceof Error ? error.message : String(error);
+        owner.cleanupFailure = detail;
+        owner.statusUi?.setStatus(
+          "firstmate-watcher-failure",
+          "watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery",
+        );
         schedulePendingCleanup(owner);
       }
+      clearAmbiguousDeliveryStatus(owner);
       return;
     }
   }
@@ -677,6 +735,7 @@ export default function (pi: ExtensionAPI) {
     clearReplacementHandoff(pending);
     const index = owner.pendingActionables.findIndex((item) => item.token === pending.token);
     if (index >= 0) owner.pendingActionables.splice(index, 1);
+    if (owner.cleanupFailure) owner.statusUi?.setStatus("firstmate-watcher-failure", undefined);
     owner.cleanupFailure = "";
   }
 
@@ -714,10 +773,16 @@ export default function (pi: ExtensionAPI) {
             surfaceCleanupFailure(owner, error);
           }
         }
-        // A record Pi has accepted but not consumed is neither redelivered
-        // nor finished here: consumption finishes it, replacement replays it.
+        // An ambiguous fire-and-forget submission blocks every later main
+        // self-delivery in this generation. Exact consumption finishes it;
+        // aggregate lifecycle events and replacements never replay it.
+        const ambiguous = owner.pendingActionables.find((item) => item.ambiguous);
+        if (ambiguous) {
+          showAmbiguousDelivery(owner, ambiguous.token);
+          break;
+        }
         const pending = owner.pendingActionables.find(
-          (item) => !item.delivered && !owner.unconsumedWakes.has(item.token),
+          (item) => !item.delivered && !owner.ambiguousWakes.has(item.token),
         );
         if (!pending) break;
         const existingClaim = replacementCoordinator.deliveries.get(pending.token);
@@ -760,18 +825,18 @@ export default function (pi: ExtensionAPI) {
             releaseClaim();
             return;
           }
-          const awaitingConsumption = owner.unconsumedWakes.has(pending.token);
+          const awaitingConsumption = owner.ambiguousWakes.has(pending.token);
           if (awaitingConsumption && !generationIsLive(owner)) {
-            // Pi accepted the follow-up, then the session was replaced before
-            // this continuation ran: the shutdown persisted the still-pending
-            // record, so a replacement waiting on this claim must replay it.
-            settleClaim("failed");
+            // The still-durable ambiguous record was persisted at shutdown.
+            // A replacement must not replay it because old preflight can still
+            // start; the parent doorbell owns recovery.
+            settleClaim("delivered");
             releaseClaim();
             return;
           }
           settleClaim("delivered");
           if (!awaitingConsumption) {
-            // The branch handled it, or Pi consumed it before this ran.
+            // The branch handled it, or exact Pi consumption ran synchronously.
             pending.delivered = true;
             try {
               finishPendingActionable(owner, pending);
@@ -885,6 +950,22 @@ export default function (pi: ExtensionAPI) {
       await waitForRetry(attempt + 1);
     }
     return { failure: `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries` };
+  }
+
+  async function restoreWhileDeliveryIsAmbiguous(
+    owner: SessionGeneration,
+    predecessorArmPid: string,
+  ): Promise<void> {
+    if (!generationIsLive(owner) || owner.restoring) return;
+    owner.restoring = true;
+    try {
+      const restoration = await restoreAfterActionableClose(owner, predecessorArmPid);
+      if (restoration.failure && generationIsLive(owner)) {
+        owner.statusUi?.setStatus("firstmate-watcher-failure", restoration.failure.split("\n")[0]);
+      }
+    } finally {
+      if (generationIsLive(owner)) owner.restoring = false;
+    }
   }
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
@@ -1005,9 +1086,14 @@ export default function (pi: ExtensionAPI) {
       const predecessor = String(armChild.pid ?? "");
       if (classification.kind === "actionable") {
         const pending = armPendingActionable.get(armChild) ?? createPendingActionable(classification.message, predecessor);
+        const deliveryAlreadyAmbiguous = owner.pendingActionables.some((item) => item.ambiguous);
         enqueuePendingActionable(owner, pending);
         if (!generationIsLive(owner)) return;
         owner.retryFailures = 0;
+        if (deliveryAlreadyAmbiguous) {
+          void restoreWhileDeliveryIsAmbiguous(owner, predecessor);
+          return;
+        }
         void processPendingActionables(owner);
         return;
       }
@@ -1040,8 +1126,9 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  function activateOwnedWatch(owner: SessionGeneration): ArmResult {
+  function activateOwnedWatch(owner: SessionGeneration, ctx?: ExtensionContext): ArmResult {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
+    if (ctx) owner.statusUi = ctx.ui;
     if (lockOwnership() !== "owned") return startArm(owner);
     replacementCoordinator.receiver = receiveReplacementActionable;
     let pending: PendingActionableClose[] = [];
@@ -1056,6 +1143,8 @@ export default function (pi: ExtensionAPI) {
     for (const actionable of [...pending, ...inProcessPending]) {
       enqueuePendingActionable(owner, actionable);
     }
+    const ambiguous = owner.pendingActionables.find((item) => item.ambiguous);
+    if (ambiguous) showAmbiguousDelivery(owner, ambiguous.token);
     if (owner.pendingActionables.length > 0) {
       if (loadFailure) surfaceFailure(owner, loadFailure);
       const armResult = startArm(owner, owner.pendingActionables[0].predecessorArmPid);
@@ -1071,19 +1160,34 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on?.("before_agent_start", (event) => {
+    invalidateDeliveryBoundary(generation);
     consumeWake(generation, event.prompt);
   });
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;
+    invalidateDeliveryBoundary(generation);
     consumeWake(generation, userMessageText(event.message.content));
   });
+  pi.on?.("agent_start", () => {
+    invalidateDeliveryBoundary(generation);
+  });
+  pi.on?.("agent_settled", (_event, ctx) => {
+    rememberDeliveryBoundary(generation, ctx);
+  });
+  pi.on?.("session_before_compact", () => {
+    invalidateDeliveryBoundary(generation);
+  });
+  pi.on?.("session_compact", (_event, ctx) => {
+    rememberDeliveryBoundary(generation, ctx);
+  });
 
-  pi.on?.("session_start", async () => {
+  pi.on?.("session_start", async (_event, ctx) => {
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
+    generation.statusUi = ctx.ui;
     markLoaded();
     if (lockOwnership() !== "owned") return;
-    activateOwnedWatch(generation);
+    activateOwnedWatch(generation, ctx);
   });
   pi.on?.("session_shutdown", async (event) => {
     const replacement = event.reason === "reload" || event.reason === "new" || event.reason === "resume" || event.reason === "fork";
@@ -1094,7 +1198,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand?.("fm-watch-arm-pi", {
     description: "Arm firstmate watcher supervision through the Pi extension instead of foreground bash.",
     handler: async (_args, ctx) => {
-      const result = activateOwnedWatch(generation);
+      const result = activateOwnedWatch(generation, ctx);
       ctx.ui.notify(result.message, result.ok ? "info" : "warning");
     },
   });

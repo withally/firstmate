@@ -426,6 +426,34 @@ ok - live Herdr submit confirm: Claude Code (2.1.251 (Claude Code)) on herdr 0.8
 ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms short/long idle/busy sends in an isolated named lab
 ```
 
+### Pi watcher wake-turn containment
+
+The predecessor live guard measured real queue acknowledgement on 2026-09-06 against Herdr 0.8.2 and Pi 0.85.0 using `openai-codex/gpt-5.6-sol` at medium reasoning effort.
+It appended a real status wake to an isolated Pi-shaped Firstmate home, observed its durable queue row, and then observed that row disappear through normal drain and acknowledgement without sending a parent doorbell.
+Its bounded result was:
+
+```text
+ok - live Pi watcher wake: Pi 0.85.0 on herdr 0.8.2 drained and acknowledged a unique FM_PI_HERDR_WAKE token without a parent doorbell in an isolated named lab
+```
+
+The current temporary containment adds the portable at-most-one-turn invariant and changes the live guard to establish an authoritative settled boundary before appending the wake.
+This task's unguarded brief prohibited Herdr lifecycle execution, so the updated guard was verified to self-skip but was not used to overwrite the historical live result above.
+Refresh the current live proof only from a Herdr-lab-authorized task with:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  FM_PI_HERDR_WAKE_LIVE=1 \
+  bin/fm-test-run.sh tests/fm-pi-herdr-wake-live-e2e.test.sh
+```
+
+The current no-opt-in result on 2026-09-06 was:
+
+```text
+FM_TEST_BEGIN 2026-09-06T13:22:45Z tests/fm-pi-herdr-wake-live-e2e.test.sh family=live-harness-optin expected_gate_skip=optin-env
+skip: set FM_PI_HERDR_WAKE_LIVE=1 to run the live Pi-on-Herdr watcher wake-turn guard
+FM_TEST_END 2026-09-06T13:22:45Z tests/fm-pi-herdr-wake-live-e2e.test.sh exit=0 duration_ms=22 gate_skip=true
+```
+
 ### Prune and respawn
 
 The real label-collision reproduction is owned by:
@@ -1198,14 +1226,14 @@ ok - real Pi SDK 0.84.4 returns a post-construction 429 wake to main without los
 ```
 
 The current portable regression proves that only consecutive provider errors count toward the two-error broken-branch latch: a durable report between errors resets the streak, the error that reaches the threshold rejects to watcher-owned fallback, and the next wake remains on main without another branch prompt.
-`tests/fm-pi-watch-extension.test.sh` owns the provider-free integration evidence that watcher fallback remains pending until Pi accepts the main follow-up or the branch settles successfully, and that a follow-up accepted while main is streaming neither stalls the successor chain nor escapes replacement replay until Pi consumes it.
+`tests/fm-pi-watch-extension.test.sh` owns the provider-free integration evidence that watcher fallback remains durable until either the branch settles successfully or one main self-submission is made from the temporary containment's authoritative idle boundary.
 [`pi-supervision-branch.md`](../pi-supervision-branch.md) owns the current cooldown, recovery, and re-latch contract and points to the regression that now covers it.
 
 Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
 The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh the SDK construction, picker, renderer, and type evidence after every Pi upgrade by rerunning the applicable live guard probes, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists).
 The live guard now drives both extensions through the watcher-owned settlement handshake, requires rejected branch settlement before main delivery, and verifies successor-delivery confirmation; rerun it against the matching importable Pi package to refresh end-to-end fallback evidence.
 
-### 2026-09-02 streaming-time watcher delivery
+### 2026-09-02 historical streaming-time watcher delivery
 
 The focused watcher suite, strict typecheck, and credential-free live guard were run against the npm `@earendil-works/pi-coding-agent` 0.84.4 package selected with `FM_PI_PACKAGE_DIR`, on macOS 26.6.2 arm64, Node v24.14.1, after the watcher extension stopped waiting for `before_agent_start` before settling a main delivery.
 No credential was read, no request left the machine, and the active Pi session was not changed.
@@ -1224,7 +1252,7 @@ ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.84.4
 ok - real Pi SDK 0.84.4 queues a streaming-time watcher wake without before_agent_start, keeps the successor chain, and surfaces consumption of both follow-ups
 ```
 
-The live probe loads the tracked watcher extension through Pi's real resource loader into a real AgentSession whose only provider is a local fake with its fetch intercepted in-process and held open mid-stream.
-It proved that a follow-up the extension sends while main is streaming raises no `before_agent_start` at queue time or when the run reaches it, joins the run as a user `message_start` carrying the exact wake text in its own model turn, and is followed by a verified successor and delivery of the next close; a follow-up sent to the idle main raises `before_agent_start` with the exact text before its user `message_start`.
-The portable regression drives the same shape with a fake main that never raises `before_agent_start` while streaming, then proves a replacement replays only the follow-up Pi had not consumed and that an exhausted restoration delivers its typed failure without launching a further arm.
+The historical live probe loaded the tracked watcher extension through Pi's real resource loader into a real AgentSession whose only provider was a local fake with its fetch intercepted in-process and held open mid-stream.
+It proved that a follow-up sent while main was streaming raised no `before_agent_start` at queue time or when the run reached it, joined the run as a user `message_start` carrying the exact wake text in its own model turn, and was followed by a verified successor and delivery of the next close.
+That streaming delivery contract is superseded by [Pi watcher wake-turn containment](#pi-watcher-wake-turn-containment), which never self-submits while main is streaming and never replays an ambiguous submission on replacement.
 A second regression holds a branch settlement open while the verified successor exits with a failure, and proves that failure takes the ordinary bounded retry once the delivery settles rather than leaving the generation with no watcher and no retry.

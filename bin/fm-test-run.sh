@@ -287,6 +287,7 @@ family_for_basename() {
     fm-afk-herdr-claude-busy-guard-live-e2e.test.sh|\
     fm-procevent-lavish-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
+    fm-pi-herdr-wake-live-e2e.test.sh|\
     fm-pi-clear-on-shrink-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\

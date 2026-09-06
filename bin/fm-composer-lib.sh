@@ -978,6 +978,14 @@ _fm_composer_screen_row() {  # <n> <screen>
   printf '%s\n' "$2" | sed -n "$(($1 + 1))p"
 }
 
+_fm_composer_screen_row_if_present() {  # <n> <screen>
+  local n=$1
+  printf '%s' "$2" | awk -v wanted="$((n + 1))" '
+    NR == wanted { print; found=1; exit }
+    END { if (!found) exit 1 }
+  '
+}
+
 # _fm_composer_row_content: extract the classification content of one raw row:
 # ghost-strip when styled, plain otherwise, normalize-trim, and strip one
 # matching pair of side border glyphs.
@@ -1063,8 +1071,9 @@ _fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
   [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" = 1 ] || return 1
   row=$((FM_COMPOSER_SCAN_PI_CLOSE + 1))
   while :; do
-    raw=$(_fm_composer_screen_row "$row" "$plain")
-    [ -n "$raw" ] || break
+    if ! raw=$(_fm_composer_screen_row_if_present "$row" "$plain"); then
+      break
+    fi
     trimmed=$raw
     fm_composer_normalize_trim_var trimmed
     if [ -z "$trimmed" ]; then

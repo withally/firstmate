@@ -352,6 +352,12 @@ test_pi_calm_live_capture_matrix() {
       || fail "tmux Pi 0.85.0 ${mode} idle control must read empty, got '$verdict'"
   done
 
+  screen=$(printf '%b' "$(awk '/~\/\.treehouse/ && !inserted { print ""; inserted=1 } { print }' \
+    "$fixture_root/herdr-calm-on-idle.ansi.txt")")
+  verdict=$(fm_composer_classify_screen "$caps_herdr" "$screen" '' "$identity")
+  [ "$verdict" = empty ] \
+    || fail "a blank row after the Pi separator pair must not hide the footer, got '$verdict'"
+
   screen=$(printf '%b' "$(cat "$fixture_root/herdr-calm-on-pending.ansi.txt")")
   verdict=$(fm_composer_classify_screen "$caps_herdr" "$screen" '' "$identity")
   [ "$verdict" = pending ] \

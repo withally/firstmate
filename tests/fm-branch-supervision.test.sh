@@ -235,6 +235,53 @@ test_legacy_action_rows_remain_readable_appendable_and_acknowledgeable() {
   pass "legacy firstmate-action rows read, permit strict appends, acknowledge, and rebuild with safe provenance defaults"
 }
 
+test_legacy_action_without_silent_retains_wake_validation() {
+  local home store out status seq snapshot
+  home="$TMP_ROOT/store-legacy-action-no-silent-home"
+  mkdir -p "$home/state"
+  store="$home/state/branch-outcomes.jsonl"
+  printf '%s\n' \
+    '{"seq":1,"epoch":1,"task":"legacy-action","wake":"signal: legacy-action","verdict":"firstmate-action","summary":"action outcome without silent","wake_seq":41}' \
+    > "$store"
+  printf 'kind=crew\n' > "$home/state/legacy-action.meta"
+  printf '0\n' > "$home/state/.branch-outcomes-cursor"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" list --recent 1) \
+    || fail "list refused the legacy firstmate-action row without silent"
+  assert_contains "$out" '"wake_seq":41' "list lost the wake-linked legacy action"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread) \
+    || fail "unread refused the legacy firstmate-action row without silent"
+  assert_contains "$out" '"seq":1' "unread lost the wake-linked legacy action"
+
+  seq=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task later --verdict routine --summary 'strict row after omitted silent') \
+    || fail "append refused valid legacy action history without silent"
+  [ "$seq" = 2 ] || fail "append after omitted-silent history assigned sequence $seq, not 2"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-read --through 1 \
+    || fail "mark-read refused valid legacy action history without silent"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" processed-init \
+    || fail "processed-init refused valid legacy action history without silent"
+
+  home="$TMP_ROOT/store-legacy-action-invalid-wake-home"
+  mkdir -p "$home/state"
+  store="$home/state/branch-outcomes.jsonl"
+  printf '%s\n' \
+    '{"seq":1,"epoch":1,"task":"legacy-action","wake":"signal: legacy-action","verdict":"firstmate-action","summary":"invalid wake sequence","wake_seq":0}' \
+    > "$store"
+  printf '0\n' > "$home/state/.branch-outcomes-cursor"
+  snapshot=$(cat "$store")
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "unread accepted an omitted-silent action with invalid wake_seq"
+  assert_contains "$out" "malformed or non-sequential" "invalid wake_seq refusal lost its diagnostic"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task later --verdict routine --summary 'must remain unrecorded' 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "append accepted an omitted-silent action with invalid wake_seq"
+  [ "$(cat "$store")" = "$snapshot" ] || fail "invalid wake_seq append changed the outcome store"
+  pass "legacy action rows without silent remain valid while wake_seq stays strict"
+}
+
 test_outcome_cursor_corruption_fails_closed() {
   local home store snapshot out status
   home="$TMP_ROOT/store-corrupt-cursor-home"
@@ -881,6 +928,7 @@ test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence
 test_outcome_startup_replay_stops_at_captain_barrier
 test_legacy_action_rows_remain_readable_appendable_and_acknowledgeable
+test_legacy_action_without_silent_retains_wake_validation
 test_outcome_cursor_corruption_fails_closed
 test_cursor_advancement_refuses_ahead_processed_marker
 test_outcome_sequence_conflicts_fail_closed

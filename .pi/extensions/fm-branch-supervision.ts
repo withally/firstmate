@@ -1054,10 +1054,10 @@ export default function (pi: ExtensionAPI) {
           if (!actionStatus.ok) return false;
           if (actionStatus.stdout === "started") {
             if (!runOutcomeScript(["mark-read", "--through", String(row.seq)]).ok) return false;
-          } else if (actionStatus.stdout !== "pending") {
-            return false;
+            continue;
           }
-          continue;
+          if (actionStatus.stdout !== "pending") return false;
+          return true;
         } else if (row.verdict !== "routine") {
           deliverRoutineOutcome(row);
         }

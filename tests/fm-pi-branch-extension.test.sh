@@ -1012,6 +1012,105 @@ EOF
   pass "legacy firstmate-action startup recovery uses one hidden handoff before advancing the cursor"
 }
 
+test_pending_firstmate_action_blocks_later_outcome_reconciliation() {
+  local repo home out status
+  repo="$TMP_ROOT/action-barrier-root"
+  home="$TMP_ROOT/action-barrier-home"
+  mkdir -p "$home/state/branch-action" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, settle, sentToMain, outcomeScript, defaultSessionCtx, mainEntries, home }; })()`);
+const { fire, settle, sentToMain, outcomeScript, defaultSessionCtx, mainEntries, home } = globalThis.__t;
+import { readFileSync, writeFileSync } from "node:fs";
+
+const state = `${home}/state`;
+writeFileSync(`${state}/.lock`, `${process.ppid}\n`);
+writeFileSync(`${state}/.wake-queue`, "");
+writeFileSync(
+  `${state}/branch-outcomes.jsonl`,
+  `${JSON.stringify({
+    seq: 1,
+    epoch: 1,
+    task: "legacy-action",
+    wake: "signal: legacy-action",
+    verdict: "firstmate-action",
+    summary: "authorized action",
+    silent: false,
+    wake_seq: 41,
+  })}\n${JSON.stringify({
+    seq: 2,
+    epoch: 2,
+    task: "later-captain",
+    wake: "signal: later-captain",
+    verdict: "captain",
+    summary: "must wait behind action",
+    silent: false,
+  })}\n`,
+);
+writeFileSync(`${state}/.branch-outcomes-cursor`, "0\n");
+writeFileSync(
+  `${state}/branch-action/wake-41.json`,
+  `${JSON.stringify({
+    version: "fm-branch-action-v1",
+    wake_seq: 41,
+    outcome_seq: 1,
+    state: "pending",
+    task: "legacy-action",
+    verdict: "firstmate-action",
+    summary: "authorized action",
+    wake: "signal: legacy-action",
+    silent: false,
+  })}\n`,
+);
+
+globalThis.__fmAutoStartMainMessage = false;
+fire("session_start", {}, defaultSessionCtx);
+await settle(() => sentToMain.some((sent) => sent.message.details?.verdict === "firstmate-action"), "pending action handoff");
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "0") {
+  throw new Error("reconciliation crossed a pending firstmate-action barrier");
+}
+if (mainEntries.some((entry) => entry.data?.seq === 2)) {
+  throw new Error("reconciliation presented a later captain outcome before the action started");
+}
+if (!outcomeScript(["unread"]).includes('"seq":2')) {
+  throw new Error("the later captain outcome was not kept unread behind the action");
+}
+if (outcomeScript(["action-status", "--seq", "1"]) !== "pending") {
+  throw new Error("the handoff started before its message_end boundary");
+}
+
+const actionDeliveries = sentToMain.filter((sent) => sent.message.details?.verdict === "firstmate-action");
+if (actionDeliveries.length !== 1) {
+  throw new Error(`pending action was handed off ${actionDeliveries.length} times: ${JSON.stringify(sentToMain)}`);
+}
+const delivery = actionDeliveries[0];
+fire("message_end", {
+  message: {
+    role: "custom",
+    customType: delivery.message.customType,
+    content: delivery.message.content,
+    display: delivery.message.display,
+    details: delivery.message.details,
+  },
+});
+await settle(() => outcomeScript(["action-status", "--seq", "1"]) === "started", "action start after barrier");
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "1") {
+  throw new Error("starting the hidden action did not acknowledge only that action");
+}
+if (!outcomeScript(["unread"]).includes('"seq":2')) {
+  throw new Error("the later captain outcome was skipped when the action started");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "pending firstmate-action must block later reconciliation: $out"
+  [ -z "$out" ] || fail "pending firstmate-action barrier regression printed output: $out"
+  pass "pending firstmate-action blocks later reconciliation until its handoff starts"
+}
+
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
   local repo home out status
   repo="$TMP_ROOT/requested-outcome-root"
@@ -4118,6 +4217,7 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_firstmate_action_startup_recovery_hands_off_legacy_row
+test_pending_firstmate_action_blocks_later_outcome_reconciliation
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
 test_captain_outcome_is_exactly_once_across_crash_reload_and_unrelated_response
 test_captain_outcome_processing_turn_is_sequence_keyed_and_re_presented

@@ -1,0 +1,24 @@
+== legacy store as supplied ==
+{"seq":1,"epoch":1,"task":"legacy-captain","wake":"","verdict":"captain","summary":"captain outcome before status provenance","silent":false}
+{"seq":2,"epoch":2,"task":"legacy-action","wake":"signal: legacy-action.status","verdict":"firstmate-action","summary":"action outcome before status provenance","silent":false,"wake_seq":41}
+== list accepts legacy firstmate-action row ==
+{"seq":1,"epoch":1,"task":"legacy-captain","wake":"","verdict":"captain","summary":"captain outcome before status provenance","silent":false}
+{"seq":2,"epoch":2,"task":"legacy-action","wake":"signal: legacy-action.status","verdict":"firstmate-action","summary":"action outcome before status provenance","silent":false,"wake_seq":41}
+== strict append after legacy history ==
+assigned sequence: 3
+appended row:
+{"seq":3,"epoch":1788659630,"task":"current","wake":"","verdict":"routine","summary":"new strict row after legacy history","silent":false,"statusEndpoint":0,"statusIdent":"-"}
+== read and process acknowledgements ==
+cursor: 2
+processed: 1
+rebuilt legacy index: fm-branch-outcome-index-v1	2	0	-
+unread after acknowledging the legacy rows:
+{"seq":3,"epoch":1788659630,"task":"current","wake":"","verdict":"routine","summary":"new strict row after legacy history","silent":false,"statusEndpoint":0,"statusIdent":"-"}
+== main drain with all-legacy action history and uncovered done status ==
+first drain output:
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+legacy-action done: legacy action recovery is visible again
+outcome-index-ready: 1
+rebuilt legacy action index: fm-branch-outcome-index-v1	1	0	-
+second drain output (idempotent):
+(empty)

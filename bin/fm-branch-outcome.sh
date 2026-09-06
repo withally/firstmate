@@ -5,9 +5,11 @@
 # CONTRACT (this header is the one owner of the store's format).
 #   - Store: $STATE/branch-outcomes.jsonl, strictly APPEND-ONLY. One JSON
 #     object per line: {"seq":N,"epoch":N,"task":"...","wake":"...",
-#     "verdict":"routine"|"captain","summary":"...","silent":true|false,
-#     "statusEndpoint":N,"statusIdent":"..."}. Legacy rows without `silent`
-#     or status provenance remain valid and are treated as visible.
+#     "verdict":"routine"|"captain"|"firstmate-action","summary":"...",
+#     "silent":true|false,"statusEndpoint":N,"statusIdent":"..."}.
+#     A wake-linked firstmate-action row carries `wake_seq`:N. Legacy rows
+#     without `silent` or status provenance remain valid and are treated as
+#     visible, including wake-linked rows with `wake_seq` but no provenance.
 #     Every read and append validates the complete log as a gap-free sequence;
 #     malformed, duplicate, or reordered rows fail closed.
 #     Existing lines are never rewritten, reordered, or deleted by any

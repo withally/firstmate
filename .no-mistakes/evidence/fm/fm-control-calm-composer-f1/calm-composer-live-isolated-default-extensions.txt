@@ -1,0 +1,21 @@
+identity=pi	idle initial=empty settled=empty byte_identical=1
+     1	852af5566c/01M1T30QEGN63352MBMK9RK66M' && env HOME='/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00
+     2	000gn/T//fm-live-default-ext.NByrwP/home' PI_CODING_AGENT_DIR='/var/folders/3n/3wfcplrn3clf44
+     3	hjjkfgq8t00000gn/T//fm-live-default-ext.NByrwP/pi-agent' PI_OFFLINE=1 FM_ROOT_OVERRIDE='/var/
+     4	folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-live-default-ext.NByrwP/home' pi --approve --
+     5	no-session --no-context-files -e '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN
+     6	63352MBMK9RK66M/.pi/extensions/fm-calm.ts' --mcp-config '/var/folders/3n/3wfcplrn3clf44hjjkfg
+     7	q8t00000gn/T//fm-live-default-ext.NByrwP/mcp.json' --model openai-codex/gpt-5.6-sol --thinkin
+     8	g medium --tools bash
+     9	
+    10	 Warning: fd not found. Offline mode enabled, skipping download.                             
+    11	
+    12	─────────────────────────────────────────────────────────────────────────────────────────────
+    13	 Error: MCP: Failed to connect to synthetic: Connection closed                               
+    14	
+    15	─────────────────────────────────────────────────────────────────────────────────────────────
+    16	                                                                                             
+    17	─────────────────────────────────────────────────────────────────────────────────────────────
+    18	/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M (detached)
+    19	0.0%/272k (auto)                                          (openai-codex) gpt-5.6-sol • medium
+    20	🔌 MCP: 1 server enabled

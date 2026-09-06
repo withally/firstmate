@@ -1,0 +1,101 @@
+
+[before_escape] target=fm-lab-fm-live-diag-35825-11199:w1:p1
+rows=29
+classifier=unknown
+     1	cd '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M' && FM_ROOT_OV
+     2	ERRIDE='/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-live-diag.QRx4cH/home' pi --appr
+     3	ove --no-session --no-context-files --no-extensions -e '/Users/ivan/.no-mistakes/worktrees/37
+     4	852af5566c/01M1T30QEGN63352MBMK9RK66M/.pi/extensions/fm-calm.ts' --model openai-codex/gpt-5.6
+     5	-sol --thinking medium --tools bash
+     6	ivan@Ivans-MacBook-Pro 01M1T30QEGN63352MBMK9RK66M % cd '/Users/ivan/.no-mistakes/worktrees/37
+     7	852af5566c/01M1T30QEGN63352MBMK9RK66M' && FM_ROOT_OVERRIDE='/var/folders/3n/3wfcplrn3clf44hjj
+     8	kfgq8t00000gn/T//fm-live-diag.QRx4cH/home' pi --approve --no-session --no-context-files --no-
+     9	extensions -e '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M/.pi
+    10	/extensions/fm-calm.ts' --model openai-codex/gpt-5.6-sol --thinking medium --tools bash
+    11	
+    12	─────────────────────────────────────────────────────────────────────────────────────────────
+    13	 Update Available                                                                            
+    14	 New version 0.85.1 is available. Run pi update                                              
+    15	 Changelog: https://pi.dev/changelog                                                         
+    16	─────────────────────────────────────────────────────────────────────────────────────────────
+    17	
+    18	─────────────────────────────────────────────────────────────────────────────────────────────
+    19	 Package Updates Available                                                                   
+    20	 Package updates are available. Run pi update --extensions                                   
+    21	 Packages:                                                                                   
+    22	 - pi-mcp-adapter                                                                            
+    23	─────────────────────────────────────────────────────────────────────────────────────────────
+    24	
+    25	─────────────────────────────────────────────────────────────────────────────────────────────
+    26	                                                                                             
+    27	─────────────────────────────────────────────────────────────────────────────────────────────
+    28	~/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M (detached)
+    29	$0.000 (sub) 0.0%/272k (auto)                             (openai-codex) gpt-5.6-sol • medium
+
+[after_escape_1] target=fm-lab-fm-live-diag-35825-11199:w1:p1
+rows=29
+classifier=unknown
+     1	cd '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M' && FM_ROOT_OV
+     2	ERRIDE='/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-live-diag.QRx4cH/home' pi --appr
+     3	ove --no-session --no-context-files --no-extensions -e '/Users/ivan/.no-mistakes/worktrees/37
+     4	852af5566c/01M1T30QEGN63352MBMK9RK66M/.pi/extensions/fm-calm.ts' --model openai-codex/gpt-5.6
+     5	-sol --thinking medium --tools bash
+     6	ivan@Ivans-MacBook-Pro 01M1T30QEGN63352MBMK9RK66M % cd '/Users/ivan/.no-mistakes/worktrees/37
+     7	852af5566c/01M1T30QEGN63352MBMK9RK66M' && FM_ROOT_OVERRIDE='/var/folders/3n/3wfcplrn3clf44hjj
+     8	kfgq8t00000gn/T//fm-live-diag.QRx4cH/home' pi --approve --no-session --no-context-files --no-
+     9	extensions -e '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M/.pi
+    10	/extensions/fm-calm.ts' --model openai-codex/gpt-5.6-sol --thinking medium --tools bash
+    11	
+    12	─────────────────────────────────────────────────────────────────────────────────────────────
+    13	 Update Available                                                                            
+    14	 New version 0.85.1 is available. Run pi update                                              
+    15	 Changelog: https://pi.dev/changelog                                                         
+    16	─────────────────────────────────────────────────────────────────────────────────────────────
+    17	
+    18	─────────────────────────────────────────────────────────────────────────────────────────────
+    19	 Package Updates Available                                                                   
+    20	 Package updates are available. Run pi update --extensions                                   
+    21	 Packages:                                                                                   
+    22	 - pi-mcp-adapter                                                                            
+    23	─────────────────────────────────────────────────────────────────────────────────────────────
+    24	
+    25	─────────────────────────────────────────────────────────────────────────────────────────────
+    26	                                                                                             
+    27	─────────────────────────────────────────────────────────────────────────────────────────────
+    28	~/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M (detached)
+    29	$0.000 (sub) 0.0%/272k (auto)                             (openai-codex) gpt-5.6-sol • medium
+
+[after_escape_2] target=fm-lab-fm-live-diag-35825-11199:w1:p1
+rows=29
+classifier=unknown
+     1	cd '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M' && FM_ROOT_OV
+     2	ERRIDE='/var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-live-diag.QRx4cH/home' pi --appr
+     3	ove --no-session --no-context-files --no-extensions -e '/Users/ivan/.no-mistakes/worktrees/37
+     4	852af5566c/01M1T30QEGN63352MBMK9RK66M/.pi/extensions/fm-calm.ts' --model openai-codex/gpt-5.6
+     5	-sol --thinking medium --tools bash
+     6	ivan@Ivans-MacBook-Pro 01M1T30QEGN63352MBMK9RK66M % cd '/Users/ivan/.no-mistakes/worktrees/37
+     7	852af5566c/01M1T30QEGN63352MBMK9RK66M' && FM_ROOT_OVERRIDE='/var/folders/3n/3wfcplrn3clf44hjj
+     8	kfgq8t00000gn/T//fm-live-diag.QRx4cH/home' pi --approve --no-session --no-context-files --no-
+     9	extensions -e '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M/.pi
+    10	/extensions/fm-calm.ts' --model openai-codex/gpt-5.6-sol --thinking medium --tools bash
+    11	
+    12	─────────────────────────────────────────────────────────────────────────────────────────────
+    13	 Update Available                                                                            
+    14	 New version 0.85.1 is available. Run pi update                                              
+    15	 Changelog: https://pi.dev/changelog                                                         
+    16	─────────────────────────────────────────────────────────────────────────────────────────────
+    17	
+    18	─────────────────────────────────────────────────────────────────────────────────────────────
+    19	 Package Updates Available                                                                   
+    20	 Package updates are available. Run pi update --extensions                                   
+    21	 Packages:                                                                                   
+    22	 - pi-mcp-adapter                                                                            
+    23	─────────────────────────────────────────────────────────────────────────────────────────────
+    24	
+    25	─────────────────────────────────────────────────────────────────────────────────────────────
+    26	                                                                                             
+    27	─────────────────────────────────────────────────────────────────────────────────────────────
+    28	~/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M (detached)
+    29	$0.000 (sub) 0.0%/272k (auto)                             (openai-codex) gpt-5.6-sol • medium
+
+[settle_probe] byte_identical=1 classifier_from_second=unknown

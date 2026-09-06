@@ -1,0 +1,27 @@
+target=fm-lab-fm-live-mcp-5947-21384:w1:p1 identity=pi	idle initial_classifier=empty
+settled_byte_identical=1 settled_classifier=empty
+     1	lf44hjjkfgq8t00000gn/T//fm-live-mcp.beJGZ7/pi-agent' PI_OFFLINE=1 FM_ROOT_OVERRIDE='/var/fold
+     2	ers/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-live-mcp.beJGZ7/home' pi --approve --no-session -
+     3	-no-context-files --no-extensions -e '/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M1T30
+     4	QEGN63352MBMK9RK66M/.pi/extensions/fm-calm.ts' -e '/var/folders/3n/3wfcplrn3clf44hjjkfgq8t000
+     5	00gn/T//fm-live-mcp.beJGZ7/pi-agent/npm/node_modules/pi-mcp-adapter/index.ts' --mcp-config '/
+     6	var/folders/3n/3wfcplrn3clf44hjjkfgq8t00000gn/T//fm-live-mcp.beJGZ7/home/mcp.json' --model op
+     7	enai-codex/gpt-5.6-sol --thinking medium --tools bash
+     8	
+     9	 Warning: fd not found. Offline mode enabled, skipping download.                             
+    10	
+    11	─────────────────────────────────────────────────────────────────────────────────────────────
+    12	MCP: Failed to connect to figma: Dynamic Client Registration rejected (HTTP 403): Forbidden —
+    13	 probe: endpoint returned text/plain (401) — this URL does not appear to speak MCP───────────
+    14	 Error: MCP: Failed to connect to figma: Dynamic Client Registration rejected (HTTP 403):    
+    15	 Forbidden — probe: endpoint returned text/plain (401) — this URL does not appear to speak   
+    16	 MCP                                                                                         
+    17	
+    18	 Error: MCP: Failed to connect to synthetic: Connection closed                               
+    19	
+    20	─────────────────────────────────────────────────────────────────────────────────────────────
+    21	                                                                                             
+    22	─────────────────────────────────────────────────────────────────────────────────────────────
+    23	~/.no-mistakes/worktrees/37852af5566c/01M1T30QEGN63352MBMK9RK66M (detached)
+    24	0.0%/272k (auto)                                          (openai-codex) gpt-5.6-sol • medium
+    25	🔌 MCP: 2 servers enabled

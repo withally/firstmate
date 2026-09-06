@@ -3808,18 +3808,19 @@ test_real_pi_picker_primitives_stay_bounded_and_searchable() {
   fixture="$TMP_ROOT/real-picker-primitives"
   mkdir -p "$fixture/lib" "$fixture/node_modules/@earendil-works"
   cp "$ROOT/.pi/extensions/lib/fm-branch-model-picker.ts" "$fixture/lib/fm-branch-model-picker.ts"
-  ln -s "$package_dir" "$fixture/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$package_dir/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
   original_dir=$PWD
   cd "$fixture" || fail "could not enter the Pi picker primitives fixture"
-  LIB="$fixture/lib/fm-branch-model-picker.ts" PI_VERSION_FILE="$package_dir/package.json" \
+  LIB="$fixture/lib/fm-branch-model-picker.ts" PI_VERSION_FILE="$package_dir/package.json" PI_PACKAGE_DIR="$package_dir" \
     node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'JS'
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 
 const version = JSON.parse(readFileSync(process.env.PI_VERSION_FILE, "utf8")).version;
 const { Input, SelectList, fuzzyFilter } = await import("@earendil-works/pi-tui");
-const { DynamicBorder } = await import("@earendil-works/pi-coding-agent");
+const { DynamicBorder } = await import(
+  pathToFileURL(`${process.env.PI_PACKAGE_DIR}/dist/modes/interactive/components/dynamic-border.js`).href
+);
 for (const [name, value] of [
   ["Input", Input],
   ["SelectList", SelectList],
@@ -3894,18 +3895,25 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers() {
     return
   fi
   fixture="$TMP_ROOT/stock-render-consumers"
-  mkdir -p "$fixture/.pi/extensions/lib" "$fixture/node_modules/@earendil-works"
-  cp "$EXT" "$fixture/.pi/extensions/fm-branch-supervision.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$fixture/.pi/extensions/lib/fm-branch-dispatch.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-branch-model-picker.ts" "$fixture/.pi/extensions/lib/fm-branch-model-picker.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$fixture/.pi/extensions/lib/fm-calm-visibility.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/.pi/extensions/lib/fm-operational-input.ts"
-  ln -s "$package_dir" "$fixture/node_modules/@earendil-works/pi-coding-agent"
+  install_pi_branch_extension_fixture "$fixture"
+  # Keep the extension on the hermetic SDK fixture: the installed package's
+  # root export eagerly imports optional experimental server dependencies.
+  # The consumers below still come from the installed package, and the
+  # extension's renderers use Pi's real TUI objects for the comparison.
+  rm -rf "$fixture/node_modules/@earendil-works/pi-tui"
   ln -s "$package_dir/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
-  ln -s "$package_dir/node_modules/@earendil-works/pi-ai" "$fixture/node_modules/@earendil-works/pi-ai"
-  ln -s "$package_dir/node_modules/typebox" "$fixture/node_modules/typebox"
+  mv "$fixture/node_modules/@earendil-works/pi-coding-agent/index.js" "$fixture/node_modules/@earendil-works/pi-coding-agent/stub-index.js"
+  cat > "$fixture/node_modules/@earendil-works/pi-coding-agent/index.js" <<'JS'
+import { pathToFileURL } from "node:url";
 
-  out=$(cd "$fixture" && EXT="$fixture/.pi/extensions/fm-branch-supervision.ts" PI_PACKAGE_DIR="$package_dir" node --input-type=module 2>&1 <<'JS'
+export * from "./stub-index.js";
+const installed = await import(pathToFileURL(process.env.FM_REAL_PI_TOOL_EXECUTION).href);
+const keybindings = await import(pathToFileURL(process.env.FM_REAL_PI_KEY_HINT).href);
+export const ToolExecutionComponent = installed.ToolExecutionComponent;
+export const keyHint = keybindings.keyHint;
+JS
+
+  out=$(cd "$fixture" && EXT="$fixture/.pi/extensions/fm-branch-supervision.ts" PI_PACKAGE_DIR="$package_dir" FM_REAL_PI_TOOL_EXECUTION="$package_dir/dist/modes/interactive/components/tool-execution.js" FM_REAL_PI_KEY_HINT="$package_dir/dist/modes/interactive/components/keybinding-hints.js" node --input-type=module 2>&1 <<'JS'
 import { pathToFileURL } from "node:url";
 
 const packageRoot = process.env.PI_PACKAGE_DIR;

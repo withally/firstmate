@@ -1084,12 +1084,12 @@ _fm_composer_classify_bare_row() {  # <screen> <styled> <row>
 # dead-shell guard correctly rejects it before this harness-specific proof is
 # considered.
 # This narrow fallback requires the valid separator pair, the path/stats footer
-# ordering, and no later prompt or structural row.
+# ordering, the MCP status row, and no later prompt or structural row.
 # The caller still requires native Pi identity and idle/done state before an
 # empty verdict, so this rendered footer string is never sufficient by itself.
 # A settle proof is required as a second gate for cursorless empty verdicts.
 _fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
-  local plain=$1 row raw trimmed phase=path footer_seen=0 glyph
+  local plain=$1 row raw trimmed phase=path footer_seen=0 status_seen=0
   [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" = 1 ] || return 1
   row=$((FM_COMPOSER_SCAN_PI_CLOSE + 1))
   while :; do
@@ -1117,14 +1117,19 @@ _fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
         phase=status
         ;;
       status)
-        fm_composer_row_has_edge "$trimmed" && return 1
-        fm_composer_leading_shell_glyph_var glyph "$trimmed" && return 1
-        fm_composer_leading_agent_glyph_var glyph "$trimmed" && return 1
+        if ! printf '%s\n' "$trimmed" | LC_ALL=C grep -Eq '^🔌 MCP: [0-9]+ servers? enabled$'; then
+          return 1
+        fi
+        status_seen=1
+        phase=done
+        ;;
+      done)
+        [ -z "$trimmed" ] || return 1
         ;;
     esac
     row=$((row + 1))
   done
-  [ "$footer_seen" = 1 ]
+  [ "$footer_seen" = 1 ] && [ "$status_seen" = 1 ]
 }
 
 fm_composer_pi_cursorless_footer_candidate() {  # <screen>

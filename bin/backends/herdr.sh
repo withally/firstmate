@@ -2623,7 +2623,8 @@ fm_backend_herdr_composer_settle_proof() {  # <target>
   case "$settle" in ''|*[!0-9.]*) return 1 ;; esac
   sleep "$settle"
   second=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES") || return 1
-  fm_composer_captures_settled "$first" "$second"
+  fm_composer_captures_settled "$first" "$second" || return 1
+  printf '%s' "$second"
 }
 
 # --- herdr composer capture and capability primitives -----------------------
@@ -2664,6 +2665,7 @@ fm_backend_herdr_composer_state() {  # <target> [expected-label] [output-mode] -
   local target=$1 cap caps verdict identity output=${3-}
   fm_backend_herdr_parse_target "$target" || { fm_composer_state_output unknown '' '' "$output"; return 0; }
   identity=''
+  local settled_cap
   if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   elif cap=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES"); then
@@ -2683,8 +2685,9 @@ fm_backend_herdr_composer_state() {  # <target> [expected-label] [output-mode] -
   if [ "$verdict" = unknown ] \
     && { [ "$identity" = $'pi\tidle' ] || [ "$identity" = $'pi\tdone' ]; } \
     && fm_composer_pi_cursorless_footer_candidate "$cap"; then
-    if fm_backend_herdr_composer_settle_proof "$target"; then
-      caps=$(printf '%s\nsettled=1' "$caps")
+    if settled_cap=$(fm_backend_herdr_composer_settle_proof "$target"); then
+      caps=$(printf 'styled=0\ncursor=0\nidentity=1\nrows=%s\nsettled=1' "$FM_COMPOSER_CAPTURE_LINES")
+      cap=$settled_cap
       verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
     fi
   fi

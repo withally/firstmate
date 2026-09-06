@@ -392,6 +392,23 @@ test_pi_calm_live_capture_matrix() {
   pass "matrix: real Pi Calm captures require structure plus identity, preserve pending text, and match tmux controls"
 }
 
+test_pi_calm_footer_requires_idle_mcp_status() {
+  local fixture_root="$ROOT/tests/fixtures/pi-0.85.0-calm-composer"
+  local caps identity screen verdict missing
+  caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=20\nsettled=1')
+  identity=$(printf 'pi\tidle')
+  screen=$(printf '%b' "$(cat "$fixture_root/herdr-calm-on-working.ansi.txt")")
+  verdict=$(fm_composer_classify_screen "$caps" "$screen" '' "$identity")
+  [ "$verdict" = unknown ] \
+    || fail "a stable Calm working indicator must stay unknown, got '$verdict'"
+  missing=$(sed '$d' "$fixture_root/herdr-calm-on-working.ansi.txt")
+  screen=$(printf '%b' "$missing")
+  verdict=$(fm_composer_classify_screen "$caps" "$screen" '' "$identity")
+  [ "$verdict" = unknown ] \
+    || fail "a Calm footer without its MCP status must stay unknown, got '$verdict'"
+  pass "matrix: Calm's cursorless footer requires an idle MCP status row"
+}
+
 test_matrix_opencode_leftbar_signals() {
   # Real idle opencode: `┃`-prefixed rows holding the "Ask anything..." hint,
   # blanks, and a Build-mode footer. Two independent idle signals: the shared
@@ -743,6 +760,7 @@ test_matrix_cursor_reverse_video_placeholder_remnant
 test_matrix_herdr_halfblock_rule_bounds_bare_wrap
 test_matrix_pi_separated_needs_identity
 test_pi_calm_live_capture_matrix
+test_pi_calm_footer_requires_idle_mcp_status
 test_matrix_opencode_leftbar_signals
 test_matrix_grok_titled_bottom_border
 test_matrix_kimi_bordered_shell_glyph_box

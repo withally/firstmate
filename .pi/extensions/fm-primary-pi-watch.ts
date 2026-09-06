@@ -12,15 +12,12 @@
 // Stale callbacks from a prior generation are no-ops against the active replacement.
 //
 // Delivery versus consumption (stated once here):
-// A main follow-up is delivered once Pi accepts it (sendUserMessage resolves).
-// The successor pipeline never waits for the model to read it: a follow-up
-// queued while main is streaming joins the running run without ever raising
-// before_agent_start, so waiting on that event stalls every later close.
-// Consumption is tracked only so a replacement can replay a follow-up Pi had
-// not consumed. An idle main consumes at before_agent_start; a streaming main
-// consumes at the user message_start carrying the exact wake text; either
-// event finishes the pending record, and a still-unconsumed record rides the
-// replacement handoff.
+// Pi follow-ups have a settled-boundary race: a follow-up accepted after the
+// agent loop's final queued-message check remains stranded until an unrelated
+// prompt starts another run. The watcher therefore never uses Pi's follow-up
+// queue. It waits for agent_settled, then submits the wake as a fresh turn.
+// Consumption at before_agent_start finishes the pending record; a wake still
+// waiting for that boundary or not yet consumed rides the replacement handoff.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -94,7 +91,9 @@ type SessionGeneration = {
   seq: number;
   pendingActionables: PendingActionableClose[];
   cleanupFailure: string;
-  // Main follow-ups Pi has accepted but not yet consumed, by pending token.
+  agentActive: boolean;
+  settledWaiters: Set<() => void>;
+  // Main wakes awaiting their fresh Pi turn, by pending token.
   // Never cleared at shutdown: a delivery continuation that runs after the
   // replacement began reads it to tell a main-queued wake (replayed) from a
   // branch-handled one (finished).
@@ -420,6 +419,8 @@ function createGeneration(): SessionGeneration {
     seq: 0,
     pendingActionables: [],
     cleanupFailure: "",
+    agentActive: false,
+    settledWaiters: new Set(),
     unconsumedWakes: new Map(),
     deferredClose: null,
   };
@@ -435,6 +436,9 @@ function generationIsLive(generation: SessionGeneration): boolean {
 
 function stopGeneration(generation: SessionGeneration): ChildProcess | null {
   generation.stopping = true;
+  generation.agentActive = false;
+  for (const resolveSettled of generation.settledWaiters) resolveSettled();
+  generation.settledWaiters.clear();
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   if (generation.cleanupTimer) clearTimeout(generation.cleanupTimer);
   generation.retryTimer = null;
@@ -511,6 +515,13 @@ export default function (pi: ExtensionAPI) {
     !calmPresentation.stockExportRendering &&
     !calmTranscriptClassIsVisible(itemClass);
 
+  function waitForAgentSettled(owner: SessionGeneration): Promise<void> {
+    if (!generationIsLive(owner) || !owner.agentActive) return Promise.resolve();
+    return new Promise((resolveSettled) => {
+      owner.settledWaiters.add(resolveSettled);
+    });
+  }
+
   async function sendWake(
     owner: SessionGeneration,
     message: string,
@@ -523,7 +534,9 @@ export default function (pi: ExtensionAPI) {
     );
     if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
     try {
-      await pi.sendUserMessage(content, { deliverAs: "followUp" });
+      await waitForAgentSettled(owner);
+      if (!generationIsLive(owner)) return false;
+      await pi.sendUserMessage(content);
     } catch (error) {
       if (pending) owner.unconsumedWakes.delete(pending.token);
       throw error;
@@ -534,8 +547,8 @@ export default function (pi: ExtensionAPI) {
     return generationIsLive(owner);
   }
 
-  // Pi consumed a main follow-up: an idle main at before_agent_start, a
-  // streaming main at the user message_start that joins the running run.
+  // Pi consumed the fresh main turn at before_agent_start. message_start is a
+  // defensive equivalent for adapters that omit that preflight event.
   function consumeWake(owner: SessionGeneration, text: string): void {
     for (const [token, wake] of owner.unconsumedWakes) {
       if (wake.content !== text) continue;
@@ -714,8 +727,9 @@ export default function (pi: ExtensionAPI) {
             surfaceCleanupFailure(owner, error);
           }
         }
-        // A record Pi has accepted but not consumed is neither redelivered
-        // nor finished here: consumption finishes it, replacement replays it.
+        // A record waiting for its fresh Pi turn or accepted but not consumed
+        // is neither redelivered nor finished here: consumption finishes it,
+        // and replacement replays it.
         const pending = owner.pendingActionables.find(
           (item) => !item.delivered && !owner.unconsumedWakes.has(item.token),
         );
@@ -762,9 +776,9 @@ export default function (pi: ExtensionAPI) {
           }
           const awaitingConsumption = owner.unconsumedWakes.has(pending.token);
           if (awaitingConsumption && !generationIsLive(owner)) {
-            // Pi accepted the follow-up, then the session was replaced before
-            // this continuation ran: the shutdown persisted the still-pending
-            // record, so a replacement waiting on this claim must replay it.
+            // The session was replaced before the fresh turn consumed this
+            // wake. The shutdown persisted the still-pending record, so a
+            // replacement waiting on this claim must replay it.
             settleClaim("failed");
             releaseClaim();
             return;
@@ -1076,6 +1090,14 @@ export default function (pi: ExtensionAPI) {
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;
     consumeWake(generation, userMessageText(event.message.content));
+  });
+  pi.on?.("agent_start", () => {
+    generation.agentActive = true;
+  });
+  pi.on?.("agent_settled", () => {
+    generation.agentActive = false;
+    for (const resolveSettled of generation.settledWaiters) resolveSettled();
+    generation.settledWaiters.clear();
   });
 
   pi.on?.("session_start", async () => {

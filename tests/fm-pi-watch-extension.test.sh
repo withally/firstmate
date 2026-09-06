@@ -1906,7 +1906,7 @@ EOF
   pass "Pi session replacement auto-arms and carries its in-flight actionable close"
 }
 
-test_pi_streaming_followup_is_replayed_after_replacement() {
+test_pi_deferred_wake_is_replayed_after_replacement() {
   local repo home plugin trigger out status
   repo="$TMP_ROOT/pi-streaming-followup-replacement-root"
   home="$TMP_ROOT/pi-streaming-followup-replacement-home"
@@ -1967,10 +1967,10 @@ originalMod.default(original.pi);
 await original.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
 original.handlers.get("agent_start")?.({}, {});
 writeFileSync(process.env.FM_TRIGGER_FILE, "trigger\n");
-await waitFor(
-  () => original.prompts.some((message) => message.includes("signal: streaming queued actionable outcome")),
-  "old-session queued follow-up",
-);
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (original.prompts.length !== 0) {
+  throw new Error(`running session received a strandable wake: ${original.prompts.join(" | ")}`);
+}
 await original.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
 
 const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=streaming-followup`);
@@ -2009,16 +2009,97 @@ process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi replacement must replay a streaming follow-up before consumption"
-  [ -z "$out" ] || fail "Pi streaming follow-up replacement test printed output: $out"
-  pass "Pi replacement replays a streaming follow-up before consumption"
+  expect_code 0 "$status" "Pi replacement must replay a wake deferred behind the active run"
+  [ -z "$out" ] || fail "Pi deferred-wake replacement test printed output: $out"
+  pass "Pi replacement replays a wake deferred behind the active run"
 }
 
-# The 2026-09-02 incident: a wake delivered while main was mid-turn never raised
-# before_agent_start, the extension waited for it, and every later actionable
-# close was dropped. Continuity must settle on Pi accepting the follow-up, while
-# consumption still decides what a replacement replays.
-test_pi_streaming_time_delivery_keeps_the_successor_chain() {
+# Pi can accept a follow-up after its agent loop has made the final queued-message
+# check but before agent_settled. That accepted message remains stranded until an
+# unrelated external prompt starts another run. The watcher must wait for the
+# settled boundary and start the wake as a fresh turn instead.
+test_pi_settled_boundary_starts_deferred_wake_turn() {
+  local repo home plugin trigger out status
+  repo="$TMP_ROOT/pi-settled-boundary-root"
+  home="$TMP_ROOT/pi-settled-boundary-home"
+  trigger="$TMP_ROOT/pi-settled-boundary.trigger"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+trap 'exit 0' TERM INT
+printf 'watcher: started pid=%s\n' "$$"
+while [ ! -e "$FM_TRIGGER_FILE" ]; do sleep 0.02; done
+rm -f "$FM_TRIGGER_FILE"
+printf 'signal: settled-boundary wake\n'
+exit 0
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_TRIGGER_FILE="$trigger" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const started = [];
+let streaming = true;
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage: async (message, options) => {
+    sends.push({ message, options });
+    if (options?.deliverAs === "followUp") return;
+    if (streaming) throw new Error("Agent is already processing. Use followUp or steering instead.");
+    started.push(message);
+    handlers.get("before_agent_start")?.({ prompt: message }, {});
+  },
+  events: { on() {}, emit() {} },
+};
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+handlers.get("agent_start")?.({}, {});
+writeFileSync(process.env.FM_TRIGGER_FILE, "close\n");
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (sends.length !== 0) throw new Error("watcher submitted the wake before the running turn settled");
+if (started.length !== 0) throw new Error("wake started before the running turn settled");
+streaming = false;
+await handlers.get("agent_settled")?.({}, { isIdle: () => true });
+await waitFor(() => started.length === 1, "fresh wake turn after agent_settled");
+if (sends.some((send) => send.options?.deliverAs === "followUp")) {
+  throw new Error("watcher used Pi's strandable follow-up queue");
+}
+if (!started[0].includes("signal: settled-boundary wake")) {
+  throw new Error(`wrong wake started: ${started.join(" | ")}`);
+}
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi watcher must start a deferred wake after the settled boundary"
+  [ -z "$out" ] || fail "Pi settled-boundary delivery test printed output: $out"
+  pass "Pi watcher starts a deferred wake after the settled boundary"
+}
+
+# Multiple watcher cycles can close while main is active.
+# Each successor must start immediately, while each wake waits for its own fresh
+# turn at an agent_settled boundary instead of entering Pi's follow-up queue.
+test_pi_settled_delivery_keeps_the_successor_chain() {
   local repo home plugin log trigger out status
   repo="$TMP_ROOT/pi-streaming-chain-root"
   home="$TMP_ROOT/pi-streaming-chain-home"
@@ -2056,20 +2137,16 @@ const pi = {
   },
   registerCommand() {},
   registerTool() {},
-  // The real Pi prompt path: a follow-up sent while the agent is streaming is
-  // queued for the running run and raises no before_agent_start; only a send
-  // to an idle agent starts a run and raises it with the exact text.
   sendUserMessage: async (message) => {
+    if (streaming) throw new Error("Agent is already processing");
     prompts.push(message);
-    if (streaming) return;
+    streaming = true;
+    handlers.get("agent_start")?.({}, {});
     beforeAgentStarts += 1;
     handlers.get("before_agent_start")?.({ prompt: message }, {});
   },
   events: { on() {}, emit() {} },
 };
-// The running run reaching a queued follow-up: Pi emits the user message.
-const consumeQueued = (message) =>
-  handlers.get("message_start")?.({ message: { role: "user", content: [{ type: "text", text: message }] } }, {});
 const arms = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n").filter((row) => row.startsWith("arm=")).length
   : 0;
@@ -2088,43 +2165,31 @@ mod.default(pi);
 await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
 await waitFor(() => arms() === 1, "first arm");
 streaming = true;
+handlers.get("agent_start")?.({}, {});
 writeFileSync(`${process.env.FM_TRIGGER_FILE}.1`, "close\n");
-await waitFor(() => prompts.length === 1, "first wake delivered while main streams");
-if (wakes("signal: streaming chain wake 1") !== 1) throw new Error(`wrong first wake: ${prompts.join(" | ")}`);
-await waitFor(() => arms() === 2, "successor after the streaming-time delivery");
+await waitFor(() => arms() === 2, "successor while the first wake waits for settle");
+if (prompts.length !== 0) throw new Error(`wake entered the active run: ${prompts.join(" | ")}`);
 writeFileSync(`${process.env.FM_TRIGGER_FILE}.2`, "close\n");
-await waitFor(() => prompts.length === 2, "second wake delivered while main still streams");
-if (wakes("signal: streaming chain wake 2") !== 1) throw new Error(`wrong second wake: ${prompts.join(" | ")}`);
-await waitFor(() => arms() === 3, "successor after the second streaming-time delivery");
-if (beforeAgentStarts !== 0) throw new Error(`streaming follow-ups raised before_agent_start ${beforeAgentStarts} times`);
-
-// The run reaches the first queued follow-up; the second is still queued when
-// the captain replaces the session, so only the second rides the handoff.
-consumeQueued(prompts[0]);
-await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
-const handoffPath = `${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`;
-const handoff = JSON.parse(readFileSync(handoffPath, "utf8"));
-if (handoff.pending.length !== 1 || handoff.pending[0].delivered || !handoff.pending[0].message.includes("signal: streaming chain wake 2")) {
-  throw new Error(`replacement handoff did not carry exactly the unconsumed wake: ${JSON.stringify(handoff)}`);
-}
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (prompts.length !== 0) throw new Error(`second wake entered the active run: ${prompts.join(" | ")}`);
 streaming = false;
-const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=streaming-chain`);
-replacementMod.default(pi);
-await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
-await waitFor(() => prompts.length === 3, "replacement replay of the unconsumed wake");
-if (wakes("signal: streaming chain wake 2") !== 2 || wakes("signal: streaming chain wake 1") !== 1) {
-  throw new Error(`replacement replayed the wrong wakes: ${prompts.join(" | ")}`);
-}
-if (beforeAgentStarts !== 1) throw new Error(`idle replay raised before_agent_start ${beforeAgentStarts} times`);
-await waitFor(() => arms() === 4, "replacement arm");
-await waitFor(() => !existsSync(handoffPath), "consumed replay clears its handoff record");
+await handlers.get("agent_settled")?.({}, { isIdle: () => true });
+await waitFor(() => prompts.length === 1, "first fresh wake turn");
+if (wakes("signal: streaming chain wake 1") !== 1) throw new Error(`wrong first wake: ${prompts.join(" | ")}`);
+await waitFor(() => arms() === 3, "successor while the second wake waits for settle");
+streaming = false;
+await handlers.get("agent_settled")?.({}, { isIdle: () => true });
+await waitFor(() => prompts.length === 2, "second fresh wake turn");
+if (wakes("signal: streaming chain wake 2") !== 1) throw new Error(`wrong second wake: ${prompts.join(" | ")}`);
+if (beforeAgentStarts !== 2) throw new Error(`fresh wakes raised before_agent_start ${beforeAgentStarts} times`);
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
 process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi streaming-time wake delivery must keep the successor chain and replay only unconsumed wakes"
-  [ -z "$out" ] || fail "Pi streaming-time delivery chain test printed output: $out"
-  pass "Pi streaming-time wake delivery keeps the successor chain and replays only unconsumed wakes"
+  expect_code 0 "$status" "Pi settled wake delivery must keep the successor chain"
+  [ -z "$out" ] || fail "Pi settled delivery chain test printed output: $out"
+  pass "Pi settled wake delivery keeps the successor chain"
 }
 
 # A verified successor can die while the wake it was started for is still
@@ -3623,8 +3688,9 @@ test_pi_actionable_close_rechecks_session_lock
 test_pi_arm_distinguishes_session_lock_ownership
 test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
-test_pi_streaming_followup_is_replayed_after_replacement
-test_pi_streaming_time_delivery_keeps_the_successor_chain
+test_pi_deferred_wake_is_replayed_after_replacement
+test_pi_settled_boundary_starts_deferred_wake_turn
+test_pi_settled_delivery_keeps_the_successor_chain
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_late_retiring_actionable_reaches_replacement
 test_pi_replacement_tokens_are_process_unique

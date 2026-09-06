@@ -401,6 +401,25 @@ ok - live Herdr submit confirm: Claude Code (2.1.251 (Claude Code)) on herdr 0.8
 ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms short/long idle/busy sends in an isolated named lab
 ```
 
+### Pi watcher wake-turn continuity
+
+Measured 2026-09-06 against Herdr 0.8.2 and Pi 0.85.0 using `openai-codex/gpt-5.6-sol` at medium reasoning effort.
+The guard appended a real status wake to an isolated Pi-shaped Firstmate home, observed its durable queue row, and then observed that row disappear through the normal drain-and-acknowledgement path without sending any parent doorbell.
+The portable regression in `tests/fm-pi-watch-extension.test.sh` separately pins the triggering race: a streaming follow-up that arrives after Pi's final queued-message check can be accepted but stranded before `agent_settled`, so the extension now waits for that boundary and starts the wake as a fresh turn.
+Refresh the live proof with:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  FM_PI_HERDR_WAKE_LIVE=1 \
+  tests/fm-pi-herdr-wake-live-e2e.test.sh
+```
+
+Observed 2026-09-06:
+
+```text
+ok - live Pi watcher wake: Pi 0.85.0 on herdr 0.8.2 drained and acknowledged a unique FM_PI_HERDR_WAKE token without a parent doorbell in an isolated named lab
+```
+
 ### Prune and respawn
 
 The real label-collision reproduction is owned by:

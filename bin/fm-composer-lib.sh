@@ -36,6 +36,8 @@
 #               Pi's blank separated composer provable; with identity=0 that
 #               shape stays `unknown`.
 #   rows=<n>    the capture's bounded row count (informational).
+#   settled=1   two plain captures were byte-identical across the adapter's
+#               bounded settle window; only the cursorless Pi footer uses it.
 #
 # THE STRICT BLANK-ROW RULE (captain decision blank-row-injection-posture,
 # 2026-08-09): a blank or otherwise unidentified input row with no positive
@@ -502,6 +504,23 @@ FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
 # boxes) from ever competing with the live composer.
 FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 
+fm_composer_capture_hash() {  # <capture>
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 2>/dev/null | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum 2>/dev/null | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+fm_composer_captures_settled() {  # <first-capture> <second-capture>
+  local first_hash second_hash
+  first_hash=$(fm_composer_capture_hash "$1") || return 1
+  second_hash=$(fm_composer_capture_hash "$2") || return 1
+  [ -n "$first_hash" ] && [ "$first_hash" = "$second_hash" ]
+}
+
 # Pi allows a multi-line composer between its horizontal separators. Bound the
 # structural candidate so two unrelated transcript rules with an arbitrarily
 # large region between them can never be promoted into a composer.
@@ -678,6 +697,8 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 #   [identity]   "<agent>\t<status>" from the backend's native identity probe,
 #                or `probe-absent` when the probe found no live identity; only
 #                meaningful when caps carry identity=1.
+#   settled=1    in caps means two plain cursorless captures were byte-identical
+#                across the adapter's bounded settle window.
 # Prints exactly one verdict: empty | pending | pending-unproven | unknown,
 # or the internal sentinel `need-identity` when caps declare identity=1, no
 # identity result was supplied, and the verdict depends on it. Adapters answer
@@ -1066,6 +1087,7 @@ _fm_composer_classify_bare_row() {  # <screen> <styled> <row>
 # ordering, and no later prompt or structural row.
 # The caller still requires native Pi identity and idle/done state before an
 # empty verdict, so this rendered footer string is never sufficient by itself.
+# A settle proof is required as a second gate for cursorless empty verdicts.
 _fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
   local plain=$1 row raw trimmed phase=path footer_seen=0 glyph
   [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" = 1 ] || return 1
@@ -1103,6 +1125,13 @@ _fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
     row=$((row + 1))
   done
   [ "$footer_seen" = 1 ]
+}
+
+fm_composer_pi_cursorless_footer_candidate() {  # <screen>
+  local plain=$1
+  plain=$(printf '%s\n' "$plain" | fm_composer_strip_ansi)
+  _fm_composer_select_screen_context "$plain" '' && return 1
+  _fm_composer_pi_cursorless_footer_layout "$plain"
 }
 
 # _fm_composer_wrap_region_ok: 0 when every row STRICTLY BELOW <glyph-row>
@@ -1535,11 +1564,13 @@ fm_composer_state_output() {  # <state> [caps] [screen] [output-mode] [cursor-ro
 fm_composer_classify_screen() {  # <caps> <screen> [cursor_row] [identity]
   local caps=$1 screen=$2 cy=${3:-} identity=${4:-}
   local styled=0 cursor=0 has_identity=0 kv plain
+  local settled=0
   while IFS= read -r kv; do
     case "$kv" in
       styled=1) styled=1 ;;
       cursor=1) cursor=1 ;;
       identity=1) has_identity=1 ;;
+      settled=1) settled=1 ;;
     esac
   done <<EOF
 $caps
@@ -1551,7 +1582,7 @@ EOF
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
   if ! _fm_composer_select_screen_context "$plain" "$cy"; then
     if [ -z "$cy" ] && _fm_composer_pi_cursorless_footer_layout "$plain"; then
-      _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity"
+      _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity" "$settled" 1
     else
       printf 'unknown'
     fi
@@ -1740,8 +1771,11 @@ _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <i
 # is drawn above the separator pair, so the composer region looks free while the
 # keys would answer the prompt instead of composing (issue #2797). Structure
 # cannot disprove that, so a blocked pi defers rather than claiming empty.
-_fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
-  local screen=$1 styled=$2 has_identity=$3 identity=$4 agent agent_status state
+_fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity> [settled] [cursorless]
+  local screen=$1 styled=$2 has_identity=$3 identity=$4 settled cursorless
+  local agent agent_status state
+  if [ "$#" -ge 5 ]; then settled=$5; else settled=1; fi
+  if [ "$#" -ge 6 ]; then cursorless=$6; else cursorless=0; fi
   if [ "$has_identity" != 1 ]; then
     printf 'unknown'
     return 0
@@ -1766,7 +1800,13 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
     return 0
   fi
   case "$agent_status" in
-    idle|done) printf 'empty' ;;
+    idle|done)
+      if [ "$cursorless" = 1 ] && [ "$settled" != 1 ]; then
+        printf 'unknown'
+      else
+        printf 'empty'
+      fi
+      ;;
     *) printf 'unknown' ;;
   esac
 }

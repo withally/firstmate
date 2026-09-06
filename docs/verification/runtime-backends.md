@@ -317,7 +317,8 @@ Cursor is deliberately outside this cursor-anchored empty-composer matrix becaus
 The cursorless Pi Calm composer path was verified on 2026-09-06 with Pi 0.85.0, Herdr 0.8.2, tmux 3.7c, and macOS 26.5.1 arm64.
 The exact Calm-on and Calm-off idle pane bytes from the named Herdr lab and the isolated tmux control are pinned under `tests/fixtures/pi-0.85.0-calm-composer/`.
 The Herdr capture places Pi's blank separator composer above a dollar-prefixed usage footer, while the tmux cursor remains anchored inside the same separator pair.
-The shared classifier requires the valid pair plus native Pi idle identity before reporting `empty`, and visible draft text remains `pending`.
+The shared classifier requires the valid pair plus native Pi idle/done identity and, for the cursorless fallback, two byte-identical plain captures separated by the existing FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP window (0.6 seconds by default) before reporting empty; visible draft text remains pending.
+Any changed capture, including a Calm working indicator, spinner, or streaming row, remains unknown.
 
 The live guard was run with:
 

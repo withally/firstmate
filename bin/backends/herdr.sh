@@ -2616,6 +2616,16 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
   printf '%s' "$out" | tail -n "$lines"
 }
 
+fm_backend_herdr_composer_settle_proof() {  # <target>
+  local target=$1 first second settle
+  first=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES") || return 1
+  settle=$(fm_backend_herdr_submit_confirm_budget 0 2>/dev/null) || return 1
+  case "$settle" in ''|*[!0-9.]*) return 1 ;; esac
+  sleep "$settle"
+  second=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES") || return 1
+  fm_composer_captures_settled "$first" "$second"
+}
+
 # --- herdr composer capture and capability primitives -----------------------
 #
 # These functions are the ONLY herdr-specific composer knowledge left: the
@@ -2653,6 +2663,7 @@ fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
 fm_backend_herdr_composer_state() {  # <target> [expected-label] [output-mode] -> empty|pending|pending-unproven|unknown
   local target=$1 cap caps verdict identity output=${3-}
   fm_backend_herdr_parse_target "$target" || { fm_composer_state_output unknown '' '' "$output"; return 0; }
+  identity=''
   if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
   elif cap=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES"); then
@@ -2668,6 +2679,14 @@ fm_backend_herdr_composer_state() {  # <target> [expected-label] [output-mode] -
     fi
     verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
+  fi
+  if [ "$verdict" = unknown ] \
+    && { [ "$identity" = $'pi\tidle' ] || [ "$identity" = $'pi\tdone' ]; } \
+    && fm_composer_pi_cursorless_footer_candidate "$cap"; then
+    if fm_backend_herdr_composer_settle_proof "$target"; then
+      caps=$(printf '%s\nsettled=1' "$caps")
+      verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
+    fi
   fi
   fm_composer_state_output "$verdict" "$caps" "$cap" "$output"
 }

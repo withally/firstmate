@@ -334,8 +334,10 @@ test_pi_calm_live_capture_matrix() {
   # A production change that lets the lower `$0.000` usage footer masquerade as
   # a dead-shell prompt makes the Herdr idle assertions fail.
   local fixture_root="$ROOT/tests/fixtures/pi-0.85.0-calm-composer"
-  local caps_herdr caps_tmux identity screen verdict cy without_pair
-  caps_herdr=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=20')
+  local caps_herdr caps_unsettled caps_tmux identity screen verdict cy without_pair
+  local first_plain second_plain
+  caps_herdr=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=20\nsettled=1')
+  caps_unsettled=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=20\nsettled=0')
   caps_tmux=$(printf 'styled=1\ncursor=1\nidentity=1\nrows=20')
   identity=$(printf 'pi\tidle')
 
@@ -351,6 +353,22 @@ test_pi_calm_live_capture_matrix() {
     [ "$verdict" = empty ] \
       || fail "tmux Pi 0.85.0 ${mode} idle control must read empty, got '$verdict'"
   done
+
+  screen=$(printf '%b' "$(cat "$fixture_root/herdr-calm-on-idle.ansi.txt")")
+  first_plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
+  second_plain=$(printf '%b' "$(cat "$fixture_root/herdr-calm-on-pending.ansi.txt")" \
+    | fm_composer_strip_ansi)
+  if fm_composer_captures_settled "$first_plain" "$second_plain"; then
+    fail "Calm idle and pending fixture reads must differ"
+  fi
+  verdict=$(fm_composer_classify_screen "$caps_unsettled" "$screen" '' "$identity")
+  [ "$verdict" = unknown ] \
+    || fail "a changing Calm read must stay unknown, got '$verdict'"
+  fm_composer_captures_settled "$first_plain" "$first_plain" \
+    || fail "identical Calm fixture reads must produce a settle proof"
+  verdict=$(fm_composer_classify_screen "$caps_herdr" "$screen" '' "$identity")
+  [ "$verdict" = empty ] \
+    || fail "identical Calm reads with the settle proof must read empty, got '$verdict'"
 
   screen=$(printf '%b' "$(awk '/~\/\.treehouse/ && !inserted { print ""; inserted=1 } { print }' \
     "$fixture_root/herdr-calm-on-idle.ansi.txt")")

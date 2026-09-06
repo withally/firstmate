@@ -89,10 +89,13 @@ import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 let handler = null;
+const handlers = new Map();
 let notification = "";
 let prompt = "";
 const pi = {
-  on() {},
+  on(event, eventHandler) {
+    handlers.set(event, eventHandler);
+  },
   registerCommand(name, options) {
     if (name === "fm-watch-arm-pi") handler = options.handler;
   },
@@ -104,16 +107,22 @@ const pi = {
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 if (!handler) {
   console.error("Pi watch command was not registered");
   process.exit(1);
 }
 const result = await handler("", {
-  ui: {
-    notify(message) {
-      notification = message;
+    ui: {
+      notify(message) {
+        notification = message;
+      },
+      setStatus() {},
     },
-  },
 });
 if (result !== undefined) {
   console.error(`Pi command returned a value: ${String(result)}`);
@@ -946,6 +955,7 @@ const offers = [];
 let prompt = "";
 let handler = null;
 const handlers = new Map();
+const piHandlers = new Map();
 const bus = {
   on(channel, h) {
     handlers.set(channel, [...(handlers.get(channel) ?? []), h]);
@@ -960,7 +970,9 @@ bus.on("fm-branch-supervision:dispatch", (offer) => {
   offer.accept();
 });
 const pi = {
-  on() {},
+  on(event, eventHandler) {
+    piHandlers.set(event, eventHandler);
+  },
   events: bus,
   registerCommand(name, options) {
     if (name === "fm-watch-arm-pi") handler = options.handler;
@@ -973,7 +985,12 @@ const pi = {
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
-await handler("", { ui: { notify() {} } });
+await piHandlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
+await handler("", { ui: { notify() {}, setStatus() {} } });
 for (let i = 0; i < 250 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -1427,6 +1444,11 @@ const pi = {
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 await tool.execute("tool-call-established-empty", {}, undefined, undefined, {});
 for (let i = 0; i < 250 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1931,11 +1953,12 @@ const replacementStart = replacement.handlers.get("session_start")?.({
   reason: "new",
   previousSessionFile: "/tmp/previous.jsonl",
 }, {});
-await replacement.handlers.get("agent_settled")?.({}, {
+const idle = {
   ui: { setStatus() {} },
   isIdle: () => true,
   hasPendingMessages: () => false,
-});
+};
+await replacement.handlers.get("agent_settled")?.({}, idle);
 await new Promise((resolve) => setTimeout(resolve, 50));
 await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "replacement arm before old delivery settlement");
 if (replacement.prompts.some((message) => message.includes("signal: replacement-race actionable outcome"))) {
@@ -1947,6 +1970,13 @@ writeFileSync(
 );
 releaseOldDelivery();
 await replacementStart;
+await waitFor(
+  () => replacement.prompts.some((message) => message.includes("could not clear a delivered replacement-session actionable wake")),
+  "replacement cleanup failure notice",
+);
+const cleanupFailurePrompt = replacement.prompts.find((message) => message.includes("could not clear a delivered replacement-session actionable wake"));
+replacement.handlers.get("before_agent_start")?.({ prompt: cleanupFailurePrompt }, idle);
+await replacement.handlers.get("agent_settled")?.({}, idle);
 await waitFor(
   () => replacement.prompts.some((message) => message.includes("signal: replacement-successor actionable outcome")),
   "replacement-session successor actionable delivery",
@@ -2124,6 +2154,75 @@ EOF
   fi
   [ -z "$out" ] || fail "Pi ambiguous self-delivery test printed output: $out"
   pass "Pi ambiguous self-delivery preserves at-most-one-turn across late preflight, compaction, and replacement"
+}
+
+test_pi_failure_notice_busy_stays_in_status() {
+  local repo home plugin log out status
+  repo="$TMP_ROOT/pi-failure-busy-root"
+  home="$TMP_ROOT/pi-failure-busy-home"
+  log="$TMP_ROOT/pi-failure-busy.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=5 FM_WATCH_REARM_RETRY_LIMIT=1 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const statuses = [];
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage(message) {
+    sends.push(message);
+  },
+};
+async function waitForFailureNotice() {
+  for (let i = 0; i < 500; i += 1) {
+    if (sends.length > 0 || statuses.some(({ key }) => key === "firstmate-watcher-failure")) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for watcher failure; sends=${JSON.stringify(sends)} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, { ui });
+await handlers.get("agent_settled")?.({}, {
+  ui,
+  isIdle: () => false,
+  hasPendingMessages: () => true,
+});
+await waitForFailureNotice();
+if (sends.length !== 0) throw new Error(`busy Pi received a failure notice: ${sends.join(" | ")}`);
+const failure = statuses.find(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("external healthy watcher"));
+if (!failure) throw new Error(`busy watcher failure was not retained in status: ${JSON.stringify(statuses)}`);
+if (!String(failure.value).includes("parent doorbell owns recovery")) {
+  throw new Error(`busy watcher failure status omitted parent-doorbell recovery: ${failure.value}`);
+}
+if (!/token=[0-9]+-[0-9]+-[0-9]+/.test(String(failure.value))) throw new Error(`busy watcher failure status omitted its unique token: ${failure.value}`);
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi must retain a failure notice in status while the live context is busy: $out"
+  [ -z "$out" ] || fail "Pi busy failure-notice test printed output: $out"
+  pass "Pi busy failure notice stays in status without a self-delivery"
 }
 
 # A verified successor can die while the wake it was started for is still
@@ -3635,6 +3734,7 @@ test_pi_arm_distinguishes_session_lock_ownership
 test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
 test_pi_ambiguous_self_delivery_is_never_retried
+test_pi_failure_notice_busy_stays_in_status
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_late_retiring_actionable_reaches_replacement
 test_pi_replacement_tokens_are_process_unique

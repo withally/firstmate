@@ -77,7 +77,12 @@ type WatchToolRenderContext = {
 
 type AmbiguousWake = {
   content: string;
-  pending: PendingActionableClose;
+  pending: PendingActionableClose | null;
+};
+
+type WakeDelivery = {
+  token: string;
+  pending: PendingActionableClose | null;
 };
 
 type DeliveryBoundary = Pick<ExtensionContext, "hasPendingMessages" | "isIdle" | "ui">;
@@ -273,10 +278,14 @@ function nodeErrorCode(error: unknown): string {
 function createPendingActionable(message: string, predecessorArmPid: string): PendingActionableClose {
   return {
     version: 1,
-    token: `${process.pid}-${Date.now()}-${++replacementCoordinator.nextTokenId}`,
+    token: nextDeliveryToken(),
     message,
     predecessorArmPid,
   };
+}
+
+function nextDeliveryToken(): string {
+  return `${process.pid}-${Date.now()}-${++replacementCoordinator.nextTokenId}`;
 }
 
 function validatePendingActionable(value: unknown): PendingActionableClose {
@@ -552,29 +561,28 @@ export default function (pi: ExtensionAPI) {
   async function sendWake(
     owner: SessionGeneration,
     message: string,
-    pending?: PendingActionableClose,
+    delivery: WakeDelivery,
   ): Promise<boolean> {
     if (!generationIsLive(owner)) return false;
-    if (pending) {
-      if (pending.ambiguous || owner.ambiguousWakes.size > 0) {
-        showAmbiguousDelivery(owner, pending.token);
-        return false;
-      }
-      if (!deliveryBoundaryIsSafe(owner.deliveryBoundary)) {
-        owner.deliveryBoundary = null;
-        return false;
-      }
-      owner.deliveryBoundary = null;
+    if (delivery.pending?.ambiguous || owner.ambiguousWakes.size > 0) {
+      const [ambiguousToken] = owner.ambiguousWakes.keys();
+      showAmbiguousDelivery(owner, ambiguousToken || delivery.token);
+      return false;
     }
+    if (!deliveryBoundaryIsSafe(owner.deliveryBoundary)) {
+      owner.deliveryBoundary = null;
+      return false;
+    }
+    owner.deliveryBoundary = null;
     const content = encodeFirstmateOperationalInput(
       "watcher",
-      `FIRSTMATE WATCHER WAKE: ${message}${pending ? `\n\nFirstmate self-delivery token: ${pending.token}` : ""}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
+      `FIRSTMATE WATCHER WAKE: ${message}\n\nFirstmate self-delivery token: ${delivery.token}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
-    if (pending) {
-      pending.ambiguous = true;
-      owner.ambiguousWakes.set(pending.token, { content, pending });
-      showAmbiguousDelivery(owner, pending.token);
+    if (delivery.pending) {
+      delivery.pending.ambiguous = true;
     }
+    owner.ambiguousWakes.set(delivery.token, { content, pending: delivery.pending });
+    showAmbiguousDelivery(owner, delivery.token);
     try {
       pi.sendUserMessage(content, { deliverAs: "followUp" });
     } catch {
@@ -591,18 +599,20 @@ export default function (pi: ExtensionAPI) {
     for (const [token, wake] of owner.ambiguousWakes) {
       if (wake.content !== text) continue;
       owner.ambiguousWakes.delete(token);
-      delete wake.pending.ambiguous;
-      wake.pending.delivered = true;
-      try {
-        finishPendingActionable(owner, wake.pending);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        owner.cleanupFailure = detail;
-        owner.statusUi?.setStatus(
-          "firstmate-watcher-failure",
-          "watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery",
-        );
-        schedulePendingCleanup(owner);
+      if (wake.pending) {
+        delete wake.pending.ambiguous;
+        wake.pending.delivered = true;
+        try {
+          finishPendingActionable(owner, wake.pending);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          owner.cleanupFailure = detail;
+          owner.statusUi?.setStatus(
+            "firstmate-watcher-failure",
+            "watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery",
+          );
+          schedulePendingCleanup(owner);
+        }
       }
       clearAmbiguousDeliveryStatus(owner);
       return;
@@ -685,7 +695,7 @@ export default function (pi: ExtensionAPI) {
         if (!pidAlive(watcherPid)) {
           await retireArm(owner.child);
         }
-        return await sendWake(owner, `${message}\n\n${confirmed.detail}`, pending);
+        return await sendWake(owner, `${message}\n\n${confirmed.detail}`, { token: pending.token, pending });
       }
     }
     if (!repairFailed) {
@@ -697,12 +707,22 @@ export default function (pi: ExtensionAPI) {
         } catch {}
       }
     }
-    return await sendWake(owner, message, pending);
+    return await sendWake(owner, message, { token: pending.token, pending });
+  }
+
+  function retainFailureInStatus(owner: SessionGeneration, message: string, token: string): void {
+    owner.statusUi?.setStatus(
+      "firstmate-watcher-failure",
+      `${message}\nwatcher: failure notice self-delivery was not submitted; parent doorbell owns recovery (token=${token})`,
+    );
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
-    void sendWake(owner, message).catch(() => {
-      // Pi owns delivery errors; continuity restoration never waits on prompting.
+    const delivery = { token: nextDeliveryToken(), pending: null };
+    void sendWake(owner, message, delivery).then((submitted) => {
+      if (!submitted && generationIsLive(owner)) retainFailureInStatus(owner, message, delivery.token);
+    }).catch(() => {
+      if (generationIsLive(owner)) retainFailureInStatus(owner, message, delivery.token);
     });
   }
 

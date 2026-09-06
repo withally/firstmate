@@ -327,6 +327,47 @@ test_matrix_pi_separated_needs_identity() {
   pass "matrix: pi's separated composer needs identity + structure; the blank row alone never proves it"
 }
 
+test_pi_calm_live_capture_matrix() {
+  # Exact ANSI pane bytes captured from Pi 0.85.0 on 2026-09-06.
+  # The Herdr 0.8.2 captures came from the named non-default lab session; the
+  # tmux captures are the same Calm-on/Calm-off idle control at cursor row 18.
+  # A production change that lets the lower `$0.000` usage footer masquerade as
+  # a dead-shell prompt makes the Herdr idle assertions fail.
+  local fixture_root="$ROOT/tests/fixtures/pi-0.85.0-calm-composer"
+  local caps_herdr caps_tmux identity screen verdict cy without_pair
+  caps_herdr=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=20')
+  caps_tmux=$(printf 'styled=1\ncursor=1\nidentity=1\nrows=20')
+  identity=$(printf 'pi\tidle')
+
+  for mode in calm-on calm-off; do
+    screen=$(printf '%b' "$(cat "$fixture_root/herdr-${mode}-idle.ansi.txt")")
+    verdict=$(fm_composer_classify_screen "$caps_herdr" "$screen" '' "$identity")
+    [ "$verdict" = empty ] \
+      || fail "Herdr Pi 0.85.0 ${mode} idle capture must read empty, got '$verdict'"
+
+    screen=$(printf '%b' "$(cat "$fixture_root/tmux-${mode}-idle.ansi.txt")")
+    cy=$(cat "$fixture_root/tmux-${mode}-idle.cursor.txt")
+    verdict=$(fm_composer_classify_screen "$caps_tmux" "$screen" "$cy" "$identity")
+    [ "$verdict" = empty ] \
+      || fail "tmux Pi 0.85.0 ${mode} idle control must read empty, got '$verdict'"
+  done
+
+  screen=$(printf '%b' "$(cat "$fixture_root/herdr-calm-on-pending.ansi.txt")")
+  verdict=$(fm_composer_classify_screen "$caps_herdr" "$screen" '' "$identity")
+  [ "$verdict" = pending ] \
+    || fail "Herdr Calm-on visible draft must remain pending, got '$verdict'"
+
+  screen=$(printf '%b' "$(cat "$fixture_root/herdr-calm-on-idle.ansi.txt")")
+  verdict=$(fm_composer_classify_screen "$caps_herdr" "$screen" '' probe-absent)
+  [ "$verdict" = unknown ] \
+    || fail "the Calm idle surface without Pi identity must stay unknown, got '$verdict'"
+  without_pair=$(printf '%s\n' "$screen" | sed '/────────────────/,+2d')
+  verdict=$(fm_composer_classify_screen "$caps_herdr" "$without_pair" '' "$identity")
+  [ "$verdict" = unknown ] \
+    || fail "Pi identity without the Calm composer structure must stay unknown, got '$verdict'"
+  pass "matrix: real Pi Calm captures require structure plus identity, preserve pending text, and match tmux controls"
+}
+
 test_matrix_opencode_leftbar_signals() {
   # Real idle opencode: `┃`-prefixed rows holding the "Ask anything..." hint,
   # blanks, and a Build-mode footer. Two independent idle signals: the shared
@@ -677,6 +718,7 @@ test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
 test_matrix_herdr_halfblock_rule_bounds_bare_wrap
 test_matrix_pi_separated_needs_identity
+test_pi_calm_live_capture_matrix
 test_matrix_opencode_leftbar_signals
 test_matrix_grok_titled_bottom_border
 test_matrix_kimi_bordered_shell_glyph_box

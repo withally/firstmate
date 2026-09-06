@@ -1047,6 +1047,55 @@ _fm_composer_classify_bare_row() {  # <screen> <styled> <row>
   printf '%s' "$state"
 }
 
+# _fm_composer_pi_cursorless_footer_layout: prove the Pi 0.85 cursorless
+# layout captured from an idle Calm pane on Herdr.
+#
+# Herdr renders Pi's blank separator pair above the three-line footer.
+# Pi's stats row begins with a dollar-denominated usage total, so the generic
+# dead-shell guard correctly rejects it before this harness-specific proof is
+# considered.
+# This narrow fallback requires the valid separator pair, the path/stats footer
+# ordering, and no later prompt or structural row.
+# The caller still requires native Pi identity and idle/done state before an
+# empty verdict, so this rendered footer string is never sufficient by itself.
+_fm_composer_pi_cursorless_footer_layout() {  # <plain-screen>
+  local plain=$1 row raw trimmed phase=path footer_seen=0 glyph
+  [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" = 1 ] || return 1
+  row=$((FM_COMPOSER_SCAN_PI_CLOSE + 1))
+  while :; do
+    raw=$(_fm_composer_screen_row "$row" "$plain")
+    [ -n "$raw" ] || break
+    trimmed=$raw
+    fm_composer_normalize_trim_var trimmed
+    if [ -z "$trimmed" ]; then
+      row=$((row + 1))
+      continue
+    fi
+    case "$phase" in
+      path)
+        case "$trimmed" in
+          /*|'~'/*) phase=stats ;;
+          *) return 1 ;;
+        esac
+        ;;
+      stats)
+        if ! printf '%s\n' "$trimmed" | LC_ALL=C grep -Eq '^\$[0-9]+\.[0-9]{3} \(sub\) (\?|[0-9]+\.[0-9])%/[0-9]+(\.[0-9])?[kM] \(auto\)(  +.*)?$'; then
+          return 1
+        fi
+        footer_seen=1
+        phase=status
+        ;;
+      status)
+        fm_composer_row_has_edge "$trimmed" && return 1
+        fm_composer_leading_shell_glyph_var glyph "$trimmed" && return 1
+        fm_composer_leading_agent_glyph_var glyph "$trimmed" && return 1
+        ;;
+    esac
+    row=$((row + 1))
+  done
+  [ "$footer_seen" = 1 ]
+}
+
 # _fm_composer_wrap_region_ok: 0 when every row STRICTLY BELOW <glyph-row>
 # through <cursor-row> is non-blank and carries no structural edge - the
 # contiguity proof that those rows are the bare composer's wrapped input
@@ -1492,7 +1541,11 @@ EOF
   fi
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
   if ! _fm_composer_select_screen_context "$plain" "$cy"; then
-    printf 'unknown'
+    if [ -z "$cy" ] && _fm_composer_pi_cursorless_footer_layout "$plain"; then
+      _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity"
+    else
+      printf 'unknown'
+    fi
     return 0
   fi
   case "$FM_COMPOSER_SELECTED_KIND" in

@@ -515,7 +515,7 @@ function parseOutcomeRow(value: unknown): OutcomeRow | null {
   const row = value as Record<string, unknown>;
   if (typeof row.seq !== "number" || !Number.isSafeInteger(row.seq) || row.seq < 1) return null;
   if (typeof row.task !== "string" || !row.task) return null;
-  if (row.verdict !== "routine" && row.verdict !== "captain") return null;
+  if (row.verdict !== "routine" && row.verdict !== "captain" && row.verdict !== "firstmate-action") return null;
   if (typeof row.summary !== "string" || !row.summary) return null;
   if (row.silent !== undefined && typeof row.silent !== "boolean") return null;
   const silent = row.silent === true;
@@ -1034,6 +1034,7 @@ export default function (pi: ExtensionAPI) {
       if (!runOutcomeScript(["processed-init"]).ok) return false;
       processedInitializedGeneration = expectedGeneration;
     }
+    activatePendingActionDeliveries(expectedGeneration);
     const unread = runOutcomeScript(["unread"]);
     if (!unread.ok) return false;
     if (unread.stdout) {
@@ -1048,6 +1049,15 @@ export default function (pi: ExtensionAPI) {
         if (!row || !generationOwnsLock(expectedGeneration)) return false;
         if (row.verdict === "captain") {
           if (!ensureVisibleCaptainOutcome(row)) return false;
+        } else if (row.verdict === "firstmate-action") {
+          const actionStatus = runOutcomeScript(["action-status", "--seq", String(row.seq)]);
+          if (!actionStatus.ok) return false;
+          if (actionStatus.stdout === "started") {
+            if (!runOutcomeScript(["mark-read", "--through", String(row.seq)]).ok) return false;
+          } else if (actionStatus.stdout !== "pending") {
+            return false;
+          }
+          continue;
         } else if (row.verdict !== "routine") {
           deliverRoutineOutcome(row);
         }

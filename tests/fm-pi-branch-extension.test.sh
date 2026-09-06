@@ -927,6 +927,91 @@ EOF
   pass "a captain outcome reaches main's model as one typed, sequence-keyed processing request while routine outcomes stay store-only"
 }
 
+test_firstmate_action_startup_recovery_hands_off_legacy_row() {
+  local repo home out status
+  repo="$TMP_ROOT/action-startup-root"
+  home="$TMP_ROOT/action-startup-home"
+  mkdir -p "$home/state/branch-action" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, settle, sentToMain, outcomeScript, defaultSessionCtx, realRoot, home }; })()`);
+const { fire, settle, sentToMain, outcomeScript, defaultSessionCtx, realRoot, home } = globalThis.__t;
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+
+const state = `${home}/state`;
+writeFileSync(`${state}/.lock`, `${process.ppid}\n`);
+writeFileSync(`${state}/.wake-queue`, "");
+writeFileSync(
+  `${state}/branch-outcomes.jsonl`,
+  `${JSON.stringify({
+    seq: 1,
+    epoch: 1,
+    task: "legacy-action",
+    wake: "signal: legacy-action",
+    verdict: "firstmate-action",
+    summary: "authorized action",
+    silent: false,
+    wake_seq: 41,
+  })}\n`,
+);
+writeFileSync(`${state}/.branch-outcomes-cursor`, "0\n");
+writeFileSync(
+  `${state}/branch-action/wake-41.json`,
+  `${JSON.stringify({
+    version: "fm-branch-action-v1",
+    wake_seq: 41,
+    outcome_seq: 1,
+    state: "pending",
+    task: "legacy-action",
+    verdict: "firstmate-action",
+    summary: "authorized action",
+    wake: "signal: legacy-action",
+    silent: false,
+  })}\n`,
+);
+
+const replay = spawnSync("bash", [`${realRoot}/bin/fm-branch-outcome.sh`, "startup-replay"], {
+  encoding: "utf8",
+  env: { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: state },
+});
+if (replay.status !== 0) throw new Error(`startup replay failed: ${replay.stderr}`);
+if (replay.stdout !== "") throw new Error(`startup replay printed or consumed a legacy action: ${replay.stdout}`);
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "0") {
+  throw new Error("startup replay advanced the cursor before the hidden action handoff started");
+}
+
+fire("session_start", {}, defaultSessionCtx);
+await settle(() => sentToMain.length === 1, "legacy action startup handoff");
+const delivery = sentToMain[0];
+if (delivery.message.customType !== "fm-branch-merge" || delivery.message.display !== false) {
+  throw new Error(`legacy action was not delivered as one hidden merge message: ${JSON.stringify(delivery)}`);
+}
+if (delivery.options.triggerTurn !== true || delivery.options.deliverAs !== "followUp") {
+  throw new Error(`legacy action did not open one hidden follow-up turn: ${JSON.stringify(delivery.options)}`);
+}
+if (delivery.message.details?.outcomeSeq !== "1" || delivery.message.details?.wakeSeq !== "41" || delivery.message.details?.verdict !== "firstmate-action") {
+  throw new Error(`legacy action delivery lost its durable identity: ${JSON.stringify(delivery.message.details)}`);
+}
+if (!delivery.message.content.includes("Perform that action now, then report the result.")) {
+  throw new Error(`legacy action delivery lost its action instruction: ${delivery.message.content}`);
+}
+await settle(() => outcomeScript(["action-status", "--seq", "1"]) === "started", "legacy action start marker");
+if (outcomeScript(["unread"]) !== "") throw new Error("startup handoff left the legacy action unread");
+if (readFileSync(`${state}/.branch-outcomes-cursor`, "utf8").trim() !== "1") {
+  throw new Error("startup handoff did not advance the cursor after the hidden turn started");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "legacy firstmate-action startup recovery must use the hidden handoff: $out"
+  [ -z "$out" ] || fail "legacy firstmate-action startup recovery printed output: $out"
+  pass "legacy firstmate-action startup recovery uses one hidden handoff before advancing the cursor"
+}
+
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
   local repo home out status
   repo="$TMP_ROOT/requested-outcome-root"
@@ -4032,6 +4117,7 @@ JS
 test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
+test_firstmate_action_startup_recovery_hands_off_legacy_row
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
 test_captain_outcome_is_exactly_once_across_crash_reload_and_unrelated_response
 test_captain_outcome_processing_turn_is_sequence_keyed_and_re_presented

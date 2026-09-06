@@ -201,6 +201,12 @@ last_seq() {
           and ((.statusIdent | type) == "string" and (.statusIdent | test("[\\t\\n]") | not))
         )
         or (
+          keys == ["epoch", "seq", "silent", "summary", "task", "verdict", "wake", "wake_seq"]
+          and (.silent | type) == "boolean"
+          and .verdict == "firstmate-action"
+          and ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor))
+        )
+        or (
           keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake", "wake_seq"]
           and (.silent | type) == "boolean"
           and .verdict == "firstmate-action"

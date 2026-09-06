@@ -196,6 +196,45 @@ test_outcome_startup_replay_stops_at_captain_barrier() {
   pass "startup replay cannot advance the cursor across an unrendered captain outcome"
 }
 
+test_legacy_action_rows_remain_readable_appendable_and_acknowledgeable() {
+  local home store snapshot out seq
+  home="$TMP_ROOT/store-legacy-action-home"
+  mkdir -p "$home/state"
+  store="$home/state/branch-outcomes.jsonl"
+  printf '%s\n' \
+    '{"seq":1,"epoch":1,"task":"legacy-captain","wake":"","verdict":"captain","summary":"captain outcome before status provenance","silent":false}' \
+    '{"seq":2,"epoch":2,"task":"legacy-action","wake":"signal: legacy-action.status","verdict":"firstmate-action","summary":"action outcome before status provenance","silent":false,"wake_seq":41}' \
+    > "$store"
+  printf 'kind=crew\n' > "$home/state/legacy-action.meta"
+  printf '1\n' > "$home/state/.branch-outcomes-cursor"
+  snapshot=$(cat "$store")
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" list --recent 2) \
+    || fail "list refused a legacy firstmate-action row without status provenance"
+  assert_contains "$out" '"seq":2' "list lost the legacy firstmate-action row"
+  seq=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task current --verdict routine --summary 'new strict row after legacy history') \
+    || fail "append refused valid legacy firstmate-action history"
+  [ "$seq" = 3 ] || fail "append after legacy history assigned sequence $seq, not 3"
+  case "$(cat "$store")" in
+    "$snapshot"*) ;;
+    *) fail "append after legacy history rewrote existing store bytes" ;;
+  esac
+  tail -n 1 "$store" | jq -e \
+    '.seq == 3 and .statusEndpoint == 0 and .statusIdent == "-"' >/dev/null \
+    || fail "append after legacy history did not retain the strict current row shape"
+
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-read --through 2 \
+    || fail "mark-read refused legacy firstmate-action history"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-processed --through 1 \
+    || fail "mark-processed refused a captain row preceding a legacy firstmate-action row"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" processed-init \
+    || fail "outcome-index rebuild refused legacy firstmate-action history"
+  [ "$(cat "$home/state/.legacy-action.branch-outcome-index")" = $'fm-branch-outcome-index-v1\t2\t0\t-' ] \
+    || fail "legacy firstmate-action provenance did not rebuild with the safe 0/- defaults"
+  pass "legacy firstmate-action rows read, permit strict appends, acknowledge, and rebuild with safe provenance defaults"
+}
+
 test_outcome_cursor_corruption_fails_closed() {
   local home store snapshot out status
   home="$TMP_ROOT/store-corrupt-cursor-home"
@@ -841,6 +880,7 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence
 test_outcome_startup_replay_stops_at_captain_barrier
+test_legacy_action_rows_remain_readable_appendable_and_acknowledgeable
 test_outcome_cursor_corruption_fails_closed
 test_cursor_advancement_refuses_ahead_processed_marker
 test_outcome_sequence_conflicts_fail_closed

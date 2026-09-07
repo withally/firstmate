@@ -89,6 +89,11 @@ type FailureStatusOwner =
   | { kind: "cleanup"; token: string }
   | { kind: "notice"; token: string };
 
+type FailureStatus = {
+  owner: FailureStatusOwner;
+  message: string;
+};
+
 type DeliveryBoundary = Pick<ExtensionContext, "hasPendingMessages" | "isIdle" | "ui">;
 
 type SessionGeneration = {
@@ -103,7 +108,7 @@ type SessionGeneration = {
   seq: number;
   pendingActionables: PendingActionableClose[];
   cleanupFailures: Map<string, string>;
-  failureStatusOwner: FailureStatusOwner | null;
+  failureStatusOwners: Map<string, FailureStatus>;
   // One fire-and-forget main submission remains ambiguous until exact
   // lifecycle consumption. It is never cleared or retried by aggregate state.
   ambiguousWakes: Map<string, AmbiguousWake>;
@@ -439,7 +444,7 @@ function createGeneration(): SessionGeneration {
     seq: 0,
     pendingActionables: [],
     cleanupFailures: new Map(),
-    failureStatusOwner: null,
+    failureStatusOwners: new Map(),
     ambiguousWakes: new Map(),
     deliveryBoundary: null,
     statusUi: null,
@@ -726,10 +731,13 @@ export default function (pi: ExtensionAPI) {
     token: string,
     statusOwner: FailureStatusOwner,
   ): void {
-    owner.failureStatusOwner = statusOwner;
+    owner.failureStatusOwners.set(`${statusOwner.kind}:${statusOwner.token}`, {
+      owner: statusOwner,
+      message: `${message}\nwatcher: failure notice self-delivery was not submitted; parent doorbell owns recovery (token=${token})`,
+    });
     owner.statusUi?.setStatus(
       "firstmate-watcher-failure",
-      `${message}\nwatcher: failure notice self-delivery was not submitted; parent doorbell owns recovery (token=${token})`,
+      [...owner.failureStatusOwners.values()].map(({ message: failure }) => failure).join("\n\n"),
     );
   }
 
@@ -773,13 +781,11 @@ export default function (pi: ExtensionAPI) {
     const index = owner.pendingActionables.findIndex((item) => item.token === pending.token);
     if (index >= 0) owner.pendingActionables.splice(index, 1);
     const clearedCleanupFailure = owner.cleanupFailures.delete(pending.token);
-    if (
-      clearedCleanupFailure &&
-      owner.cleanupFailures.size === 0 &&
-      owner.failureStatusOwner?.kind === "cleanup"
-    ) {
-      owner.statusUi?.setStatus("firstmate-watcher-failure", undefined);
-      owner.failureStatusOwner = null;
+    if (clearedCleanupFailure && owner.failureStatusOwners.delete(`cleanup:${pending.token}`)) {
+      const failureStatus = [...owner.failureStatusOwners.values()]
+        .map(({ message: failure }) => failure)
+        .join("\n\n");
+      owner.statusUi?.setStatus("firstmate-watcher-failure", failureStatus || undefined);
     }
   }
 

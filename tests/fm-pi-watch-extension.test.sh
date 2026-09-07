@@ -2695,14 +2695,14 @@ mod.default(pi);
 await handlers.get("session_start")?.({}, idle);
 await handlers.get("agent_settled")?.({}, idle);
 await waitFor(() => sends.length === 1, "ambiguous self-delivery");
-writeFileSync(handoff, "{malformed handoff\n");
-handlers.get("before_agent_start")?.({ prompt: sends[0] }, idle);
-await waitFor(() => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("cleanup failed after ambiguous self-delivery consumption")), "cleanup failure status");
 handlers.get("agent_start")?.({}, idle);
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "1\n");
 writeFileSync(process.env.FM_FAIL_FILE, "fail\n");
 await waitFor(() => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("unrelated watcher failure")), "unrelated failure status");
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(handoff, "{malformed handoff\n");
+handlers.get("before_agent_start")?.({ prompt: sends[0] }, idle);
+await waitFor(() => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("cleanup failed after ambiguous self-delivery consumption")), "cleanup failure status");
 writeFileSync(
   handoff,
   JSON.stringify({

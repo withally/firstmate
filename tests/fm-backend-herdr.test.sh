@@ -3704,6 +3704,22 @@ test_send_text_submit_claude_quoted_final_row_footer_does_not_confirm() {
   pass "fm_backend_herdr_send_text_submit: quoted Claude activity in the final row stays unconfirmed"
 }
 
+test_send_text_submit_claude_busy_override_cannot_confirm_quoted_footer() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-claude-override-quoted-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '  ready\n  ❯\n' > "$resp/3.out"
+  printf '  ready\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf '  quoted stale: esc to interrupt\n' > "$resp/7.out"
+  printf '  ❯ hello captain\n' > "$resp/8.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_BUSY_REGEX='esc to interrupt' \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" = pending ] || fail "FM_BUSY_REGEX must not let quoted Claude activity confirm an Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: FM_BUSY_REGEX cannot replace Claude's structural proof"
+}
+
 test_send_text_submit_claude_current_spinner_footer_confirms() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-current-spinner"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4845,6 +4861,7 @@ test_send_text_submit_claude_idle_baseline_preexisting_rendered_busy_does_not_co
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof
 test_send_text_submit_claude_stale_footer_above_idle_prompt_does_not_confirm
 test_send_text_submit_claude_quoted_final_row_footer_does_not_confirm
+test_send_text_submit_claude_busy_override_cannot_confirm_quoted_footer
 test_send_text_submit_claude_current_spinner_footer_confirms
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer
 test_send_text_submit_claude_working_pending_accepts_rendered_busy

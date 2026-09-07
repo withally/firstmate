@@ -345,11 +345,10 @@ FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
 fm_claude_current_busy_footer() {
-  local last regex
+  local last
   last=$(awk 'NF { line=$0 } END { print line }') || return 1
   [ -n "$last" ] || return 1
-  regex=${FM_BUSY_REGEX:-$FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT}
-  printf '%s\n' "$last" | grep -qiE "$regex"
+  printf '%s\n' "$last" | grep -qiE "$FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT"
 }
 
 fm_busy_lines_match() {  # [harness]

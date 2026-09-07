@@ -690,6 +690,30 @@ unit_detached_launch_carries_target_harness() {
   rm -rf "$st"
 }
 
+unit_target_harness_comes_from_exact_herdr_pane() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-target-identity.XXXXXX")
+  mkdir -p "$st/state"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" CLAUDECODE=1 bash -c '
+    . "$1"
+    fm_backend_source() { return 0; }
+    fm_backend_herdr_composer_identity() {
+      [ "$1" = "lab:w1:p2" ] || return 1
+      printf "pi\tworking"
+    }
+    out=$(fm_afk_launch_target_harness lab:w1:p2 herdr)
+    [ "$out" = pi ] || { printf "expected target harness pi, got %s\n" "$out" >&2; exit 1; }
+    fm_backend_herdr_composer_identity() { return 1; }
+    out=$(fm_afk_launch_target_harness lab:w1:p2 herdr)
+    [ "$out" = unknown ] || { printf "expected unverifiable target to remain unknown, got %s\n" "$out" >&2; exit 1; }
+  ' _ "$LAUNCH"; then
+    pass "detached launch: Herdr harness identity comes from the exact target pane"
+  else
+    fail "detached launch: Herdr target harness was not verified at the target boundary"
+  fi
+  rm -rf "$st"
+}
+
 unit_stop_validates_before_signal() {
   local st sleeper_pid
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-validate.XXXXXX")
@@ -1000,6 +1024,7 @@ unit_malformed_record_fails_closed
 unit_stop_malformed_record_fails_closed
 unit_tmux_planned_record_and_collision
 unit_detached_launch_carries_target_harness
+unit_target_harness_comes_from_exact_herdr_pane
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_surfaces_afk_removal_failure

@@ -262,6 +262,7 @@ test_claude_busy_signature_uses_real_capture_shapes() {
   composer="$dir/composer"
   pane_busy() {
     PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$composer" \
+      FM_BUSY_REGEX="${FM_BUSY_REGEX-}" \
       bash -c '. "$1/bin/fm-tmux-lib.sh"; fm_pane_is_busy "$2" "$3"' \
       _ "$ROOT" "$1" "${2:-}"
   }
@@ -319,6 +320,12 @@ test_claude_busy_signature_uses_real_capture_shapes() {
   # Older Claude Code and the existing Pi and Grok signatures remain unchanged.
   printf 'esc to interrupt\n' > "$composer"
   pane_busy old-claude claude || fail "older Claude escape footer should be busy"
+  printf 'quoted stale: esc to interrupt\n' > "$composer"
+  FM_BUSY_REGEX='esc to interrupt' pane_busy override-quoted claude \
+    && fail "FM_BUSY_REGEX must not bypass Claude's structural footer gate"
+  printf '✢ Pollinating… (16s · ↓ 1.1k tokens)\n' > "$composer"
+  FM_BUSY_REGEX='unrelated override token' pane_busy override-current claude \
+    || fail "a genuine Claude footer must remain busy when an override does not match"
   printf 'Working...\n' > "$composer"
   pane_busy pi pi || fail "Pi Working footer should be busy"
   pane_busy pi-signed pi-signed || fail "pi-signed should share Pi's exact Working footer"

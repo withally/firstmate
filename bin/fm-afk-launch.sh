@@ -156,7 +156,25 @@ fm_afk_launch_entry_cmd() {
 }
 
 fm_afk_launch_target_harness() {
-  local harness
+  local target=${1:-} backend=${2:-} identity harness
+  if [ "$backend" = herdr ]; then
+    if fm_backend_source herdr 2>/dev/null; then
+      identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null || true)
+      harness=${identity%%$'\t'*}
+      case "$harness" in
+        claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+          printf '%s' "$harness"
+          return 0
+          ;;
+      esac
+    fi
+    printf 'unknown'
+    return 0
+  fi
+  if [ "$backend" != tmux ] || [ -z "${TMUX_PANE:-}" ] || [ "$TMUX_PANE" != "$target" ]; then
+    printf 'unknown'
+    return 0
+  fi
   harness=$("$FM_ROOT/bin/fm-harness.sh" 2>/dev/null || printf 'unknown')
   case "$harness" in
     claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp) printf '%s' "$harness" ;;
@@ -478,7 +496,7 @@ fm_afk_launch_start() {
     fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
   captain_backend=$(discover_supervisor_backend) || {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
-  captain_harness=$(fm_afk_launch_target_harness)
+  captain_harness=$(fm_afk_launch_target_harness "$captain_target" "$captain_backend")
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 

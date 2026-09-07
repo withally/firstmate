@@ -650,7 +650,7 @@ pane_is_busy() {  # <target> [backend]
     rendered=$(fm_backend_herdr_rendered_busy_state "$target" claude 2>/dev/null)
     case "$rendered" in
       busy)
-        FM_PANE_BUSY_REASON=rendered-busy
+        FM_PANE_BUSY_REASON='rendered-busy'
         return 0
         ;;
       idle) return 1 ;;
@@ -666,7 +666,7 @@ pane_is_busy() {  # <target> [backend]
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
   if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
     | fm_busy_lines_match "$harness"; then
-    FM_PANE_BUSY_REASON=rendered-busy
+    FM_PANE_BUSY_REASON='rendered-busy'
     return 0
   fi
   return 1

@@ -430,6 +430,7 @@ ok - live Herdr submit confirm: Pi (0.84.2, openai-codex/gpt-5.6-sol) confirms s
 
 The predecessor live guard measured real queue acknowledgement on 2026-09-06 against Herdr 0.8.2 and Pi 0.85.0 using `openai-codex/gpt-5.6-sol` at medium reasoning effort.
 It appended a real status wake to an isolated Pi-shaped Firstmate home, observed its durable queue row, and then observed that row disappear through normal drain and acknowledgement without sending a parent doorbell.
+This predecessor result is historical evidence only and does not establish a current acknowledged-delivery or exactly-once guarantee.
 Its bounded result was:
 
 ```text
@@ -437,7 +438,7 @@ ok - live Pi watcher wake: Pi 0.85.0 on herdr 0.8.2 drained and acknowledged a u
 ```
 
 The current temporary containment adds the portable at-most-one-turn invariant and changes the live guard to establish an authoritative settled boundary before appending the wake.
-This task's unguarded brief prohibited Herdr lifecycle execution, so the updated guard was verified to self-skip but was not used to overwrite the historical live result above.
+The current guard was verified through its no-opt-in self-skip, so the historical live result above remains unchanged.
 Refresh the current live proof only from a Herdr-lab-authorized task with:
 
 ```sh
@@ -1226,7 +1227,8 @@ ok - real Pi SDK 0.84.4 returns a post-construction 429 wake to main without los
 ```
 
 The current portable regression proves that only consecutive provider errors count toward the two-error broken-branch latch: a durable report between errors resets the streak, the error that reaches the threshold rejects to watcher-owned fallback, and the next wake remains on main without another branch prompt.
-`tests/fm-pi-watch-extension.test.sh` owns the provider-free integration evidence that watcher fallback remains durable until either the branch settles successfully or one main self-submission is made from the temporary containment's authoritative idle boundary.
+`tests/fm-pi-watch-extension.test.sh` owns the provider-free integration evidence that watcher fallback remains durable until either the branch settles successfully or the temporary containment makes one main self-submission from its authoritative idle boundary.
+The exact-token consumption, ambiguity, and replacement rules are owned by [Pi watcher wake-turn containment](../watcher-continuity.md#temporary-pi-self-delivery-containment).
 [`pi-supervision-branch.md`](../pi-supervision-branch.md) owns the current cooldown, recovery, and re-latch contract and points to the regression that now covers it.
 
 Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.

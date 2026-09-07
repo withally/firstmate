@@ -517,7 +517,7 @@ tests/fm-pi-primary-types.test.sh
 ```
 
 Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, `/fork`, and reload, plus same-instance shutdown-plus-start, an owning `session_start` armed the replacement generation before any model turn and without the `watcher: not armed - Pi session is shutting down` refusal.
-A fresh module rebind also received exactly once the actionable close whose first delivery was still in flight at shutdown, while retaining one live successor.
+A fresh module rebind preserved an actionable close that overlapped shutdown while an earlier branch delivery was still in flight, then delivered that successor once without replaying the settled branch wake.
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
 The strict no-emit check used the installed Pi SDK declarations to hold the lifecycle event contract.
 Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.

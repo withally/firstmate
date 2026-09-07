@@ -11,7 +11,7 @@ When this session owns supervision and away mode is not active:
 5. The extension starts `bin/fm-watch-arm.sh --restart`, keeps the child attached to the live Pi process, and owns every later successor launch.
 6. Ordinary same-process session replacement (`/new`, `/resume`, `/fork`, reload) retires only the prior generation; when the replacement owns the fleet lock, its `session_start` arms the new generation without a model turn or another `fm_watch_arm_pi` call.
    The generation-owner contract and in-flight actionable-close handoff live in `.pi/extensions/fm-primary-pi-watch.ts`.
-7. After an actionable child close, the extension rechecks session-lock ownership and verifies one successor before it delivers the follow-up wake; its bounded fallback is defined in `docs/watcher-continuity.md`.
+7. After an actionable child close, the extension rechecks session-lock ownership and verifies one successor before it routes the wake through the delivery path; its temporary Pi self-delivery containment and bounded fallback are defined in `docs/watcher-continuity.md`.
 8. Ordinary work, turn completion, and ordinary signal, stale, check, heartbeat, or other wake handling: do not call `fm_watch_arm_pi` again because continuity is extension-owned rather than model-memory-owned.
 9. An unexpected child close enters bounded exponential retry, and an exhausted retry or lost session lock is surfaced as a watcher failure instead of disappearing.
 10. Missing, failed, or unhealthy cycle only: if a later notification explicitly reports one of those repair conditions, drain queued wakes, inspect the failure text, call `fm_watch_arm_pi`, and restart the selected Pi-family executable with both extensions loaded if needed.
@@ -26,7 +26,7 @@ That request is the one turn in which MAIN processes the outcome: give the capta
 Only that call closes the outcome; an unrelated, empty, or paraphrased answer leaves it open, and the current unprocessed sequence set is presented again at the next run boundary and at session start until it is acknowledged.
 The persisted entry is already the captain-visible record, so MAIN must not re-emit it verbatim merely because it appeared.
 Before MAIN steers, controls lifecycle, or cleans up a task, claim its lease with `bin/fm-lease.sh claim <task>` and release it afterwards; a refused claim means the branch is acting on that task right now.
-This conversation still receives every other fleet-wide or unresolvable wake, the branch's wakes when it is unavailable or away mode is active, and every watcher-failure alarm regardless, so the arm and repair contract above is unchanged.
+This conversation remains the owner of every other fleet-wide or unresolvable wake, the branch's wakes when it is unavailable or away mode is active, and every watcher-failure alarm; the containment path may retain a failure notice in status until a safe boundary or parent doorbell can surface it.
 Treat the wake behind either opened turn as already acknowledged; any legacy rendered branch note is historical and already handled - do not re-drain or re-handle its event.
 For `captain`, MAIN applies judgment about how to surface the captain-only result or question without taking another fleet action from that delivery.
 For `firstmate-action`, wake ownership does not complete the downstream workflow: perform the authorized action named by the envelope now, then report its result.

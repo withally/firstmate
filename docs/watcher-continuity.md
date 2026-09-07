@@ -55,7 +55,6 @@ It keeps the durable row and an in-memory ambiguous record until the exact token
 No timer, compaction event, settled event, session replacement, or aggregate error retries an ambiguous submission.
 Replacement preserves the row and does not replay it because Pi cannot prove that the old preflight terminated; the visible status says self-delivery was ambiguous and the parent doorbell owns recovery.
 At-most-one-turn has priority, while no-stranded-row is best effort until Pi supplies acknowledged, correlated delivery.
-The design evidence and permanent Pi-side boundary are recorded in the private `data/fm-pi-wake-delivery-boundary-d1/report.md` report.
 
 ## Recovery episode acknowledgement
 
@@ -85,7 +84,7 @@ A main drain claims every currently unclaimed row and excludes an active branch 
 Its `--ack-through <SEQ>` deletes only claimed main rows at or below the cutoff, while a branch acknowledgement deletes only claimed branch rows at or below its cutoff.
 Every settled branch prompt releases any residual grant, so an omitted or failed acknowledgement leaves the durable row available to a later main drain; a successful acknowledgement has already removed it.
 An acknowledgement whose cutoff removes none of the actor's rows while a presented row above the cutoff still waits is reported as having acknowledged nothing, together with the exact `--ack-through` and `--recovery-generation` command for that presented row; the presented set is read before any re-claim, so a row that arrived after presentation is never named for unseen acknowledgement.
-If a branch offer loses the claim race to main, it rejects its settlement so the watcher retains the actionable close until Pi accepts its main follow-up.
+If a branch offer loses the claim race to main, it rejects its settlement so the watcher retains the actionable close until the temporary Pi self-delivery containment routes it through the one-shot main path.
 [`pi-supervision-branch.md`](pi-supervision-branch.md#components-and-their-owners) owns branch eligibility, mixed-queue dispatch, the pre-drain recheck, and heartbeat's all-or-nothing rule.
 A check-kind row is main-owned in every mode, including a heartbeat review, so it is never part of a branch claim and never defers one; main is woken for it on that check's own triggering close.
 `fm-wake-drain.sh` never reclassifies a row itself: it filters the queue to the current actor's opaque claim before same-key deduplication, then presents and acknowledges only that actor-local view.
@@ -126,7 +125,7 @@ It also covers the portable lock's stale-recovery boundary: at most one primary-
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim; [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
-`FM_PI_HERDR_WAKE_LIVE=1 tests/fm-pi-herdr-wake-live-e2e.test.sh` provisions a named Herdr lab, establishes a real settled boundary, appends a status wake, and proves that Pi drains and acknowledges its durable row without a parent doorbell.
+`FM_PI_HERDR_WAKE_LIVE=1 tests/fm-pi-herdr-wake-live-e2e.test.sh` provisions a named Herdr lab, establishes a real settled boundary, appends a status wake, and proves one best-effort self-delivery path drains and acknowledges its durable row without a parent doorbell.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset; [`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full generation and legacy claim coverage.
 
 ## Active limits and verification

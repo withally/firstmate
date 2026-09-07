@@ -312,7 +312,7 @@ fm_composer_strip_ghost() {
 # submit could never be acknowledged, because cursor parks its terminal cursor
 # outside its composer and the composer verdict is therefore always `unknown`.
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop'
-FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='^[[:space:]]*([^[:space:]]+[[:space:]]+)*esc to interrupt[[:space:]]*$|^[[:space:]]*([^[:space:]]+[[:space:]]+)*[^[:space:]]*…[[:space:]]+\([0-9]+[smh][^)]*\)[[:space:]]*$|^[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+\([0-9]+[smh][[:space:]]+[·•][[:space:]]+[^)]*\)[[:space:]]*$'
+FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='^[[:space:]]*(✢|✽|✻|✶|✳|•)[[:space:]]+[[:alpha:]][[:alpha:][:space:]]*…[[:space:]]+\([0-9]+[smh][^)]*\)[[:space:]]*$|^[[:space:]]*(✢|✽|✻|✶|✳|•)[[:space:]]+[[:alpha:]][[:alpha:][:space:]]*\([0-9]+[smh][[:space:]]+[·•][[:space:]]+[^)]*\)[[:space:]]*$|^[[:space:]]*esc to interrupt[[:space:]]*$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'

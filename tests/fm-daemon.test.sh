@@ -2547,6 +2547,17 @@ test_pane_is_busy_herdr_claude_ignores_stale_footer_above_idle_prompt() {
   pass "pane_is_busy: stale or quoted Claude activity above an idle prompt is ignored"
 }
 
+test_pane_is_busy_herdr_claude_ignores_quoted_final_row_footer() {
+  (
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_capture() { printf 'quoted stale: esc to interrupt\n'; }
+    if FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr; then
+      fail "quoted Claude activity in the final row must not classify the pane busy"
+    fi
+  ) || fail "Herdr+Claude quoted-final-row pane_is_busy subshell failed"
+  pass "pane_is_busy: quoted Claude activity in the final row is ignored"
+}
+
 test_pane_is_busy_herdr_claude_accepts_current_spinner_footer() {
   (
     fm_backend_busy_state() { printf 'idle'; }
@@ -2923,6 +2934,7 @@ test_inject_msg_detects_claude_harness_before_submit
 test_pane_is_busy_herdr_claude_rendered_busy_state
 test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard
 test_pane_is_busy_herdr_claude_ignores_stale_footer_above_idle_prompt
+test_pane_is_busy_herdr_claude_ignores_quoted_final_row_footer
 test_pane_is_busy_herdr_claude_accepts_current_spinner_footer
 test_pane_is_busy_native_busy_fast_path_outside_herdr_claude
 test_inject_msg_logs_native_busy_subcause

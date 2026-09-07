@@ -50,7 +50,7 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 
 Pi 0.85.0 exposes `sendUserMessage` as fire-and-forget, so this deliberately weakened contract is best-effort self-wake with the parent doorbell authoritative.
 The watcher self-submits one fresh message carrying a unique token only from `agent_settled` or post-compaction context that reports `isIdle() === true` and `hasPendingMessages() === false`.
-Failure notices use the same gate, and when no safe boundary is available they remain in the watcher-failure status for parent-doorbell recovery instead of self-submitting.
+Failure notices use the same gate, and an existing persisted ambiguous row also blocks a new failure self-delivery; when the boundary is unsafe or ambiguity remains unresolved, they stay in the watcher-failure status for parent-doorbell recovery instead of self-submitting.
 It keeps the durable row and an in-memory ambiguous record until the exact token is consumed by `before_agent_start` or the user `message_start`.
 No timer, compaction event, settled event, session replacement, or aggregate error retries an ambiguous submission.
 Replacement preserves the row and does not replay it because Pi cannot prove that the old preflight terminated; the visible status says self-delivery was ambiguous and the parent doorbell owns recovery.

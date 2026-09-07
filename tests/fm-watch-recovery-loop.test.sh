@@ -98,9 +98,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
+const handlers = new Map();
 const prompts = [];
 const pi = {
-  on() {},
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -114,6 +117,11 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 if (!tool) throw new Error("Pi watch tool was not registered");
 await tool.execute("tool-call-t1", {}, undefined, undefined, {});
+await handlers.get("agent_settled")?.({}, {
+  ui: { setStatus() {} },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
 const deadline = Date.now() + 75000;
 let firstAt = 0;
 while (Date.now() < deadline) {

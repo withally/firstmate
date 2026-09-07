@@ -293,6 +293,13 @@ There is still one watcher process; the event reader is a bounded child of that 
 The away daemon supports tmux and Herdr supervisor panes only.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
+`bin/fm-supervise-daemon.sh` owns the delivered-once contract through a single JSONL journal (`state/.subsuper-delivery.jsonl`): each record carries its nonce, kind, source key, text, state, lifecycle epochs, and transcript witness baseline, and every journal mutation reads all records, writes one temp file, and atomically renames it, including an empty result.
+Each digest receives a collision-safe unique 12-hex nonce and is marked `typed` before its one and only type; rendering is the fast confirmation path, Pi/pi-signed and Claude user transcripts are authoritative JSONL nonce witnesses when rendering is unknown, and an unconfirmed attempt stays typed and alarms without ever retyping.
+Within an away session, check records deduplicate on `source_key` plus distilled `text`; delivered records remain in the journal until fresh-entry or return cleanup.
+Pi witness lookup first follows the active pane's canonical `agent_session` when it resolves beneath the configured `PI_CODING_AGENT_DIR` session root or the propagated `PI_CODING_AGENT_SESSION_DIR` override from a configured `--session-dir`; foreign or non-canonical roots are rejected and the transcript's working directory must match.
+Claude uses the cwd-scoped project transcript and validates its working directory.
+Pi and Claude typing defers until a canonical transcript baseline exists, and a typed record carrying `witness_transcript=-` re-resolves and binds a later canonical transcript before witness confirmation.
+At daemon startup, pre-redesign delivery files are never parsed or imported; they are moved verbatim into a unique quarantine and raise the wedge alarm, with sources retained if quarantine creation or a move fails.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 Harnesses with native tracked background execution can run the daemon in their terminal.
@@ -302,7 +309,7 @@ It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
-A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
+Fresh-entry cleanup and flag ordering are owned by the AFK skill's stale-artifact lifecycle; an away restart or recovery with `state/.afk` already present preserves the session's delivery journal.
 
 ## Destructive lab safety
 
@@ -341,6 +348,8 @@ tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
+tests/fm-daemon.test.sh
+tests/fm-afk-delivery-witness-live-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```

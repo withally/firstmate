@@ -973,6 +973,10 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+The daemon's delivered-once transcript witness is pinned portably by `tests/fm-daemon.test.sh`; refresh the real Herdr plus Pi path against an existing disposable pane, without lifecycle operations, with `FM_AFK_DELIVERY_WITNESS_LIVE=1 FM_AFK_DELIVERY_WITNESS_LIVE_TARGET='<named-session>:<pane-id>' FM_AFK_DELIVERY_WITNESS_LIVE_HOME='<pi-working-directory>' tests/fm-afk-delivery-witness-live-e2e.test.sh`.
+On 2026-09-07, two port-branch attempts and one unchanged fork-main control ran with Pi 0.85.0 and Herdr 0.8.2 in named non-default lab sessions.
+Each attempt passed the pending-composer refusal phase, then timed out waiting for the buffered escalation after Pi became safely idle.
+The matching fork-main failure identifies environment drift rather than a port-only gap; this run records no live pass.
 
 ## Zellij
 

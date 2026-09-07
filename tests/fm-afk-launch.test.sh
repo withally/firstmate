@@ -41,31 +41,64 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
-# UNIT 1: fm_afk_clear_stale_artifacts removes exactly the three stale artifacts.
+# UNIT 1: fm_afk_clear_stale_artifacts removes live artifacts and preserves
+# pre-journal inputs for the daemon's startup quarantine.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear.XXXXXX")
   mkdir -p "$st/state"
+  : > "$st/state/.subsuper-delivery.jsonl"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
+  : > "$st/state/.subsuper-escalations.delivery"
+  : > "$st/state/.subsuper-escalations.records"
   : > "$st/state/.subsuper-inject-wedged"
+  : > "$st/state/.subsuper-check-ledger"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
   # Source fm-afk-start.sh inside a child bash (it sets `set -eu` and would
   # otherwise leak that into this test shell) and call the clear helper.
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
-  if [ ! -e "$st/state/.subsuper-escalations" ] \
-     && [ ! -e "$st/state/.subsuper-escalations.since" ] \
-     && [ ! -e "$st/state/.subsuper-inject-wedged" ]; then
-    pass "clear-stale: removes escalations buffer, sidecar, and wedge marker"
+  if [ ! -e "$st/state/.subsuper-delivery.jsonl" ] \
+     && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
+     && [ -e "$st/state/.subsuper-escalations" ] \
+     && [ -e "$st/state/.subsuper-escalations.since" ] \
+     && [ -e "$st/state/.subsuper-escalations.delivery" ] \
+     && [ -e "$st/state/.subsuper-escalations.records" ] \
+     && [ -e "$st/state/.subsuper-check-ledger" ]; then
+    pass "clear-stale: clears live artifacts and preserves pre-journal quarantine inputs"
   else
-    fail "clear-stale: stale artifacts survived"
+    fail "clear-stale: live artifacts were not cleared or legacy inputs were lost"
   fi
   if [ -e "$st/state/.wake-queue" ]; then
     pass "clear-stale: leaves the durable wake-queue intact (no pending work dropped)"
   else
     fail "clear-stale: removed the durable wake-queue"
+  fi
+  rm -rf "$st"
+}
+
+unit_clear_stale_reports_any_failure() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-clear-failure.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.subsuper-delivery.jsonl"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fail_path="$3"
+    rm() {
+      local arg
+      for arg in "$@"; do
+        [ "$arg" = "$fail_path" ] && return 1
+      done
+      command rm "$@"
+    }
+    ! fm_afk_clear_stale_artifacts "$2"
+  ' _ "$START" "$st/state" "$st/state/.subsuper-delivery.jsonl"; then
+    pass "clear-stale: reports a failure from any artifact removal"
+  else
+    fail "clear-stale: masked a failure removing the journal"
   fi
   rm -rf "$st"
 }
@@ -118,6 +151,68 @@ unit_relative_paths_are_absolute_before_daemon_launch() {
   rm -rf "$root"
 }
 
+unit_detector_miss_leaves_daemon_harness_unset() {
+  local st detector entry
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-detector-miss.XXXXXX")
+  detector="$st/detector"
+  entry="$st/entry"
+  mkdir -p "$st/state" "$detector"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$detector/fm-harness.sh"
+  # shellcheck disable=SC2016 # Variables expand in the generated script, not this test shell.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  chmod +x "$detector/fm-harness.sh" "$entry"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    FM_AFK_LAUNCH_DIR="$2"
+    FM_AFK_LAUNCH_ENTRY="$3"
+    tmux() {
+      if [ "${1:-}" = new-session ]; then
+        printf "%s" "${5:-}" > "$FM_HOME/planned-command"
+        return 1
+      fi
+      return 1
+    }
+    [ -z "$(fm_afk_launch_primary_harness)" ]
+    ! fm_afk_launch_create_tmux captain:0 tmux
+    output=$(FM_DAEMON_PRIMARY_HARNESS=claude eval "$(cat "$FM_HOME/planned-command")")
+    [ "$output" = unset ]
+  ' _ "$LAUNCH" "$detector" "$entry"; then
+    pass "launcher detector: a failed harness probe leaves daemon self-resolution enabled"
+  else
+    fail "launcher detector: a failed harness probe was exported as a harness"
+  fi
+  rm -rf "$st"
+}
+
+unit_daemon_command_carries_configured_pi_agent_dir() {
+  local st detector entry custom session_dir output expected
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-root.XXXXXX")
+  detector="$st/detector"
+  entry="$st/entry"
+  custom="$st/custom pi agent"
+  session_dir="$st/custom pi sessions"
+  mkdir -p "$detector" "$custom" "$session_dir"
+  # shellcheck disable=SC2016 # Variables expand in the generated script, not this test shell.
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${PI_CODING_AGENT_SESSION_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
+  chmod +x "$entry" "$detector/fm-harness.sh"
+  output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" PI_CODING_AGENT_DIR="$custom" \
+    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    bash -c '
+      . "$1"
+      FM_AFK_LAUNCH_DIR="$2"
+      command=$(fm_afk_launch_daemon_cmd named:w1:p2 herdr "$3")
+      eval "$command"
+    ' _ "$LAUNCH" "$detector" "$entry")
+  expected="$custom|$session_dir|$st|named:w1:p2|pi"
+  if [ "$output" = "$expected" ]; then
+    pass "launcher command: configured Pi agent and session roots reach the daemon pane"
+  else
+    fail "launcher command: configured Pi agent root was not propagated ($output)"
+  fi
+  rm -rf "$st"
+}
+
 # ---------------------------------------------------------------------------
 # UNIT 2: a FRESH entry clears; a REFRESH (daemon already alive) preserves the
 # current session's buffered escalations.
@@ -127,7 +222,10 @@ unit_fresh_vs_refresh() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-refresh.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
+  : > "$st/state/.subsuper-escalations.delivery"
+  : > "$st/state/.subsuper-escalations.records"
   : > "$st/state/.subsuper-inject-wedged"
+  : > "$st/state/.subsuper-check-ledger"
   # A live "daemon": a real process whose identity the lock records, so
   # daemon_lock_held_by_live_daemon returns true (a refresh).
   sleep 600 &
@@ -138,7 +236,11 @@ unit_fresh_vs_refresh() {
   # shellcheck source=/dev/null
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleep_pid" > "$lock/pid-identity" 2>/dev/null ) || true
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
-  if [ -e "$st/state/.subsuper-escalations" ] && [ -e "$st/state/.subsuper-inject-wedged" ]; then
+  if [ -e "$st/state/.subsuper-escalations" ] \
+    && [ -e "$st/state/.subsuper-escalations.delivery" ] \
+    && [ -e "$st/state/.subsuper-escalations.records" ] \
+    && [ -e "$st/state/.subsuper-inject-wedged" ] \
+    && [ -e "$st/state/.subsuper-check-ledger" ]; then
     pass "refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)"
   else
     fail "refresh: incorrectly cleared the current session's buffered escalations"
@@ -221,13 +323,19 @@ unit_failed_start_rolls_back_state() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-failed-start.XXXXXX")
   mkdir -p "$st/state"
   printf 'pending\n' > "$st/state/.subsuper-escalations"
+  printf 'v1\tabcdef123456\t1\tdeadbeef\n' > "$st/state/.subsuper-escalations.delivery"
+  printf '{"version":1,"nonce":"","delivery_nonce":"","kind":"escalation","lines":1,"buffered_epoch":0,"origin":"legacy"}\n' > "$st/state/.subsuper-escalations.records"
   printf 'wedged\n' > "$st/state/.subsuper-inject-wedged"
+  printf 'buffered\t1\trepair.check.sh\tcheck: repair due\t\n' > "$st/state/.subsuper-check-ledger"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
     FM_SUPERVISOR_BACKEND=unsupported "$LAUNCH" start >/dev/null 2>&1; then
     fail "failed start: unsupported backend unexpectedly succeeded"
   elif [ ! -e "$st/state/.afk" ] \
     && [ "$(cat "$st/state/.subsuper-escalations")" = pending ] \
-    && [ "$(cat "$st/state/.subsuper-inject-wedged")" = wedged ]; then
+    && [ -e "$st/state/.subsuper-escalations.delivery" ] \
+    && [ -e "$st/state/.subsuper-escalations.records" ] \
+    && [ "$(cat "$st/state/.subsuper-inject-wedged")" = wedged ] \
+    && [ "$(cut -f1 "$st/state/.subsuper-check-ledger")" = buffered ]; then
     pass "failed start: away flag and delivery artifacts roll back"
   else
     fail "failed start: left false away state or discarded delivery artifacts"
@@ -499,11 +607,13 @@ unit_native_lifecycle() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
+  : > "$st/state/.subsuper-check-ledger"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
-    && [ ! -e "$st/state/.subsuper-escalations" ]; then
-    pass "native lifecycle: launcher owns state with no terminal"
+    && [ -e "$st/state/.subsuper-escalations" ] \
+    && [ -e "$st/state/.subsuper-check-ledger" ]; then
+    pass "native lifecycle: launcher owns state and preserves pre-journal inputs"
   else
     fail "native lifecycle: state preparation or no-terminal record failed"
   fi
@@ -512,6 +622,29 @@ unit_native_lifecycle() {
     pass "native lifecycle: uniform stop clears state without closing a terminal"
   else
     fail "native lifecycle: uniform stop retained state"
+  fi
+  rm -rf "$st"
+}
+
+unit_restart_preserves_session_ledger() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-restart-ledger.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.afk"
+  printf 'buffered\t71\t/state/restart.check.sh\tcheck: restart\t\n' \
+    > "$st/state/.subsuper-check-ledger"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
+    FM_SUPERVISOR_TARGET=fakepane FM_SUPERVISOR_BACKEND=tmux \
+    bash -c '
+      . "$1"
+      fm_afk_launch_reconcile() { :; }
+      fm_afk_launch_create_tmux() { :; }
+      fm_afk_launch_start
+    ' _ "$LAUNCH" >/dev/null 2>&1 \
+    && [ -s "$st/state/.subsuper-check-ledger" ]; then
+    pass "restart recovery: an existing away flag preserves pre-journal state"
+  else
+    fail "restart recovery: the existing away session lost its check ledger"
   fi
   rm -rf "$st"
 }
@@ -943,7 +1076,10 @@ e2e_tmux() {
 }
 
 unit_clear_stale
+unit_clear_stale_reports_any_failure
 unit_relative_paths_are_absolute_before_daemon_launch
+unit_detector_miss_leaves_daemon_harness_unset
+unit_daemon_command_carries_configured_pi_agent_dir
 unit_fresh_vs_refresh
 unit_stop_ordering
 unit_stop_rejects_reused_pid

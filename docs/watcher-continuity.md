@@ -51,9 +51,11 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 Pi 0.85.0 exposes `sendUserMessage` as fire-and-forget, so this deliberately weakened contract is best-effort self-wake with the parent doorbell authoritative.
 The watcher self-submits one fresh message carrying a unique token only from `agent_settled` or post-compaction context that reports `isIdle() === true` and `hasPendingMessages() === false`.
 Failure notices use the same gate, and an existing persisted ambiguous row also blocks a new failure self-delivery; when the boundary is unsafe or ambiguity remains unresolved, they stay in the watcher-failure status for parent-doorbell recovery instead of self-submitting.
+An immediate `sendUserMessage` exception is treated as an unsent failure notice and retained in `firstmate-watcher-failure` status without retrying.
 It keeps the durable row and an in-memory ambiguous record until the exact token is consumed by `before_agent_start` or the user `message_start`.
 No timer, compaction event, settled event, session replacement, or aggregate error retries an ambiguous submission.
 Replacement preserves the row and does not replay it because Pi cannot prove that the old preflight terminated; the visible status says self-delivery was ambiguous and the parent doorbell owns recovery.
+Cleanup failures remain associated with their pending token; cleanup-owned status clears only when no cleanup failure remains, and cleanup never clears notice-owned status.
 At-most-one-turn has priority, while no-stranded-row is best effort until Pi supplies acknowledged, correlated delivery.
 
 ## Recovery episode acknowledgement
@@ -116,6 +118,7 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, proves the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
 The same suite pins one tokenized ambiguous submission across late `before_agent_start`, compaction mid-preflight, and replacement, and proves that pending messages disqualify an otherwise idle boundary.
 It also proves that a watcher failure raised while Pi is busy stays in status without creating a self-delivery.
+It also proves that a synchronous `sendUserMessage` exception stays status-visible without retry, and that cleanup of one pending row cannot clear another row's or a notice's recovery alarm.
 It also covers ordinary same-process session replacement for `/new`, `/resume`, `/fork`, and reload, same-instance shutdown-plus-start, automatic re-arm before any model turn, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watch-arm.test.sh` covers durable queue replay, real remote parent-replies ingestion into the authoritative status log, decision-only OPEN DECISIONS recovery, interrupted handling replay, generation-bound acknowledgement, a persistent live successor after recovery, a watcher close inside the handling window that must leave the printed acknowledgement valid, and the self-healing moved-generation acknowledgement that consumes its handled rows and names its remedy.
 `tests/fm-watch-recovery-loop.test.sh` covers the once-per-generation announcement bound with the real Pi extension against a refused handling handshake, and a handling successor that must surface a real crew event instead of going blind.

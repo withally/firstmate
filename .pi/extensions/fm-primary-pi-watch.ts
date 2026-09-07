@@ -85,6 +85,10 @@ type WakeDelivery = {
   pending: PendingActionableClose | null;
 };
 
+type FailureStatusOwner =
+  | { kind: "cleanup"; token: string }
+  | { kind: "notice"; token: string };
+
 type DeliveryBoundary = Pick<ExtensionContext, "hasPendingMessages" | "isIdle" | "ui">;
 
 type SessionGeneration = {
@@ -99,6 +103,7 @@ type SessionGeneration = {
   seq: number;
   pendingActionables: PendingActionableClose[];
   cleanupFailures: Map<string, string>;
+  failureStatusOwner: FailureStatusOwner | null;
   // One fire-and-forget main submission remains ambiguous until exact
   // lifecycle consumption. It is never cleared or retried by aggregate state.
   ambiguousWakes: Map<string, AmbiguousWake>;
@@ -432,6 +437,7 @@ function createGeneration(): SessionGeneration {
     seq: 0,
     pendingActionables: [],
     cleanupFailures: new Map(),
+    failureStatusOwner: null,
     ambiguousWakes: new Map(),
     deliveryBoundary: null,
     statusUi: null,
@@ -711,19 +717,26 @@ export default function (pi: ExtensionAPI) {
     return await sendWake(owner, message, { token: pending.token, pending });
   }
 
-  function retainFailureInStatus(owner: SessionGeneration, message: string, token: string): void {
+  function retainFailureInStatus(
+    owner: SessionGeneration,
+    message: string,
+    token: string,
+    statusOwner: FailureStatusOwner,
+  ): void {
+    owner.failureStatusOwner = statusOwner;
     owner.statusUi?.setStatus(
       "firstmate-watcher-failure",
       `${message}\nwatcher: failure notice self-delivery was not submitted; parent doorbell owns recovery (token=${token})`,
     );
   }
 
-  function surfaceFailure(owner: SessionGeneration, message: string): void {
+  function surfaceFailure(owner: SessionGeneration, message: string, statusOwnerOverride?: FailureStatusOwner): void {
     const delivery = { token: nextDeliveryToken(), pending: null };
+    const statusOwner: FailureStatusOwner = statusOwnerOverride ?? { kind: "notice", token: delivery.token };
     void sendWake(owner, message, delivery).then((submitted) => {
-      if (!submitted && generationIsLive(owner)) retainFailureInStatus(owner, message, delivery.token);
+      if (!submitted && generationIsLive(owner)) retainFailureInStatus(owner, message, delivery.token, statusOwner);
     }).catch(() => {
-      if (generationIsLive(owner)) retainFailureInStatus(owner, message, delivery.token);
+      if (generationIsLive(owner)) retainFailureInStatus(owner, message, delivery.token, statusOwner);
     });
   }
 
@@ -757,8 +770,14 @@ export default function (pi: ExtensionAPI) {
     const index = owner.pendingActionables.findIndex((item) => item.token === pending.token);
     if (index >= 0) owner.pendingActionables.splice(index, 1);
     const clearedCleanupFailure = owner.cleanupFailures.delete(pending.token);
-    if (clearedCleanupFailure && owner.cleanupFailures.size === 0) {
+    if (
+      clearedCleanupFailure &&
+      owner.cleanupFailures.size === 0 &&
+      owner.failureStatusOwner?.kind === "cleanup" &&
+      owner.failureStatusOwner.token === pending.token
+    ) {
       owner.statusUi?.setStatus("firstmate-watcher-failure", undefined);
+      owner.failureStatusOwner = null;
     }
   }
 
@@ -771,7 +790,7 @@ export default function (pi: ExtensionAPI) {
     const detail = error instanceof Error ? error.message : String(error);
     if (owner.cleanupFailures.get(pending.token) === detail) return;
     owner.cleanupFailures.set(pending.token, detail);
-    surfaceFailure(owner, `${message}\n${detail}`);
+    surfaceFailure(owner, `${message}\n${detail}`, { kind: "cleanup", token: pending.token });
   }
 
   function schedulePendingCleanup(owner: SessionGeneration): void {

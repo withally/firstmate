@@ -730,7 +730,13 @@ check_ledger_state() {  # <state> <sequence-or-empty> <key> <payload>
   local state=$1 sequence=$2 key=$3 payload=$4 ledger
   ledger="$state/.subsuper-check-ledger"
   [ -s "$ledger" ] || return 0
-  awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
+  FM_CHECK_LEDGER_SEQUENCE="$sequence" FM_CHECK_LEDGER_KEY="$key" FM_CHECK_LEDGER_PAYLOAD="$payload" \
+    awk -F '\t' '
+    BEGIN {
+      sequence=ENVIRON["FM_CHECK_LEDGER_SEQUENCE"]
+      key=ENVIRON["FM_CHECK_LEDGER_KEY"]
+      payload=ENVIRON["FM_CHECK_LEDGER_PAYLOAD"]
+    }
     $3 == key && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) { state=$1 }
     END { if (state != "") print state }
   ' "$ledger"
@@ -766,7 +772,13 @@ check_ledger_reserved_append_present() {  # <state> <sequence-or-empty> <key> <p
   ledger="$state/.subsuper-check-ledger"
   buf="$state/.subsuper-escalations"
   [ -s "$ledger" ] && [ -s "$buf" ] || return 1
-  reservation=$(awk -F '\t' -v sequence="$sequence" -v key="$key" -v payload="$payload" '
+  reservation=$(FM_CHECK_LEDGER_SEQUENCE="$sequence" FM_CHECK_LEDGER_KEY="$key" FM_CHECK_LEDGER_PAYLOAD="$payload" \
+    awk -F '\t' '
+    BEGIN {
+      sequence=ENVIRON["FM_CHECK_LEDGER_SEQUENCE"]
+      key=ENVIRON["FM_CHECK_LEDGER_KEY"]
+      payload=ENVIRON["FM_CHECK_LEDGER_PAYLOAD"]
+    }
     $1 == "reserved" && $3 == key \
       && ((sequence != "" && $2 == sequence && $4 == payload) || (sequence == "" && $4 == payload)) {
         lines=$5

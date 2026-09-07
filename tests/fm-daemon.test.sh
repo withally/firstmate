@@ -1488,6 +1488,28 @@ test_check_wakes_dedupe_by_source_and_payload_within_one_session() {
   pass "check wakes dedupe exact source-sequence-payload repeats while preserving changed observations"
 }
 
+test_check_ledger_preserves_literal_backslash_t_fields() {
+  local dir state key payload
+  dir=$(make_supercase check-ledger-literal-backslash-t)
+  state="$dir/state"
+  key='literal\tkey'
+  payload='check: literal\tpayload'
+
+  check_ledger_append "$state" buffered 81 "$key" "$payload" \
+    || fail "could not seed the literal backslash-t buffered record"
+  [ "$(check_ledger_state "$state" 81 "$key" "$payload")" = buffered ] \
+    || fail "exact ledger lookup did not preserve literal backslash-t fields"
+
+  check_ledger_append "$state" reserved 82 "$key" "$payload" 0 \
+    || fail "could not seed the literal backslash-t reservation"
+  [ "$(check_ledger_state "$state" '' "$key" "$payload")" = reserved ] \
+    || fail "logical ledger lookup did not preserve literal backslash-t fields"
+  printf '%s\n' "$payload" > "$state/.subsuper-escalations"
+  check_ledger_reserved_append_present "$state" 82 "$key" "$payload" "$payload" \
+    || fail "reservation lookup did not preserve literal backslash-t fields"
+  pass "check ledger lookups preserve literal backslash-t keys and payloads"
+}
+
 test_check_wake_replay_recovers_after_buffer_append_before_seen_record() {
   local dir state reason
   dir=$(make_supercase check-crash-after-buffer)
@@ -2957,6 +2979,7 @@ test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate
 test_check_wakes_dedupe_by_source_and_payload_within_one_session
+test_check_ledger_preserves_literal_backslash_t_fields
 test_check_wake_replay_recovers_after_buffer_append_before_seen_record
 test_check_wake_flush_reconciles_reserved_append_before_clearing
 test_check_wake_reservation_does_not_borrow_another_sources_buffer_line

@@ -3672,6 +3672,37 @@ test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof() 
   pass "fm_backend_herdr_send_text_submit: idle-baseline Claude native working accepts rendered active-turn proof"
 }
 
+test_send_text_submit_claude_stale_footer_above_idle_prompt_does_not_confirm() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-claude-stale-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '  ready\n  ❯\n' > "$resp/3.out"
+  printf '  quoted stale: • Working (4s • esc to interrupt)\n  ❯\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  printf '  ❯\n' > "$resp/7.out"
+  printf '  ❯ hello captain\n' > "$resp/8.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" = pending ] || fail "stale Claude footer text above an idle prompt must not confirm an Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: stale Claude footer text above an idle prompt stays unconfirmed"
+}
+
+test_send_text_submit_claude_current_spinner_footer_confirms() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-current-spinner"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '  ready\n  ❯\n' > "$resp/3.out"
+  printf '  ✢ Pollinating… (16s · ↓ 1.1k tokens · thought for 1s)\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" = empty ] || fail "a current Claude spinner footer should confirm the current Enter, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "current Claude spinner confirmation should send exactly one Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a current Claude spinner footer confirms delivery"
+}
+
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-idle-native-working-empty-composer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4796,6 +4827,8 @@ test_send_text_submit_claude_working_pending_requires_rendered_busy
 test_send_text_submit_claude_idle_baseline_native_busy_requires_rendered_or_empty_proof
 test_send_text_submit_claude_idle_baseline_preexisting_rendered_busy_does_not_confirm
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_rendered_proof
+test_send_text_submit_claude_stale_footer_above_idle_prompt_does_not_confirm
+test_send_text_submit_claude_current_spinner_footer_confirms
 test_send_text_submit_claude_idle_baseline_native_busy_accepts_cleared_composer
 test_send_text_submit_claude_working_pending_accepts_rendered_busy
 test_send_text_submit_claude_preexisting_busy_does_not_confirm_late_snapshot

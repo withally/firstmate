@@ -2536,6 +2536,27 @@ test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard() {
   pass "pane_is_busy: Herdr+Claude native idle still honors the rendered active-turn guard"
 }
 
+test_pane_is_busy_herdr_claude_ignores_stale_footer_above_idle_prompt() {
+  (
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_capture() { printf 'quoted stale: • Working (4s • esc to interrupt)\n❯\n'; }
+    if FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr; then
+      fail "stale or quoted Claude activity above an idle composer must not classify the pane busy"
+    fi
+  ) || fail "Herdr+Claude stale-footer pane_is_busy subshell failed"
+  pass "pane_is_busy: stale or quoted Claude activity above an idle prompt is ignored"
+}
+
+test_pane_is_busy_herdr_claude_accepts_current_spinner_footer() {
+  (
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_capture() { printf '✢ Pollinating… (16s · ↓ 1.1k tokens · thought for 1s)\n'; }
+    FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr \
+      || fail "a current Claude spinner footer should classify the pane busy"
+  ) || fail "Herdr+Claude current-spinner pane_is_busy subshell failed"
+  pass "pane_is_busy: a current Claude spinner footer remains a busy proof"
+}
+
 test_pane_is_busy_native_busy_fast_path_outside_herdr_claude() {
   (
     fm_backend_busy_state() { printf 'busy'; }
@@ -2901,6 +2922,8 @@ test_inject_msg_herdr_claude_native_busy_rendered_idle_submits
 test_inject_msg_detects_claude_harness_before_submit
 test_pane_is_busy_herdr_claude_rendered_busy_state
 test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard
+test_pane_is_busy_herdr_claude_ignores_stale_footer_above_idle_prompt
+test_pane_is_busy_herdr_claude_accepts_current_spinner_footer
 test_pane_is_busy_native_busy_fast_path_outside_herdr_claude
 test_inject_msg_logs_native_busy_subcause
 test_inject_msg_logs_rendered_busy_subcause

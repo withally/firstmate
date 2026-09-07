@@ -3785,6 +3785,21 @@ test_rendered_busy_state_scopes_claude_to_the_current_footer() {
   pass "fm_backend_herdr_rendered_busy_state: Claude busy proof is scoped to the current footer"
 }
 
+test_rendered_busy_state_rejects_unrecognized_claude_footer() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/rendered-busy-claude-unknown-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    '• Working (4s • esc to interrupt)' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  [ "$out" = unknown ] || fail "an unrecognized Claude footer in an empty composer must be unknown, got '$out'"
+  pass "fm_backend_herdr_rendered_busy_state: an unrecognized Claude footer fails closed"
+}
+
 test_rendered_busy_state_honors_claude_busy_override_inside_current_composer() {
   local dir log resp fb bare_out structured_out
   dir="$TMP_ROOT/rendered-busy-claude-override"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3821,6 +3836,22 @@ test_send_text_submit_claude_ambiguous_footer_never_confirms() {
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "an ambiguous post-Enter footer changed the configured Enter count: $enter_count"
   pass "fm_backend_herdr_send_text_submit: an ambiguous Claude footer never confirms delivery"
+}
+
+test_send_text_submit_claude_stale_native_working_uses_footer_transition() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-claude-stale-working"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  herdr_claude_idle_plain > "$resp/3.out"
+  printf '  ❯ hello captain\n' > "$resp/5.out"
+  herdr_claude_busy_plain > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
+  [ "$out" = empty ] || fail "a Claude footer idle-to-busy transition must confirm despite stale native working, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a confirmed Claude submit must send one Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: Claude uses the harness-scoped footer transition"
 }
 
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
@@ -4733,8 +4764,10 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
 test_rendered_busy_state_scopes_claude_to_the_current_footer
+test_rendered_busy_state_rejects_unrecognized_claude_footer
 test_rendered_busy_state_honors_claude_busy_override_inside_current_composer
 test_send_text_submit_claude_ambiguous_footer_never_confirms
+test_send_text_submit_claude_stale_native_working_uses_footer_transition
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition
 test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
 test_send_text_submit_confirms_despite_codex_idle_tip_composer

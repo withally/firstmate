@@ -2711,14 +2711,11 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # claude/codex popups, so the caller's <settle> before the first Enter matters
 # here the same way it does for tmux.
 #
-# Confirmation signal: when the target is legibly idle before Enter,
-# submission is confirmed by fm_backend_herdr_wait_for_working observing a
-# submit-active agent_status after Enter. Live Claude on Herdr 0.8.0 can
-# keep agent_status idle for a whole landed turn, so an idle native result
-# falls through to the shared composer verdict: empty is positive delivery,
-# proven pending retries Enter, and retries-exhausted pending plus a
-# generating busy signal is a queued Enter via
-# fm_composer_queued_enter_verdict (bin/fm-composer-lib.sh).
+# Confirmation signal: for a non-Claude target that is legibly idle before
+# Enter, submission is confirmed by fm_backend_herdr_wait_for_working observing
+# a submit-active agent_status after Enter. A known Claude target treats native
+# agent_status as diagnostic and confirms through its current rendered footer
+# transition or a cleared composer.
 #
 # Incident (2026-07-07, followed up on 2026-07-08): a redelivery loop in the
 # away-mode daemon. Root cause: composer-content submit confirmation was too
@@ -2762,8 +2759,8 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # rendered-footer twin of the tmux submit core's turn-started confirmation
 # (bin/fm-tmux-lib.sh): an idle-to-busy transition ACROSS our Enter is proof the
 # harness accepted the submission. The baseline is taken before the first Enter
-# and only when the native baseline was not legibly idle, so the idle-baseline
-# path still never reads pane content until native stays idle. A pane already
+# and a known Claude target always uses that rendered baseline because its
+# native status is diagnostic. A pane already
 # mid-turn cannot use a rendered-footer transition as proof of this Enter;
 # only the separate retries-exhausted, proven-pending queued-Enter verdict can
 # confirm delivery from its native working state.
@@ -2771,22 +2768,27 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # text visible until the current turn ends): after the retry budget, a proven
 # pending composer plus native agent_status=working is delivered, not swallowed.
 # blocked is not working, so a Cursor pane that is blocked in every state does
-# not receive this conversion. On an idle native baseline, a rendered busy
-# footer may supply the same generating signal because live Claude never leaves
-# idle. The policy is fm_composer_queued_enter_verdict; this adapter only
-# supplies the busy primitive.
+# not receive this conversion. On an idle native baseline, a non-Claude target
+# may use its rendered busy footer as the generating signal. The policy is
+# fm_composer_queued_enter_verdict; this adapter only supplies the busy
+# primitive.
 # Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
 # submit vocabulary. Empty means confirmed submitted for every backend; how
 # each backend confirms it is an internal decision.
 #
 # fm_backend_herdr_queued_enter_busy: delivery-busy for the shared queued-Enter
-# conversion. Native agent_status=working is generating; blocked is not (a
-# permission prompt, or Cursor's always-blocked native state, is not a queued
-# mid-turn). When <allow-rendered> is 1, an idle native baseline may also take
-# the pane's rendered busy footer, because live Claude keeps agent_status idle
-# through a whole turn.
-fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
-  local target=$1 allow_rendered=${2:-0} raw
+# conversion. Native agent_status=working is generating for non-Claude
+# targets; blocked is not (a permission prompt, or Cursor's always-blocked
+# native state, is not a queued mid-turn). When <allow-rendered> is 1, a
+# non-Claude idle native baseline may also take the pane's rendered busy
+# footer. Known Claude targets use the current-footer transition in the submit
+# loop instead.
+fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [harness]
+  local target=$1 allow_rendered=${2:-0} harness=${3:-} raw
+  if [ "$harness" = claude ]; then
+    printf 'idle'
+    return 0
+  fi
   raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
   case "$raw" in
     working) printf 'busy'; return 0 ;;
@@ -2798,8 +2800,8 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
   fi
 }
 
-fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [harness]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 harness=${7:-} i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline='' allow_rendered=0 enter_sent=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
@@ -2809,10 +2811,12 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   # Typing never starts a turn, so a footer read taken after the literal send
   # and before the first Enter is still a pre-submission baseline.
-  if [ "$baseline" = idle ]; then
+  if [ "$harness" = claude ]; then
+    footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
+  elif [ "$baseline" = idle ]; then
     allow_rendered=1
   else
-    footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
+    footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$harness")
   fi
   while :; do
     if fm_backend_herdr_send_key "$target" Enter; then
@@ -2826,7 +2830,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       sleep "$sleep_s"
       continue
     fi
-    if [ "$baseline" = idle ]; then
+    if [ "$baseline" = idle ] && [ "$harness" != claude ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
       case "$verdict" in
@@ -2844,9 +2848,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
-      if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
+      if [ "$verdict" = pending ] \
         && [ "$footer_baseline" = idle ] \
-        && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
+        && { [ "$harness" = claude ] || [ "$raw_status" != working ]; } \
+        && [ "$(fm_backend_herdr_rendered_busy_state "$target" "$harness")" = busy ]; then
         verdict=busy
       fi
       case "$verdict" in
@@ -2861,7 +2866,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         printf 'send-failed'
       else
         fm_composer_queued_enter_verdict "$verdict" \
-          "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered")"
+          "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered" "$harness")"
       fi
       return 0
     fi

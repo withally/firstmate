@@ -314,6 +314,7 @@ fm_composer_strip_ghost() {
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
+FM_DELIVERY_CLAUDE_IDLE_FOOTER_REGEX='^Claude[[:space:]]+[0-9]+(\.[0-9]+)?$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -396,7 +397,10 @@ fm_claude_current_footer_busy() {
   elif printf '%s\n' "$footer" | grep -qE "$FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX"; then
     return 0
   fi
-  return 1
+  if printf '%s\n' "$footer" | grep -qE "$FM_DELIVERY_CLAUDE_IDLE_FOOTER_REGEX"; then
+    return 1
+  fi
+  return 2
 }
 
 # The prompt glyphs, each declared exactly once (see THE SAFETY RULE above).

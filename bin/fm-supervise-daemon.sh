@@ -605,6 +605,18 @@ mark_escalated_seen() {  # <state> <captured-endpoint-file>
   return "$rc"
 }
 
+status_identity_key() {  # <task> <captured-endpoint> <captured-identity>
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] || return 1
+  printf 'status:%s\t%s\t%s' "$1" "$2" "$3"
+}
+
+status_capture_source_key() {  # <captured-endpoint-file>
+  local capture=$1 task endpoint ident
+  [ -s "$capture" ] || return 1
+  IFS=$(printf '\t') read -r task endpoint ident < "$capture" || return 1
+  status_identity_key "$task" "$endpoint" "$ident"
+}
+
 # Busy and composer-empty detection form the injection boundary.
 # These thin wrappers keep the daemon's call sites and unit tests stable.
 #
@@ -694,7 +706,7 @@ stale_window_is_busy() {  # <window> <state>
 #                       every record typed together in one flush (the
 #                       [d:<nonce>] the transcript witness looks for),
 #     "kind":           "escalation" | "check",
-#     "source_key":     the durable check key for dedup ("" for escalations),
+#     "source_key":     the durable source identity for dedup, or "",
 #     "text":           the distilled digest item,
 #     "state":          "buffered" | "typed" | "delivered",
 #     "buffered_epoch": epoch first buffered,
@@ -1117,16 +1129,22 @@ delivery_undelivered_texts() {  # <state>
 }
 
 # --- buffering --------------------------------------------------------------
-# Append one escalation item as a buffered record. Escalations do not dedup; the
-# per-wake seen-status markers already collapse catch-all repeats upstream.
-escalate_add() {  # <state> <distilled-item>
-  local state=$1 item=$2 now
+# Append one escalation item as a buffered record.
+escalate_add() {  # <state> <distilled-item> [source-key]
+  local state=$1 item=$2 source_key=${3:-} now
   case "$item" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  case "$source_key" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  if [ -n "$source_key" ] && [ -s "$state/$JOURNAL_NAME" ] \
+    && jq -s -e --arg key "$source_key" --arg text "$item" \
+      'any(.[]; .kind=="escalation" and .source_key==$key and .text==$text)' \
+      "$state/$JOURNAL_NAME" >/dev/null 2>&1; then
+    return 0
+  fi
   now=$(_now)
-  # shellcheck disable=SC2016 # $text/$now are jq --arg/--argjson variables.
+  # shellcheck disable=SC2016 # $key/$text/$now are jq --arg/--argjson variables.
   journal_apply "$state" \
-    '. + [{nonce:"",kind:"escalation",source_key:"",text:$text,state:"buffered",buffered_epoch:$now,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}]' \
-    --arg text "$item" --argjson now "$now"
+    '. + [{nonce:"",kind:"escalation",source_key:$key,text:$text,state:"buffered",buffered_epoch:$now,typed_epoch:0,delivered_epoch:0,witness_transcript:"-",witness_offset:0}]' \
+    --arg key "$source_key" --arg text "$item" --argjson now "$now"
 }
 
 # Append one durable check exactly once per away session. Dedup is keyed on the
@@ -1225,6 +1243,10 @@ journal_quarantine_and_alarm() {  # <state> <reason> <file...>
     fi
     return 1
   fi
+  if ! journal_quarantine_alarm_write "$state" "$reason" "$dir"; then
+    log "ERROR: away-mode delivery store quarantine alarm publication failed ($reason); source files retained"
+    return 1
+  fi
   for f in "$@"; do
     if [ -e "$f" ] || [ -L "$f" ]; then
       base=${f##*/}
@@ -1238,10 +1260,6 @@ journal_quarantine_and_alarm() {  # <state> <reason> <file...>
       fi
     fi
   done
-  if ! journal_quarantine_alarm_write "$state" "$reason" "$dir"; then
-    log "ERROR: away-mode delivery store quarantine alarm publication failed ($reason); source files retained where moves failed"
-    return 1
-  fi
   if [ "$failed" -eq 0 ]; then
     log "ERROR: away-mode delivery store quarantined ($reason); moved $moved file(s) to $dir; raising wedge alarm"
   else
@@ -1788,7 +1806,7 @@ housekeeping() {  # <state>
   #     read decides relevance, and the classified-through offset is the dedup.
   if [ "$(_file_age "$state/.subsuper-last-scan")" -ge "${FM_HEARTBEAT_SCAN_SECS:-$HEARTBEAT_SCAN_SECS_DEFAULT}" ]; then
     _now > "$state/.subsuper-last-scan"
-    local event record rest endpoint ident rc
+    local event record rest endpoint ident source_key rc
     for f in "$state"/*.status; do
       [ -e "$f" ] || [ -L "$f" ] || continue
       task=$(basename "$f"); task="${task%.status}"
@@ -1799,7 +1817,8 @@ housekeeping() {  # <state>
         ident=$(status_observed_signature "$f")
         status_presentation_marker_reported_matches "$(_seen_status_path "$state" "$task")" "$ident" \
           && continue
-        if escalate_add "$state" "$(basename "$f"): unreadable status span (catch-all scan)"; then
+        source_key=$(status_identity_key ERROR "$task" "$ident" 2>/dev/null || true)
+        if escalate_add "$state" "$(basename "$f"): unreadable status span (catch-all scan)" "$source_key"; then
           status_presentation_marker_report "$(_seen_status_path "$state" "$task")" "$ident" || true
         fi
         continue
@@ -1809,11 +1828,13 @@ housekeeping() {  # <state>
       rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
       if [ "$rc" -eq 0 ]; then
         event=${rest#*$'\t'}
-        if escalate_add "$state" "$(basename "$f"): $event (catch-all scan)"; then
+        source_key=$(status_identity_key "$task" "$endpoint" "$ident" 2>/dev/null || true)
+        if escalate_add "$state" "$(basename "$f"): $event (catch-all scan)" "$source_key"; then
           mark_status_seen "$state" "$task" "$endpoint" "$ident" || true
         fi
       elif ! mark_status_seen "$state" "$task" "$endpoint" "$ident"; then
-        escalate_add "$state" "$(basename "$f"): status position commit failed (catch-all scan)"
+        source_key=$(status_identity_key "$task" "$endpoint" "$ident" 2>/dev/null || true)
+        escalate_add "$state" "$(basename "$f"): status position commit failed (catch-all scan)" "$source_key"
       fi
     done
   fi
@@ -1974,7 +1995,7 @@ is_wake_reason() {  # <reason>
 # Side effects: logging, marker records, escalation buffer appends.
 handle_wake() {  # <reason> <state> [durable-key] [durable-sequence]
   local reason=$1 state=$2 durable_key=${3:-} durable_sequence=${4:-}
-  local decision action distilled task last stale_detail check_rc
+  local decision action distilled task last stale_detail check_rc source_key=''
   local capture="$state/.subsuper-classified-end.$$" span_record='' span_rc='' endpoint ident rest sig marker
   local kind="" arg="" classification_failed=0 span_failure_repeat=0
   : > "$capture" || return 1
@@ -2067,6 +2088,10 @@ handle_wake() {  # <reason> <state> [durable-key] [durable-sequence]
             return 1
             ;;
         esac
+      elif source_key=$(status_capture_source_key "$capture" 2>/dev/null); then
+        if ! escalate_add "$state" "$distilled" "$source_key"; then
+          classification_failed=1
+        fi
       elif escalate_add "$state" "$distilled"; then
         :
       else

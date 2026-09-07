@@ -213,6 +213,100 @@ unit_daemon_command_carries_configured_pi_agent_dir() {
   rm -rf "$st"
 }
 
+unit_daemon_command_derives_herdr_pi_session_dir() {
+  local st detector entry transcript session_dir output expected
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-herdr-session.XXXXXX")
+  detector="$st/detector"
+  entry="$st/entry"
+  session_dir="$st/custom-sessions"
+  transcript="$session_dir/active.jsonl"
+  mkdir -p "$detector" "$session_dir"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${PI_CODING_AGENT_SESSION_DIR:-unset}"\n' > "$entry"
+  printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
+  chmod +x "$entry" "$detector/fm-harness.sh"
+  output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" PI_TRANSCRIPT="$transcript" \
+    bash -c '
+      . "$1"
+      FM_AFK_LAUNCH_DIR="$2"
+      fm_backend_herdr_cli() {
+        [ "${2:-}" = agent ] && [ "${3:-}" = get ] || return 1
+        jq -cn --arg path "$PI_TRANSCRIPT" \
+          '\''{result:{agent:{agent_session:$path}}}'\''
+      }
+      command=$(fm_afk_launch_daemon_cmd named:w1:p2 herdr "$3")
+      eval "$command"
+    ' _ "$LAUNCH" "$detector" "$entry")
+  expected="$session_dir"
+  if [ "$output" = "$expected" ]; then
+    pass "launcher command: Herdr agent_session derives the Pi session directory"
+  else
+    fail "launcher command: Herdr agent_session did not derive the Pi session directory ($output)"
+  fi
+  rm -rf "$st"
+}
+
+unit_daemon_command_derives_tmux_pi_session_dir() {
+  local st detector entry session_dir output expected
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-tmux-session.XXXXXX")
+  detector="$st/detector"
+  entry="$st/entry"
+  session_dir="$st/custom-sessions"
+  mkdir -p "$detector" "$session_dir"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${PI_CODING_AGENT_SESSION_DIR:-unset}"\n' > "$entry"
+  printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
+  chmod +x "$entry" "$detector/fm-harness.sh"
+  output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" TMUX_SESSION_DIR="$session_dir" \
+    bash -c '
+      . "$1"
+      FM_AFK_LAUNCH_DIR="$2"
+      fm_backend_tmux_foreground_args() {
+        printf "pi --session-dir %s --offline\\n" "$TMUX_SESSION_DIR"
+      }
+      command=$(fm_afk_launch_daemon_cmd captain:0 tmux "$3")
+      eval "$command"
+    ' _ "$LAUNCH" "$detector" "$entry")
+  expected="$session_dir"
+  if [ "$output" = "$expected" ]; then
+    pass "launcher command: tmux Pi arguments derive the session directory"
+  else
+    fail "launcher command: tmux Pi arguments did not derive the session directory ($output)"
+  fi
+  rm -rf "$st"
+}
+
+unit_launch_paths_forward_derived_pi_session_dir() {
+  local st capture output expected
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-forward.XXXXXX")
+  capture="$st/capture"
+  output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" CAPTURE="$capture" bash -c '
+    . "$1"
+    fm_afk_launch_pi_session_dir() { printf "%s" /expected/pi-sessions; }
+    fm_afk_launch_daemon_cmd() { printf "%s\\n" "${4:-missing}" >> "$CAPTURE"; printf true; }
+    fm_afk_launch_record_write() { :; }
+    fm_afk_launch_commit_terminal() { :; }
+    fm_backend_source() { :; }
+    fm_backend_herdr_server_ensure() { :; }
+    fm_backend_herdr_cli() {
+      case "${2:-} ${3:-}" in
+        "workspace create") printf '\''{"result":{"workspace":{"workspace_id":"ws"},"root_pane":{"pane_id":"pane"}}}'\'' ;;
+        "pane run") : ;;
+        *) return 1 ;;
+      esac
+    }
+    fm_afk_launch_create_herdr lab:captain herdr
+    tmux() { [ "${1:-}" = new-session ] && return 0; return 1; }
+    fm_afk_launch_create_tmux captain:0 tmux
+    cat "$CAPTURE"
+  ' _ "$LAUNCH")
+  expected=$'/expected/pi-sessions\n/expected/pi-sessions'
+  if [ "$output" = "$expected" ]; then
+    pass "launcher paths: Herdr and tmux forward the derived Pi session directory"
+  else
+    fail "launcher paths: a backend omitted the derived Pi session directory ($output)"
+  fi
+  rm -rf "$st"
+}
+
 # ---------------------------------------------------------------------------
 # UNIT 2: a FRESH entry clears; a REFRESH (daemon already alive) preserves the
 # current session's buffered escalations.
@@ -1102,6 +1196,9 @@ unit_clear_stale_reports_any_failure
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_detector_miss_leaves_daemon_harness_unset
 unit_daemon_command_carries_configured_pi_agent_dir
+unit_daemon_command_derives_herdr_pi_session_dir
+unit_daemon_command_derives_tmux_pi_session_dir
+unit_launch_paths_forward_derived_pi_session_dir
 unit_restart_preserves_delivery_journal
 unit_native_restart_preserves_delivery_journal
 unit_fresh_vs_refresh

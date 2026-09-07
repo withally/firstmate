@@ -106,6 +106,31 @@ test_afk_start_fails_when_fresh_cleanup_fails() {
   pass "fm-afk-start.sh fails closed when fresh artifact cleanup fails"
 }
 
+test_afk_start_fresh_cleanup_failure_never_leaves_flag() {
+  local dir state out rc
+  dir=$(make_supercase afk-start-cleanup-rollback-failure)
+  state="$dir/state"
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    fm_afk_clear_stale_artifacts() { return 1; }
+    rm() {
+      local arg
+      for arg in "$@"; do
+        [ "$arg" = "$FM_AFK_STATE/.afk" ] && return 1
+      done
+      command rm "$@"
+    }
+    set +e
+    fm_afk_start_main
+  ' _ "$AFK_START" 2>&1)
+  rc=$?
+
+  [ "$rc" -ne 0 ] || fail "fm-afk-start.sh reported success after cleanup and rollback both failed"
+  [ ! -e "$state/.afk" ] || fail "fm-afk-start.sh published a fresh away flag before cleanup succeeded"
+  pass "fm-afk-start.sh leaves no fresh flag when cleanup fails and rollback is unavailable"
+}
+
 test_afk_start_recovery_preserves_durable_state_without_prepared_env() {
   local dir state out rc flag journal
   dir=$(make_supercase afk-start-recovery-preserves-state)
@@ -456,6 +481,23 @@ test_catchall_buffer_failure_preserves_position() {
   [ "$(status_seen_offset "$state" catch-write-r2)" = "$(log_size "$state/catch-write-r2.status")" ] \
     || fail "the recovered catch-all did not advance its classification position"
   pass "catch-all markers advance only after escalation buffering succeeds"
+}
+
+test_catchall_replay_after_seen_marker_failure_dedupes() {
+  local dir state
+  dir=$(make_supercase catchall-marker-replay)
+  state="$dir/state"
+  printf 'done: release verification complete\n' > "$state/replay-r3.status"
+  (
+    mark_status_seen() { return 1; }
+    rm -f "$state/.subsuper-last-scan"
+    FM_HEARTBEAT_SCAN_SECS=0 housekeeping "$state" || true
+    rm -f "$state/.subsuper-last-scan"
+    FM_HEARTBEAT_SCAN_SECS=0 housekeeping "$state" || true
+  )
+  [ "$(journal_buffered_count "$state")" -eq 1 ] \
+    || fail "catch-all replay appended a duplicate after seen-marker persistence failed"
+  pass "catch-all replay is idempotent when seen-marker persistence fails"
 }
 
 test_durable_wake_failure_retains_entire_batch() {
@@ -1599,6 +1641,21 @@ test_signal_escalate_marks_seen_no_catchall_refire() {
   pass "captain signal escalate marks seen so the catch-all scan does not re-fire"
 }
 
+test_signal_replay_after_seen_marker_failure_dedupes() {
+  local dir state
+  dir=$(make_supercase signal-marker-replay)
+  state="$dir/state"
+  printf 'done: release verification complete\n' > "$state/replay-s4.status"
+  (
+    mark_escalated_seen() { return 1; }
+    FM_ESCALATE_BATCH_SECS=999 handle_wake "signal: $state/replay-s4.status" "$state" || true
+    FM_ESCALATE_BATCH_SECS=999 handle_wake "signal: $state/replay-s4.status" "$state" || true
+  )
+  [ "$(journal_buffered_count "$state")" -eq 1 ] \
+    || fail "signal replay appended a duplicate after seen-marker persistence failed"
+  pass "signal replay is idempotent when seen-marker persistence fails"
+}
+
 test_collapse_newlines_pure() {
   local out
   out=$(_collapse_newlines $'line one\nline two\nline three')
@@ -2393,6 +2450,24 @@ test_prejournal_quarantine_failure_preserves_source() {
   fi
   [ -e "$source" ] || fail "quarantine removed a source after a move failure"
   pass "quarantine fails closed and retains an unmovable pre-journal source"
+}
+
+test_quarantine_publication_failure_preserves_source() {
+  local dir state source
+  dir=$(make_supercase delivery-quarantine-publication-failure)
+  state="$dir/state"
+  mkdir -p "$state"
+  source="$state/.subsuper-escalations"
+  printf '%s\n' 'delivery must remain discoverable' > "$source"
+  if (
+    journal_quarantine_alarm_write() { return 1; }
+    FM_WEDGE_ALARM_EXEC=discard journal_quarantine_and_alarm \
+      "$state" "test quarantine publication failure" "$source"
+  ); then
+    fail "quarantine reported success after alarm publication failed"
+  fi
+  [ -e "$source" ] || fail "quarantine moved a source before publishing its pointer"
+  pass "quarantine publication failure retains the original source"
 }
 
 test_delivery_nonce_avoids_existing_journal_collision() {
@@ -3391,6 +3466,8 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 }
 
 test_afk_start_refuses_when_flag_cannot_be_written
+test_afk_start_fails_when_fresh_cleanup_fails
+test_afk_start_fresh_cleanup_failure_never_leaves_flag
 test_afk_start_recovery_preserves_durable_state_without_prepared_env
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
@@ -3436,6 +3513,7 @@ test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout
 test_terminal_stale_escalate_leaves_no_marker
 test_signal_escalate_marks_seen_no_catchall_refire
+test_signal_replay_after_seen_marker_failure_dedupes
 test_collapse_newlines_pure
 test_afk_absent_daemon_does_not_inject
 test_busy_guard_defers_when_supervisor_busy
@@ -3462,6 +3540,7 @@ test_status_read_failure_surfaces_without_advancing_seen
 test_catchall_advances_routine_then_surfaces_append
 test_escalation_buffer_failure_retains_wake_and_position
 test_catchall_buffer_failure_preserves_position
+test_catchall_replay_after_seen_marker_failure_dedupes
 test_durable_wake_failure_retains_entire_batch
 test_missing_status_stale_is_acknowledged_without_diagnostic
 test_transient_unreadable_signal_recovers_without_advancing
@@ -3483,6 +3562,7 @@ test_prejournal_delivery_state_is_quarantined_verbatim
 test_prejournal_quarantine_alarm_survives_empty_flush
 test_quarantine_evidence_survives_later_wedge_alarm
 test_prejournal_quarantine_failure_preserves_source
+test_quarantine_publication_failure_preserves_source
 test_delivery_nonce_avoids_existing_journal_collision
 test_typed_record_without_nonce_is_quarantined
 test_journal_empty_apply_commits_empty_file

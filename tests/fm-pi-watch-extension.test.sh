@@ -2225,6 +2225,177 @@ EOF
   pass "Pi busy failure notice stays in status without a self-delivery"
 }
 
+test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status() {
+  local repo home plugin log out status
+  repo="$TMP_ROOT/pi-ambiguous-consumption-cleanup-root"
+  home="$TMP_ROOT/pi-ambiguous-consumption-cleanup-home"
+  log="$TMP_ROOT/pi-ambiguous-consumption-cleanup.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+count=0
+[ ! -f "$FM_ARM_LOG" ] || count=$(grep -c '^arm=' "$FM_ARM_LOG")
+count=$((count + 1))
+printf 'arm=%s\n' "$count" >> "$FM_ARM_LOG"
+printf 'watcher: started pid=%s recovery-generation=cleanup-fixture\n' "$$"
+trap 'exit 0' TERM INT
+if [ "$count" -eq 1 ]; then
+  printf 'signal: ambiguous cleanup actionable outcome\n'
+  exit 0
+fi
+sleep 1
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=100 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=5 FM_WATCH_REARM_RETRY_LIMIT=1 node --input-type=module 2>&1 <<'EOF'
+import { mkdirSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const statuses = [];
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage(message) {
+    sends.push(message);
+  },
+};
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}; sends=${JSON.stringify(sends)} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 1, "ambiguous self-delivery");
+const wake = sends[0];
+mkdirSync(`${process.env.FM_HOME}/state/extensions/pi-primary-watch`, { recursive: true });
+writeFileSync(`${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`, "{malformed handoff\n");
+handlers.get("before_agent_start")?.({ prompt: wake }, idle);
+await waitFor(() => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("cleanup failed after ambiguous self-delivery consumption") && /token=[0-9]+-[0-9]+-[0-9]+/.test(String(value))), "tokenized cleanup failure status");
+const failure = statuses.find(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("cleanup failed after ambiguous self-delivery consumption"));
+if (!String(failure.value).includes("parent doorbell owns recovery")) {
+  throw new Error(`cleanup failure status omitted parent-doorbell recovery: ${failure.value}`);
+}
+if (sends.length !== 1) throw new Error(`cleanup failure created an extra turn: ${JSON.stringify(sends)}`);
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi must retain an ambiguous-consumption cleanup failure through the containment status path: $out"
+  [ -z "$out" ] || fail "Pi ambiguous-consumption cleanup test printed output: $out"
+  pass "Pi ambiguous-consumption cleanup failure uses containment status"
+}
+
+test_pi_ambiguous_restoration_failure_uses_containment_status() {
+  local repo home plugin log trigger out status
+  repo="$TMP_ROOT/pi-ambiguous-restoration-failure-root"
+  home="$TMP_ROOT/pi-ambiguous-restoration-failure-home"
+  log="$TMP_ROOT/pi-ambiguous-restoration-failure.log"
+  trigger="$TMP_ROOT/pi-ambiguous-restoration-failure.trigger"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  exit 0
+fi
+count=0
+[ ! -f "$FM_ARM_LOG" ] || count=$(grep -c '^arm=' "$FM_ARM_LOG")
+count=$((count + 1))
+printf 'arm=%s\n' "$count" >> "$FM_ARM_LOG"
+if [ "$count" -le 2 ]; then
+  printf 'watcher: started pid=%s recovery-generation=restoration-fixture\n' "$$"
+  trap 'exit 0' TERM INT
+  if [ "$count" -eq 1 ]; then
+    printf 'signal: initial ambiguous restoration outcome\n'
+    exit 0
+  fi
+  while [ ! -e "$FM_TRIGGER_FILE" ]; do sleep 0.02; done
+  rm -f "$FM_TRIGGER_FILE"
+  printf 'signal: successor ambiguous restoration outcome\n'
+  exit 0
+fi
+printf 'watcher: FAILED - restoration fixture successor could not start\n'
+exit 3
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_TRIGGER_FILE="$trigger" FM_PI_ARM_READY_TIMEOUT_MS=40 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=40 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=5 FM_WATCH_REARM_RETRY_LIMIT=1 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const statuses = [];
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage(message) {
+    sends.push(message);
+  },
+};
+const arms = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n").filter((row) => row.startsWith("arm=")).length
+  : 0;
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}; arms=${arms()} sends=${JSON.stringify(sends)} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 1 && arms() === 2, "initial ambiguous self-delivery");
+writeFileSync(process.env.FM_TRIGGER_FILE, "close\n");
+await waitFor(() => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("could not verify a ready successor watcher") && /token=[0-9]+-[0-9]+-[0-9]+/.test(String(value))), "tokenized restoration failure status");
+const failure = statuses.find(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("could not verify a ready successor watcher"));
+if (!String(failure.value).includes("parent doorbell owns recovery")) {
+  throw new Error(`restoration failure status omitted parent-doorbell recovery: ${failure.value}`);
+}
+if (sends.length !== 1) throw new Error(`restoration failure created an extra turn: ${JSON.stringify(sends)}`);
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi must retain an ambiguous-restoration failure through the containment status path: $out"
+  [ -z "$out" ] || fail "Pi ambiguous-restoration failure test printed output: $out"
+  pass "Pi ambiguous-restoration failure uses containment status"
+}
+
 # A verified successor can die while the wake it was started for is still
 # being delivered (a branch turn can take minutes). Its failure close arrives
 # while the pipeline is busy, so the ordinary retry path must be deferred to
@@ -3735,6 +3906,8 @@ test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
 test_pi_ambiguous_self_delivery_is_never_retried
 test_pi_failure_notice_busy_stays_in_status
+test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status
+test_pi_ambiguous_restoration_failure_uses_containment_status
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_late_retiring_actionable_reaches_replacement
 test_pi_replacement_tokens_are_process_unique

@@ -607,9 +607,9 @@ export default function (pi: ExtensionAPI) {
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           owner.cleanupFailure = detail;
-          owner.statusUi?.setStatus(
-            "firstmate-watcher-failure",
-            "watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery",
+          surfaceFailure(
+            owner,
+            `watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery\n${detail}`,
           );
           schedulePendingCleanup(owner);
         }
@@ -981,7 +981,7 @@ export default function (pi: ExtensionAPI) {
     try {
       const restoration = await restoreAfterActionableClose(owner, predecessorArmPid);
       if (restoration.failure && generationIsLive(owner)) {
-        owner.statusUi?.setStatus("firstmate-watcher-failure", restoration.failure.split("\n")[0]);
+        surfaceFailure(owner, restoration.failure);
       }
     } finally {
       if (generationIsLive(owner)) owner.restoring = false;

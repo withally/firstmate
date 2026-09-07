@@ -80,16 +80,17 @@ done
 [ "$ready" = 1 ] || fail "Pi watcher extension never established its live arm in $TARGET"
 
 # Establish the only boundary from which containment may self-submit.
-lab pane send-text "$PANE" "Reply with exactly $SETTLE_TOKEN" >/dev/null \
-  && lab pane send-keys "$PANE" enter >/dev/null \
-  || fail "could not submit the settlement probe to Pi in $TARGET"
+if ! lab pane send-text "$PANE" "Reply with exactly $SETTLE_TOKEN" >/dev/null \
+  || ! lab pane send-keys "$PANE" enter >/dev/null; then
+  fail "could not submit the settlement probe to Pi in $TARGET"
+fi
 settled=0
 stable=0
 i=0
 while [ "$i" -lt 480 ]; do
   recent=$(lab pane read "$PANE" --source recent --lines 120 2>/dev/null || true)
   agent_status=$(lab agent get "$PANE" 2>/dev/null | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)
-  if printf '%s' "$recent" | grep -Fq "$SETTLE_TOKEN" && { [ "$agent_status" = idle ] || [ "$agent_status" = done ]; }; then
+  if printf '%s' "$recent" | grep -Fq "$SETTLE_TOKEN" && { [ "$agent_status" = idle ] || [ "$agent_status" = "done" ]; }; then
     stable=$((stable + 1))
     if [ "$stable" -ge 4 ]; then
       settled=1

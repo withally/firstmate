@@ -2386,6 +2386,79 @@ EOF
   pass "Pi successor persisted ambiguity blocks failure self-delivery"
 }
 
+test_pi_replacement_handoff_rejects_delivered_ambiguous_state() {
+  local repo home plugin stop out status handoff
+  repo="$TMP_ROOT/pi-contradictory-handoff-root"
+  home="$TMP_ROOT/pi-contradictory-handoff-home"
+  stop="$TMP_ROOT/pi-contradictory-handoff.stop"
+  handoff="$home/state/extensions/pi-primary-watch/session-replacement-actionable.json"
+  mkdir -p "$repo/bin" "$home/state/extensions/pi-primary-watch" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$handoff" <<'JSON'
+{"version":2,"pending":[{"version":1,"token":"123-456-1","message":"signal: contradictory actionable outcome","predecessorArmPid":"0","delivered":true,"ambiguous":true}]}
+JSON
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: started pid=%s recovery-generation=contradictory-handoff-fixture\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const statuses = [];
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage(message) {
+    sends.push(message);
+  },
+};
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}; sends=${JSON.stringify(sends)} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, idle);
+await waitFor(
+  () => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("could not load a replacement-session actionable wake")),
+  "contradictory handoff rejection",
+);
+if (sends.length !== 0) throw new Error(`contradictory handoff triggered a wake: ${JSON.stringify(sends)}`);
+if (!existsSync(`${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`)) {
+  throw new Error("contradictory handoff was cleaned instead of rejected");
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi must reject a delivered-and-ambiguous handoff row: $out"
+  [ -z "$out" ] || fail "Pi contradictory handoff test printed output: $out"
+  pass "Pi rejects contradictory delivered-and-ambiguous handoff rows"
+}
+
 test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status() {
   local repo home plugin log out status
   repo="$TMP_ROOT/pi-ambiguous-consumption-cleanup-root"
@@ -4262,6 +4335,7 @@ test_pi_ambiguous_self_delivery_is_never_retried
 test_pi_failure_notice_busy_stays_in_status
 test_pi_sync_failure_notice_is_status_visible
 test_pi_successor_ambiguous_marker_blocks_failure_wake
+test_pi_replacement_handoff_rejects_delivered_ambiguous_state
 test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status
 test_pi_cleanup_failure_ownership_is_per_pending_token
 test_pi_cleanup_failure_status_preserves_unrelated_notice

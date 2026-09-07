@@ -306,7 +306,9 @@ function validatePendingActionable(value: unknown): PendingActionableClose {
     ((value as { delivered?: unknown }).delivered !== undefined &&
       (value as { delivered?: unknown }).delivered !== true) ||
     ((value as { ambiguous?: unknown }).ambiguous !== undefined &&
-      (value as { ambiguous?: unknown }).ambiguous !== true)
+      (value as { ambiguous?: unknown }).ambiguous !== true) ||
+    ((value as { delivered?: unknown }).delivered === true &&
+      (value as { ambiguous?: unknown }).ambiguous === true)
   ) {
     throw new Error(`invalid Pi replacement actionable handoff at ${actionableHandoff}`);
   }

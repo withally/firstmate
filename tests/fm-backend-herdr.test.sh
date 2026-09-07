@@ -3682,6 +3682,10 @@ herdr_claude_busy_plain() {
   printf '%b' '────────────────────────\n❯\n────────────────────────\n✢ Pollinating… (16s · ↓ 1.1k tokens)\n'
 }
 
+herdr_claude_idle_ansi() {
+  printf '%b' '────────────────────────\n❯ \033[0m\033[2mwhat did the wheelhouse healing verification find?\033[0m\n────────────────────────\n  Fable 5                 80%%\n'
+}
+
 # The idle capture: no busy token anywhere, which is the pre-Enter baseline.
 herdr_cursor_idle_plain() {
   printf '%b' ' ▄▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀▀\n  Cursor Grok 4.5 High · 7%%           Run Everything\n  ~/.treehouse/curhd-ae68cd/1/curhd · 39418af\n'
@@ -3785,6 +3789,32 @@ test_rendered_busy_state_scopes_claude_to_the_current_footer() {
   pass "fm_backend_herdr_rendered_busy_state: Claude busy proof is scoped to the current footer"
 }
 
+test_rendered_busy_state_claude_accepts_ansi_idle_fixture() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/rendered-busy-claude-ansi-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  herdr_claude_idle_ansi > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  [ "$out" = idle ] || fail "Claude's styled dim suggestion plus Fable footer should prove an idle rendered pane, got '$out'"
+  pass "fm_backend_herdr_rendered_busy_state: Claude's ANSI ghost suggestion and Fable footer prove idle"
+}
+
+test_rendered_busy_state_claude_accepts_single_word_spinner_footer() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/rendered-busy-claude-single-word"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    'Pontificating…' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_rendered_busy_state default:w1:p2 claude' "$ROOT" )
+  [ "$out" = busy ] || fail "Claude's observed single-word ellipsis footer should prove a busy rendered pane, got '$out'"
+  pass "fm_backend_herdr_rendered_busy_state: Claude's single-word ellipsis footer proves busy"
+}
+
 test_rendered_busy_state_rejects_unrecognized_claude_footer() {
   local dir log resp fb out
   dir="$TMP_ROOT/rendered-busy-claude-unknown-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3821,14 +3851,49 @@ test_rendered_busy_state_honors_claude_busy_override_inside_current_composer() {
   pass "fm_backend_herdr_rendered_busy_state: FM_BUSY_REGEX remains honored inside Claude's proven footer boundary"
 }
 
+test_send_text_submit_claude_captures_footer_before_typing() {
+  local out
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    literal_sent=0
+    enter_sent=0
+    fm_backend_herdr_parse_target() { return 0; }
+    fm_backend_herdr_rendered_busy_state() {
+      if [ "$literal_sent" -eq 0 ]; then
+        printf idle
+      elif [ "$enter_sent" -eq 1 ]; then
+        printf busy
+      else
+        printf unknown
+      fi
+    }
+    fm_backend_herdr_send_literal() { literal_sent=1; return 0; }
+    fm_backend_herdr_agent_status_raw() { printf working; }
+    fm_backend_herdr_classify_submit_agent_status() { printf working; }
+    fm_backend_herdr_submit_confirm_budget() { printf 0; }
+    fm_backend_herdr_send_key() { enter_sent=1; return 0; }
+    fm_backend_herdr_composer_state() { printf pending; }
+    fm_backend_herdr_send_text_submit default:w1:p2 text 1 0 0 "" claude
+  ' "$ROOT")
+  [ "$out" = empty ] || fail "Claude submit must capture an idle footer before typing so the later rendered transition can confirm delivery, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: Claude captures its footer baseline before typing"
+}
+
 test_send_text_submit_claude_ambiguous_footer_never_confirms() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-ambiguous-footer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
-  herdr_claude_idle_plain > "$resp/3.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  printf '• Working (4s • esc to interrupt)\n' > "$resp/5.out"
-  printf '  ❯ hello captain\n' > "$resp/6.out"
+  herdr_claude_idle_ansi > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/3.out"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯ hello captain' \
+    '────────────────────────' \
+    'Fable 5                 80%' > "$resp/5.out"
+  printf '%s\n' \
+    '────────────────────────' \
+    '❯' \
+    '────────────────────────' \
+    '• Working (4s • esc to interrupt)' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01 "" claude' "$ROOT" )
@@ -3841,8 +3906,8 @@ test_send_text_submit_claude_ambiguous_footer_never_confirms() {
 test_send_text_submit_claude_stale_native_working_uses_footer_transition() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-claude-stale-working"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  herdr_claude_idle_plain > "$resp/3.out"
+  herdr_claude_idle_ansi > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/3.out"
   printf '  ❯ hello captain\n' > "$resp/5.out"
   herdr_claude_busy_plain > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -4764,8 +4829,11 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
 test_rendered_busy_state_scopes_claude_to_the_current_footer
+test_rendered_busy_state_claude_accepts_ansi_idle_fixture
+test_rendered_busy_state_claude_accepts_single_word_spinner_footer
 test_rendered_busy_state_rejects_unrecognized_claude_footer
 test_rendered_busy_state_honors_claude_busy_override_inside_current_composer
+test_send_text_submit_claude_captures_footer_before_typing
 test_send_text_submit_claude_ambiguous_footer_never_confirms
 test_send_text_submit_claude_stale_native_working_uses_footer_transition
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition

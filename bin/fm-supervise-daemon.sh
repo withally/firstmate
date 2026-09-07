@@ -635,7 +635,7 @@ fm_daemon_primary_harness() {
 }
 
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 visible harness claude_footer_rc
+  local target=$1 backend=${2:-tmux} native harness rendered
   FM_PANE_BUSY_REASON=
   FM_PANE_NATIVE_BUSY_STATE=
   fm_daemon_primary_harness >/dev/null
@@ -646,23 +646,13 @@ pane_is_busy() {  # <target> [backend]
     FM_PANE_NATIVE_BUSY_STATE=working
   fi
   if [ "$backend" = herdr ] && [ "$harness" = claude ]; then
-    tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
-      FM_PANE_BUSY_REASON=unreadable
-      return 1
-    }
-    visible=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
-    [ -n "$visible" ] || {
-      FM_PANE_BUSY_REASON=unreadable
-      return 1
-    }
-    if printf '%s' "$visible" | fm_claude_current_footer_busy; then
-      FM_PANE_BUSY_REASON=rendered-busy
-      return 0
-    else
-      claude_footer_rc=$?
-    fi
-    case "$claude_footer_rc" in
-      1) return 1 ;;
+    rendered=$(fm_backend_herdr_rendered_busy_state "$target" claude 2>/dev/null)
+    case "$rendered" in
+      busy)
+        FM_PANE_BUSY_REASON=rendered-busy
+        return 0
+        ;;
+      idle) return 1 ;;
       *) FM_PANE_BUSY_REASON=unreadable; return 1 ;;
     esac
   fi

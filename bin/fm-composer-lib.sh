@@ -291,10 +291,10 @@ fm_composer_strip_ghost() {
 # asking what a worker is doing, and the two must not be conflated.
 # Delivery-only rendered busy footers per harness. claude/codex: "esc to
 # interrupt"; opencode: "esc interrupt"; pi: "Working..."; omp: "Working…"; grok: "Ctrl+c:cancel".
-# Claude's current spinner has a rotating glyph and word, but every active-turn
-# line has an ellipsis followed by a parenthesized elapsed duration. Keep this
-# signature separate from the shared default because that shape is not generic
-# enough to classify arbitrary harness output safely.
+# Claude's current spinner has a rotating glyph and word, with active-turn
+# lines either ending in an ellipsis or carrying a parenthesized elapsed
+# duration. Keep this signature separate from the shared default because that
+# shape is not generic enough to classify arbitrary harness output safely.
 # Kimi's anchored moon-phase spinner is separate because bare moon glyphs in
 # ordinary output must not classify another harness as busy. Leading whitespace is
 # OPTIONAL; whitespace on both sides of the separator is REQUIRED because every
@@ -313,8 +313,8 @@ fm_composer_strip_ghost() {
 # outside its composer and the composer verdict is therefore always `unknown`.
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
-FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
-FM_DELIVERY_CLAUDE_IDLE_FOOTER_REGEX='^Claude[[:space:]]+[0-9]+(\.[0-9]+)?$'
+FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+…|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
+FM_DELIVERY_CLAUDE_IDLE_FOOTER_REGEX='^(Claude[[:space:]]+[0-9]+(\.[0-9]+)?|Fable[[:space:]]+[0-9]+([[:space:]].*)?)$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
@@ -375,19 +375,18 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local lines plain footer composer caps verdict
+  local lines plain footer composer caps last verdict
+  caps=${1:-}
+  [ -n "$caps" ] || caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
   footer=$(printf '%s\n' "$plain" | awk 'NF { row=$0 } END { if (row != "") print row }')
   fm_composer_normalize_trim_var footer
   [ -n "$footer" ] || return 2
-  composer=$(printf '%s\n' "$plain" | awk '
-    { rows[NR]=$0 }
-    NF { last=NR }
-    END { for (row=1; row < last; row++) print rows[row] }
-  ')
-  caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
+  last=$(printf '%s\n' "$plain" | awk 'NF { row=NR } END { print row + 0 }')
+  case "$last" in ''|0) return 2 ;; esac
+  composer=$(printf '%s\n' "$lines" | awk -v last="$last" 'NR < last { print }')
   verdict=$(fm_composer_classify_screen "$caps" "$composer")
   [ "$verdict" = empty ] || return 2
   if [ -n "${FM_BUSY_REGEX:-}" ]; then

@@ -2712,6 +2712,7 @@ test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   (
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected busy_state args: $1 $2"; printf 'busy'; }
+    fm_backend_herdr_rendered_busy_state() { printf 'idle'; }
     fm_backend_capture() { printf '%b' '────────────────────────\n❯\n────────────────────────\nClaude 4.1\n'; }
     fm_backend_composer_state() { printf 'empty'; }
     fm_backend_send_text_submit() { printf 'empty'; }
@@ -2728,6 +2729,7 @@ test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
 test_pane_is_busy_herdr_claude_rendered_busy_state() {
   (
     fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_herdr_rendered_busy_state() { printf 'busy'; }
     fm_backend_capture() { printf '%b' '────────────────────────\n❯\n────────────────────────\n✢ Pollinating… (16s · ↓ 1.1k tokens)\n'; }
     FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr \
       || fail "rendered Claude active turn was not busy"
@@ -2746,6 +2748,7 @@ test_inject_msg_ignores_nested_claude_busy_text_above_idle_composer() {
   (
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_herdr_rendered_busy_state() { printf 'idle'; }
     fm_backend_capture() {
       printf '%s\n' 'tool output:' '• Working (4s • esc to interrupt)' \
         '────────────────────────' '❯' '────────────────────────' 'Claude 4.1'
@@ -2771,6 +2774,7 @@ test_inject_msg_herdr_claude_unreadable_capture_defers() {
   (
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_herdr_rendered_busy_state() { printf 'unknown'; }
     fm_backend_capture() { return 1; }
     fm_backend_composer_state() { fail "composer_state ran after unreadable capture"; }
     fm_backend_send_text_submit() { fail "submit ran after unreadable capture"; }

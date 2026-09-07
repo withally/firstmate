@@ -193,7 +193,7 @@ unit_daemon_command_carries_configured_pi_agent_dir() {
   session_dir="$st/custom pi sessions"
   mkdir -p "$detector" "$custom" "$session_dir"
   # shellcheck disable=SC2016 # Variables expand in the generated script, not this test shell.
-  printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${PI_CODING_AGENT_SESSION_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s|%%s\\n" "${PI_CODING_AGENT_DIR:-unset}" "${PI_CODING_AGENT_SESSION_DIR:-unset}" "${FM_HOME:-unset}" "${FM_SUPERVISOR_TARGET:-unset}" "${FM_DAEMON_PRIMARY_HARNESS:-unset}" "${FM_AFK_STATE_PREPARED:-unset}"\n' > "$entry"
   printf '#!/usr/bin/env bash\nprintf "pi"\n' > "$detector/fm-harness.sh"
   chmod +x "$entry" "$detector/fm-harness.sh"
   output=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" PI_CODING_AGENT_DIR="$custom" \
@@ -204,7 +204,7 @@ unit_daemon_command_carries_configured_pi_agent_dir() {
       command=$(fm_afk_launch_daemon_cmd named:w1:p2 herdr "$3")
       eval "$command"
     ' _ "$LAUNCH" "$detector" "$entry")
-  expected="$custom|$session_dir|$st|named:w1:p2|pi"
+  expected="$custom|$session_dir|$st|named:w1:p2|pi|1"
   if [ "$output" = "$expected" ]; then
     pass "launcher command: configured Pi agent and session roots reach the daemon pane"
   else
@@ -626,11 +626,13 @@ unit_native_lifecycle() {
   rm -rf "$st"
 }
 
-unit_restart_preserves_session_ledger() {
-  local st
+unit_restart_preserves_delivery_journal() {
+  local st expected
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-restart-ledger.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.afk"
+  expected='{"nonce":"abcdef123456","kind":"escalation","source_key":"","text":"recover me","state":"typed","buffered_epoch":1,"typed_epoch":2,"delivered_epoch":0,"witness_transcript":"-","witness_offset":0}'
+  printf '%s\n' "$expected" > "$st/state/.subsuper-delivery.jsonl"
   printf 'buffered\t71\t/state/restart.check.sh\tcheck: restart\t\n' \
     > "$st/state/.subsuper-check-ledger"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
@@ -641,10 +643,30 @@ unit_restart_preserves_session_ledger() {
       fm_afk_launch_create_tmux() { :; }
       fm_afk_launch_start
     ' _ "$LAUNCH" >/dev/null 2>&1 \
+    && [ "$(cat "$st/state/.subsuper-delivery.jsonl" 2>/dev/null || true)" = "$expected" ] \
     && [ -s "$st/state/.subsuper-check-ledger" ]; then
     pass "restart recovery: an existing away flag preserves pre-journal state"
   else
     fail "restart recovery: the existing away session lost its check ledger"
+  fi
+  rm -rf "$st"
+}
+
+unit_native_restart_preserves_delivery_journal() {
+  local st expected
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native-restart.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.afk"
+  expected='{"nonce":"abcdef123456","kind":"escalation","source_key":"","text":"recover me","state":"typed","buffered_epoch":1,"typed_epoch":2,"delivered_epoch":0,"witness_transcript":"-","witness_offset":0}'
+  printf '%s\n' "$expected" > "$st/state/.subsuper-delivery.jsonl"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_afk_launch_start_native
+  ' _ "$LAUNCH" >/dev/null 2>&1 \
+    && [ "$(cat "$st/state/.subsuper-delivery.jsonl" 2>/dev/null || true)" = "$expected" ]; then
+    pass "native recovery: an existing away flag preserves the delivery journal"
+  else
+    fail "native recovery: the existing away session lost its delivery journal"
   fi
   rm -rf "$st"
 }
@@ -1080,6 +1102,8 @@ unit_clear_stale_reports_any_failure
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_detector_miss_leaves_daemon_harness_unset
 unit_daemon_command_carries_configured_pi_agent_dir
+unit_restart_preserves_delivery_journal
+unit_native_restart_preserves_delivery_journal
 unit_fresh_vs_refresh
 unit_stop_ordering
 unit_stop_rejects_reused_pid

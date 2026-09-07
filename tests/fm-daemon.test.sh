@@ -2310,6 +2310,23 @@ test_prejournal_delivery_state_is_quarantined_verbatim() {
   pass "pre-journal delivery state is quarantined once, verbatim, without journal import"
 }
 
+test_prejournal_quarantine_alarm_survives_empty_flush() {
+  local dir state
+  dir=$(make_supercase delivery-prejournal-empty-flush)
+  state="$dir/state"
+  printf '%s\n' 'legacy delivery remains visible' > "$state/.subsuper-escalations"
+
+  FM_WEDGE_ALARM_EXEC=discard delivery_quarantine_legacy "$state" \
+    || fail "pre-journal delivery state was not quarantined"
+  [ -s "$state/.subsuper-inject-wedged" ] \
+    || fail "pre-journal quarantine did not raise the wedge alarm"
+
+  FM_ESCALATE_BATCH_SECS=0 housekeeping "$state"
+  [ -s "$state/.subsuper-inject-wedged" ] \
+    || fail "empty housekeeping flush cleared the quarantine alarm"
+  pass "pre-journal quarantine alarm survives an empty housekeeping flush"
+}
+
 test_prejournal_quarantine_failure_preserves_source() {
   local dir state source
   dir=$(make_supercase delivery-prejournal-quarantine-failure)
@@ -3412,6 +3429,7 @@ test_delivery_witness_prefers_herdr_agent_session_path
 test_delivery_witness_requires_exact_envelope_and_new_transcript_offset
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_prejournal_delivery_state_is_quarantined_verbatim
+test_prejournal_quarantine_alarm_survives_empty_flush
 test_prejournal_quarantine_failure_preserves_source
 test_delivery_nonce_avoids_existing_journal_collision
 test_typed_record_without_nonce_is_quarantined

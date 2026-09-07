@@ -1172,6 +1172,16 @@ journal_quarantine_alarm_write() {  # <state> <reason> <directory>
   mv "$marker_tmp" "$state/.subsuper-inject-wedged" || { rm -f "$marker_tmp"; return 1; }
 }
 
+journal_wedge_marker_clear_if_normal() {
+  local state=$1 marker="$1/.subsuper-inject-wedged" first
+  [ -e "$marker" ] || return 0
+  first=$(head -1 "$marker" 2>/dev/null) || return 0
+  case "$first" in
+    "fm away-mode delivery store QUARANTINED:"*) return 0 ;;
+    *) rm -f "$marker" ;;
+  esac
+}
+
 journal_quarantine_and_alarm() {  # <state> <reason> <file...>
   local state=$1 reason=$2 dir f base destination failed=0 moved=0
   shift 2
@@ -1262,7 +1272,7 @@ escalate_flush() {  # <state>
     journal_quarantine_and_alarm "$state" "corrupt delivery journal" "$journal"
     return 1
   fi
-  [ -s "$journal" ] || { rm -f "$state/.subsuper-inject-wedged"; return 0; }
+  [ -s "$journal" ] || { journal_wedge_marker_clear_if_normal "$state"; return 0; }
 
   # (1) Confirm any already-typed (sent, unconfirmed) records via the witness.
   typed_nonces=$(jq -s -r 'map(select(.state=="typed") | .nonce) | unique | .[]' \
@@ -1290,7 +1300,7 @@ EOF
   # means no typed digest is still unconfirmed, so a delivery that clears the
   # buffer resolves any prior stall - drop the stale wedge marker on success.
   count=$(jq -s 'map(select(.state=="buffered")) | length' "$journal" 2>/dev/null)
-  case "$count" in ''|*[!0-9]*|0) rm -f "$state/.subsuper-inject-wedged"; return 0 ;; esac
+  case "$count" in ''|*[!0-9]*|0) journal_wedge_marker_clear_if_normal "$state"; return 0 ;; esac
   msg=$(jq -s -r 'map(select(.state=="buffered") | .text) | join(" | ")' "$journal" 2>/dev/null)
   buffered_at=$(jq -s -r 'map(select(.state=="buffered") | .buffered_epoch) | min' "$journal" 2>/dev/null)
   case "$buffered_at" in ''|*[!0-9]*) buffered_at=$(_now) ;; esac
@@ -1316,7 +1326,7 @@ EOF
   rc=$?
   case "$rc" in
     0) journal_mark_delivered "$state" "$nonce" || return 1
-       rm -f "$state/.subsuper-inject-wedged"
+       journal_wedge_marker_clear_if_normal "$state"
        return 0 ;;
     *) return 1 ;;
   esac
@@ -1643,7 +1653,7 @@ housekeeping() {  # <state>
        && [ "$(_file_age "$state/.subsuper-inject-wedged")" -ge "$max_defer" ]; then
       if escalate_flush "$state"; then
         log "inject recovered: max-defer flush succeeded after ${oldest}s undelivered"
-        rm -f "$state/.subsuper-inject-wedged"
+        journal_wedge_marker_clear_if_normal "$state"
       else
         inject_wedge_alarm "$state" "$oldest"
       fi

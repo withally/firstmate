@@ -166,7 +166,7 @@ fm_afk_launch_primary_harness() {
 fm_afk_launch_daemon_cmd() {  # <captain-target> <captain-backend> <entry> [pi-session-dir]
   local captain_target=$1 captain_backend=$2 entry=$3 primary_harness pi_agent_dir pi_session_dir daemon_env
   primary_harness=$(fm_afk_launch_primary_harness)
-  daemon_env=$(printf 'exec env -u FM_DAEMON_PRIMARY_HARNESS FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q' \
+  daemon_env=$(printf 'exec env -u FM_DAEMON_PRIMARY_HARNESS FM_AFK_STATE_PREPARED=1 FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q' \
     "$FM_HOME" "$captain_target" "$captain_backend")
   pi_agent_dir=${PI_CODING_AGENT_DIR:-}
   if [ -n "$pi_agent_dir" ]; then
@@ -520,9 +520,8 @@ fm_afk_launch_start() {
   if ! fm_afk_launch_reconcile; then
     result=1
   else
-    if fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
-      result=0
-    else
+    result=0
+    if [ "$had_afk" -eq 0 ] && ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
       result=1
     fi
@@ -576,11 +575,14 @@ fm_afk_launch_start_native() {
     fi
   done
   fm_afk_launch_reconcile || result=1
-  if [ "$result" -eq 0 ]; then
+  if [ "$result" -eq 0 ] && [ "$had_afk" -eq 0 ]; then
     if ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
       result=1
-    elif ! fm_afk_launch_flag_write; then
+    fi
+  fi
+  if [ "$result" -eq 0 ]; then
+    if ! fm_afk_launch_flag_write; then
       result=1
     fi
   fi

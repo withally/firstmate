@@ -173,7 +173,11 @@ fm_afk_start_main() {
   # Fresh start: clear the previous away session's live delivery artifacts
   # before the new daemon can surface them (fix for the leaked-artifact defect).
   if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ]; then
-    fm_afk_clear_stale_artifacts "$FM_AFK_STATE"
+    if ! fm_afk_clear_stale_artifacts "$FM_AFK_STATE"; then
+      rm -f "$FM_AFK_STATE/.afk" 2>/dev/null || true
+      echo "afk: failed to clear stale away-mode artifacts" >&2
+      return 1
+    fi
   fi
 
   echo "afk: starting supervise daemon in foreground; keep this command as a tracked background session"

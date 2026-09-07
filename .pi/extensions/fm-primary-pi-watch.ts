@@ -595,6 +595,7 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // A synchronous exception is clearer than Pi's ordinary asynchronous
       // ambiguity, but the at-most-one-turn containment still never retries.
+      return false;
     }
     return true;
   }
@@ -773,8 +774,7 @@ export default function (pi: ExtensionAPI) {
     if (
       clearedCleanupFailure &&
       owner.cleanupFailures.size === 0 &&
-      owner.failureStatusOwner?.kind === "cleanup" &&
-      owner.failureStatusOwner.token === pending.token
+      owner.failureStatusOwner?.kind === "cleanup"
     ) {
       owner.statusUi?.setStatus("firstmate-watcher-failure", undefined);
       owner.failureStatusOwner = null;

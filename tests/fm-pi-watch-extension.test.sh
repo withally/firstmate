@@ -2225,6 +2225,75 @@ EOF
   pass "Pi busy failure notice stays in status without a self-delivery"
 }
 
+test_pi_sync_failure_notice_is_status_visible() {
+  local repo home plugin out status
+  repo="$TMP_ROOT/pi-sync-failure-notice-root"
+  home="$TMP_ROOT/pi-sync-failure-notice-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=5 FM_WATCH_REARM_RETRY_LIMIT=1 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const statuses = [];
+let sendAttempts = 0;
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage() {
+    sendAttempts += 1;
+    throw new Error("stale Pi runtime");
+  },
+};
+async function waitForFailureNotice() {
+  for (let i = 0; i < 500; i += 1) {
+    if (statuses.some(({ key }) => key === "firstmate-watcher-failure")) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for synchronous-send failure status; attempts=${sendAttempts} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await waitForFailureNotice();
+const failureEvents = statuses.filter(({ key }) => key === "firstmate-watcher-failure");
+const failure = failureEvents[failureEvents.length - 1];
+if (!failure || !String(failure.value).includes("could not restore watcher continuity after 1 retries")) {
+  throw new Error(`synchronous send failure lost its typed watcher notice: ${JSON.stringify(statuses)}`);
+}
+if (!String(failure.value).includes("parent doorbell owns recovery")) {
+  throw new Error(`synchronous send failure omitted parent-doorbell recovery: ${failure.value}`);
+}
+if (sendAttempts !== 1) throw new Error(`synchronous send failure was retried: ${sendAttempts}`);
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi synchronous send exceptions must retain typed failure status without retry: $out"
+  [ -z "$out" ] || fail "Pi synchronous-send failure test printed output: $out"
+  pass "Pi synchronous send failure stays status-visible without retry"
+}
+
 test_pi_successor_ambiguous_marker_blocks_failure_wake() {
   local repo home plugin log out status handoff
   repo="$TMP_ROOT/pi-successor-ambiguous-marker-root"
@@ -4191,6 +4260,7 @@ test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
 test_pi_ambiguous_self_delivery_is_never_retried
 test_pi_failure_notice_busy_stays_in_status
+test_pi_sync_failure_notice_is_status_visible
 test_pi_successor_ambiguous_marker_blocks_failure_wake
 test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status
 test_pi_cleanup_failure_ownership_is_per_pending_token

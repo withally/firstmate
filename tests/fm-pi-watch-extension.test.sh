@@ -2397,6 +2397,97 @@ EOF
   pass "Pi ambiguous-consumption cleanup failure uses containment status"
 }
 
+test_pi_cleanup_failure_ownership_is_per_pending_token() {
+  local repo home plugin stop out status
+  repo="$TMP_ROOT/pi-cleanup-failure-ownership-root"
+  home="$TMP_ROOT/pi-cleanup-failure-ownership-home"
+  stop="$TMP_ROOT/pi-cleanup-failure-ownership.stop"
+  mkdir -p "$repo/bin" "$home/state/extensions/pi-primary-watch" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$home/state/extensions/pi-primary-watch/session-replacement-actionable.json" <<'JSON'
+{"version":2,"pending":[{"version":1,"token":"111-222-1","message":"signal: first cleanup ownership outcome","predecessorArmPid":"0"},{"version":1,"token":"111-222-2","message":"signal: second cleanup ownership outcome","predecessorArmPid":"0"}]}
+JSON
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  exit 0
+fi
+printf 'watcher: started pid=%s recovery-generation=cleanup-ownership-fixture\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_STOP_FILE="$stop" FM_WATCH_REARM_RETRY_BASE_MS=10000 FM_WATCH_REARM_RETRY_MAX_MS=10000 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const statuses = [];
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage(message) {
+    sends.push(message);
+  },
+};
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}; sends=${JSON.stringify(sends)} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 1, "first ambiguous self-delivery");
+writeFileSync(`${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`, "{malformed handoff\n");
+handlers.get("before_agent_start")?.({ prompt: sends[0] }, idle);
+await waitFor(() => statuses.some(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("cleanup failed after ambiguous self-delivery consumption")), "first cleanup failure status");
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(() => sends.length === 2, "second ambiguous self-delivery");
+writeFileSync(
+  `${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`,
+  JSON.stringify({
+    version: 2,
+    pending: [{ version: 1, token: "111-222-2", message: "signal: second cleanup ownership outcome", predecessorArmPid: "0" }],
+  }) + "\n",
+);
+handlers.get("before_agent_start")?.({ prompt: sends[1] }, idle);
+const failureEvents = statuses.filter(({ key }) => key === "firstmate-watcher-failure");
+const latestFailure = failureEvents[failureEvents.length - 1];
+if (!latestFailure || !String(latestFailure.value).includes("cleanup failed after ambiguous self-delivery consumption")) {
+  throw new Error(`successful cleanup of an unrelated row cleared the first row failure: ${JSON.stringify(failureEvents)}`);
+}
+if (!String(latestFailure.value).includes("parent doorbell owns recovery")) {
+  throw new Error(`cleanup failure lost parent-doorbell recovery: ${latestFailure.value}`);
+}
+if (sends.length !== 2) throw new Error(`cleanup failure ownership created an extra turn: ${JSON.stringify(sends)}`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi cleanup failure status must remain owned by its pending token: $out"
+  [ -z "$out" ] || fail "Pi cleanup failure ownership test printed output: $out"
+  pass "Pi cleanup failure status stays owned by its pending token"
+}
+
 test_pi_ambiguous_restoration_failure_uses_containment_status() {
   local repo home plugin log trigger out status
   repo="$TMP_ROOT/pi-ambiguous-restoration-failure-root"
@@ -4000,6 +4091,7 @@ test_pi_ambiguous_self_delivery_is_never_retried
 test_pi_failure_notice_busy_stays_in_status
 test_pi_successor_ambiguous_marker_blocks_failure_wake
 test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status
+test_pi_cleanup_failure_ownership_is_per_pending_token
 test_pi_ambiguous_restoration_failure_uses_containment_status
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_late_retiring_actionable_reaches_replacement

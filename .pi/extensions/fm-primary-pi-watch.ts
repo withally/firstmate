@@ -98,7 +98,7 @@ type SessionGeneration = {
   restoring: boolean;
   seq: number;
   pendingActionables: PendingActionableClose[];
-  cleanupFailure: string;
+  cleanupFailures: Map<string, string>;
   // One fire-and-forget main submission remains ambiguous until exact
   // lifecycle consumption. It is never cleared or retried by aggregate state.
   ambiguousWakes: Map<string, AmbiguousWake>;
@@ -431,7 +431,7 @@ function createGeneration(): SessionGeneration {
     restoring: false,
     seq: 0,
     pendingActionables: [],
-    cleanupFailure: "",
+    cleanupFailures: new Map(),
     ambiguousWakes: new Map(),
     deliveryBoundary: null,
     statusUi: null,
@@ -606,11 +606,11 @@ export default function (pi: ExtensionAPI) {
         try {
           finishPendingActionable(owner, wake.pending);
         } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          owner.cleanupFailure = detail;
-          surfaceFailure(
+          surfaceCleanupFailure(
             owner,
-            `watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery\n${detail}`,
+            wake.pending,
+            "watcher: cleanup failed after ambiguous self-delivery consumption; parent doorbell owns recovery",
+            error,
           );
           schedulePendingCleanup(owner);
         }
@@ -756,18 +756,22 @@ export default function (pi: ExtensionAPI) {
     clearReplacementHandoff(pending);
     const index = owner.pendingActionables.findIndex((item) => item.token === pending.token);
     if (index >= 0) owner.pendingActionables.splice(index, 1);
-    if (owner.cleanupFailure) owner.statusUi?.setStatus("firstmate-watcher-failure", undefined);
-    owner.cleanupFailure = "";
+    const clearedCleanupFailure = owner.cleanupFailures.delete(pending.token);
+    if (clearedCleanupFailure && owner.cleanupFailures.size === 0) {
+      owner.statusUi?.setStatus("firstmate-watcher-failure", undefined);
+    }
   }
 
   function surfaceCleanupFailure(
     owner: SessionGeneration,
+    pending: PendingActionableClose,
+    message: string,
     error: unknown,
   ): void {
     const detail = error instanceof Error ? error.message : String(error);
-    if (owner.cleanupFailure === detail) return;
-    owner.cleanupFailure = detail;
-    surfaceFailure(owner, `watcher: FAILED - Pi extension could not clear a delivered replacement-session actionable wake\n${detail}`);
+    if (owner.cleanupFailures.get(pending.token) === detail) return;
+    owner.cleanupFailures.set(pending.token, detail);
+    surfaceFailure(owner, `${message}\n${detail}`);
   }
 
   function schedulePendingCleanup(owner: SessionGeneration): void {
@@ -791,7 +795,12 @@ export default function (pi: ExtensionAPI) {
           try {
             finishPendingActionable(owner, delivered);
           } catch (error) {
-            surfaceCleanupFailure(owner, error);
+            surfaceCleanupFailure(
+              owner,
+              delivered,
+              "watcher: FAILED - Pi extension could not clear a delivered replacement-session actionable wake",
+              error,
+            );
           }
         }
         // An ambiguous fire-and-forget submission blocks every later main
@@ -862,7 +871,12 @@ export default function (pi: ExtensionAPI) {
             try {
               finishPendingActionable(owner, pending);
             } catch (error) {
-              surfaceCleanupFailure(owner, error);
+              surfaceCleanupFailure(
+                owner,
+                pending,
+                "watcher: FAILED - Pi extension could not clear a delivered replacement-session actionable wake",
+                error,
+              );
             }
           }
           releaseClaim();

@@ -656,6 +656,40 @@ unit_tmux_planned_record_and_collision() {
   rm -rf "$st"
 }
 
+unit_detached_launch_carries_target_harness() {
+  local st command
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-target-harness.XXXXXX")
+  mkdir -p "$st/state"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_LAUNCH_ENTRY=/bin/true bash -c '
+    . "$1"
+    discover_supervisor_target() { printf captain:0; }
+    discover_supervisor_backend() { printf tmux; }
+    fm_afk_launch_target_harness() { printf pi; }
+    daemon_lock_held_by_live_daemon() { return 1; }
+    fm_afk_launch_reconcile() { return 0; }
+    fm_afk_clear_stale_artifacts() { return 0; }
+    fm_afk_launch_flag_write() { return 0; }
+    fm_afk_launch_commit_terminal() { :; }
+    tmux() {
+      [ "$1" = new-session ] || return 1
+      printf "%s" "${!#}" > "$FM_HOME/command"
+    }
+    fm_afk_launch_start
+  ' _ "$LAUNCH"; then
+    command=$(cat "$st/command" 2>/dev/null || true)
+    case "$command" in
+      *"FM_SUPERVISOR_HARNESS=pi"*"FM_DAEMON_PRIMARY_HARNESS=pi"*)
+        pass "detached launch: verified target harness reaches the daemon environment" ;;
+      *)
+        fail "detached launch: target harness was not propagated into the daemon command: $command"
+        ;;
+    esac
+  else
+    fail "detached launch: target-bound harness setup failed"
+  fi
+  rm -rf "$st"
+}
+
 unit_stop_validates_before_signal() {
   local st sleeper_pid
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-validate.XXXXXX")
@@ -965,6 +999,7 @@ unit_record_publication_atomic
 unit_malformed_record_fails_closed
 unit_stop_malformed_record_fails_closed
 unit_tmux_planned_record_and_collision
+unit_detached_launch_carries_target_harness
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_surfaces_afk_removal_failure

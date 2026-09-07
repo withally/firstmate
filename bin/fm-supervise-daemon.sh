@@ -626,7 +626,14 @@ mark_escalated_seen() {  # <state> <captured-endpoint-file>
 # is too heavy to pay on every source of this library (the unit tests and the
 # launcher source it purely for its pure functions).
 fm_daemon_primary_harness() {
-  if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
+  if [ -n "${FM_SUPERVISOR_HARNESS:-}" ]; then
+    case "$FM_SUPERVISOR_HARNESS" in
+      claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+        FM_DAEMON_PRIMARY_HARNESS=$FM_SUPERVISOR_HARNESS
+        ;;
+      *) FM_DAEMON_PRIMARY_HARNESS=unknown ;;
+    esac
+  elif [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
     FM_DAEMON_PRIMARY_HARNESS=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
     [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
   fi
@@ -1306,6 +1313,7 @@ inject_msg() {  # <message> [state]
   # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
+  fm_daemon_primary_harness >/dev/null
   harness=${FM_DAEMON_PRIMARY_HARNESS:-unknown}
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s" "" "$harness")
   if [ "$verdict" = empty ]; then

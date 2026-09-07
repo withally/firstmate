@@ -2482,7 +2482,7 @@ test_inject_msg_detects_claude_harness_before_submit() {
   printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" claude' > "$dir/fakebin/fm-harness.sh"
   chmod +x "$dir/fakebin/fm-harness.sh"
   (
-    unset FM_DAEMON_PRIMARY_HARNESS
+    unset FM_DAEMON_PRIMARY_HARNESS FM_SUPERVISOR_HARNESS
     FM_DAEMON_DIR="$dir/fakebin"
     fm_backend_target_exists() { return 0; }
     fm_backend_busy_state() { printf 'busy'; }
@@ -2503,6 +2503,35 @@ test_inject_msg_detects_claude_harness_before_submit() {
       || fail "a detected Claude harness with rendered idle and empty composer should reach submit"
   ) || fail "detected Claude harness submit-boundary subshell failed"
   pass "inject_msg: detected Claude harness survives pane_is_busy into the submit boundary"
+}
+
+test_inject_msg_uses_target_bound_harness_for_herdr() {
+  local dir state
+  dir=$(make_supercase inject-herdr-target-bound-harness)
+  state="$dir/state"
+  afk_enter "$state"
+  (
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    FM_SUPERVISOR_HARNESS=pi
+    fm_backend_target_exists() { return 0; }
+    fm_backend_busy_state() { printf 'busy'; }
+    fm_backend_capture() { fail "a target-bound non-Claude harness must retain Herdr's native busy fast path"; }
+    FM_SUPERVISOR_BACKEND=herdr
+    FM_SUPERVISOR_TARGET="default:w1:p2"
+    pane_is_busy "default:w1:p2" herdr || fail "target-bound native busy state was lost to stale Claude identity"
+    [ "$FM_PANE_BUSY_REASON" = native-busy ] || fail "target-bound native busy state used the wrong guard: ${FM_PANE_BUSY_REASON:-unset}"
+
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_capture() { printf 'idle prompt\n'; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_send_text_submit() {
+      [ "${8:-}" = pi ] || fail "target-bound harness was not forwarded to submit: ${8:-unset}"
+      printf 'empty'
+    }
+    LOG="$dir/daemon.log"
+    inject_msg "hello" "$state" || fail "target-bound non-Claude harness should reach the submit boundary"
+  ) || fail "target-bound Herdr harness subshell failed"
+  pass "inject_msg: target-bound harness controls Herdr busy detection and submit confirmation"
 }
 
 test_pane_is_busy_herdr_claude_rendered_busy_state() {
@@ -2931,6 +2960,7 @@ test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
 test_inject_msg_herdr_claude_native_busy_rendered_idle_submits
 test_inject_msg_detects_claude_harness_before_submit
+test_inject_msg_uses_target_bound_harness_for_herdr
 test_pane_is_busy_herdr_claude_rendered_busy_state
 test_pane_is_busy_herdr_claude_native_idle_keeps_rendered_guard
 test_pane_is_busy_herdr_claude_ignores_stale_footer_above_idle_prompt

@@ -32,9 +32,12 @@
 # primary checkout - the main home or a genuinely marked secondmate home - and
 # stay a silent, fast no-op inside child task worktrees.
 #
-# Away mode (state/.afk): the away-mode daemon owns supervision and runs the
-# watcher one-shot, restarting it after every wake, so the watch lock is
-# regularly unheld at a turn boundary with nothing wrong. A live
+# Away mode (state/.afk): this synchronous turn-boundary guard checks the
+# away-daemon owner before it trusts the ownership transfer. If the daemon's
+# identity-backed lock is dead or mismatched, it asks bin/fm-afk-launch.sh - the
+# terminal-lifecycle owner - to relaunch through its tracked native path. The
+# away daemon runs the watcher one-shot, restarting it after every wake, so the
+# watch lock is regularly unheld at a turn boundary with nothing wrong. A live
 # identity-matched daemon holding this home, plus the unchanged fresh-beacon
 # test, is what proves supervision there - see fm_afk_daemon_owns_supervision in
 # bin/fm-wake-lib.sh. The strict watcher predicate is unchanged everywhere else.
@@ -194,6 +197,9 @@ fi
 # The beacon half of the predicate is deliberately unchanged: a daemon that
 # stops restarting its watcher still blocks once the beacon passes grace, and
 # a home with no daemon and no watcher blocks exactly as before.
+if [ -e "$STATE/.afk" ] && ! fm_afk_daemon_owns_supervision "$STATE"; then
+  "$SCRIPT_DIR/fm-afk-launch.sh" start >/dev/null 2>&1 || true
+fi
 if [ "$FM_SUP_WATCHER_FRESH" = true ] && fm_afk_daemon_owns_supervision "$STATE"; then
   allow_supervised_stop
 fi

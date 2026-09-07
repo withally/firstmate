@@ -359,6 +359,23 @@ test_empty_delivery_journal_is_a_valid_noop() {
   pass "return catch-up accepts an empty delivery journal as no work"
 }
 
+test_return_surfaces_complete_quarantine_evidence() {
+  local dir out evidence
+  dir="$TMP_ROOT/quarantine-evidence"
+  install_runner "$dir"
+  evidence="$dir/home/state/.subsuper-delivery-quarantine"
+  {
+    printf 'quarantine\tfirst corrupt store\t%s\n' "$dir/first-quarantine"
+    printf 'quarantine\tsecond corrupt store\t%s\n' "$dir/second-quarantine"
+  } > "$evidence"
+
+  out=$(run_return "$dir" begin) || fail "return did not complete with quarantine evidence: $out"
+  assert_contains "$out" "$dir/first-quarantine" "return omitted the first quarantine pointer"
+  assert_contains "$out" "$dir/second-quarantine" "return omitted the second quarantine pointer"
+  [ ! -e "$evidence" ] || fail "successful return left quarantine evidence behind"
+  pass "return catch-up surfaces and retires complete quarantine evidence"
+}
+
 test_delivery_cleanup_failure_keeps_return_gate() {
   local dir out rc gate wedge fakebin
   dir="$TMP_ROOT/delivery-cleanup-failure"
@@ -398,4 +415,5 @@ test_malformed_delivery_journal_blocks_return_and_preserves_state
 test_typed_delivery_without_nonce_blocks_return
 test_return_surfaces_empty_delivery_record
 test_empty_delivery_journal_is_a_valid_noop
+test_return_surfaces_complete_quarantine_evidence
 test_delivery_cleanup_failure_keeps_return_gate

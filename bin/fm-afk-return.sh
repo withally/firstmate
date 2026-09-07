@@ -155,7 +155,8 @@ clear_delivery_artifacts() {
   local artifact result=0
   for artifact in \
     .subsuper-delivery.jsonl \
-    .subsuper-inject-wedged; do
+    .subsuper-inject-wedged \
+    .subsuper-delivery-quarantine; do
     rm -f "$STATE/$artifact" || result=1
   done
   return "$result"
@@ -175,7 +176,7 @@ return_guard() {
 }
 
 return_reconcile() {
-  local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge escalations lifecycle_ok=1
+  local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge quarantine escalations lifecycle_ok=1
   local journal="$STATE/.subsuper-delivery.jsonl" undelivered_count empty_count
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
@@ -205,8 +206,16 @@ return_reconcile() {
   append_evidence wake "$drained" "$evidence"
 
   if [ -s "$STATE/.subsuper-inject-wedged" ]; then
-    wedge=$(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
+    wedge=$(cat "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
     append_evidence wedge "$wedge" "$evidence"
+  fi
+  if [ -e "$STATE/.subsuper-delivery-quarantine" ]; then
+    if quarantine=$(cat "$STATE/.subsuper-delivery-quarantine" 2>/dev/null); then
+      append_evidence quarantine "$quarantine" "$evidence"
+    else
+      append_evidence lifecycle 'away-mode quarantine evidence could not be read; preserved for retry' "$evidence"
+      lifecycle_ok=0
+    fi
   fi
   # Undelivered escalation/check items still in the delivery journal are the
   # "while you were out" catch-up.

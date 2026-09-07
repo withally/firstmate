@@ -106,6 +106,30 @@ test_afk_start_fails_when_fresh_cleanup_fails() {
   pass "fm-afk-start.sh fails closed when fresh artifact cleanup fails"
 }
 
+test_afk_start_recovery_preserves_durable_state_without_prepared_env() {
+  local dir state out rc flag journal
+  dir=$(make_supercase afk-start-recovery-preserves-state)
+  state="$dir/state"
+  flag="$state/.afk"
+  journal="$state/.subsuper-delivery.jsonl"
+  printf '%s\n' 'existing-away-session' > "$flag"
+  jq -cn '{nonce:"abcdef123456",kind:"escalation",source_key:"recovery",text:"already typed",state:"typed",buffered_epoch:1,typed_epoch:2,delivered_epoch:0,witness_transcript:"-",witness_offset:0}' > "$journal"
+
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    FM_AFK_DAEMON=/usr/bin/true
+    fm_afk_clear_stale_artifacts() { return 1; }
+    set +e
+    fm_afk_start_main
+  ' _ "$AFK_START" 2>&1)
+  rc=$?
+
+  [ "$rc" -eq 0 ] || fail "fm-afk-start.sh treated recovery as a failed fresh entry: $out"
+  [ "$(cat "$flag")" = 'existing-away-session' ] || fail "recovery overwrote the pre-existing away flag"
+  [ "$(jq -s -r '.[0].text' "$journal")" = 'already typed' ] || fail "recovery cleared the durable delivery journal"
+  pass "fm-afk-start.sh preserves durable recovery state without launcher preparation"
+}
+
 test_afk_start_ignores_stale_pidfile_without_lock() {
   local dir state out status
   dir=$(make_supercase afk-start-stale-pidfile)
@@ -2327,6 +2351,32 @@ test_prejournal_quarantine_alarm_survives_empty_flush() {
   pass "pre-journal quarantine alarm survives an empty housekeeping flush"
 }
 
+test_quarantine_evidence_survives_later_wedge_alarm() {
+  local dir state first second evidence
+  dir=$(make_supercase delivery-quarantine-evidence)
+  state="$dir/state"
+  first="$dir/quarantine-one"
+  second="$dir/quarantine-two"
+  evidence="$state/.subsuper-delivery-quarantine"
+  mkdir -p "$first" "$second"
+
+  FM_WEDGE_ALARM_EXEC=discard journal_quarantine_alarm_write "$state" "first corrupt store" "$first" \
+    || fail "first quarantine evidence was not recorded"
+  FM_WEDGE_ALARM_EXEC=discard journal_quarantine_alarm_write "$state" "second corrupt store" "$second" \
+    || fail "second quarantine evidence was not recorded"
+  [ -s "$evidence" ] || fail "quarantine evidence was not stored separately from wedge status"
+  grep -F "$first" "$evidence" >/dev/null || fail "first quarantine pointer was lost"
+  grep -F "$second" "$evidence" >/dev/null || fail "second quarantine pointer was lost"
+
+  touch -t 200001010000 "$state/.subsuper-inject-wedged"
+  FM_WEDGE_ALARM_EXEC=discard FM_SUPERVISOR_BACKEND=herdr inject_wedge_alarm "$state" 30600
+  grep -F 'fm away-mode inject WEDGED: 30600s' "$state/.subsuper-inject-wedged" >/dev/null \
+    || fail "later ordinary wedge alarm did not replace the ordinary status marker"
+  grep -F "$first" "$evidence" >/dev/null || fail "later wedge alarm erased first quarantine evidence"
+  grep -F "$second" "$evidence" >/dev/null || fail "later wedge alarm erased second quarantine evidence"
+  pass "quarantine pointers survive later ordinary wedge alarms"
+}
+
 test_prejournal_quarantine_failure_preserves_source() {
   local dir state source
   dir=$(make_supercase delivery-prejournal-quarantine-failure)
@@ -3341,6 +3391,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 }
 
 test_afk_start_refuses_when_flag_cannot_be_written
+test_afk_start_recovery_preserves_durable_state_without_prepared_env
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_daemon_state_root_uses_fm_home
@@ -3430,6 +3481,7 @@ test_delivery_witness_requires_exact_envelope_and_new_transcript_offset
 test_unknown_submit_without_witness_stalls_and_alarms_without_retype
 test_prejournal_delivery_state_is_quarantined_verbatim
 test_prejournal_quarantine_alarm_survives_empty_flush
+test_quarantine_evidence_survives_later_wedge_alarm
 test_prejournal_quarantine_failure_preserves_source
 test_delivery_nonce_avoids_existing_journal_collision
 test_typed_record_without_nonce_is_quarantined

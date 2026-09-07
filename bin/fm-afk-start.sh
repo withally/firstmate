@@ -50,12 +50,14 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 FM_AFK_FRESH_DELIVERY_ARTIFACTS=(
   .subsuper-delivery.jsonl
   .subsuper-inject-wedged
+  .subsuper-delivery-quarantine
 )
 
 # shellcheck disable=SC2034 # Consumed by fm-afk-launch.sh after sourcing.
 FM_AFK_DELIVERY_ARTIFACTS=(
   .subsuper-delivery.jsonl
   .subsuper-inject-wedged
+  .subsuper-delivery-quarantine
   .subsuper-escalations
   .subsuper-escalations.since
   .subsuper-escalations.delivery
@@ -153,13 +155,14 @@ fm_afk_start_main() {
   esac
 
   mkdir -p "$FM_AFK_STATE"
+  local had_afk=0 pid
+  [ -f "$FM_AFK_STATE/.afk" ] && had_afk=1
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
     [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
-  else
+  elif [ "$had_afk" -eq 0 ]; then
     fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
   fi
 
-  local pid
   pid=$(daemon_lock_pid 2>/dev/null || true)
   if daemon_lock_held_by_live_daemon; then
     echo "afk: daemon already running pid=$pid"
@@ -172,7 +175,7 @@ fm_afk_start_main() {
 
   # Fresh start: clear the previous away session's live delivery artifacts
   # before the new daemon can surface them (fix for the leaked-artifact defect).
-  if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ]; then
+  if [ "$had_afk" -eq 0 ]; then
     if ! fm_afk_clear_stale_artifacts "$FM_AFK_STATE"; then
       rm -f "$FM_AFK_STATE/.afk" 2>/dev/null || true
       echo "afk: failed to clear stale away-mode artifacts" >&2

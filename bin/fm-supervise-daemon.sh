@@ -716,6 +716,7 @@ stale_window_is_busy() {  # <window> <state>
 # rare crash between the typed rename and the send leaves an unwitnessable typed
 # record that the max-defer wedge alarm surfaces: a stall, never a flood.
 JOURNAL_NAME=".subsuper-delivery.jsonl"
+QUARANTINE_EVIDENCE_NAME=".subsuper-delivery-quarantine"
 
 delivery_nonce_generate() {  # <state>
   local state=${1:-} journal nonce existing attempts=0
@@ -1162,18 +1163,50 @@ DELIVERY_LEGACY_ARTIFACTS=(
   .subsuper-check-ledger
 )
 
+journal_quarantine_evidence_append() {  # <state> <reason> <directory>
+  local state=$1 reason=$2 directory=$3 evidence timestamp
+  case "$reason$directory" in
+    *$'\t'*|*$'\r'*|*$'\n'*) return 1 ;;
+  esac
+  evidence="$state/$QUARANTINE_EVIDENCE_NAME"
+  timestamp=$(date '+%Y-%m-%dT%H:%M:%S%z') || return 1
+  ( umask 077; printf 'quarantine\t%s\t%s\t%s\n' "$timestamp" "$reason" "$directory" >> "$evidence" )
+}
+
+journal_quarantine_evidence_import_marker() {  # <state>
+  local state=$1 marker="$1/.subsuper-inject-wedged" evidence="$1/$QUARANTINE_EVIDENCE_NAME" first directory reason
+  [ -s "$marker" ] || return 0
+  first=$(head -1 "$marker" 2>/dev/null) || return 1
+  case "$first" in
+    "fm away-mode delivery store QUARANTINED:"*) ;;
+    *) return 0 ;;
+  esac
+  directory=$(sed -n '3p' "$marker" 2>/dev/null) || return 1
+  [ -n "$directory" ] || return 0
+  if [ -s "$evidence" ] \
+    && awk -F '\t' -v want="$directory" '$1 == "quarantine" && $4 == want { found=1 } END { exit found ? 0 : 1 }' \
+      "$evidence" >/dev/null 2>&1; then
+    return 0
+  fi
+  reason=${first#fm away-mode delivery store QUARANTINED: }
+  journal_quarantine_evidence_append "$state" "$reason" "$directory"
+}
+
 journal_quarantine_alarm_write() {  # <state> <reason> <directory>
   local state=$1 reason=$2 directory=$3 marker_tmp
+  journal_quarantine_evidence_import_marker "$state" || return 1
+  journal_quarantine_evidence_append "$state" "$reason" "$directory" || return 1
   marker_tmp=$(umask 077; mktemp "$state/.subsuper-inject-wedged.XXXXXX") || return 1
   {
     printf 'fm away-mode delivery store QUARANTINED: %s as of %s\n' "$reason" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
-    printf 'The daemon could not safely interpret its delivery store. Contents preserved at:\n%s\n' "$directory"
+    printf 'Complete quarantine evidence is retained in %s\n' "$QUARANTINE_EVIDENCE_NAME"
   } > "$marker_tmp" 2>/dev/null || { rm -f "$marker_tmp"; return 1; }
   mv "$marker_tmp" "$state/.subsuper-inject-wedged" || { rm -f "$marker_tmp"; return 1; }
 }
 
 journal_wedge_marker_clear_if_normal() {
   local state=$1 marker="$1/.subsuper-inject-wedged" first
+  journal_quarantine_evidence_import_marker "$state" || return 0
   [ -e "$marker" ] || return 0
   first=$(head -1 "$marker" 2>/dev/null) || return 0
   case "$first" in
@@ -1574,6 +1607,7 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   local state=$1 age=$2 marker target backend max_defer now notify=1
   marker="$state/.subsuper-inject-wedged"
   max_defer="${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}"
+  journal_quarantine_evidence_import_marker "$state" || return 1
   # Re-alarm at most once per max-defer window so a long wedge does not spam.
   if [ "$(_file_age "$marker")" -lt "$max_defer" ]; then
     return 0

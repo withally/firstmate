@@ -2716,8 +2716,9 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
-# (Enter only, never retyped) until native agent-state, a cleared composer, or
-# fm_composer_queued_enter_verdict confirms delivery. Verified hazard
+# (Enter only, never retyped) until native agent-state, a current rendered-footer
+# transition, a cleared composer, or fm_composer_queued_enter_verdict confirms
+# delivery. Verified hazard
 # (herdr-verification-p2.md "slash/$ autocomplete popup"): a `/`- or
 # `$`-prefixed send opens a completion popup within ~0.1s, exactly like tmux's
 # claude/codex popups, so the caller's <settle> before the first Enter matters
@@ -2733,11 +2734,12 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # away-mode daemon. Root cause: composer-content submit confirmation was too
 # sensitive to harness rendering details. Real claude/codex use bare prompt
 # rows, and real codex adds dynamic idle suggestions after `›`; the later
-# ANSI-aware composer classifier now handles that Codex shape, and idle-baseline
-# submit confirmation still prefers native agent-state so a faint idle tip
-# cannot block a landed send. Composer content is consulted only after native
-# state stays idle, as the empty/pending owner, and for submit attempts whose
-# pre-Enter agent-state baseline is not legibly idle.
+# ANSI-aware composer classifier now handles that Codex shape. Non-Claude
+# idle-baseline submit confirmation still prefers native agent-state so a faint
+# idle tip cannot block a landed send, while the away daemon's known Claude
+# target uses a rendered current-footer baseline because native `working` can
+# remain set after the foreground turn ends. Composer content is consulted as
+# the empty/pending owner after the applicable native or rendered signal.
 #
 # This also still correctly handles the earlier 2026-07-03 incident (a
 # slash-command popup selection/placeholder-fill on the FIRST Enter is not a
@@ -2748,16 +2750,17 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # generalizes instead of special-casing the popup shape.
 #
 # Failure-mode analysis (the two directions the caller-facing contract must
-# not get wrong - see docs/herdr-backend.md "Native agent-state submit
-# confirmation" for the empirical timing behind this):
+# not get wrong - see docs/herdr-backend.md "Current transport behavior" for
+# the empirical timing behind this):
 #   - Slow transition: fm_backend_herdr_wait_for_working samples repeatedly
 #     across herdr's per-attempt confirmation budget (not once at the end), so a
 #     transition landing partway through a window is still caught before this
 #     loop gives up and sends a needless extra Enter.
-#   - Instant round-trip or a native status that never leaves idle: bounded by
-#     the composer fallback. A cleared composer is delivery; a proven-pending
-#     composer on an idle pane is a swallow; extra Enter on an already-empty
-#     composer is a no-op, not a duplicate delivery of <text>.
+#   - Instant round-trip, a native status that never leaves idle, or a missed
+#     Claude footer transition: bounded by the composer fallback. A cleared
+#     composer is delivery; a proven-pending composer on an idle pane is a
+#     swallow; extra Enter on an already-empty composer is a no-op, not a
+#     duplicate delivery of <text>.
 # Fallback path, for a harness whose native agent-state is never legibly idle
 # (measured live: herdr reports a cursor pane `blocked` in every state - idle,
 # mid-turn, and after - so the idle-baseline path above is structurally
@@ -2775,7 +2778,8 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # native status is diagnostic. A pane already
 # mid-turn cannot use a rendered-footer transition as proof of this Enter;
 # only the separate retries-exhausted, proven-pending queued-Enter verdict can
-# confirm delivery from its native working state.
+# confirm delivery from a non-Claude target's native working state. Claude's
+# queued-busy input remains unconfirmed unless its composer clears.
 # Queued-while-busy Enter (OpenCode 1.18.4, and any harness that keeps typed
 # text visible until the current turn ends): after the retry budget, a proven
 # pending composer plus native agent_status=working is delivered, not swallowed.

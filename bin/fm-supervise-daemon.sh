@@ -210,8 +210,9 @@ WEDGE_ALARM_NOTIFIER_PID=
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, and the status-span reader) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
-# Composer-empty detection, submit acknowledgement, and the harness-scoped
-# supervisor-pane busy guard live in bin/fm-tmux-lib.sh.
+# Composer-empty detection and shared shape logic live in
+# bin/fm-composer-lib.sh; backend-specific submit acknowledgement and the
+# harness-scoped supervisor-pane busy guard route through bin/fm-backend.sh.
 # FM_BUSY_REGEX also overrides Grok's isolated task-state fallback.
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
@@ -1399,8 +1400,10 @@ window_for_task() {  # <task-key> [state]
 #     Enter leaves our text in the composer, and retyping would concatenate two
 #     sentinel-prefixed digests into one corrupted turn.
 #   - SUBMIT ACK = the backend submit primitive reports `empty` after Enter.
-#     For tmux that means a cleared composer; for herdr's normal idle-baseline
-#     path it means native agent-state observed a real turn start.
+#     For tmux that means a cleared composer; for Herdr's non-Claude
+#     idle-baseline path it means native agent-state observed a real turn start;
+#     a known Claude target uses its current rendered-footer idle-to-busy
+#     transition or a cleared composer instead.
 #     Pending means Enter was swallowed; unknown is treated as undelivered by
 #     this strict daemon path.
 #   - COMPOSER GUARD before typing: if the cursor line already has real content

@@ -564,9 +564,10 @@ export default function (pi: ExtensionAPI) {
     delivery: WakeDelivery,
   ): Promise<boolean> {
     if (!generationIsLive(owner)) return false;
-    if (delivery.pending?.ambiguous || owner.ambiguousWakes.size > 0) {
+    const persistedAmbiguous = owner.pendingActionables.find((pending) => pending.ambiguous);
+    if (delivery.pending?.ambiguous || persistedAmbiguous || owner.ambiguousWakes.size > 0) {
       const [ambiguousToken] = owner.ambiguousWakes.keys();
-      showAmbiguousDelivery(owner, ambiguousToken || delivery.token);
+      showAmbiguousDelivery(owner, ambiguousToken || persistedAmbiguous?.token || delivery.token);
       return false;
     }
     if (!deliveryBoundaryIsSafe(owner.deliveryBoundary)) {

@@ -2225,6 +2225,98 @@ EOF
   pass "Pi busy failure notice stays in status without a self-delivery"
 }
 
+test_pi_successor_ambiguous_marker_blocks_failure_wake() {
+  local repo home plugin log out status handoff
+  repo="$TMP_ROOT/pi-successor-ambiguous-marker-root"
+  home="$TMP_ROOT/pi-successor-ambiguous-marker-home"
+  log="$TMP_ROOT/pi-successor-ambiguous-marker.log"
+  handoff="$home/state/extensions/pi-primary-watch/session-replacement-actionable.json"
+  mkdir -p "$repo/bin" "$home/state/extensions/pi-primary-watch" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$handoff" <<'JSON'
+{"version":2,"pending":[{"version":1,"token":"123-456-1","message":"signal: persisted ambiguous actionable outcome","predecessorArmPid":"0","ambiguous":true}]}
+JSON
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+count=0
+[ ! -f "$FM_ARM_LOG" ] || count=$(grep -c '^arm=' "$FM_ARM_LOG")
+count=$((count + 1))
+printf 'arm=%s\n' "$count" >> "$FM_ARM_LOG"
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s recovery-generation=persisted-ambiguous-fixture\n' "$$"
+  printf 'signal: successor failure while ambiguous\n'
+  exit 0
+fi
+printf 'watcher: FAILED - persisted ambiguous restoration failure\n'
+exit 3
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=40 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=40 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=5 FM_WATCH_REARM_RETRY_LIMIT=1 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sends = [];
+const statuses = [];
+const ui = {
+  setStatus(key, value) {
+    statuses.push({ key, value });
+  },
+};
+const idle = { ui, isIdle: () => true, hasPendingMessages: () => false };
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage(message) {
+    sends.push(message);
+  },
+};
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}; sends=${JSON.stringify(sends)} statuses=${JSON.stringify(statuses)}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({}, idle);
+await handlers.get("agent_settled")?.({}, idle);
+await waitFor(
+  () => sends.length > 0 || statuses.some(({ key }) => key === "firstmate-watcher-failure"),
+  "persisted ambiguity failure handling",
+);
+if (sends.length !== 0) throw new Error(`persisted ambiguity allowed a failure wake: ${JSON.stringify(sends)}`);
+const failure = statuses.find(({ key, value }) => key === "firstmate-watcher-failure" && String(value).includes("could not restore watcher continuity"));
+if (!failure) throw new Error(`persisted ambiguity failure was not retained in status: ${JSON.stringify(statuses)}`);
+if (!String(failure.value).includes("parent doorbell owns recovery")) {
+  throw new Error(`persisted ambiguity failure omitted parent-doorbell recovery: ${failure.value}`);
+}
+if (!/token=[0-9]+-[0-9]+-[0-9]+/.test(String(failure.value))) {
+  throw new Error(`persisted ambiguity failure omitted its unique token: ${failure.value}`);
+}
+if (!statuses.some(({ key, value }) => key === "firstmate-wake-delivery" && String(value).includes("123-456-1"))) {
+  throw new Error(`persisted ambiguity marker was not surfaced: ${JSON.stringify(statuses)}`);
+}
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
+if (existsSync(process.env.FM_ARM_LOG) && readFileSync(process.env.FM_ARM_LOG, "utf8").trim().length === 0) {
+  throw new Error("Pi did not attempt successor restoration");
+}
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi successor must retain failure status when a persisted ambiguous row blocks self-delivery: $out"
+  [ -z "$out" ] || fail "Pi successor ambiguous-marker test printed output: $out"
+  pass "Pi successor persisted ambiguity blocks failure self-delivery"
+}
+
 test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status() {
   local repo home plugin log out status
   repo="$TMP_ROOT/pi-ambiguous-consumption-cleanup-root"
@@ -3906,6 +3998,7 @@ test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
 test_pi_ambiguous_self_delivery_is_never_retried
 test_pi_failure_notice_busy_stays_in_status
+test_pi_successor_ambiguous_marker_blocks_failure_wake
 test_pi_ambiguous_consumption_cleanup_failure_uses_containment_status
 test_pi_ambiguous_restoration_failure_uses_containment_status
 test_pi_successor_failure_during_delivery_is_retried_after_delivery

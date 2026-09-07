@@ -3886,6 +3886,45 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
   pass "fm_backend_herdr_send_text_submit: idle native baseline uses a rendered busy footer to confirm a queued Enter"
 }
 
+test_rendered_busy_state_scopes_known_target_harness() {
+  local out
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    unset FM_BUSY_REGEX
+    fm_backend_herdr_capture() { printf "esc to interrupt\\n"; }
+    unscoped=$(fm_backend_herdr_rendered_busy_state default:w1:p2)
+    known=$(fm_backend_herdr_rendered_busy_state default:w1:p2 pi)
+    unknown=$(fm_backend_herdr_rendered_busy_state default:w1:p2 unknown)
+    printf "%s %s %s" "$unscoped" "$known" "$unknown"
+  ' "$ROOT")
+  [ "$out" = "busy idle busy" ] || fail "a known Pi target borrowed the cross-harness footer matcher, got '$out'"
+  pass "fm_backend_herdr_rendered_busy_state: known target harness scopes busy evidence while unknown retains the union"
+}
+
+test_send_text_submit_scopes_known_target_rendered_proof() {
+  local out
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    capture_calls=0
+    fm_backend_herdr_send_literal() { return 0; }
+    fm_backend_herdr_send_key() { return 0; }
+    fm_backend_herdr_agent_status_raw() { printf blocked; }
+    fm_backend_herdr_composer_state() { printf pending; }
+    fm_backend_herdr_submit_confirm_budget() { printf 0; }
+    fm_backend_herdr_capture() {
+      if [ "$capture_calls" -eq 0 ]; then
+        capture_calls=1
+        printf "ready\\n"
+      else
+        printf "esc to interrupt\\n"
+      fi
+    }
+    fm_backend_herdr_send_text_submit default:w1:p2 hello 1 0 0 "" pi
+  ' "$ROOT")
+  [ "$out" = pending ] || fail "a known Pi target borrowed a stale cross-harness transition as submit proof, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: known target harness scopes rendered submit proof"
+}
+
 # --- the never-idle-native-state harness (real cursor on herdr) --------------
 # Measured live on cursor-agent 2026.08.11-e8db854 under herdr: `agent get`
 # reports a cursor pane `blocked` in EVERY state - idle, mid-turn, and after -
@@ -4872,6 +4911,8 @@ test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
 test_send_text_submit_idle_baseline_does_not_confirm_failed_enter
 test_send_text_submit_idle_native_empty_composer_confirms_delivery
 test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
+test_rendered_busy_state_scopes_known_target_harness
+test_send_text_submit_scopes_known_target_rendered_proof
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition

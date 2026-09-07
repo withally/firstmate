@@ -2681,6 +2681,9 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
 # core wants: it has no recorded harness for the pane.
 fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unknown
   local target=$1 harness=${2:-} cap visible
+  case "$harness" in
+    unknown) harness= ;;
+  esac
   cap=$(fm_backend_herdr_capture "$target" 40) || { printf 'unknown'; return 0; }
   visible=$(printf '%s' "$cap" | grep -v '^[[:space:]]*$' | tail -12)
   [ -n "$visible" ] || { printf 'unknown'; return 0; }
@@ -2792,7 +2795,7 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered> [footer-base
     working) printf 'busy'; return 0 ;;
   esac
   if [ "$allow_rendered" = 1 ]; then
-    fm_backend_herdr_rendered_busy_state "$target"
+    fm_backend_herdr_rendered_busy_state "$target" "$target_harness"
   else
     printf 'idle'
   fi
@@ -2815,7 +2818,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       claude*) footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target" claude) ;;
       *)
         if [ "$baseline" != idle ]; then
-          footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
+          footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target" "$target_harness")
         else
           footer_baseline=
         fi
@@ -2890,7 +2893,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         *)
           if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
             && [ "$footer_baseline" = idle ] \
-            && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target" "$target_harness")" = busy ]; then
             verdict=busy
           fi
           ;;

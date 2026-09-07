@@ -497,6 +497,11 @@ fm_afk_launch_start() {
   captain_backend=$(discover_supervisor_backend) || {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
   captain_harness=$(fm_afk_launch_target_harness "$captain_target" "$captain_backend")
+  if [ "$captain_backend" = tmux ] \
+    && { [ -z "$captain_harness" ] || [ "$captain_harness" = unknown ]; }; then
+    fm_afk_launch_log "could not verify harness for tmux supervisor target '$captain_target'"
+    return 1
+  fi
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 

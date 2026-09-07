@@ -244,10 +244,12 @@ unit_concurrent_start_serialized() {
   TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $cap_session"
   cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET="$cap_pane" \
+    TMUX_PANE="$cap_pane" PI_CODING_AGENT=true \
     FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" start >/dev/null 2>&1 &
   # shellcheck disable=SC2031 # The background PID is captured immediately in this shell.
   first=$!
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET="$cap_pane" \
+    TMUX_PANE="$cap_pane" PI_CODING_AGENT=true \
     FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" start >/dev/null 2>&1 &
   # shellcheck disable=SC2031 # The background PID is captured immediately in this shell.
   second=$!
@@ -714,6 +716,30 @@ unit_target_harness_comes_from_exact_herdr_pane() {
   rm -rf "$st"
 }
 
+unit_unverified_tmux_target_refuses_launch() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-unverified-target.XXXXXX")
+  mkdir -p "$st/state"
+  if TMUX_PANE=%42 FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    discover_supervisor_target() { printf captain:0; }
+    discover_supervisor_backend() { printf tmux; }
+    daemon_lock_held_by_live_daemon() { return 1; }
+    fm_afk_launch_reconcile() { return 0; }
+    fm_afk_clear_stale_artifacts() { return 0; }
+    fm_afk_launch_flag_write() { return 0; }
+    fm_afk_launch_create_tmux() { : > "$FM_HOME/create-called"; return 0; }
+    ! fm_afk_launch_start
+  ' _ "$LAUNCH" \
+    && [ ! -e "$st/create-called" ] \
+    && [ ! -e "$st/state/.afk" ]; then
+    pass "tmux launch: an unverifiable explicit target is refused before state or terminal creation"
+  else
+    fail "tmux launch: an unverifiable explicit target proceeded"
+  fi
+  rm -rf "$st"
+}
+
 unit_stop_validates_before_signal() {
   local st sleeper_pid
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-validate.XXXXXX")
@@ -920,7 +946,7 @@ e2e_herdr() {
   home_tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-e2e-home.XXXXXX")
   E2E_HERDR_CLEANUP() {
     # shellcheck disable=SC2031 # Cleanup reads the caller's resolved target; it does not reassign it.
-    FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
+  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
       FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr "$LAUNCH" stop >/dev/null 2>&1 || true
     herdr_safe_stop_and_delete "$SESSION" >/dev/null 2>&1 || true
     rm -rf "$home_tmp" 2>/dev/null || true
@@ -978,8 +1004,9 @@ e2e_tmux() {
   cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
   before=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
 
-  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
+    FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
+    FM_SUPERVISOR_TARGET="$cap_pane" TMUX_PANE="$cap_pane" PI_CODING_AGENT=true \
+    FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
     "$LAUNCH" start >/dev/null 2>&1
 
   during=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
@@ -1025,6 +1052,7 @@ unit_stop_malformed_record_fails_closed
 unit_tmux_planned_record_and_collision
 unit_detached_launch_carries_target_harness
 unit_target_harness_comes_from_exact_herdr_pane
+unit_unverified_tmux_target_refuses_launch
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_surfaces_afk_removal_failure

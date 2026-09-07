@@ -257,7 +257,8 @@ ANSI capture preserves de-emphasized placeholder style.
 If the ANSI capture ever fails, the plain fallback declares itself unstyled and the classifier degrades a glyph row carrying trailing text to `unknown` instead of misreading ghost suggestions as typed input, which safely defers injection and eventually raises the wedge alarm.
 
 A bare shell prompt is never an empty agent composer.
-Away-mode injection proceeds only on an affirmative `empty` result, never on unknown.
+Away-mode injection proceeds only with a known harness and an affirmative `empty` composer result, never on unknown.
+A live daemon keeps its supervisor backend, target, and harness fixed for its lock lifetime; away-mode refresh refuses a changed or unverifiable binding and preserves existing state.
 This prevents a dead agent pane from receiving and possibly executing an escalation as shell input.
 
 The current operational envelope starts with U+2063 and `FIRSTMATE_OP: `.

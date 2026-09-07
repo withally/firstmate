@@ -103,7 +103,7 @@
 #                                   (default 300)
 #          FM_HOUSEKEEPING_TICK     seconds between housekeeping passes while
 #                                   the watcher is mid-cycle (default 15)
-#          FM_BUSY_REGEX            optional rendered busy-signature override
+#          FM_BUSY_REGEX            rendered override; additive-only for Claude injection
 #                                   for delivery guards and Grok's fallback
 #          FM_COMPOSER_IDLE_RE      optional shared classifier override; see
 #                                   docs/configuration.md for its safety gates
@@ -641,11 +641,23 @@ fm_daemon_primary_harness() {
 }
 
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 visible harness
+  local target=$1 backend=${2:-tmux} native tail40 visible harness identity
   FM_PANE_BUSY_REASON=
   FM_PANE_NATIVE_BUSY_STATE=
   fm_daemon_primary_harness >/dev/null
   harness=${FM_DAEMON_PRIMARY_HARNESS:-unknown}
+  case "$harness" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp) ;;
+    *) FM_PANE_BUSY_REASON='unknown-harness'; return 0 ;;
+  esac
+  if [ "$backend" = herdr ]; then
+    fm_backend_source herdr || { FM_PANE_BUSY_REASON=unreadable; return 0; }
+    identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null) || identity=
+    if [ "${identity%%$'\t'*}" != "$harness" ]; then
+      FM_PANE_BUSY_REASON='harness-mismatch'
+      return 0
+    fi
+  fi
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
   FM_PANE_NATIVE_BUSY_STATE="$native"
   # Herdr's semantic busy value maps only agent_status=working; retain the
@@ -666,7 +678,9 @@ pane_is_busy() {  # <target> [backend]
       FM_PANE_BUSY_REASON='unreadable'
       return 0
     }
-    if printf '%s' "$visible" | fm_busy_lines_match claude; then
+    # An operator pattern may add a reason to defer, never supply submit proof.
+    if printf '%s' "$visible" | fm_busy_lines_match claude \
+      || { [ -n "${FM_BUSY_REGEX:-}" ] && printf '%s' "$visible" | grep -qiE "$FM_BUSY_REGEX"; }; then
       FM_PANE_BUSY_REASON='rendered-busy'
       return 0
     fi
@@ -680,7 +694,8 @@ pane_is_busy() {  # <target> [backend]
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
   if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"; then
+    | fm_busy_lines_match "$harness" \
+    || { [ "$harness" = claude ] && [ -n "${FM_BUSY_REGEX:-}" ] && printf '%s' "$tail40" | grep -qiE "$FM_BUSY_REGEX"; }; then
     FM_PANE_BUSY_REASON='rendered-busy'
     return 0
   fi
@@ -1659,6 +1674,16 @@ fm_super_main() {
   if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
     echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
     log "startup failed: target '$TARGET' not found (backend=$BACKEND)"
+    fm_lock_release "$LOCK" 2>/dev/null || true
+    rm -f "$PIDFILE" 2>/dev/null || true
+    exit 1
+  fi
+
+  # supervisor-binding: backend<TAB>target<TAB>harness, immutable for this
+  # lock lifetime. Refresh compares it without rebinding; lock cleanup owns it.
+  fm_daemon_primary_harness >/dev/null
+  if ! printf '%s\t%s\t%s\n' "$BACKEND" "$TARGET" "$FM_DAEMON_PRIMARY_HARNESS" > "$LOCK/supervisor-binding"; then
+    log "startup failed: cannot record supervisor binding"
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     exit 1

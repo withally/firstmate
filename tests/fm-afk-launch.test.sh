@@ -716,6 +716,78 @@ unit_target_harness_comes_from_exact_herdr_pane() {
   rm -rf "$st"
 }
 
+unit_daemon_publishes_lifetime_binding() {
+  local st pid attempt owner
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-daemon-binding.XXXXXX")
+  mkdir -p "$st/state" "$st/bin"
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$st/bin/fm-watch.sh"
+  chmod +x "$st/bin/fm-watch.sh"
+  printf '. "%s/bin/fm-wake-lib.sh"\n' "$ROOT" > "$st/bin/fm-wake-lib.sh"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=fixture:p1 \
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_HARNESS=pi bash -c '
+    . "$1/bin/fm-supervise-daemon.sh"
+    FM_DAEMON_DIR="$FM_HOME/bin"
+    fm_backend_target_exists() { return 0; }
+    fm_super_main
+  ' _ "$ROOT" > "$st/output" 2>&1 &
+  pid=$!
+  for attempt in $(seq 1 100); do
+    [ ! -s "$st/state/.supervise-daemon.lock/supervisor-binding" ] || break
+    sleep 0.05
+  done
+  owner=$(readlink "$st/state/.supervise-daemon.lock" 2>/dev/null || true)
+  if [ "$(cat "$st/state/.supervise-daemon.lock/supervisor-binding" 2>/dev/null)" = "$(printf 'herdr\tfixture:p1\tpi')" ]; then
+    pass "daemon startup: publishes the resolved supervisor binding in its lifetime lock"
+  else
+    cat "$st/output" >&2
+    fail "daemon startup: did not publish the resolved supervisor binding"
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  if [ -e "$st/state/.supervise-daemon.lock" ] || { [ -n "$owner" ] && [ -e "$owner" ]; }; then
+    fail "daemon shutdown: lifetime binding prevented lock-owner cleanup"
+  else
+    pass "daemon shutdown: removes the lifetime binding with its lock owner"
+  fi
+  rm -rf "$st"
+}
+
+unit_refresh_requires_matching_supervisor_binding() {
+  local st binding
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-refresh-binding.XXXXXX")
+  mkdir -p "$st/state/.supervise-daemon.lock"
+  for binding in claude pi unknown missing other-target other-backend; do
+    printf 'original\n' > "$st/state/.afk"
+    if [ "$binding" = missing ]; then
+      rm -f "$st/state/.supervise-daemon.lock/supervisor-binding"
+    elif [ "$binding" = other-target ]; then
+      printf 'herdr\tfixture:p2\tpi\n' > "$st/state/.supervise-daemon.lock/supervisor-binding"
+    elif [ "$binding" = other-backend ]; then
+      printf 'tmux\tfixture:p1\tpi\n' > "$st/state/.supervise-daemon.lock/supervisor-binding"
+    else
+      printf 'herdr\tfixture:p1\t%s\n' "$binding" > "$st/state/.supervise-daemon.lock/supervisor-binding"
+    fi
+    if ! FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+      . "$1"
+      discover_supervisor_target() { printf fixture:p1; }
+      discover_supervisor_backend() { printf herdr; }
+      fm_afk_launch_target_harness() { printf pi; }
+      daemon_lock_held_by_live_daemon() { return 0; }
+      daemon_lock_owner() { printf "%s" "$FM_AFK_LAUNCH_STATE/.supervise-daemon.lock"; }
+      fm_afk_launch_record_validate_if_present() { return 0; }
+      fm_afk_launch_create_herdr() { exit 99; }
+      if [ "$2" = pi ]; then fm_afk_launch_start && fm_afk_launch_start_native; else ! fm_afk_launch_start && ! fm_afk_launch_start_native; fi
+    ' _ "$LAUNCH" "$binding"; then
+      fail "refresh binding $binding returned wrong verdict"
+    fi
+    if [ "$binding" != pi ] && [ "$(cat "$st/state/.afk")" != original ]; then
+      fail "refused refresh modified away flag"
+    fi
+  done
+  rm -rf "$st"
+  pass "refresh: only the live daemon's matching supervisor binding permits refresh"
+}
+
 unit_unverified_tmux_target_refuses_launch() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-unverified-target.XXXXXX")
@@ -1052,6 +1124,8 @@ unit_stop_malformed_record_fails_closed
 unit_tmux_planned_record_and_collision
 unit_detached_launch_carries_target_harness
 unit_target_harness_comes_from_exact_herdr_pane
+unit_daemon_publishes_lifetime_binding
+unit_refresh_requires_matching_supervisor_binding
 unit_unverified_tmux_target_refuses_launch
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata

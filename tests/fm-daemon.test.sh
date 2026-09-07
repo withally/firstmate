@@ -24,6 +24,9 @@ fi
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
+# This suite supplies pane signals; identity is independently varied below.
+fm_backend_source herdr
+fm_backend_herdr_composer_identity() { printf '%s\tidle' "${FM_SUPERVISOR_HARNESS:-${FM_DAEMON_PRIMARY_HARNESS:-unknown}}"; }
 
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
@@ -2453,6 +2456,69 @@ test_discover_supervisor_target_herdr() {
 }
 
 # shellcheck disable=SC2030 # The harness fixture is intentionally scoped to the isolated injection subshell.
+test_inject_msg_unknown_harness_refuses() {
+  local dir backend
+  dir=$(make_supercase inject-unknown-harness)
+  afk_enter "$dir/state"
+  for backend in herdr tmux; do
+    (
+      FM_SUPERVISOR_HARNESS=unknown
+      FM_SUPERVISOR_BACKEND=$backend
+      FM_SUPERVISOR_TARGET=fixture
+      LOG="$dir/daemon.log"
+      fm_backend_target_exists() { return 0; }
+      fm_backend_busy_state() { printf idle; }
+      fm_backend_capture() { printf 'esc to interrupt\n'; }
+      fm_backend_composer_state() { printf empty; }
+      fm_backend_send_text_submit() { : > "$dir/sent"; printf empty; }
+      if inject_msg hello "$dir/state"; then exit 1; fi
+      [ ! -e "$dir/sent" ]
+    ) || fail "unknown $backend harness permitted injection"
+  done
+  pass "inject_msg: unknown harness refuses before typing on every backend"
+}
+
+test_inject_msg_herdr_changed_identity_refuses() {
+  local dir observed
+  dir=$(make_supercase inject-changed-identity)
+  afk_enter "$dir/state"
+  for observed in pi unknown ''; do
+    (
+      FM_SUPERVISOR_HARNESS=claude
+      FM_SUPERVISOR_BACKEND=herdr
+      FM_SUPERVISOR_TARGET=fixture
+      LOG="$dir/daemon.log"
+      fm_backend_herdr_composer_identity() { printf '%s\tworking' "$observed"; }
+      fm_backend_target_exists() { return 0; }
+      fm_backend_busy_state() { printf busy; }
+      fm_backend_capture() { printf 'Working...\n'; }
+      fm_backend_composer_state() { printf empty; }
+      fm_backend_send_text_submit() { : > "$dir/sent"; printf empty; }
+      if inject_msg hello "$dir/state"; then exit 1; fi
+      [ ! -e "$dir/sent" ]
+    ) || fail "changed or missing Herdr identity permitted stale Claude injection"
+  done
+  pass "inject_msg: changed or missing live identity refuses stale harness semantics"
+}
+
+test_claude_busy_override_is_additive_guard_only() {
+  (
+    FM_DAEMON_PRIMARY_HARNESS=claude
+    FM_BUSY_REGEX=custom-busy
+    fm_backend_busy_state() { printf idle; }
+    fm_backend_capture() { printf 'custom-busy\n'; }
+    pane_is_busy fixture herdr || exit 1
+    pane_is_busy fixture tmux || exit 1
+    # The same custom evidence cannot confirm a submit.
+    if printf 'custom-busy\n' | fm_busy_lines_match claude; then exit 1; fi
+    # A nonmatching override must not hide genuine structural busy evidence.
+    fm_backend_capture() { printf 'esc to interrupt\n'; }
+    pane_is_busy fixture herdr || exit 1
+  ) || fail "Claude override did not preserve additive-guard / structural-proof separation"
+  pass "Claude busy override only adds refusal evidence and cannot confirm submission"
+}
+
+# shellcheck disable=SC2030 # This test keeps the harness assignment inside its isolated subshell.
 test_inject_msg_herdr_claude_native_busy_rendered_idle_submits() {
   local dir
   dir=$(make_supercase inject-herdr-claude-native-busy-idle)
@@ -2958,6 +3024,9 @@ test_fm_send_exits_nonzero_on_initial_send_failure
 test_fm_send_exits_nonzero_on_unproven_submit
 test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
+test_inject_msg_unknown_harness_refuses
+test_inject_msg_herdr_changed_identity_refuses
+test_claude_busy_override_is_additive_guard_only
 test_inject_msg_herdr_claude_native_busy_rendered_idle_submits
 test_inject_msg_detects_claude_harness_before_submit
 test_inject_msg_uses_target_bound_harness_for_herdr

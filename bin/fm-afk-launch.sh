@@ -485,6 +485,19 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
 }
 
+# Compare the current request against the live daemon's immutable lock-lifetime
+# binding. Missing legacy evidence refuses refresh; this never adopts a new target.
+fm_afk_launch_refresh_binding_matches() {  # <target> <backend> <harness>
+  local owner binding expected
+  [ -n "$3" ] && [ "$3" != unknown ] || return 1
+  owner=$(daemon_lock_owner) || return 1
+  binding=$(cat "$owner/supervisor-binding" 2>/dev/null) || return 1
+  expected=$(printf '%s\t%s\t%s' "$2" "$1" "$3")
+  [ "$binding" = "$expected" ] || return 1
+  [ "$(daemon_lock_owner)" = "$owner" ] || return 1
+  daemon_lock_held_by_live_daemon
+}
+
 fm_afk_launch_start() {
   local captain_target captain_backend captain_harness backup artifact had_afk=0 result
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
@@ -507,6 +520,10 @@ fm_afk_launch_start() {
 
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
+    if ! fm_afk_launch_refresh_binding_matches "$captain_target" "$captain_backend" "$captain_harness"; then
+      fm_afk_launch_log "refusing refresh: running daemon supervisor binding is changed or unverifiable; use the normal stop/start path"
+      return 1
+    fi
     if ! fm_afk_launch_flag_write; then
       fm_afk_launch_log "failed to refresh away-mode flag"
       return 1
@@ -561,7 +578,7 @@ fm_afk_launch_start() {
 }
 
 fm_afk_launch_start_native() {
-  local backup artifact had_afk=0 result=0
+  local backup artifact had_afk=0 result=0 target backend harness
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
@@ -569,6 +586,13 @@ fm_afk_launch_start_native() {
   fi
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
+    target=$(discover_supervisor_target) || return 1
+    backend=$(discover_supervisor_backend) || return 1
+    harness=$(fm_afk_launch_target_harness "$target" "$backend")
+    if ! fm_afk_launch_refresh_binding_matches "$target" "$backend" "$harness"; then
+      fm_afk_launch_log "refusing refresh: running daemon supervisor binding is changed or unverifiable; use the normal stop/start path"
+      return 1
+    fi
     fm_afk_launch_flag_write || return 1
     fm_afk_launch_log "daemon already running; refreshed away-mode flag"
     return 0

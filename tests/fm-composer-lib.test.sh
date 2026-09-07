@@ -840,3 +840,48 @@ test_claude_current_footer_requires_selected_composer_adjacency() {
 }
 
 test_claude_current_footer_requires_selected_composer_adjacency
+
+test_claude_2_1_263_titled_rule_and_permission_modes() {
+  local fixture_root="$ROOT/tests/fixtures/claude-2.1.263-herdr-composer"
+  local caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+  local idle busy mode screen rc verdict
+  idle=$(cat "$fixture_root/auto-mode-idle.txt")
+  busy=$(cat "$fixture_root/auto-mode-busy.txt")
+
+  verdict=$(fm_composer_classify_screen "$caps" "$idle")
+  [ "$verdict" = empty ] \
+    || fail "Claude 2.1.263 titled-rule idle composer must read empty, got '$verdict'"
+  if printf '%s\n' "$idle" | fm_claude_current_footer_busy "$caps"; then
+    fail "Claude 2.1.263 auto-mode idle footer must not read rendered-busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] \
+    || fail "Claude 2.1.263 auto-mode idle footer must read idle, got rc=$rc"
+
+  printf '%s\n' "$busy" | fm_claude_current_footer_busy "$caps" \
+    || fail "Claude 2.1.263 auto-mode active footer must read rendered-busy"
+
+  for mode in 'bypass permissions' 'auto mode' 'accept edits' 'plan mode'; do
+    screen=${idle/'auto mode'/"$mode"}
+    if printf '%s\n' "$screen" | fm_claude_current_footer_busy "$caps"; then
+      fail "Claude permission footer '$mode on' must remain idle without an active row"
+    else
+      rc=$?
+    fi
+    [ "$rc" -eq 1 ] \
+      || fail "Claude permission footer '$mode on' must be readable, got rc=$rc"
+  done
+
+  screen=${idle/$'  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent'/$'  ? for shortcuts'}
+  if printf '%s\n' "$screen" | fm_claude_current_footer_busy "$caps"; then
+    fail "Claude bare shortcuts footer must not read rendered-busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] \
+    || fail "Claude bare shortcuts footer must read idle, got rc=$rc"
+  pass "fm_claude_current_footer_busy: Claude 2.1.263 titled-rule composers and permission-mode footers stay readable"
+}
+
+test_claude_2_1_263_titled_rule_and_permission_modes

@@ -600,6 +600,7 @@ export default function (pi: ExtensionAPI) {
     try {
       pi.sendUserMessage(content, { deliverAs: "followUp" });
     } catch {
+      owner.ambiguousWakes.delete(delivery.token);
       // A synchronous exception is clearer than Pi's ordinary asynchronous
       // ambiguity, but the at-most-one-turn containment still never retries.
       return false;

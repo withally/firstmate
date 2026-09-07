@@ -2244,6 +2244,7 @@ import { pathToFileURL } from "node:url";
 const handlers = new Map();
 const statuses = [];
 let sendAttempts = 0;
+let armCommand = null;
 const ui = {
   setStatus(key, value) {
     statuses.push({ key, value });
@@ -2254,7 +2255,9 @@ const pi = {
   on(event, handler) {
     handlers.set(event, handler);
   },
-  registerCommand() {},
+  registerCommand(name, options) {
+    if (name === "fm-watch-arm-pi") armCommand = options.handler;
+  },
   registerTool() {},
   sendUserMessage() {
     sendAttempts += 1;
@@ -2284,6 +2287,20 @@ if (!String(failure.value).includes("parent doorbell owns recovery")) {
   throw new Error(`synchronous send failure omitted parent-doorbell recovery: ${failure.value}`);
 }
 if (sendAttempts !== 1) throw new Error(`synchronous send failure was retried: ${sendAttempts}`);
+if (!armCommand) throw new Error("watch arm command was not registered");
+await handlers.get("agent_settled")?.({}, idle);
+await armCommand("", {
+  ui: {
+    notify() {},
+    setStatus: ui.setStatus,
+  },
+  isIdle: () => true,
+  hasPendingMessages: () => false,
+});
+for (let i = 0; i < 500 && sendAttempts < 2; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (sendAttempts !== 2) throw new Error(`synchronous failure poisoned later delivery: ${sendAttempts}`);
 await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, idle);
 process.exit(0);
 EOF

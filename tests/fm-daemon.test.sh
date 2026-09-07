@@ -1641,19 +1641,20 @@ test_signal_escalate_marks_seen_no_catchall_refire() {
   pass "captain signal escalate marks seen so the catch-all scan does not re-fire"
 }
 
-test_signal_replay_after_seen_marker_failure_dedupes() {
+test_signal_and_catchall_replay_after_seen_marker_failure_dedupes() {
   local dir state
-  dir=$(make_supercase signal-marker-replay)
+  dir=$(make_supercase competing-status-replay)
   state="$dir/state"
   printf 'done: release verification complete\n' > "$state/replay-s4.status"
   (
     mark_escalated_seen() { return 1; }
     FM_ESCALATE_BATCH_SECS=999 handle_wake "signal: $state/replay-s4.status" "$state" || true
-    FM_ESCALATE_BATCH_SECS=999 handle_wake "signal: $state/replay-s4.status" "$state" || true
+    rm -f "$state/.subsuper-last-scan"
+    FM_HEARTBEAT_SCAN_SECS=0 housekeeping "$state" || true
   )
   [ "$(journal_buffered_count "$state")" -eq 1 ] \
-    || fail "signal replay appended a duplicate after seen-marker persistence failed"
-  pass "signal replay is idempotent when seen-marker persistence fails"
+    || fail "per-wake and catch-all replay appended a duplicate after seen-marker persistence failed"
+  pass "per-wake and catch-all replay share captured-status idempotence"
 }
 
 test_collapse_newlines_pure() {
@@ -3513,7 +3514,7 @@ test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout
 test_terminal_stale_escalate_leaves_no_marker
 test_signal_escalate_marks_seen_no_catchall_refire
-test_signal_replay_after_seen_marker_failure_dedupes
+test_signal_and_catchall_replay_after_seen_marker_failure_dedupes
 test_collapse_newlines_pure
 test_afk_absent_daemon_does_not_inject
 test_busy_guard_defers_when_supervisor_busy

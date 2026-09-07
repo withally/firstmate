@@ -184,6 +184,35 @@ unit_detector_miss_leaves_daemon_harness_unset() {
   rm -rf "$st"
 }
 
+unit_daemon_command_preserves_supported_harnesses() {
+  local st detector entry output expected
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-harnesses.XXXXXX")
+  detector="$st/detector"
+  entry="$st/entry"
+  mkdir -p "$detector"
+  printf '#!/usr/bin/env bash\nprintf "%%s" "${FM_TEST_HARNESS:-unknown}"\n' > "$detector/fm-harness.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${FM_DAEMON_PRIMARY_HARNESS:-unset}"\n' > "$entry"
+  chmod +x "$detector/fm-harness.sh" "$entry"
+  output=$(
+    for harness in claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp; do
+      FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_TEST_HARNESS="$harness" \
+        bash -c '
+          . "$1"
+          FM_AFK_LAUNCH_DIR="$2"
+          command=$(fm_afk_launch_daemon_cmd named:w1:p2 herdr "$3")
+          eval "$command"
+        ' _ "$LAUNCH" "$detector" "$entry"
+    done
+  )
+  expected=$'claude\ncodex\nopencode\npi\npi-signed\ngrok\nkimi\ncursor\ngemini\nmuse\nrovo\nomp'
+  if [ "$output" = "$expected" ]; then
+    pass "launcher command: every supported primary harness reaches the daemon"
+  else
+    fail "launcher command: a supported primary harness was dropped ($output)"
+  fi
+  rm -rf "$st"
+}
+
 unit_daemon_command_carries_configured_pi_agent_dir() {
   local st detector entry custom session_dir output expected
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pi-root.XXXXXX")
@@ -1195,6 +1224,7 @@ unit_clear_stale
 unit_clear_stale_reports_any_failure
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_detector_miss_leaves_daemon_harness_unset
+unit_daemon_command_preserves_supported_harnesses
 unit_daemon_command_carries_configured_pi_agent_dir
 unit_daemon_command_derives_herdr_pi_session_dir
 unit_daemon_command_derives_tmux_pi_session_dir

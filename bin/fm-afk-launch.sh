@@ -159,7 +159,7 @@ fm_afk_launch_primary_harness() {
   local harness
   harness=$(FM_HOME="$FM_HOME" "$FM_AFK_LAUNCH_DIR/fm-harness.sh" 2>/dev/null || true)
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) printf '%s' "$harness" ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp) printf '%s' "$harness" ;;
   esac
 }
 

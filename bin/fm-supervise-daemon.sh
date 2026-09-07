@@ -1135,8 +1135,8 @@ escalate_add() {  # <state> <distilled-item> [source-key]
   case "$item" in *$'\n'*|*$'\r'*) return 1 ;; esac
   case "$source_key" in *$'\n'*|*$'\r'*) return 1 ;; esac
   if [ -n "$source_key" ] && [ -s "$state/$JOURNAL_NAME" ] \
-    && jq -s -e --arg key "$source_key" --arg text "$item" \
-      'any(.[]; .kind=="escalation" and .source_key==$key and .text==$text)' \
+    && jq -s -e --arg key "$source_key" \
+      'any(.[]; .kind=="escalation" and .source_key==$key)' \
       "$state/$JOURNAL_NAME" >/dev/null 2>&1; then
     return 0
   fi

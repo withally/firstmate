@@ -359,6 +359,50 @@ test_home_seed_warns_when_acquired_home_return_fails() {
   pass "home seed rollback warns when treehouse-acquired return fails"
 }
 
+test_home_seed_refuses_malformed_treehouse_receipt_on_rollback() {
+  local home acquired fakebin log err receipt lease
+  home="$TMP_ROOT/dash-malformed-receipt-home"
+  acquired="$TMP_ROOT/dash-malformed-receipt-acquired-home"
+  err="$TMP_ROOT/dash-malformed-receipt.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/dash-malformed-receipt-alpha.git"
+  printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
+  git clone --quiet "$ROOT" "$acquired"
+  printf 'other\n' > "$acquired/.fm-secondmate-home"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/dash-malformed-receipt-fake")
+  log="$TMP_ROOT/dash-malformed-receipt-fake/tmux.log"
+  receipt="$home/state/dash.treehouse-lease"
+  lease="$TMP_ROOT/dash-malformed-receipt-fake/lease"
+  cat > "$fakebin/mv" <<SH
+#!/usr/bin/env bash
+set -u
+target=
+for arg in "\$@"; do target="\$arg"; done
+/bin/mv "\$@"
+status=\$?
+if [ "\$status" -eq 0 ] && [ "\$target" = "$receipt" ]; then
+  printf '%s\n' 'treehouse_lease_holder=dash' >> "$receipt"
+fi
+exit "\$status"
+SH
+  chmod +x "$fakebin/mv"
+
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TREEHOUSE_HOME="$acquired" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" \
+    FM_SECONDMATE_CHARTER='dash malformed receipt scope' FM_SECONDMATE_SCOPE='dash malformed receipt scope' \
+    "$ROOT/bin/fm-home-seed.sh" dash - alpha >/dev/null 2>"$err"; then
+    fail "seed reused an acquired home with a malformed durable receipt"
+  fi
+  grep -F 'durable lease receipt is malformed or disagrees with the acquisition identity' "$err" >/dev/null \
+    || fail "seed rollback did not refuse the malformed durable receipt"
+  [ -f "$receipt" ] || fail "malformed receipt was removed during rollback"
+  [ -f "$lease" ] || fail "malformed receipt rollback lost lease evidence"
+  ! grep -F 'treehouse return --force' "$log" >/dev/null \
+    || fail "malformed receipt rollback attempted a provider return"
+  pass "home seed rollback retains malformed lease evidence without returning it"
+}
+
 test_home_seed_does_not_return_unsafe_acquired_home() {
   local home descendant fakebin log err
   home="$TMP_ROOT/dash-active-home"
@@ -3159,6 +3203,7 @@ test_home_seed_validate_rejects_nested_homes
 test_home_seed_uses_treehouse_acquired_home
 test_home_seed_returns_treehouse_acquired_home_on_assignment_failure
 test_home_seed_warns_when_acquired_home_return_fails
+test_home_seed_refuses_malformed_treehouse_receipt_on_rollback
 test_home_seed_does_not_return_unsafe_acquired_home
 test_home_seed_rolls_back_failed_clone
 test_home_seed_refuses_missing_filled_charter

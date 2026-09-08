@@ -216,6 +216,14 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
+teardown_generated_worktree_files() {
+  local worktree=$1
+  [ -d "$worktree" ] || return 0
+  rm -f "$worktree/.claude/settings.local.json" "$worktree/.opencode/plugins/fm-turn-end.js" \
+    "$worktree/.opencode/plugins/fm-busy-state.js" \
+    "$worktree/.fm-grok-turnend" "$worktree/.fm-kimi-turnend"
+}
+
 teardown_retirement_worktree_files() {
   local worktree=$1 backend=$2 kind=$3 branch
   [ "$backend" != orca ] && [ "$kind" != secondmate ] || return 0
@@ -226,9 +234,7 @@ teardown_retirement_worktree_files() {
       git -C "$worktree" branch -D "$branch" >/dev/null 2>&1 || true
     fi
   fi
-  rm -f "$worktree/.claude/settings.local.json" "$worktree/.opencode/plugins/fm-turn-end.js" \
-    "$worktree/.opencode/plugins/fm-busy-state.js" \
-    "$worktree/.fm-grok-turnend" "$worktree/.fm-kimi-turnend"
+  teardown_generated_worktree_files "$worktree"
 }
 
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
@@ -465,10 +471,44 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
   recovery_target=$FM_BACKEND_VALIDATED_TARGET
   recovery_wt=$(fm_meta_get "$RECOVER_FROM" worktree)
   recovery_project=$(fm_meta_get "$RECOVER_FROM" project)
-  [ -d "$recovery_wt" ] && [ -d "$recovery_project" ] || {
+  recovery_cleanup=$(fm_meta_get "$RECOVER_FROM" cleanup_recovery)
+  recovery_orca_worktree_id=$(fm_meta_get "$RECOVER_FROM" orca_worktree_id)
+  [ -d "$recovery_project" ] || {
     echo "REFUSED: orphan recovery needs the exact existing project and worktree" >&2; exit 1;
   }
-  recovery_real=$(cd "$recovery_wt" && pwd -P) || exit 1
+  recovery_real=
+  if [ "$recovery_backend" = orca ]; then
+    [ "$recovery_cleanup" = orca ] && [ -n "$recovery_orca_worktree_id" ] || {
+      echo "REFUSED: orphan Orca recovery lacks its exact provider identity" >&2; exit 1;
+    }
+    recovery_provider_wt=$(fm_backend_worktree_path orca "$recovery_orca_worktree_id") || {
+      echo "REFUSED: orphan Orca recovery could not resolve its exact worktree id" >&2; exit 1;
+    }
+    case "$recovery_provider_wt" in /*) ;; *)
+      echo "REFUSED: orphan Orca recovery resolved a non-absolute worktree path" >&2; exit 1 ;;
+    esac
+    recovery_provider_real=$(CDPATH='' cd -- "$recovery_provider_wt" 2>/dev/null && pwd -P) || {
+      echo "REFUSED: orphan Orca recovery resolved an uninspectable worktree" >&2; exit 1;
+    }
+    if [ -n "$recovery_wt" ]; then
+      [ -d "$recovery_wt" ] || {
+        echo "REFUSED: orphan recovery needs the exact existing project and worktree" >&2; exit 1;
+      }
+      recovery_real=$(CDPATH='' cd -- "$recovery_wt" 2>/dev/null && pwd -P) || exit 1
+      [ "$recovery_provider_real" = "$recovery_real" ] || {
+        echo "REFUSED: orphan Orca recovery provider identity disagrees with its recorded worktree" >&2
+        exit 1
+      }
+    else
+      recovery_wt=$recovery_provider_wt
+      recovery_real=$recovery_provider_real
+    fi
+  else
+    [ -d "$recovery_wt" ] || {
+      echo "REFUSED: orphan recovery needs the exact existing project and worktree" >&2; exit 1;
+    }
+    recovery_real=$(CDPATH='' cd -- "$recovery_wt" 2>/dev/null && pwd -P) || exit 1
+  fi
   [ "$(git -C "$recovery_wt" rev-parse --show-toplevel 2>/dev/null)" = "$recovery_real" ] \
     && [ "$(cd "$recovery_project" && pwd -P)" != "$recovery_real" ] || {
       echo "REFUSED: orphan recovery worktree is not isolated" >&2; exit 1;
@@ -482,12 +522,17 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
   }
   fm_treehouse_worktree_unowned "$STATE" "$recovery_wt" "$RECOVER_FROM" || exit 1
   fm_backend_source "$recovery_backend" || exit 1
+  recovery_endpoint_verified=0
+  recovery_cwd=
   case "$recovery_backend" in
     tmux) recovery_cwd=$(fm_backend_tmux_current_path "$recovery_target" || true) ;;
     herdr) recovery_cwd=$(fm_backend_herdr_current_path "$recovery_target" || true) ;;
+    orca) recovery_endpoint_verified=1 ;;
     *) echo "REFUSED: orphan endpoint identity recovery is unverified for $recovery_backend" >&2; exit 1 ;;
   esac
-  if [ -n "$recovery_cwd" ]; then
+  if [ "$recovery_endpoint_verified" = 1 ]; then
+    :
+  elif [ -n "$recovery_cwd" ]; then
     [ "$(cd "$recovery_cwd" 2>/dev/null && pwd -P)" = "$recovery_real" ] || {
       echo "REFUSED: orphan endpoint is not in its recorded worktree" >&2; exit 1;
     }
@@ -497,6 +542,7 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
     echo "REFUSED: orphan endpoint identity is ambiguous" >&2; exit 1
     }
   fi
+  teardown_generated_worktree_files "$recovery_wt"
   # Orphan recovery has no scout/force carveout: unknown work must survive.
   recovery_dirty=$(git -C "$recovery_wt" status --porcelain --untracked-files=all --ignored) || exit 1
   [ -z "$recovery_dirty" ] || { echo "REFUSED: orphan worktree has unlanded changes" >&2; exit 1; }
@@ -505,7 +551,10 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
   [ -z "$recovery_unlanded" ] || { echo "REFUSED: orphan branch is not remote-contained" >&2; exit 1; }
   recovery_lease_id=$(fm_meta_get "$RECOVER_FROM" treehouse_lease_id)
   recovery_lease_holder=$(fm_meta_get "$RECOVER_FROM" treehouse_lease_holder)
-  if [ -n "$recovery_lease_id" ] || [ -n "$recovery_lease_holder" ]; then
+  if [ "$recovery_backend" = orca ] && [ "$recovery_cleanup" = orca ]; then
+    recovery_lease_id=
+    recovery_lease_holder=
+  elif [ -n "$recovery_lease_id" ] || [ -n "$recovery_lease_holder" ]; then
     [ -n "$recovery_lease_id" ] && [ -n "$recovery_lease_holder" ] || {
       echo "REFUSED: orphan recovery retained a partial treehouse lease identity" >&2
       exit 1
@@ -528,10 +577,14 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
 $recovery_lease_identity
 EOF
   fi
-  [ -n "$recovery_lease_id" ] && [ -n "$recovery_lease_holder" ] || {
+  if [ "$recovery_backend" = orca ] && [ "$recovery_cleanup" = orca ]; then
+    :
+  elif [ -n "$recovery_lease_id" ] && [ -n "$recovery_lease_holder" ]; then
+    :
+  else
     echo "REFUSED: orphan recovery could not prove a complete treehouse lease identity for $recovery_wt" >&2
     exit 1
-  }
+  fi
   recovery_tmp="$STATE/.$ID.meta.recover.$$"
   [ -n "$recovery_spawn_gen" ] || recovery_spawn_gen="r$(date +%s).${BASHPID:-$$}.$RANDOM"
   (umask 077; set -C; {

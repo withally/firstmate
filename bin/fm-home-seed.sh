@@ -613,7 +613,7 @@ seed_rollback_target() {
 }
 
 seed_return_treehouse_home() {
-  local home=$1 abs_home lease_id holder record_project
+  local home=$1 abs_home lease_id holder record_project record
   abs_home=$(seed_rollback_target "$home" "treehouse-acquired home") || return 0
   if ! command -v treehouse >/dev/null 2>&1; then
     echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; treehouse command not found" >&2
@@ -621,30 +621,27 @@ seed_return_treehouse_home() {
   fi
   lease_id=${SEED_TREEHOUSE_LEASE_ID:-}
   holder=${SEED_TREEHOUSE_LEASE_HOLDER:-}
-  record_project=$(seed_lease_field "$SEED_TREEHOUSE_LEASE_RECORD" project)
-  [ -n "$record_project" ] || record_project=$FM_ROOT
-  [ -n "$lease_id" ] || lease_id=$(seed_lease_field "$SEED_TREEHOUSE_LEASE_RECORD" treehouse_lease_id)
-  [ -n "$holder" ] || holder=$(seed_lease_field "$SEED_TREEHOUSE_LEASE_RECORD" treehouse_lease_holder)
+  record=${SEED_TREEHOUSE_LEASE_RECORD:-}
+  if [ -e "$record" ] || [ -L "$record" ]; then
+    if ! fm_treehouse_lease_receipt_read "$record" "$FM_ROOT" "$abs_home" "$lease_id" "$holder"; then
+      echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; durable lease receipt is malformed or disagrees with the acquisition identity" >&2
+      return 0
+    fi
+    record_project=$FM_TREEHOUSE_RECORD_PROJECT
+    lease_id=$FM_TREEHOUSE_RECORD_LEASE_ID
+    holder=$FM_TREEHOUSE_RECORD_HOLDER
+  else
+    record_project=$FM_ROOT
+  fi
   if [ -z "$lease_id" ] || [ -z "$holder" ]; then
     echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; exact lease identity is unavailable" >&2
     return 0
   fi
   if fm_treehouse_lease_return "$record_project" "$abs_home" "$lease_id" "$holder" >/dev/null; then
-    rm -f -- "$SEED_TREEHOUSE_LEASE_RECORD"
+    rm -f -- "$record"
   else
     echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; lease may still be held" >&2
   fi
-}
-
-seed_lease_field() {
-  local path=$1 key=$2 line value=
-  [ -f "$path" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "$key="*) value=${line#*=} ;;
-    esac
-  done < "$path" 2>/dev/null || true
-  printf '%s' "$value"
 }
 
 seed_write_treehouse_lease_receipt() {

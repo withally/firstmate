@@ -101,6 +101,16 @@ Stale offers for the same endpoint coalesce to the latest offer during the exist
 The drain's existing `fm_wake_print_deduped` owner likewise presents one latest stale row per endpoint while the eligible grant retains every underlying sequence for acknowledgement.
 Signal and check semantics, main-owned rows, and durable queue ownership are unchanged.
 
+## Unsafe outcome store
+
+An unsafe outcome store quarantines the branch for the current main-session generation and returns the accepted wake to the watcher's existing main-delivery path.
+The extension validates the store before a wake, before each branch shell command, and after prompt settlement; an append failure also latches quarantine immediately.
+The branch cannot compensate with synthetic task status appends or shell acknowledgements after that boundary.
+It releases the eligible-row grant and branch leases while leaving unacknowledged queue rows durable for main.
+Later offers remain on main; after main repairs the store, a new main session or reload revalidates it before branch work resumes.
+Quarantine does not repair, rewrite, acknowledge, or delete outcome history, and it does not append anything to task status logs.
+The store command owns file safety and validation; shell access remains within the existing confused-agent-grade boundary, not an adversarial sandbox for a command deliberately corrupting the store itself.
+
 ## Two-stage noise filter
 
 Stage one is unchanged: the bash watcher absorbs everything provably fine at zero token cost.

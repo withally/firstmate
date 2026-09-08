@@ -92,6 +92,10 @@
 #     of the process holding $STATE/.branch-outcomes.lock (fm-wake-drain.sh may
 #     run its redirected presentation body in a subshell on Bash 3.2); it skips
 #     the nested acquire so drain's bounded lock wait remains the deadline.
+#   fm-branch-outcome.sh validate
+#     Validate the store and both cursor bounds without producing context or
+#     advancing markers. Store and cursor paths must be regular non-symlinks
+#     when present; every command refuses special files before reading them.
 #   fm-branch-outcome.sh context
 #     Read-only recovery context: latest outcome per task (summary capped at
 #     512 characters), all unprocessed captain outcomes, and the authoritative
@@ -127,7 +131,7 @@ OUTCOME_INDEX_MAX_BYTES=512
 OUTCOME_INDEX_READY="$STATE/.branch-outcome-index-ready"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | context | list [--recent <n>] | startup-replay" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | validate | context | list [--recent <n>] | startup-replay" >&2
   exit 2
 }
 
@@ -659,7 +663,23 @@ held_lock_owned_by_ancestor() {
 CMD=${1:-}
 shift 2>/dev/null || true
 
+for OUTCOME_PATH in "$STORE" "$CURSOR" "$PROCESSED"; do
+  if [ -L "$OUTCOME_PATH" ] || { [ -e "$OUTCOME_PATH" ] && { [ ! -f "$OUTCOME_PATH" ] || [ ! -r "$OUTCOME_PATH" ]; }; }; then
+    echo "error: outcome store path is not a readable regular non-symlink file: $OUTCOME_PATH" >&2
+    exit 1
+  fi
+done
+
 case "$CMD" in
+  validate)
+    [ "$#" -eq 0 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    if ! print_unprocessed >/dev/null; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    fm_lock_release "$LOCK"
+    ;;
   append)
     TASK=''
     VERDICT=''

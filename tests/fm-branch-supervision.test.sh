@@ -14,6 +14,31 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-branch-supervision)
 fm_git_identity fmtest fmtest@example.invalid
 
+test_store_validation_refuses_unsafe_paths_and_markers() {
+  local home rc kind
+  home="$TMP_ROOT/validate-home"
+  mkdir -p "$home/state"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate || fail "empty store invalid"
+  for kind in fifo directory symlink malformed; do
+    case "$kind" in
+      fifo) mkfifo "$home/state/branch-outcomes.jsonl" ;;
+      directory) mkdir "$home/state/branch-outcomes.jsonl" ;;
+      symlink) ln -s "$home/missing" "$home/state/branch-outcomes.jsonl" ;;
+      malformed) printf 'torn' > "$home/state/branch-outcomes.jsonl" ;;
+    esac
+    FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "validation accepted $kind"
+    if [ "$kind" = directory ]; then rmdir "$home/state/branch-outcomes.jsonl"; else rm "$home/state/branch-outcomes.jsonl"; fi
+  done
+  printf '1\n' > "$home/state/.branch-outcomes-cursor"
+  if FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null 2>&1; then fail "validation accepted ahead cursor"; fi
+  printf '0\n' > "$home/state/.branch-outcomes-cursor"
+  printf '1\n' > "$home/state/.branch-outcomes-processed"
+  if FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null 2>&1; then fail "validation accepted ahead processed marker"; fi
+  pass "store validation refuses unsafe files and marker bounds without consuming outcomes"
+}
+
 test_context_rebuild_is_read_only_and_bounded() {
   local home out before rc
   home="$TMP_ROOT/context-home"
@@ -944,6 +969,7 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
   pass "the branch cannot force a teardown or bypass fm-control for a relaunch"
 }
 
+test_store_validation_refuses_unsafe_paths_and_markers
 test_context_rebuild_is_read_only_and_bounded
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads

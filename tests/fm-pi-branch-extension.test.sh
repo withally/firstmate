@@ -2710,6 +2710,48 @@ EOF
   pass "the dialog mirror re-anchors for each session's new branch conversation and stays incremental within it"
 }
 
+test_unsafe_store_refuses_branch_shell_and_preserves_status() {
+  local repo home out result
+  repo="$TMP_ROOT/unsafe-store-root"
+  home="$TMP_ROOT/unsafe-store-home"
+  mkdir -p "$home/state"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, home }; })()`);
+const { dispatch, home } = globalThis.__t;
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
+const paused = "paused: waiting for release\n";
+const held = "captain-held: review pending\n";
+writeFileSync(`${home}/state/branch-driver.status`, paused);
+writeFileSync(`${home}/state/held.status`, held);
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  // Corruption arrives after construction and claim but before the next tool.
+  writeFileSync(`${home}/state/branch-outcomes.jsonl`, "unsafe torn record");
+  const bash = session.options.customTools.find((t) => t.name === "bash");
+  let refused = false;
+  try {
+    const result = await bash.execute("backstop", { command: `echo 'working: [SUPERVISOR-BACKSTOP]' >> '${home}/state/branch-driver.status'; echo 'working: [SUPERVISOR-BACKSTOP]' >> '${home}/state/held.status'` });
+    refused = result.isError === true;
+  } catch { refused = true; }
+  if (!refused) throw new Error("unsafe store allowed a synthetic status append");
+};
+const offer = dispatch("signal: unsafe boundary");
+const failure = await offer.settlement.then(() => null, (error) => error);
+if (!failure) throw new Error("unsafe wake did not return settlement ownership to watcher");
+if (readFileSync(`${home}/state/branch-driver.status`, "utf8") !== paused || readFileSync(`${home}/state/held.status`, "utf8") !== held) throw new Error("unsafe store changed last task status line");
+if (!readFileSync(`${home}/state/.wake-queue`, "utf8").trim()) throw new Error("unsafe wake was acknowledged");
+if (existsSync(`${home}/state/.branch-eligible-rows`)) throw new Error("unsafe branch retained grant");
+if (dispatch("signal: must stay on main").accepted) throw new Error("quarantined branch accepted another wake");
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "unsafe store must preserve task declarations and return wake to main: $out"
+  pass "unsafe store quarantines shell writes, preserves held status, and returns unacknowledged wakes to main"
+}
+
 test_stale_batch_keeps_latest_offer_and_all_ack_rows() {
   local repo home out result
   repo="$TMP_ROOT/stale-batch-root"
@@ -4465,6 +4507,7 @@ test_main_owned_grant_result_falls_back_to_main
 test_branch_predrain_recheck_noops_already_drained_wake
 test_branch_mirror_filters_order_and_cursor
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation
+test_unsafe_store_refuses_branch_shell_and_preserves_status
 test_stale_batch_keeps_latest_offer_and_all_ack_rows
 test_branch_rollover_preserves_durable_decisions
 test_branch_session_is_new_at_every_main_session_start

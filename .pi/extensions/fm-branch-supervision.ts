@@ -629,6 +629,7 @@ export default function (pi: ExtensionAPI) {
   // wake rows without relying on provider text or incidental session shape.
   let durableReportRevision = 0;
   let conversationWakes = 0;
+  let unsafeOutcomeStore = "";
   const maxConversationWakes = positiveIntegerEnv("FM_BRANCH_MAX_WAKES", 16);
   // The task set the wake being handled right now may be reported on, fixed
   // deterministically from the eligible rows before a signal or stale prompt
@@ -907,6 +908,21 @@ export default function (pi: ExtensionAPI) {
       };
     } catch (error) {
       return { ok: false, stdout: "", detail: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  function quarantineOutcomeStore(detail: string): void {
+    unsafeOutcomeStore = `supervision branch quarantined: outcome store is unsafe (${detail}); main owns the wake`;
+    branchBroken = unsafeOutcomeStore;
+    providerRecovery = null;
+  }
+
+  function requireSafeOutcomeStore(): void {
+    if (unsafeOutcomeStore) throw new Error(unsafeOutcomeStore);
+    const validation = runOutcomeScript(["validate"]);
+    if (!validation.ok) {
+      quarantineOutcomeStore(validation.detail);
+      throw new Error(unsafeOutcomeStore);
     }
   }
 
@@ -1250,6 +1266,7 @@ export default function (pi: ExtensionAPI) {
         if (scopeRefusal) {
           return { content: [{ type: "text", text: scopeRefusal }], details: undefined, isError: true };
         }
+        requireSafeOutcomeStore();
         const appendArgs = verdict === "firstmate-action"
           ? ["append-action", "--task", task, "--wake-seq", wakeSeq, "--summary", summary]
           : ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
@@ -1263,6 +1280,7 @@ export default function (pi: ExtensionAPI) {
         }
         const appended = runOutcomeScript(appendArgs);
         if (!appended.ok) {
+          quarantineOutcomeStore(appended.detail);
           return {
             content: [{ type: "text", text: `outcome store append failed (nothing merged): ${appended.detail}` }],
             details: undefined,
@@ -1377,6 +1395,7 @@ export default function (pi: ExtensionAPI) {
         if (!actingAsOwner(branchGeneration)) {
           throw new Error("bash refused: supervision session was replaced or lost lock ownership");
         }
+        requireSafeOutcomeStore();
         return {
           ...context,
           // Loud accidental-override guard (captain-decided): the actor
@@ -1519,6 +1538,7 @@ ${context.command}
           throw new Error("supervision session was replaced before handling the accepted wake");
         }
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
+        requireSafeOutcomeStore();
         if (conversationWakes >= maxConversationWakes) {
           // Serialized after the preceding prompt and its durable settlement.
           // No conversation-derived summary or old mirror enters the new file.
@@ -1577,6 +1597,7 @@ ${context.command}
           wakeTaskScope = null;
           if (activeWakeContext === wakeContext) activeWakeContext = null;
         }
+        requireSafeOutcomeStore();
         const providerError = settledPromptProviderError(sessionManager, entryOffset);
         if (providerError) {
           const detail = `supervision branch provider failed after construction: ${providerError}`;
@@ -1602,6 +1623,7 @@ ${context.command}
       })
       .catch((error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
+        releaseBranchLeases(acceptedGeneration);
         throw error;
       })
       .finally(() => {
@@ -1818,6 +1840,7 @@ ${context.command}
     consecutiveProviderErrors = 0;
     providerRecovery = null;
     generation += 1;
+    unsafeOutcomeStore = "";
     conversationWakes = 0;
     mirrorCollection.collectAnchor = null;
     mirrorCollection.pendingCursor = null;

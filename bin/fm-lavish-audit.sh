@@ -2,9 +2,12 @@
 # Audit the Lavish registry against Firstmate lifecycle ownership without mutation.
 #
 # Usage:
-#   fm-lavish-audit.sh [audit] [--freeze <candidate.jsonl>]
+#   fm-lavish-audit.sh [audit] [--freeze <candidate.jsonl>] [--expiry-hours <hours>]
+#                         [--preserve-paths <file>] [--ignore-unmapped-browser]
 #   fm-lavish-audit.sh summary
 #   fm-lavish-audit.sh apply <candidate.jsonl> [--batch-size <1..50>]
+#                         [--expiry-hours <hours>] [--preserve-paths <file>]
+#                         [--ignore-unmapped-browser]
 #
 # audit is the default and classifies every registry row as preserve, eligible,
 # or ambiguous with evidence.
@@ -22,6 +25,10 @@
 # Browser/session keys that cannot be observed from the registry are accepted
 # from FM_LAVISH_ATTACHED_KEYS_FILE, one `<key><TAB><client-kind>` row per client;
 # registered and live agent poll ownership is discovered directly.
+# The default idle expiry is 48 hours.
+# A re-serve updates Lavish's updated_at, and an arm records last_polled_at in
+# the ownership ledger; an active poll remains a preserve condition regardless
+# of age.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,7 +55,9 @@ run_audit_node() {
   local mode=$1 homes_file=$2 freeze=${3-}
   AUDIT_MODE="$mode" HOMES_FILE="$homes_file" FREEZE_FILE="$freeze" \
     LAVISH_STATE_FILE="$LAVISH_STATE_FILE" ATTACHED_FILE="${FM_LAVISH_ATTACHED_KEYS_FILE:-}" \
-    LSOF_FILE="${FM_LAVISH_LSOF_FILE:-}" LAVISH_PORT="${LAVISH_AXI_PORT:-4387}" node <<'NODE'
+    LSOF_FILE="${FM_LAVISH_LSOF_FILE:-}" LAVISH_PORT="${LAVISH_AXI_PORT:-4387}" \
+    EXPIRY_HOURS="${FM_LAVISH_IDLE_EXPIRY_HOURS:-48}" PRESERVE_PATHS_FILE="${FM_LAVISH_PRESERVE_PATHS_FILE:-}" \
+    IGNORE_UNMAPPED_BROWSER="${FM_LAVISH_IGNORE_UNMAPPED_BROWSER:-0}" node <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -62,6 +71,7 @@ if (!state.sessions || typeof state.sessions !== "object" || Array.isArray(state
 const homes = fs.readFileSync(process.env.HOMES_FILE, "utf8").split("\n").filter(Boolean);
 const meta = [];
 const closed = new Set();
+const held = new Map();
 const ledgers = new Map();
 const sources = new Set();
 const decisions = new Set();
@@ -89,6 +99,9 @@ for (const home of homes) {
       for (const line of readLines(backlog)) {
         const match = line.match(/^- \[x\] ([A-Za-z0-9._-]+)(?: |$)/);
         if (match) closed.add(`${home}\0${match[1]}`);
+        const taskMatch = line.match(/^- \[[ x]\] ([A-Za-z0-9._-]+)(?: |$)/);
+        const holdMatch = line.match(/\(hold-kind: ([A-Za-z0-9._-]+)\)/);
+        if (taskMatch && holdMatch) held.set(`${home}\0${taskMatch[1]}`, holdMatch[1]);
       }
     } catch { unreadableHome = true; }
   }
@@ -113,6 +126,13 @@ for (const home of homes) {
 }
 
 const attached = new Map();
+const preservePaths = new Set();
+if (process.env.PRESERVE_PATHS_FILE) {
+  try { for (const line of readLines(process.env.PRESERVE_PATHS_FILE)) if (line) preservePaths.add(line); }
+  catch (error) { fail(`cannot read preserve-path evidence: ${error.message}`); }
+}
+const expiryHours = Number(process.env.EXPIRY_HOURS);
+if (!Number.isFinite(expiryHours) || expiryHours < 0) fail("idle expiry hours must be a non-negative number");
 if (process.env.ATTACHED_FILE) {
   try {
     for (const line of readLines(process.env.ATTACHED_FILE)) {
@@ -137,6 +157,19 @@ try {
 } catch { unreadableHome = true; }
 
 const isUnder = (file, root) => file === root || file.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+const lastActivityFor = (row, ledger) => {
+  const values = [row.updated_at, ledger?.last_polled_at].filter(Boolean).map(value => Date.parse(value)).filter(Number.isFinite);
+  return values.length ? Math.max(...values) : NaN;
+};
+const dataOwnerFor = file => {
+  for (const home of homes) {
+    const dataRoot = path.join(home,"data");
+    if (!isUnder(file,dataRoot)) continue;
+    const task = path.relative(dataRoot,file).split(path.sep)[0];
+    if (task) return {home,task};
+  }
+  return null;
+};
 const evidenceFor = row => {
   const evidence = [];
   let classification = "ambiguous";
@@ -144,6 +177,7 @@ const evidenceFor = row => {
   if (row.status === "ended") return {classification:"preserve", evidence:["historical-ended-registry-row"]};
   const exists = fs.existsSync(row.file);
   if (!exists) return {classification:"ambiguous", evidence:["unsupported-by-current-Lavish","artifact-missing"]};
+  if ([...preservePaths].some(item => row.file === item || (item.endsWith(path.sep) && row.file.startsWith(item)))) return {classification:"preserve",evidence:["captain-preserve-path"]};
   const sid = sourceId(row.file);
   if (row.status === "feedback" || Number(row.pending_prompts || 0) > 0 || (row.prompts || []).length > 0) evidence.push("feedback-or-pending-prompts");
   if ((row.pending_deliveries || []).length > 0 || unacked.has(sid)) evidence.push("unacknowledged-delivery");
@@ -158,35 +192,38 @@ const evidenceFor = row => {
     const live = meta.some(owner => owner.home === ledgerHome && owner.task === ledger.task_id);
     if (live) evidence.push(`ledger-live-task:${ledger.task_id}`);
   }
+  const dataOwner = dataOwnerFor(row.file);
+  const heldKey = ledger ? `${ledger.home}\0${ledger.task_id}` : dataOwner ? `${dataOwner.home}\0${dataOwner.task}` : "";
+  if (heldKey && held.has(heldKey)) evidence.push(`retained-backlog-hold:${held.get(heldKey)}`);
   if ((row.layout_warnings || []).length > 0 || row.layout_warnings_pending || row.layout_warning_repair_open) evidence.push("unresolved-layout-warning-repair");
   if (evidence.length) return {classification:"preserve",evidence};
 
   if (row.file.includes(`${path.sep}.treehouse${path.sep}`)) return {classification:"preserve",evidence:["retained-worktree-file"]};
 
+  const lastActivity = lastActivityFor(row, ledger);
+  const expired = Number.isFinite(lastActivity) && Date.now() - lastActivity >= expiryHours * 60 * 60 * 1000;
+  if (expired && browserConnections > 0 && process.env.IGNORE_UNMAPPED_BROWSER !== "1") return {classification:"ambiguous",evidence:[`idle-expired:${expiryHours}h`,`unmapped-browser-connections:${browserConnections}`]};
+  if (expired) return {classification:"eligible",evidence:[`idle-expired:${expiryHours}h`,"existing-artifact","no-review-owner-or-client"]};
+
   let closedOwner = null;
   if (ledger && closed.has(`${ledger.home}\0${ledger.task_id}`)) closedOwner = `${ledger.home}:${ledger.task_id}`;
-  if (!closedOwner) {
-    for (const home of homes) {
-      const dataRoot = path.join(home,"data");
-      if (!isUnder(row.file,dataRoot)) continue;
-      const rel = path.relative(dataRoot,row.file);
-      const task = rel.split(path.sep)[0];
-      if (task && closed.has(`${home}\0${task}`)) { closedOwner = `${home}:${task}`; break; }
-    }
-  }
+  if (!closedOwner && dataOwner && closed.has(`${dataOwner.home}\0${dataOwner.task}`)) closedOwner = `${dataOwner.home}:${dataOwner.task}`;
   if (closedOwner && unreadableHome) return {classification:"ambiguous",evidence:[`closed-task:${closedOwner}`,"ownership-incomplete-unreadable-home"]};
-  if (closedOwner && row.status === "open" && browserConnections > 0) return {classification:"ambiguous",evidence:[`closed-task:${closedOwner}`,`unmapped-browser-connections:${browserConnections}`]};
+  if (closedOwner && row.status === "open" && browserConnections > 0 && process.env.IGNORE_UNMAPPED_BROWSER !== "1") return {classification:"ambiguous",evidence:[`closed-task:${closedOwner}`,`unmapped-browser-connections:${browserConnections}`]};
   if (closedOwner && row.status === "open") return {classification:"eligible",evidence:[`closed-task:${closedOwner}`,"existing-artifact","no-review-owner-or-client"]};
   if (unreadableHome) return {classification:"ambiguous",evidence:["ownership-incomplete-unreadable-home"]};
   return {classification:"ambiguous",evidence:["no-positive-closed-task-owner"]};
 };
 
 const rows = Object.values(state.sessions).sort((a,b) => String(a.key).localeCompare(String(b.key)));
-const counts = {total:rows.length,open:0,feedback:0,ended:0,missing_file:0,with_live_task:0,without_live_task:0,active_poll_registrations:activePollRegistrations,attached_clients:attached.size,unmapped_browser_connections:browserConnections};
+const counts = {total:rows.length,open:0,feedback:0,ended:0,missing_file:0,past_expiry:0,with_live_task:0,without_live_task:0,active_poll_registrations:activePollRegistrations,attached_clients:attached.size,unmapped_browser_connections:browserConnections};
 const eligible = [];
 for (const row of rows) {
   if (["open","feedback","ended"].includes(row.status)) counts[row.status]++;
   if (row.status !== "ended" && !fs.existsSync(row.file || "")) counts.missing_file++;
+  const ledger = ledgers.get(row.key);
+  const lastActivity = lastActivityFor(row, ledger);
+  if (row.status === "open" && Number.isFinite(lastActivity) && Date.now() - lastActivity >= expiryHours * 60 * 60 * 1000) counts.past_expiry++;
   const live = meta.some(owner => owner.worktree && row.file && isUnder(row.file, owner.worktree));
   if (row.status !== "ended") counts[live ? "with_live_task" : "without_live_task"]++;
   const verdict = evidenceFor(row);
@@ -194,7 +231,7 @@ for (const row of rows) {
   if (process.env.AUDIT_MODE === "audit") process.stdout.write(`${verdict.classification}\t${row.key}\t${verdict.evidence.join(",")}\t${row.file || "<missing-file-field>"}\n`);
 }
 if (process.env.AUDIT_MODE === "summary") {
-  process.stdout.write(`Lavish registry rows: total=${counts.total} open=${counts.open} feedback=${counts.feedback} ended=${counts.ended} missing_file=${counts.missing_file} with_live_task=${counts.with_live_task} without_live_task=${counts.without_live_task}; live connections: attached_clients=${counts.attached_clients} unmapped_browser_connections=${counts.unmapped_browser_connections}; active_poll_registrations=${counts.active_poll_registrations}\n`);
+  process.stdout.write(`Lavish registry rows: total=${counts.total} open=${counts.open} feedback=${counts.feedback} ended=${counts.ended} missing_file=${counts.missing_file} past_expiry=${counts.past_expiry} expiry_hours=${expiryHours} with_live_task=${counts.with_live_task} without_live_task=${counts.without_live_task}; live connections: attached_clients=${counts.attached_clients} unmapped_browser_connections=${counts.unmapped_browser_connections}; active_poll_registrations=${counts.active_poll_registrations}\n`);
 }
 if (process.env.FREEZE_FILE) {
   const dir = path.dirname(process.env.FREEZE_FILE);
@@ -207,10 +244,13 @@ NODE
 }
 
 cmd_audit() {
-  local freeze='' homes
+  local freeze='' homes expiry=48 preserve_paths='' ignore_browser=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --freeze) [ "$#" -ge 2 ] || usage; freeze=$2; shift 2 ;;
+      --expiry-hours) [ "$#" -ge 2 ] || usage; expiry=$2; shift 2 ;;
+      --preserve-paths) [ "$#" -ge 2 ] || usage; preserve_paths=$2; shift 2 ;;
+      --ignore-unmapped-browser) ignore_browser=1; shift ;;
       *) usage ;;
     esac
   done
@@ -218,7 +258,8 @@ cmd_audit() {
   # shellcheck disable=SC2064 # Expand the function-local path while it is in scope.
   trap "rm -f -- '$homes'" EXIT
   make_homes_file "$homes"
-  run_audit_node audit "$homes" "$freeze"
+  FM_LAVISH_IDLE_EXPIRY_HOURS="$expiry" FM_LAVISH_PRESERVE_PATHS_FILE="$preserve_paths" \
+    FM_LAVISH_IGNORE_UNMAPPED_BROWSER="$ignore_browser" run_audit_node audit "$homes" "$freeze"
 }
 
 cmd_summary() {
@@ -240,12 +281,15 @@ count_registry() {
 }
 
 cmd_apply() {
-  local candidate=${1-} batch=10 processed=0 line key file expected_status expected_updated current verdict homes audit_output
+  local candidate=${1-} batch=10 processed=0 line key file expected_status expected_updated current verdict homes audit_output expiry=48 preserve_paths='' ignore_browser=0
   [ -n "$candidate" ] || usage
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --batch-size) [ "$#" -ge 2 ] || usage; batch=$2; shift 2 ;;
+      --expiry-hours) [ "$#" -ge 2 ] || usage; expiry=$2; shift 2 ;;
+      --preserve-paths) [ "$#" -ge 2 ] || usage; preserve_paths=$2; shift 2 ;;
+      --ignore-unmapped-browser) ignore_browser=1; shift ;;
       *) usage ;;
     esac
   done
@@ -266,7 +310,9 @@ EOF
       || die "frozen candidate key is absent: $key"
     [ "$current" = "$file"$'\t'"$expected_status"$'\t'"$expected_updated" ] \
       || die "frozen candidate changed since audit: $key"
-    audit_output=$(run_audit_node audit "$homes") || die "could not reclassify frozen candidate: $key"
+    audit_output=$(FM_LAVISH_IDLE_EXPIRY_HOURS="$expiry" FM_LAVISH_PRESERVE_PATHS_FILE="$preserve_paths" \
+      FM_LAVISH_IGNORE_UNMAPPED_BROWSER="$ignore_browser" run_audit_node audit "$homes") \
+      || die "could not reclassify frozen candidate: $key"
     verdict=$(printf '%s\n' "$audit_output" | awk -F '\t' -v key="$key" '$2 == key {print $1; exit}')
     [ "$verdict" = eligible ] || die "frozen candidate is no longer eligible: $key ($verdict)"
     [ -f "$file" ] && [ ! -L "$file" ] || die "unsupported-by-current-Lavish: $key $file"

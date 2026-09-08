@@ -85,6 +85,7 @@ const row = {
   key: session.key,
   url: session.url,
   created_at: prior?.created_at || new Date().toISOString(),
+  last_polled_at: new Date().toISOString(),
   disposition: process.env.DISPOSITION,
 };
 const next = rows.filter(item => item.key !== session.key);

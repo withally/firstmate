@@ -105,14 +105,18 @@ ELIGIBLE="$AUDIT_HOME/data/closed-task/board.html"
 AMBIGUOUS="$TMP_ROOT/audit/unowned.html"
 MISSING="$AUDIT_HOME/data/closed-task/missing.html"
 FEEDBACK="$TMP_ROOT/audit/feedback.html"
-mkdir -p "$(dirname "$CURRENT")"
-printf x > "$CURRENT"; printf x > "$ELIGIBLE"; printf x > "$AMBIGUOUS"; printf x > "$FEEDBACK"
+HELD="$AUDIT_HOME/data/held-task/board.html"
+EXPIRED="$TMP_ROOT/audit/expired.html"
+EXPIRED_WORKTREE="$TMP_ROOT/.treehouse/example/expired.html"
+mkdir -p "$(dirname "$CURRENT")" "$(dirname "$HELD")"
+mkdir -p "$(dirname "$EXPIRED_WORKTREE")"
+printf x > "$CURRENT"; printf x > "$ELIGIBLE"; printf x > "$AMBIGUOUS"; printf x > "$FEEDBACK"; printf x > "$HELD"; printf x > "$EXPIRED"; printf x > "$EXPIRED_WORKTREE"
 cat > "$AUDIT_HOME/state/current-task.meta" <<EOF
 worktree=$TMP_ROOT/audit/current
 kind=ship
 EOF
-printf '%s\n' '- [x] closed-task - closed (repo: example) (kind: task)' > "$AUDIT_HOME/data/backlog.md"
-CURRENT="$CURRENT" ELIGIBLE="$ELIGIBLE" AMBIGUOUS="$AMBIGUOUS" MISSING="$MISSING" FEEDBACK="$FEEDBACK" node <<'NODE' > "$AUDIT_STATE/state.json"
+printf '%s\n' '- [x] closed-task - closed (repo: example) (kind: task)' '- [x] held-task - retained review (repo: example) (kind: task) (hold: keep) (hold-kind: parked)' > "$AUDIT_HOME/data/backlog.md"
+CURRENT="$CURRENT" ELIGIBLE="$ELIGIBLE" AMBIGUOUS="$AMBIGUOUS" MISSING="$MISSING" FEEDBACK="$FEEDBACK" HELD="$HELD" EXPIRED="$EXPIRED" EXPIRED_WORKTREE="$EXPIRED_WORKTREE" node <<'NODE' > "$AUDIT_STATE/state.json"
 const fs = require("node:fs");
 const rows = [
   ["current", process.env.CURRENT, "open", 0],
@@ -120,9 +124,12 @@ const rows = [
   ["ambiguous", process.env.AMBIGUOUS, "open", 0],
   ["missing", process.env.MISSING, "open", 0],
   ["feedback", process.env.FEEDBACK, "feedback", 1],
+  ["held", process.env.HELD, "open", 0],
+  ["expired", process.env.EXPIRED, "open", 0],
+  ["expired-worktree", process.env.EXPIRED_WORKTREE, "open", 0],
 ];
 const sessions = {};
-for (const [key,file,status,pending_prompts] of rows) sessions[key] = {key,file:fs.existsSync(file)?fs.realpathSync(file):file,url:`http://127.0.0.1:4387/session/${key}`,status,pending_prompts,prompts:pending_prompts?[{tag:"message"}]:[],chat:[],updated_at:"2026-09-08T00:00:00.000Z"};
+for (const [key,file,status,pending_prompts] of rows) sessions[key] = {key,file:fs.existsSync(file)?fs.realpathSync(file):file,url:`http://127.0.0.1:4387/session/${key}`,status,pending_prompts,prompts:pending_prompts?[{tag:"message"}]:[],chat:[],updated_at:key.startsWith("expired")?"2020-01-01T00:00:00.000Z":new Date().toISOString()};
 process.stdout.write(JSON.stringify({sessions}, null, 2));
 NODE
 
@@ -134,7 +141,10 @@ assert_contains "$OUT" $'eligible\teligible\t' "positively closed task is eligib
 assert_contains "$OUT" $'ambiguous\tambiguous\t' "unowned session remains ambiguous"
 assert_contains "$OUT" $'ambiguous\tmissing\tunsupported-by-current-Lavish' "missing artifact is unsupported"
 assert_contains "$OUT" $'preserve\tfeedback\t' "pending feedback is preserved"
-[ "$(wc -l < "$FREEZE" | tr -d ' ')" = 1 ] || fail "freeze did not contain exactly the eligible session"
+assert_contains "$OUT" $'preserve\theld\tretained-backlog-hold:parked' "retained backlog hold is preserved"
+assert_contains "$OUT" $'eligible\texpired\tidle-expired:48h' "48-hour idle session is eligible"
+assert_contains "$OUT" $'preserve\texpired-worktree\tretained-worktree-file' "retained worktree wins over idle expiry"
+[ "$(wc -l < "$FREEZE" | tr -d ' ')" = 2 ] || fail "freeze did not contain exactly the eligible sessions"
 assert_grep '"key":"eligible"' "$FREEZE" "freeze contains the eligible key"
 pass "audit classifies every isolated registry row conservatively and freezes only eligible rows"
 
@@ -147,11 +157,12 @@ PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE"
 pass "apply ends only frozen eligible sessions and verifies the transition"
 
 SUMMARY=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" "$ROOT/bin/fm-lavish-audit.sh" summary)
-assert_contains "$SUMMARY" 'total=5' "summary counts total registry rows"
-assert_contains "$SUMMARY" 'open=3' "summary counts open registry rows after apply"
+assert_contains "$SUMMARY" 'total=8' "summary counts total registry rows"
+assert_contains "$SUMMARY" 'open=5' "summary counts open registry rows after apply"
 assert_contains "$SUMMARY" 'feedback=1' "summary counts feedback rows"
-assert_contains "$SUMMARY" 'ended=1' "summary counts ended rows"
+assert_contains "$SUMMARY" 'ended=2' "summary counts ended rows"
 assert_contains "$SUMMARY" 'missing_file=1' "summary counts open missing-file rows"
+assert_contains "$SUMMARY" 'past_expiry=1' "summary counts expired preserved rows after apply"
 pass "summary distinguishes registry counts from live connections"
 
 fm_test_cleanup

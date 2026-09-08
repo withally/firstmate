@@ -3025,7 +3025,7 @@ EOF
 
 test_treehouse_identity_requires_authoritative_tuple_and_listing() {
   local variant case_dir out rc
-  for variant in split malformed; do
+  for variant in split malformed unknown relative; do
     case_dir=$(make_case "lease-identity-$variant")
     write_meta "$case_dir" no-mistakes ship
     cat > "$case_dir/fakebin/treehouse" <<SH
@@ -3037,6 +3037,12 @@ if [ "\${1:-}" = status ]; then
       ;;
     malformed)
       printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/other-wt","status":"leased"}]'
+      ;;
+    unknown)
+      printf '%s\n' '[{"path":"$case_dir/wt","status":"corrupt","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+      ;;
+    relative)
+      printf '%s\n' '[{"path":"relative/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
       ;;
   esac
   exit 0
@@ -3076,29 +3082,41 @@ test_backlog_identity_pair_requires_project() {
 }
 
 test_retirement_replay_rejects_malformed_pool_listing() {
-  local case_dir out rc
-  case_dir=$(make_case retirement-malformed-listing)
-  write_meta "$case_dir" no-mistakes ship
-  cp "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.retiring"
-  rm "$case_dir/state/task-x1.meta"
-  cat > "$case_dir/fakebin/treehouse" <<SH
+  local variant case_dir out rc
+  for variant in malformed unknown relative; do
+    case_dir=$(make_case "retirement-$variant-listing")
+    write_meta "$case_dir" no-mistakes ship
+    cp "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.retiring"
+    rm "$case_dir/state/task-x1.meta"
+    cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = status ]; then
-  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/other-wt","status":"leased"}]'
+  case "$variant" in
+    malformed)
+      printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/other-wt","status":"leased"}]'
+      ;;
+    unknown)
+      printf '%s\n' '[{"path":"$case_dir/wt","status":"corrupt","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+      ;;
+    relative)
+      printf '%s\n' '[{"path":"relative/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+      ;;
+  esac
   exit 0
 fi
 if [ "\${1:-}" = return ]; then
   printf '%s\n' "\$*" > "$case_dir/return.log"
   exit 0
 fi
-exit 0
+  exit 0
 SH
-  chmod +x "$case_dir/fakebin/treehouse"
-  rc=0
-  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "retirement replay accepted a malformed pool listing"
-  [ -f "$case_dir/state/task-x1.retiring" ] || fail "malformed replay removed its transaction record"
-  [ ! -e "$case_dir/return.log" ] || fail "malformed replay attempted a provider return"
+    chmod +x "$case_dir/fakebin/treehouse"
+    rc=0
+    out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "$variant retirement replay accepted a malformed pool listing"
+    [ -f "$case_dir/state/task-x1.retiring" ] || fail "$variant replay removed its transaction record"
+    [ ! -e "$case_dir/return.log" ] || fail "$variant replay attempted a provider return"
+  done
   pass "retirement replay retains evidence until pool release is authoritative"
 }
 

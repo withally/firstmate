@@ -82,10 +82,13 @@ fm_treehouse_pool_listing() { # <project>
     type == "array" and all(.[];
       type == "object" and
       (.path | type) == "string" and (.path | length) > 0 and
-      (.status | type) == "string" and
-      (.status != "leased" or
-        ((.lease_id | type) == "string" and (.lease_id | length) > 0 and
-         (.lease_holder | type) == "string" and (.lease_holder | length) > 0)))
+      (.path | startswith("/")) and
+      ((.status == "available" and
+        ((.lease_id // "") | type) == "string" and (.lease_id // "") == "" and
+        ((.lease_holder // "") | type) == "string" and (.lease_holder // "") == "") or
+       (.status == "leased" and
+        (.lease_id | type) == "string" and (.lease_id | length) > 0 and
+        (.lease_holder | type) == "string" and (.lease_holder | length) > 0)))
   ' >/dev/null
 }
 

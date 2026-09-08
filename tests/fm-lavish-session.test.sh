@@ -84,8 +84,21 @@ jq -s -e 'any(.[]; .key == "durable" and .disposition == "durable-review")' "$LE
   || fail "safe-park did not record the durable ownership binding"
 pass "safe-park verifies the durable replacement before ending the superseded session"
 
+DURABLE_SOURCE_ID=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$DURABLE")
+mkdir -p "$HOME_DIR/state/decision-bindings"
+printf 'schema=fm-decision-binding.v1\norigin=(any)\n' > "$HOME_DIR/state/decision-bindings/$DURABLE_SOURCE_ID.origin"
+if PATH="$FAKE_BIN:$PATH" FM_HOME="$HOME_DIR" LAVISH_AXI_STATE_DIR="$STATE_DIR" \
+  "$ROOT/bin/fm-lavish-session.sh" end task-one "$DURABLE" >/dev/null 2>&1; then
+  fail "durable end ignored an open decision binding"
+fi
+[ "$(jq -r '.sessions.durable.status' "$STATE_DIR/state.json")" = open ] \
+  || fail "refused durable end still changed the session"
+pass "durable end refuses while a captain review binding remains open"
+
 AUDIT_HOME="$TMP_ROOT/audit-home"
 AUDIT_STATE="$TMP_ROOT/audit-lavish"
+LSOF_FILE="$TMP_ROOT/empty-lsof"
+: > "$LSOF_FILE"
 mkdir -p "$AUDIT_HOME/state/procevent" "$AUDIT_HOME/data/closed-task" "$AUDIT_STATE" "$TMP_ROOT/audit"
 CURRENT="$TMP_ROOT/audit/current/board.html"
 ELIGIBLE="$AUDIT_HOME/data/closed-task/board.html"
@@ -114,7 +127,7 @@ process.stdout.write(JSON.stringify({sessions}, null, 2));
 NODE
 
 FREEZE="$TMP_ROOT/candidates.jsonl"
-OUT=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" \
+OUT=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
   "$ROOT/bin/fm-lavish-audit.sh" audit --freeze "$FREEZE")
 assert_contains "$OUT" $'preserve\tcurrent\t' "current task ownership is preserved"
 assert_contains "$OUT" $'eligible\teligible\t' "positively closed task is eligible"
@@ -125,7 +138,7 @@ assert_contains "$OUT" $'preserve\tfeedback\t' "pending feedback is preserved"
 assert_grep '"key":"eligible"' "$FREEZE" "freeze contains the eligible key"
 pass "audit classifies every isolated registry row conservatively and freezes only eligible rows"
 
-PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" \
+PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
   "$ROOT/bin/fm-lavish-audit.sh" apply "$FREEZE" --batch-size 1 >/dev/null
 [ "$(jq -r '.sessions.eligible.status' "$AUDIT_STATE/state.json")" = ended ] \
   || fail "apply did not end its frozen eligible session"
@@ -133,7 +146,7 @@ PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE"
   || fail "apply changed an ambiguous session"
 pass "apply ends only frozen eligible sessions and verifies the transition"
 
-SUMMARY=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" "$ROOT/bin/fm-lavish-audit.sh" summary)
+SUMMARY=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" "$ROOT/bin/fm-lavish-audit.sh" summary)
 assert_contains "$SUMMARY" 'total=5' "summary counts total registry rows"
 assert_contains "$SUMMARY" 'open=3' "summary counts open registry rows after apply"
 assert_contains "$SUMMARY" 'feedback=1' "summary counts feedback rows"

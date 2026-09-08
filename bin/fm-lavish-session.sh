@@ -192,28 +192,61 @@ for (const line of fs.readFileSync(process.env.LEDGER, "utf8").split("\n")) {
   const row = JSON.parse(line);
   if (row.ended_at) continue;
   if (process.env.DISPOSITION && row.disposition !== process.env.DISPOSITION) continue;
-  process.stdout.write(`${row.artifact}\t${row.key}\n`);
+  process.stdout.write(`${row.artifact}\t${row.key}\t${row.disposition}\n`);
 }
 NODE
 }
 
+guard_durable_end() {
+  local task=$1 real=$2 key=$3 source_id result hold_status=0 session_json
+  source_id=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$real") || return 1
+  [ ! -e "$STATE/procevent/$source_id.source" ] \
+    || die "durable Lavish review still has a registered process-event source: $source_id"
+  [ ! -e "$STATE/decision-bindings/$source_id.origin" ] \
+    || die "durable Lavish review still has an open decision binding: $source_id"
+  for result in "$STATE/procevent-inbox/$source_id".*.result; do
+    [ -e "$result" ] || continue
+    [ -e "${result%.result}.handled" ] \
+      || die "durable Lavish review still has an unacknowledged delivery: $source_id"
+  done
+  session_json=$(session_json_for_file "$real") || return 1
+  SESSION_JSON="$session_json" KEY="$key" node <<'NODE' \
+    || die "durable Lavish review still has feedback, prompts, or unresolved layout warnings: $key"
+const row = JSON.parse(process.env.SESSION_JSON);
+if (row.key !== process.env.KEY || row.status !== "open") process.exit(1);
+if (Number(row.pending_prompts || 0) > 0 || (row.prompts || []).length > 0 || (row.layout_warnings || []).length > 0) process.exit(1);
+NODE
+  if [ -f "$FM_HOME/data/backlog.md" ] && command -v tasks-axi >/dev/null 2>&1; then
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-captain-hold.sh" open "$task" >/dev/null 2>&1 || hold_status=$?
+    case "$hold_status" in
+      0) die "durable Lavish review belongs to a task still held for the captain: $task" ;;
+      1) ;;
+      *) die "cannot determine whether task $task is still held for the captain" ;;
+    esac
+  fi
+}
+
 cmd_end() {
-  local task=${1-} artifact=${2-} real row key
+  local task=${1-} artifact=${2-} real row key disposition
   [ "$#" -eq 2 ] || usage
   validate_task_id "$task"
   real=$(canonical_file "$artifact")
   row=$(ledger_rows "$task" | awk -F '\t' -v file="$real" '$1 == file { print; exit }')
   [ -n "$row" ] || die "artifact is not an active recorded session for task $task: $real"
-  key=${row#*$'\t'}
+  key=${row#*$'\t'}; key=${key%%$'\t'*}
+  disposition=${row##*$'\t'}
+  if [ "$disposition" = durable-review ]; then
+    guard_durable_end "$task" "$real" "$key"
+  fi
   end_recorded_file "$task" "$real" "$key"
 }
 
 cmd_end_ephemeral() {
-  local task=${1-} rows real key
+  local task=${1-} rows real key disposition
   [ "$#" -eq 1 ] || usage
   validate_task_id "$task"
   rows=$(ledger_rows "$task" ephemeral-worktree) || die "cannot read the Lavish ledger for $task"
-  while IFS=$'\t' read -r real key; do
+  while IFS=$'\t' read -r real key disposition; do
     [ -n "$real" ] || continue
     end_recorded_file "$task" "$real" "$key" || exit 1
   done <<EOF
@@ -260,7 +293,11 @@ cmd_safe_park() {
   fi
   if [ -f "$STATE/decision-bindings/$old_id.origin" ]; then
     origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$old_id") || die "cannot read the old decision binding"
-    "$SCRIPT_DIR/fm-captain-hold.sh" bind "$new_id" "$origin" >/dev/null || exit 1
+    if [ "$origin" = '(any)' ]; then
+      "$SCRIPT_DIR/fm-captain-hold.sh" bind "$new_id" --any-origin >/dev/null || exit 1
+    else
+      "$SCRIPT_DIR/fm-captain-hold.sh" bind "$new_id" "$origin" >/dev/null || exit 1
+    fi
   fi
   if [ -f "$STATE/procevent/$old_id.source" ]; then
     "$SCRIPT_DIR/fm-procevent-lavish.sh" retire "$source_real" >/dev/null || exit 1

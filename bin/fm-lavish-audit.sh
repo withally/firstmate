@@ -47,7 +47,8 @@ make_homes_file() {
 run_audit_node() {
   local mode=$1 homes_file=$2 freeze=${3-}
   AUDIT_MODE="$mode" HOMES_FILE="$homes_file" FREEZE_FILE="$freeze" \
-    LAVISH_STATE_FILE="$LAVISH_STATE_FILE" ATTACHED_FILE="${FM_LAVISH_ATTACHED_KEYS_FILE:-}" node <<'NODE'
+    LAVISH_STATE_FILE="$LAVISH_STATE_FILE" ATTACHED_FILE="${FM_LAVISH_ATTACHED_KEYS_FILE:-}" \
+    LSOF_FILE="${FM_LAVISH_LSOF_FILE:-}" LAVISH_PORT="${LAVISH_AXI_PORT:-4387}" node <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -121,6 +122,13 @@ if (process.env.ATTACHED_FILE) {
     }
   } catch (error) { fail(`cannot read attached-client evidence: ${error.message}`); }
 }
+let browserConnections = 0;
+try {
+  const lsof = process.env.LSOF_FILE
+    ? fs.readFileSync(process.env.LSOF_FILE,"utf8")
+    : cp.execFileSync("lsof", ["-nP", `-iTCP:${process.env.LAVISH_PORT}`, "-sTCP:ESTABLISHED"], {encoding:"utf8"});
+  browserConnections = lsof.split("\n").filter(line => /^(Google|Chromium|Chrome)\s/.test(line)).length;
+} catch { unreadableHome = true; }
 try {
   const ps = cp.execFileSync("ps", ["-axo", "command="], {encoding:"utf8"});
   for (const row of Object.values(state.sessions)) {
@@ -150,7 +158,7 @@ const evidenceFor = row => {
     const live = meta.some(owner => owner.home === ledgerHome && owner.task === ledger.task_id);
     if (live) evidence.push(`ledger-live-task:${ledger.task_id}`);
   }
-  if (row.layout_warnings_pending || row.layout_warning_repair_open) evidence.push("unresolved-layout-warning-repair");
+  if ((row.layout_warnings || []).length > 0 || row.layout_warnings_pending || row.layout_warning_repair_open) evidence.push("unresolved-layout-warning-repair");
   if (evidence.length) return {classification:"preserve",evidence};
 
   if (row.file.includes(`${path.sep}.treehouse${path.sep}`)) return {classification:"preserve",evidence:["retained-worktree-file"]};
@@ -166,13 +174,15 @@ const evidenceFor = row => {
       if (task && closed.has(`${home}\0${task}`)) { closedOwner = `${home}:${task}`; break; }
     }
   }
+  if (closedOwner && unreadableHome) return {classification:"ambiguous",evidence:[`closed-task:${closedOwner}`,"ownership-incomplete-unreadable-home"]};
+  if (closedOwner && row.status === "open" && browserConnections > 0) return {classification:"ambiguous",evidence:[`closed-task:${closedOwner}`,`unmapped-browser-connections:${browserConnections}`]};
   if (closedOwner && row.status === "open") return {classification:"eligible",evidence:[`closed-task:${closedOwner}`,"existing-artifact","no-review-owner-or-client"]};
   if (unreadableHome) return {classification:"ambiguous",evidence:["ownership-incomplete-unreadable-home"]};
   return {classification:"ambiguous",evidence:["no-positive-closed-task-owner"]};
 };
 
 const rows = Object.values(state.sessions).sort((a,b) => String(a.key).localeCompare(String(b.key)));
-const counts = {total:rows.length,open:0,feedback:0,ended:0,missing_file:0,with_live_task:0,without_live_task:0,active_poll_registrations:activePollRegistrations,attached_clients:attached.size};
+const counts = {total:rows.length,open:0,feedback:0,ended:0,missing_file:0,with_live_task:0,without_live_task:0,active_poll_registrations:activePollRegistrations,attached_clients:attached.size,unmapped_browser_connections:browserConnections};
 const eligible = [];
 for (const row of rows) {
   if (["open","feedback","ended"].includes(row.status)) counts[row.status]++;
@@ -184,7 +194,7 @@ for (const row of rows) {
   if (process.env.AUDIT_MODE === "audit") process.stdout.write(`${verdict.classification}\t${row.key}\t${verdict.evidence.join(",")}\t${row.file || "<missing-file-field>"}\n`);
 }
 if (process.env.AUDIT_MODE === "summary") {
-  process.stdout.write(`Lavish registry rows: total=${counts.total} open=${counts.open} feedback=${counts.feedback} ended=${counts.ended} missing_file=${counts.missing_file} with_live_task=${counts.with_live_task} without_live_task=${counts.without_live_task}; live connections: attached_clients=${counts.attached_clients}; active_poll_registrations=${counts.active_poll_registrations}\n`);
+  process.stdout.write(`Lavish registry rows: total=${counts.total} open=${counts.open} feedback=${counts.feedback} ended=${counts.ended} missing_file=${counts.missing_file} with_live_task=${counts.with_live_task} without_live_task=${counts.without_live_task}; live connections: attached_clients=${counts.attached_clients} unmapped_browser_connections=${counts.unmapped_browser_connections}; active_poll_registrations=${counts.active_poll_registrations}\n`);
 }
 if (process.env.FREEZE_FILE) {
   const dir = path.dirname(process.env.FREEZE_FILE);
@@ -230,7 +240,7 @@ count_registry() {
 }
 
 cmd_apply() {
-  local candidate=${1-} batch=10 processed=0 line key file expected_status expected_updated current verdict homes
+  local candidate=${1-} batch=10 processed=0 line key file expected_status expected_updated current verdict homes audit_output
   [ -n "$candidate" ] || usage
   shift
   while [ "$#" -gt 0 ]; do
@@ -256,7 +266,8 @@ EOF
       || die "frozen candidate key is absent: $key"
     [ "$current" = "$file"$'\t'"$expected_status"$'\t'"$expected_updated" ] \
       || die "frozen candidate changed since audit: $key"
-    verdict=$(run_audit_node audit "$homes" | awk -F '\t' -v key="$key" '$2 == key {print $1; exit}')
+    audit_output=$(run_audit_node audit "$homes") || die "could not reclassify frozen candidate: $key"
+    verdict=$(printf '%s\n' "$audit_output" | awk -F '\t' -v key="$key" '$2 == key {print $1; exit}')
     [ "$verdict" = eligible ] || die "frozen candidate is no longer eligible: $key ($verdict)"
     [ -f "$file" ] && [ ! -L "$file" ] || die "unsupported-by-current-Lavish: $key $file"
     command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"

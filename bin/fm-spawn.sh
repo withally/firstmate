@@ -883,7 +883,7 @@ spawn_abort_preserve_meta() {
     esac
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null || true
-  mv -f -- "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
+  fm_backlog_record_publish "$tmp" "$meta" "task record" "$STATE" || { rm -f "$tmp"; return 1; }
 }
 
 spawn_abort_return_worktree() {
@@ -2104,6 +2104,10 @@ real_path_or_raw() {  # <path>
     printf '%s\n' "$path"
   fi
 }
+
+if [ "$RELAUNCH" -eq 0 ]; then
+  fm_backlog_record_remove "$STATE/$ID.retired" "retirement receipt" "$STATE" || exit 1
+fi
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);

@@ -457,6 +457,10 @@ fm_backlog_record_parent_authorized() {
 fm_backlog_record_present() {
   local path=$1 label=${2:-record} root=$3
   fm_backlog_record_parent_authorized "$path" "$label" "$root" || return 1
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    FM_BACKLOG_TRANSITION_ERROR="$label is absent at $path"
+    return 1
+  fi
   if [ ! -f "$path" ]; then
     FM_BACKLOG_TRANSITION_ERROR="$label is not a regular file at $path"
     return 1
@@ -478,11 +482,27 @@ fm_backlog_record_remove() {
 }
 
 fm_backlog_record_publish() {
-  local source=$1 target=$2 label=$3 root=$4
+  local source=$1 target=$2 label=$3 root=$4 recovery_tmp
   fm_backlog_record_present "$source" "$label staged record" "$root" || return 1
   fm_backlog_record_parent_authorized "$target" "$label target" "$root" || return 1
   if [ -e "$target" ] || [ -L "$target" ]; then
     fm_backlog_record_present "$target" "$label target" "$root" || return 1
+  fi
+  if [ "$label" = "task record" ]; then
+    case "$target" in
+      *.meta)
+        fm_backlog_record_parent_authorized "$target.recovery" "task recovery record" "$root" || return 1
+        if [ -e "$target.recovery" ] || [ -L "$target.recovery" ]; then
+          fm_backlog_record_present "$target.recovery" "task recovery record" "$root" || return 1
+        fi
+        recovery_tmp=$(mktemp "$root/.task-recovery.XXXXXX") || return 1
+        if ! (umask 077; cat "$source" > "$recovery_tmp" && mv -f "$recovery_tmp" "$target.recovery"); then
+          rm -f "$recovery_tmp"
+          FM_BACKLOG_TRANSITION_ERROR="could not retain task recovery identity at $target.recovery"
+          return 1
+        fi
+        ;;
+    esac
   fi
   if ! mv -f "$source" "$target" 2>/dev/null || ! fm_backlog_record_present "$target" "$label" "$root"; then
     [ -n "$FM_BACKLOG_TRANSITION_ERROR" ] \

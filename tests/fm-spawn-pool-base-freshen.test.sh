@@ -199,6 +199,8 @@ test_dirty_pool_refuses_without_discarding_work() {
   assert_contains "$out" "is not clean" "spawn did not clearly refuse a dirty pooled worktree"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
     || fail "spawn moved HEAD while refusing a dirty pooled worktree"
+  assert_grep 'spawn_gen=s' "$HOME_DIR/state/$id.meta" \
+    "failed launch recovery metadata omitted spawn generation"
   assert_grep 'keep this local work' "$POOL_DIR/uncommitted.txt" \
     "spawn discarded uncommitted work while refusing the pool"
   if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then

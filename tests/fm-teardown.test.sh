@@ -1206,7 +1206,7 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds() {
 
   expect_code 0 "$rc" "transient-index-lock: teardown should succeed on retry after lock self-clears"
   assert_grep "succeeded on retry" "$case_dir/stderr" \
-    "transient-index-lock: teardown did not report success on retry"
+    "transient-index-lock: teardown did not report success on retry: $(cat "$case_dir/stderr")"
   assert_not_contains "$(cat "$case_dir/stderr")" "removed provably-stale git lock" \
     "transient-index-lock: teardown force-removed a lock that only needed patience"
   [ "$(cat "$attempt_file")" = 2 ] \
@@ -2755,6 +2755,105 @@ EOF
     "abort-then-reap-then-remove-order: the leaked process was not yet reaped when the worktree return ran"
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
+
+test_absent_and_exotic_records_are_distinct() {
+  local case_dir out rc
+  case_dir=$(make_case absent-record)
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "missing evidence authorized teardown"
+  assert_contains "$out" "task record is absent" "absence must have its own diagnostic"
+  mkdir "$case_dir/state/task-x1.meta"
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "exotic record authorized teardown"
+  assert_contains "$out" "not a regular file" "exotic record must refuse without recovery"
+  pass "absent and exotic task records have distinct refusal paths"
+}
+
+test_orphan_recovery_and_repeated_teardown() {
+  local case_dir out rc
+  case_dir=$(make_case orphan-recovery)
+  write_meta "$case_dir" local-only ship
+  mv "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *pane_current_path*) printf '%s\n' '$case_dir/wt' ;;
+esac
+EOF
+  out=$(run_teardown "$case_dir" 2>&1) || fail "identity-bound orphan recovery failed: $out"
+  assert_contains "$out" "orphan recovery: exact identity verified" "recovery verdict missing"
+  assert_absent "$case_dir/state/task-x1.meta" "recovered task was not retired"
+  out=$(run_teardown "$case_dir" 2>&1) || fail "repeat teardown failed: $out"
+  assert_contains "$out" "already retired: task-x1" "repeat must have a distinct verdict"
+  pass "an exact clean orphan recovers and repeated teardown is idempotent"
+}
+
+test_orphan_recovery_preserves_dirty_work_and_mismatched_endpoint() {
+  local case_dir out rc
+  case_dir=$(make_case orphan-dirty)
+  write_meta "$case_dir" local-only scout
+  mv "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *pane_current_path*) printf '%s\n' '$case_dir/wt' ;;
+esac
+EOF
+  printf 'must survive\n' > "$case_dir/wt/local-work.txt"
+  rc=0
+  out=$(run_teardown "$case_dir" --force 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "orphan scout/force bypass discarded work"
+  assert_contains "$out" "unlanded changes" "dirty orphan must refuse"
+  assert_present "$case_dir/wt/local-work.txt" "dirty work disappeared"
+  assert_absent "$case_dir/state/task-x1.meta" "unsafe recovery published metadata"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *pane_current_path*) printf '%s\n' '$case_dir/project' ;;
+esac
+EOF
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "mismatched endpoint recovered"
+  assert_contains "$out" "not in its recorded worktree" "endpoint mismatch must refuse"
+  pass "orphan recovery preserves dirty work and refuses a mismatched endpoint"
+}
+
+test_legacy_orphan_preserves_captain_hold() {
+  local case_dir out rc
+  case_dir=$(make_case orphan-legacy-held)
+  write_meta "$case_dir" local-only ship
+  awk -F= '$1 != "spawn_gen"' "$case_dir/state/task-x1.meta" > "$case_dir/state/task-x1.legacy"
+  rm "$case_dir/state/task-x1.meta"
+  seed_backlog_in_flight "$case_dir"
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-captain-hold.sh" hold task-x1 --reason 'review remaining decision' >/dev/null || fail "could not seed captain hold"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *pane_current_path*) printf '%s\n' '$case_dir/wt' ;;
+esac
+EOF
+  out=$(run_teardown "$case_dir" --recover-from "$case_dir/state/task-x1.legacy" 2>&1) || fail "legacy recovery failed: $out"
+  rc=0
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-captain-hold.sh" open task-x1 >/dev/null 2>&1 || rc=$?
+  expect_code 0 "$rc" "orphan retirement closed the captain's decision"
+  assert_grep 'spawn_gen=r' "$case_dir/state/task-x1.retired" "legacy recovery omitted generation"
+  pass "explicit legacy orphan recovery keeps the captain hold durable"
+}
+
+if [ "$#" -gt 0 ]; then
+  for test_name in "$@"; do "$test_name"; done
+  exit 0
+fi
+
+test_legacy_orphan_preserves_captain_hold
+test_absent_and_exotic_records_are_distinct
+test_orphan_recovery_and_repeated_teardown
+test_orphan_recovery_preserves_dirty_work_and_mismatched_endpoint
 
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself

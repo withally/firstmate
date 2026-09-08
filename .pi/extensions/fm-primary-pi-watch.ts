@@ -636,7 +636,13 @@ export default function (pi: ExtensionAPI) {
         try {
           await branchDelivery;
           return true;
-        } catch {}
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const fallback = detail
+            ? `${message}\n\nwatcher: FAILED - supervision branch rejected this wake\n${detail}`
+            : message;
+          return await sendWake(owner, fallback, pending);
+        }
       }
     }
     return await sendWake(owner, message, pending);

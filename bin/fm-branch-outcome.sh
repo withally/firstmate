@@ -8,8 +8,8 @@
 #     "verdict":"routine"|"captain"|"firstmate-action","summary":"...",
 #     "silent":true|false,"statusEndpoint":N,"statusIdent":"..."}.
 #     A wake-linked firstmate-action row carries `wake_seq`:N. Legacy rows
-#     without `silent` or status provenance remain valid and are treated as
-#     visible, including wake-linked rows with `wake_seq` but no provenance.
+#     without a numeric `wake_seq`, or without `silent` or status provenance,
+#     remain valid and are treated as visible.
 #     Every read and append validates the complete log as a gap-free sequence;
 #     malformed, duplicate, or reordered rows fail closed.
 #     Existing lines are never rewritten, reordered, or deleted by any
@@ -70,6 +70,8 @@
 #     Ensure the firstmate-action marker exists and print pending|started.
 #   fm-branch-outcome.sh action-status --seq <seq>
 #     Print pending|started|none for a firstmate-action row.
+#   fm-branch-outcome.sh action-retire-legacy --seq <seq>
+#     Retire pending markers for a legacy firstmate-action row without handing it off.
 #   fm-branch-outcome.sh action-started --seq <seq>
 #     Mark the hidden main turn as started.
 #   fm-branch-outcome.sh render --seq <seq>
@@ -132,7 +134,7 @@ OUTCOME_INDEX_MAX_BYTES=512
 OUTCOME_INDEX_READY="$STATE/.branch-outcome-index-ready"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | validate | context | list [--recent <n>] | startup-replay" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | validate | context | list [--recent <n>] | startup-replay | action-retire-legacy --seq <seq>" >&2
   exit 2
 }
 
@@ -217,18 +219,18 @@ last_seq() {
           keys == ["epoch", "seq", "silent", "summary", "task", "verdict", "wake", "wake_seq"]
           and (.silent | type) == "boolean"
           and .verdict == "firstmate-action"
-          and ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor))
+          and ((.wake_seq | type) != "number" or ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor)))
         )
         or (
           keys == ["epoch", "seq", "summary", "task", "verdict", "wake", "wake_seq"]
           and .verdict == "firstmate-action"
-          and ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor))
+          and ((.wake_seq | type) != "number" or ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor)))
         )
         or (
           keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake", "wake_seq"]
           and (.silent | type) == "boolean"
           and .verdict == "firstmate-action"
-          and ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor))
+          and ((.wake_seq | type) != "number" or ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor)))
           and ((.statusEndpoint | type) == "number" and .statusEndpoint >= 0 and .statusEndpoint <= 9007199254740991 and .statusEndpoint == (.statusEndpoint | floor))
           and ((.statusIdent | type) == "string" and (.statusIdent | test("[\\t\\n]") | not))
         )
@@ -360,6 +362,61 @@ record_for_seq() { # <seq>
   return 1
 }
 
+record_is_legacy_action() {
+  printf '%s\n' "$1" | jq -e '
+    type == "object" and .verdict == "firstmate-action" and
+    ((has("wake_seq") | not) or .wake_seq == null or (.wake_seq | type) != "number")
+  ' >/dev/null 2>&1
+}
+
+legacy_record_matches_marker_identity() {
+  printf '%s\n' "$1" | jq -e --slurpfile marker "$2" '
+    type == "object" and .verdict == "firstmate-action" and
+    ((has("wake_seq") | not) or .wake_seq == null or (.wake_seq | type) != "number") and
+    .task == $marker[0].task and .summary == $marker[0].summary and .wake == $marker[0].wake
+  ' >/dev/null 2>&1
+}
+
+action_record_matches_marker() {
+  printf '%s\n' "$1" | jq -e --slurpfile marker "$2" '
+    type == "object" and .seq == $marker[0].outcome_seq and
+    .verdict == "firstmate-action" and (.wake_seq | type) == "number" and
+    .wake_seq == $marker[0].wake_seq and .task == $marker[0].task and
+    .summary == $marker[0].summary and .wake == $marker[0].wake
+  ' >/dev/null 2>&1
+}
+
+find_legacy_action_record_for_marker() {
+  local marker=$1 line
+  [ -s "$STORE" ] || return 1
+  while IFS= read -r line; do
+    if record_is_legacy_action "$line" && legacy_record_matches_marker_identity "$line" "$marker"; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done < "$STORE"
+  return 1
+}
+
+retire_legacy_action_markers_locked() {
+  local record=$1 seq path
+  seq=$(record_seq "$record") || return 1
+  [ -d "$ACTION_DIR" ] || return 0
+  for path in "$ACTION_DIR"/wake-*.json "$ACTION_DIR"/outcome-*.json; do
+    [ -f "$path" ] || continue
+    jq -e 'type == "object" and .version == "fm-branch-action-v1" and (.state == "pending" or .state == "started") and (.wake_seq == null or ((.wake_seq | type) == "number" and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor))) and (.outcome_seq == null or ((.outcome_seq | type) == "number" and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor))) and .verdict == "firstmate-action" and (.task | type) == "string" and (.summary | type) == "string" and (.wake | type) == "string"' "$path" >/dev/null 2>&1 || return 1
+    if jq -e --argjson seq "$seq" '.outcome_seq == $seq' "$path" >/dev/null 2>&1; then
+      if ! legacy_record_matches_marker_identity "$record" "$path"; then
+        echo "error: legacy action marker does not match its outcome record: $path" >&2
+        return 1
+      fi
+      rm -f -- "$path" || return 1
+    elif jq -e '.outcome_seq == null' "$path" >/dev/null 2>&1 && legacy_record_matches_marker_identity "$record" "$path"; then
+      rm -f -- "$path" || return 1
+    fi
+  done
+}
+
 append_record_locked() { # <task> <verdict> <summary> <wake> <silent> <seq> [<wake-seq>]
   local task=$1 verdict=$2 summary=$3 wake=$4 silent=$5 seq=$6 wake_seq=${7:-}
   capture_status_position "$task"
@@ -481,6 +538,7 @@ action_marker_for_seq() { # <outcome-seq>
 
 ensure_action_marker_for_record_locked() { # <record-line>
   local line=$1 seq task summary wake path
+  record_is_legacy_action "$line" && return 1
   seq=$(record_seq "$line") || return 1
   task=$(printf '%s\n' "$line" | jq -er '.task') || return 1
   summary=$(printf '%s\n' "$line" | jq -er '.summary') || return 1
@@ -489,18 +547,33 @@ ensure_action_marker_for_record_locked() { # <record-line>
   if [ -z "$path" ]; then
     path="$ACTION_DIR/outcome-$seq.json"
     write_action_marker "$path" "" "$seq" pending "$task" "$summary" "$wake" || return 1
+  elif ! action_record_matches_marker "$line" "$path"; then
+    return 1
   fi
   printf '%s\n' "$path"
 }
 
 reconcile_action_markers_locked() {
-  local path task summary wake wake_seq seq existing
+  local path task summary wake wake_seq seq existing existing_record legacy_record
   [ -d "$ACTION_DIR" ] || return 0
   for path in "$ACTION_DIR"/wake-*.json; do
     [ -f "$path" ] || continue
     jq -e 'type == "object" and .version == "fm-branch-action-v1" and (.state == "pending" or .state == "started") and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor) and (.outcome_seq == null or ((.outcome_seq | type == "number") and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor))) and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string") and (.wake | type == "string")' "$path" >/dev/null 2>&1 || return 1
     wake_seq=$(jq -er '.wake_seq | tostring' "$path") || return 1
     seq=$(jq -r '.outcome_seq // empty' "$path") || return 1
+    if [ -n "$seq" ]; then
+      existing=$(record_for_seq "$seq" 2>/dev/null || true)
+      if [ -n "$existing" ] && record_is_legacy_action "$existing" && legacy_record_matches_marker_identity "$existing" "$path"; then
+        rm -f -- "$path" || return 1
+        continue
+      fi
+    else
+      legacy_record=$(find_legacy_action_record_for_marker "$path" 2>/dev/null || true)
+      if [ -n "$legacy_record" ]; then
+        rm -f -- "$path" || return 1
+        continue
+      fi
+    fi
     if [ -z "$seq" ]; then
       task=$(jq -er '.task' "$path") || return 1
       summary=$(jq -er '.summary' "$path") || return 1
@@ -510,6 +583,12 @@ reconcile_action_markers_locked() {
         if ! LAST_SEQ=$(last_seq); then return 1; fi
         existing=$(( LAST_SEQ + 1 ))
         append_record_locked "$task" firstmate-action "$summary" "$wake" false "$existing" "$wake_seq" || return 1
+      else
+        existing_record=$(record_for_seq "$existing" 2>/dev/null || true)
+        if [ -z "$existing_record" ] || ! action_record_matches_marker "$existing_record" "$path"; then
+          echo "error: firstmate-action marker does not match its existing outcome record: $path" >&2
+          return 1
+        fi
       fi
       update_action_marker "$path" ".outcome_seq = $existing" || return 1
     fi
@@ -820,6 +899,16 @@ case "$CMD" in
         echo "error: firstmate-action wake marker is invalid for the repeated wake sequence" >&2
         exit 1
       fi
+      if ! jq -e \
+        --arg task "$TASK" \
+        --arg summary "$SUMMARY" \
+        --arg wake "$WAKE" \
+        'type == "object" and .task == $task and .summary == $summary and .wake == $wake' \
+        "$MARKER" >/dev/null 2>&1; then
+        fm_lock_release "$LOCK"
+        echo "error: firstmate-action wake marker does not match the repeated action request" >&2
+        exit 1
+      fi
       SEQ=$(jq -r '.outcome_seq // empty' "$MARKER")
       if [ -z "$SEQ" ]; then
         SEQ=$(find_action_record_by_wake_seq "$WAKE_SEQ" 2>/dev/null || true)
@@ -834,11 +923,24 @@ case "$CMD" in
             fm_lock_release "$LOCK"
             exit 1
           fi
+        else
+          RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+          if [ -z "$RECORD" ] || ! action_record_matches_marker "$RECORD" "$MARKER"; then
+            fm_lock_release "$LOCK"
+            echo "error: firstmate-action marker does not match its existing outcome record" >&2
+            exit 1
+          fi
         fi
         if ! update_action_marker "$MARKER" ".outcome_seq = $SEQ"; then
           fm_lock_release "$LOCK"
           exit 1
         fi
+      fi
+      RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+      if [ -z "$RECORD" ] || ! action_record_matches_marker "$RECORD" "$MARKER"; then
+        fm_lock_release "$LOCK"
+        echo "error: firstmate-action marker does not match its outcome record" >&2
+        exit 1
       fi
       fm_lock_release "$LOCK"
       printf '%s\n' "$SEQ"
@@ -898,10 +1000,34 @@ case "$CMD" in
       ACTION_STATE=none
     else
       ACTION_STATE=$(action_marker_state "$MARKER" 2>/dev/null || true)
+      RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+      if [ -z "$RECORD" ] || record_is_legacy_action "$RECORD" || ! action_record_matches_marker "$RECORD" "$MARKER"; then
+        fm_lock_release "$LOCK"
+        echo "error: action marker does not match its outcome record: $MARKER" >&2
+        exit 1
+      fi
       [ -n "$ACTION_STATE" ] || { fm_lock_release "$LOCK"; exit 1; }
     fi
     fm_lock_release "$LOCK"
     printf '%s\n' "$ACTION_STATE"
+    ;;
+  action-retire-legacy)
+    [ "${1:-}" = --seq ] || usage
+    SEQ=${2:-}
+    case "$SEQ" in ''|*[!0-9]*) usage ;; esac
+    [ "$#" -eq 2 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    RECORD=$(record_for_seq "$SEQ" 2>/dev/null || true)
+    if [ -z "$RECORD" ] || ! record_is_legacy_action "$RECORD"; then
+      fm_lock_release "$LOCK"
+      echo "error: outcome is not a legacy firstmate-action row: $SEQ" >&2
+      exit 1
+    fi
+    if ! retire_legacy_action_markers_locked "$RECORD"; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    fm_lock_release "$LOCK"
     ;;
   action-pending)
     [ "$#" -eq 0 ] || usage
@@ -913,17 +1039,34 @@ case "$CMD" in
     if [ -d "$ACTION_DIR" ]; then
       for MARKER in "$ACTION_DIR"/wake-*.json; do
         [ -f "$MARKER" ] || continue
-        if jq -e 'type == "object" and .version == "fm-branch-action-v1" and .state == "pending" and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor) and (.outcome_seq | type == "number") and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor) and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string")' "$MARKER" >/dev/null 2>&1; then
-          OUTCOME_SEQ=$(jq -r '.outcome_seq' "$MARKER")
-          WAKE_SEQ=$(jq -r '.wake_seq' "$MARKER")
-          RECORD=$(record_for_seq "$OUTCOME_SEQ" 2>/dev/null || true)
-          if [ -n "$RECORD" ] && printf '%s\n' "$RECORD" | jq -e \
-            --argjson outcome_seq "$OUTCOME_SEQ" \
-            --argjson wake_seq "$WAKE_SEQ" \
-            'type == "object" and .seq == $outcome_seq and .verdict == "firstmate-action" and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor) and .wake_seq == $wake_seq' \
-            >/dev/null 2>&1; then
-            printf '%s\n' "$RECORD" | jq -c '{outcome_seq: .seq, wake_seq, task, summary}'
+        if ! jq -e 'type == "object" and .version == "fm-branch-action-v1" and .state == "pending" and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor) and (.outcome_seq | type == "number") and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor) and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string") and (.wake | type == "string")' "$MARKER" >/dev/null 2>&1; then
+          fm_lock_release "$LOCK"
+          echo "error: pending firstmate-action marker is invalid: $MARKER" >&2
+          exit 1
+        fi
+        OUTCOME_SEQ=$(jq -r '.outcome_seq' "$MARKER")
+        RECORD=$(record_for_seq "$OUTCOME_SEQ" 2>/dev/null || true)
+        if [ -z "$RECORD" ]; then
+          fm_lock_release "$LOCK"
+          echo "error: pending firstmate-action marker has no matching outcome record: $MARKER" >&2
+          exit 1
+        fi
+        if record_is_legacy_action "$RECORD"; then
+          if ! legacy_record_matches_marker_identity "$RECORD" "$MARKER"; then
+            fm_lock_release "$LOCK"
+            echo "error: pending firstmate-action marker does not match its legacy outcome record: $MARKER" >&2
+            exit 1
           fi
+          rm -f -- "$MARKER" || {
+            fm_lock_release "$LOCK"
+            exit 1
+          }
+        elif ! action_record_matches_marker "$RECORD" "$MARKER"; then
+          fm_lock_release "$LOCK"
+          echo "error: pending firstmate-action marker does not match its outcome record: $MARKER" >&2
+          exit 1
+        else
+          printf '%s\n' "$RECORD" | jq -c '{outcome_seq: .seq, wake_seq, task, summary}'
         fi
       done
     fi
@@ -1158,7 +1301,7 @@ $OPEN"
       REPLAYABLE=$(printf '%s\n' "$UNREAD" | jq -sc '
         . as $rows
         | ($rows | to_entries
-           | map(select(.value.verdict == "captain" or (.value.verdict == "firstmate-action" and .value.wake_seq != null)))
+           | map(select(.value.verdict == "captain" or (.value.verdict == "firstmate-action" and (.value.wake_seq | type) == "number" and .value.wake_seq >= 1 and .value.wake_seq <= 9007199254740991 and .value.wake_seq == (.value.wake_seq | floor))))
            | .[0].key) as $barrier
         | $rows[0:($barrier // length)][]
       ')
@@ -1167,6 +1310,15 @@ $OPEN"
         printf 'BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):\n'
         printf '%s\n' "$VISIBLE"
       fi
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if record_is_legacy_action "$line" && ! retire_legacy_action_markers_locked "$line"; then
+          fm_lock_release "$LOCK"
+          exit 1
+        fi
+      done <<EOF
+$REPLAYABLE
+EOF
       LAST=$(record_seq "$(printf '%s\n' "$REPLAYABLE" | tail -n 1)")
       if [ -n "$LAST" ] && ! advance_cursor "$LAST"; then
         fm_lock_release "$LOCK"

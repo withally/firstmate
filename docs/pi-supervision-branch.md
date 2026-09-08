@@ -46,8 +46,8 @@ The supervision branch itself is Pi-only by construction:
   Outcomes are written to the store before delivery to Pi.
   A captain row advances the cursor only after its matching visible session entry exists.
   A pending wake-linked `firstmate-action` row is a cursor barrier until its hidden handoff starts; if sending that handoff fails, its marker stays pending for a later reconciliation.
-  Every legacy `firstmate-action` row without `wake_seq` is visibly replayed at startup and never handed off, whether its marker is absent, pending, or started.
-  Legacy replay leaves both the append-only row and any old marker unchanged.
+  Every legacy `firstmate-action` row without a numeric `wake_seq` is visibly replayed at startup and never handed off, whether its marker is absent, pending, or started.
+  Legacy replay leaves the append-only row unchanged and retires only matching old markers.
   Locked session-start replay stops before the first captain or wake-linked `firstmate-action` row, so it cannot acknowledge either outcome through prose alone.
 - Consistency: `bin/fm-lease-lib.sh` owns the per-task lease contract, the main-only role partition, and the deliberate CONFUSED-AGENT-GRADE threat model these guards target (captain-decided; adversarial-grade separation is out of scope and tracked as follow-up design work); `bin/fm-lease.sh` is the command surface.
   The guards are wired into `fm-send.sh`, `fm-control.sh`, and `fm-teardown.sh` (overlap, lease-checked, with claim serialization retained through the mutation) and `fm-pr-merge.sh`, `fm-merge-local.sh`, and `fm-spawn.sh` (main-owned, branch refused; a relaunch through `fm-control` stays branch-legal recovery).
@@ -105,11 +105,12 @@ Signal and check semantics, main-owned rows, and durable queue ownership are unc
 ## Unsafe outcome store
 
 An unsafe outcome store quarantines the branch for the current main-session generation and returns the accepted wake to the watcher's existing main-delivery path.
-The extension validates the store before a wake, before each branch shell command, and after prompt settlement; an append failure also latches quarantine immediately.
+The extension validates the store before accepting a wake, before every reconciliation or mutation-capable branch action, before each branch shell command, and after prompt settlement; an append failure also latches quarantine immediately.
 The branch cannot compensate with synthetic task status appends or shell acknowledgements after that boundary.
 It releases the eligible-row grant and branch leases while leaving unacknowledged queue rows durable for main.
 Later offers remain on main; after main repairs the store, a new main session or reload revalidates it before branch work resumes.
 The first quarantine in a main-session generation emits one visible health note naming the outcome store path and the repair needed; later wakes do not repeat it.
+If that note cannot be delivered, quarantine remains retryable until the detailed note is delivered, and a rejected branch wake carries the same repair detail to main.
 Quarantine does not repair, rewrite, acknowledge, or delete outcome history, and it does not append anything to task status logs.
 The store command owns file safety and validation; shell access remains within the existing confused-agent-grade boundary, not an adversarial sandbox for a command deliberately corrupting the store itself.
 
@@ -175,10 +176,11 @@ Outside away mode, the bash watcher absorbs routine status and bare turn-ended s
 ## Verification
 
 Portable regressions: `tests/fm-pi-branch-extension.test.sh` covers dispatch, signal and stale report scoping with unscoped heartbeat reports, the new branch conversation at every main session start, bounded rollover with durable open-decision recovery, stale-offer coalescing with complete queue acknowledgement, unsafe-store shell quarantine, continuation for selection changes inside one bounded conversation, the mirror re-anchor that pairs with it, requested-versus-unsolicited delivery, exact visible entry content, no unkeyed model turn, the sequence-keyed processing request and its acknowledgement, re-presentation after an empty reply and after an unrelated prior answer, the triggered-then-next-turn pacing, session-start re-presentation, routine outcomes staying turn-free, firstmate-action startup recovery and its pending-action barrier, legacy no-`wake_seq` visible replay across absent, pending, and started marker variants, send-failure retry, the processed-marker migration, idle and busy main state, incident-shaped compaction and unrelated-assistant context, cold-start post-lock recovery, crash-before-cursor reload recovery, repeated-reload idempotency, mirroring, post-construction provider-error and no-report fallback, the consecutive-error latch, cooldown probe, exponential backoff, report-plus-settlement recovery, report-before-error re-latch, cache key, and model and effort selection.
+The extension regressions also cover null and nonnumeric legacy `wake_seq` replay with matching marker retirement, health-note retry after a failed send, and mutation refusal at startup, message-end, and processed-acknowledgement boundaries.
 `tests/fm-branch-supervision.test.sh` covers prompt stability, bounded read-only recovery context, unsafe-file validation, store append-only behavior, legacy firstmate-action row validation and bounded-index rebuild, the captain cursor barrier, the processed marker's sequence bounds, leases, guards, and non-branch-home invariance.
 `tests/fm-wake-drain-outcome-backstop.test.sh` covers keyless resurfacing, causal suppression, same-second ordering, one-shot presentation, first-drain index self-healing under the outcome lock including legacy action history, store-fault fail-closed behavior, bounded history cost and output, and the oversized-line limit.
 `tests/fm-teardown.test.sh` covers removal of the retired task's outcome index and the append-side rule that a post-teardown report does not recreate it.
-The branch-offer, heartbeat-offer, heartbeat-not-ridden-by-a-check, and main-only-check-class tests remain in `tests/fm-pi-watch-extension.test.sh`, the recovery test remains in `tests/fm-session-start.test.sh`, and the per-actor consume regression remains in `tests/fm-wake-queue.test.sh`.
+The branch-offer, heartbeat-offer, heartbeat-not-ridden-by-a-check, main-only-check-class, and rejected-branch repair-detail tests remain in `tests/fm-pi-watch-extension.test.sh`, the recovery test remains in `tests/fm-session-start.test.sh`, and the per-actor consume regression remains in `tests/fm-wake-queue.test.sh`.
 Live guard: `FM_PI_BRANCH_LIVE_E2E=1 tests/fm-pi-branch-live-e2e.test.sh` exercises the real installed Pi SDK's immediate active-transcript appendEntry rendering, persistence, custom-entry model exclusion, branch-session surfaces, and watcher-owned fallback after rejected branch settlement.
 Record dated current results in [docs/verification/runtime-backends.md](verification/runtime-backends.md).
 The strict typecheck in `tests/fm-pi-primary-types.test.sh` pins the extension against the installed Pi package.

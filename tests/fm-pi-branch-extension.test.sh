@@ -1193,10 +1193,10 @@ test_legacy_marker_variants_replay_visibly_never_handoff() {
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { fire, outcomeScript, sentToMain, mainUserMessages, defaultSessionCtx, home }; })()`);
 const { fire, outcomeScript, sentToMain, mainUserMessages, defaultSessionCtx, home } = globalThis.__t;
-import { writeFileSync, readFileSync } from "node:fs";
-const rows = [undefined, false, false].map((silent, index) => ({
+import { existsSync, writeFileSync, readFileSync } from "node:fs";
+const rows = [undefined, null, "legacy"].map((wakeSeq, index) => ({
   seq: index + 1, epoch: 1, task: `legacy-${index}`, verdict: "firstmate-action", wake: "old signal",
-  summary: `visible legacy variant ${index}`, ...(silent === undefined ? {} : { silent }),
+  summary: `visible legacy variant ${index}`, silent: false, ...(wakeSeq === undefined ? {} : { wake_seq: wakeSeq }),
   ...(index === 2 ? { statusEndpoint: 0, statusIdent: "" } : {}),
 }));
 const before = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
@@ -1210,7 +1210,6 @@ writeFileSync(`${home}/state/branch-action/outcome-2.json`, JSON.stringify({
   version: "fm-branch-action-v1", wake_seq: null, outcome_seq: 2, state: "started", task: rows[1].task,
   verdict: "firstmate-action", summary: rows[1].summary, wake: "old signal", silent: false,
 }) + "\n");
-const markerBefore = readFileSync(`${home}/state/branch-action/wake-41.json`, "utf8");
 const replay = outcomeScript(["startup-replay"]);
 for (const row of rows) if (!replay.includes(row.summary)) throw new Error("shell startup skipped a legacy variant");
 writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
@@ -1220,7 +1219,8 @@ const visible = sentToMain.filter((sent) => sent.message.customType === "fm-bran
 for (const row of rows) if (!visible.some((sent) => sent.message.content.includes(row.summary))) throw new Error(`Pi startup skipped ${row.summary}`);
 if (mainUserMessages.length || sentToMain.some((sent) => sent.options.triggerTurn || sent.message.details?.verdict === "firstmate-action")) throw new Error("legacy marker caused handoff");
 if (outcomeScript(["unread"])) throw new Error("legacy marker stranded the cursor");
-if (readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8") !== before || readFileSync(`${home}/state/branch-action/wake-41.json`, "utf8") !== markerBefore) throw new Error("legacy replay mutated durable records");
+if (readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8") !== before) throw new Error("legacy replay mutated durable records");
+if (existsSync(`${home}/state/branch-action/wake-41.json`) || existsSync(`${home}/state/branch-action/outcome-2.json`)) throw new Error("legacy replay left pending action markers behind");
 process.exit(0);
 EOF
   result=$?
@@ -2808,6 +2808,166 @@ EOF
   pass "unsafe store quarantines shell writes, preserves held status, and returns unacknowledged wakes to main"
 }
 
+test_unsafe_store_blocks_startup_action_reconciliation() {
+  local repo home out result
+  repo="$TMP_ROOT/unsafe-startup-action-root"
+  home="$TMP_ROOT/unsafe-startup-action-home"
+  mkdir -p "$home/state/branch-action" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, dispatch, sentToMain, defaultSessionCtx, home }; })()`);
+const { fire, dispatch, sentToMain, defaultSessionCtx, home } = globalThis.__t;
+import { readFileSync, writeFileSync } from "node:fs";
+
+writeFileSync(`${home}/state/branch-outcomes.jsonl`, "unsafe torn record\n");
+writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
+writeFileSync(`${home}/state/.branch-outcomes-processed`, "0\n");
+writeFileSync(`${home}/state/branch-action/wake-41.json`, JSON.stringify({
+  version: "fm-branch-action-v1", wake_seq: 41, outcome_seq: 1, state: "pending",
+  task: "startup-action", verdict: "firstmate-action", summary: "must not hand off", wake: "signal: startup-action", silent: false,
+}) + "\n");
+fire("session_start", {}, defaultSessionCtx);
+if (sentToMain.some((sent) => sent.message.details?.verdict === "firstmate-action" || sent.options.triggerTurn)) {
+  throw new Error("unsafe startup reconciliation handed off a pending action");
+}
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 || !diagnostics[0].message.content.includes(`${home}/state/branch-outcomes.jsonl`) || !diagnostics[0].message.content.includes("repair")) {
+  throw new Error(`unsafe startup reconciliation did not emit one repair diagnostic: ${JSON.stringify(sentToMain)}`);
+}
+if (JSON.parse(readFileSync(`${home}/state/branch-action/wake-41.json`, "utf8")).state !== "pending") {
+  throw new Error("unsafe startup reconciliation changed the pending action marker");
+}
+if (readFileSync(`${home}/state/.branch-outcomes-cursor`, "utf8").trim() !== "0") {
+  throw new Error("unsafe startup reconciliation advanced the outcome cursor");
+}
+if (dispatch("signal: retry must stay on main").accepted) throw new Error("unsafe startup branch accepted a later wake");
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "unsafe startup reconciliation must refuse pending actions before handoff: $out"
+  pass "unsafe startup reconciliation quarantines before pending action handoff"
+}
+
+test_unsafe_store_health_note_retries_after_send_failure() {
+  local repo home out result
+  repo="$TMP_ROOT/unsafe-health-note-root"
+  home="$TMP_ROOT/unsafe-health-note-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, sentToMain, defaultSessionCtx, home }; })()`);
+const { fire, sentToMain, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+writeFileSync(`${home}/state/branch-outcomes.jsonl`, "unsafe torn record\n");
+writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
+writeFileSync(`${home}/state/.branch-outcomes-processed`, "0\n");
+globalThis.__fmSendMessageError = "health note send failed";
+fire("session_start", {}, defaultSessionCtx);
+if (sentToMain.length !== 0) throw new Error("failed health-note delivery was recorded as sent");
+globalThis.__fmSendMessageError = undefined;
+fire("turn_end", {}, defaultSessionCtx);
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 || !diagnostics[0].message.content.includes(`${home}/state/branch-outcomes.jsonl`) || !diagnostics[0].message.content.includes("repair")) {
+  throw new Error(`health note was not retried with repair detail: ${JSON.stringify(sentToMain)}`);
+}
+fire("turn_end", {}, defaultSessionCtx);
+if (sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true).length !== 1) {
+  throw new Error("health note repeated after successful delivery");
+}
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "quarantine health notes must retry after an undelivered send: $out"
+  pass "quarantine retries a failed health note and latches only after delivery"
+}
+
+test_unsafe_store_blocks_action_message_acknowledgement() {
+  local repo home out result
+  repo="$TMP_ROOT/unsafe-message-end-root"
+  home="$TMP_ROOT/unsafe-message-end-home"
+  mkdir -p "$home/state/branch-action" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, sentToMain, outcomeScript, defaultSessionCtx, home }; })()`);
+const { fire, sentToMain, outcomeScript, defaultSessionCtx, home } = globalThis.__t;
+import { readFileSync, writeFileSync } from "node:fs";
+
+outcomeScript(["append-action", "--task", "message-action", "--wake-seq", "41", "--summary", "authorized message action", "--wake", "signal: message-action"]);
+writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
+globalThis.__fmAutoStartMainMessage = false;
+fire("session_start", {}, defaultSessionCtx);
+writeFileSync(`${home}/state/branch-outcomes.jsonl`, "unsafe torn record\n");
+fire("message_end", {
+  message: {
+    customType: "fm-branch-merge",
+    details: { outcomeSeq: 1, wakeSeq: 41, verdict: "firstmate-action" },
+  },
+});
+if (JSON.parse(readFileSync(`${home}/state/branch-action/wake-41.json`, "utf8")).state !== "pending") {
+  throw new Error("unsafe message acknowledgement changed the pending marker");
+}
+if (readFileSync(`${home}/state/.branch-outcomes-cursor`, "utf8").trim() !== "0") {
+  throw new Error("unsafe message acknowledgement advanced the outcome cursor");
+}
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 || !diagnostics[0].message.content.includes("repair")) {
+  throw new Error(`unsafe message acknowledgement did not quarantine visibly: ${JSON.stringify(sentToMain)}`);
+}
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "unsafe stores must block action acknowledgement at message_end: $out"
+  pass "unsafe stores block action acknowledgement before marker mutation"
+}
+
+test_unsafe_store_blocks_processed_acknowledgement() {
+  local repo home out result
+  repo="$TMP_ROOT/unsafe-processed-root"
+  home="$TMP_ROOT/unsafe-processed-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, mainTools, outcomeScript, defaultSessionCtx, home, sentToMain }; })()`);
+const { fire, mainTools, outcomeScript, defaultSessionCtx, home, sentToMain } = globalThis.__t;
+import { readFileSync, writeFileSync } from "node:fs";
+
+outcomeScript(["append", "--task", "processed-action", "--verdict", "captain", "--summary", "captain outcome to process"]);
+writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
+fire("session_start", {}, defaultSessionCtx);
+const processed = mainTools.find((tool) => tool.name === "fm_branch_processed");
+if (!processed) throw new Error("processed acknowledgement tool was not registered");
+writeFileSync(`${home}/state/branch-outcomes.jsonl`, "unsafe torn record\n");
+const result = await processed.execute("unsafe-ack", { through: 1 }, undefined, undefined, {});
+if (!result.isError || !result.content.some((item) => item.type === "text" && item.text.includes("repair"))) {
+  throw new Error(`unsafe processed acknowledgement was not refused with repair detail: ${JSON.stringify(result)}`);
+}
+if (readFileSync(`${home}/state/.branch-outcomes-processed`, "utf8").trim() !== "0") {
+  throw new Error("unsafe processed acknowledgement advanced the processed marker");
+}
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 || !diagnostics.some((sent) => sent.message.content.includes("repair"))) {
+  throw new Error(`unsafe processed acknowledgement did not preserve one health diagnostic: ${JSON.stringify(sentToMain)}`);
+}
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "unsafe stores must block fm_branch_processed before marker mutation: $out"
+  pass "unsafe stores block processed acknowledgement before marker mutation"
+}
+
 test_unwritable_outcome_store_blocks_branch_before_shell() {
   local repo home out result
   repo="$TMP_ROOT/unwritable-outcome-root"
@@ -2817,8 +2977,8 @@ test_unwritable_outcome_store_blocks_branch_before_shell() {
   PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
-await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, outcomeScript, defaultSessionCtx, home }; })()`);
-const { dispatch, fire, outcomeScript, defaultSessionCtx, home } = globalThis.__t;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, outcomeScript, defaultSessionCtx, home, sentToMain }; })()`);
+const { dispatch, fire, outcomeScript, defaultSessionCtx, home, sentToMain } = globalThis.__t;
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
 
 outcomeScript(["append", "--task", "branch-driver", "--verdict", "routine", "--summary", "writeability seed"]);
@@ -2830,13 +2990,13 @@ globalThis.__fmOnBranchPrompt = async () => {
   writeFileSync(`${home}/state/branch-shell-side-effect`, "branch reached shell\n");
 };
 const offer = dispatch("signal: read-only outcome store");
-if (!offer.accepted) throw new Error("read-only outcome store wake was not accepted for fallback");
-const failure = await offer.settlement.then(() => null, (error) => error);
-if (!(failure instanceof Error) || !failure.message.includes("writable")) {
-  throw new Error(`read-only outcome store failure was not surfaced: ${String(failure)}`);
-}
+if (offer.accepted) throw new Error("read-only outcome store wake was accepted before fallback");
 if (prompts !== 0 || existsSync(`${home}/state/branch-shell-side-effect`)) {
   throw new Error("branch reached its shell before outcome persistence was writable");
+}
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 || !diagnostics[0].message.content.includes("repair")) {
+  throw new Error(`read-only outcome store failure was not surfaced: ${JSON.stringify(sentToMain)}`);
 }
 process.exit(0);
 EOF
@@ -4897,6 +5057,10 @@ test_branch_predrain_recheck_noops_already_drained_wake
 test_branch_mirror_filters_order_and_cursor
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation
 test_unsafe_store_refuses_branch_shell_and_preserves_status
+test_unsafe_store_blocks_startup_action_reconciliation
+test_unsafe_store_health_note_retries_after_send_failure
+test_unsafe_store_blocks_action_message_acknowledgement
+test_unsafe_store_blocks_processed_acknowledgement
 test_unwritable_outcome_store_blocks_branch_before_shell
 test_stale_batch_keeps_latest_queue_row_and_all_ack_rows
 test_first_stale_wake_bypasses_coalescing_delay

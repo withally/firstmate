@@ -568,7 +568,9 @@ const bus = {
 };
 bus.on("fm-branch-supervision:dispatch", (offer) => {
   offers.push(offer.message);
-  const rejection = new Promise((_, reject) => setTimeout(() => reject(new Error("branch refused the wake")), 0));
+  const rejection = new Promise((_, reject) => setTimeout(() => reject(new Error(
+    `supervision branch quarantined: outcome store ${process.env.FM_HOME}/state/branch-outcomes.jsonl is unsafe (read-only); repair this store and its write prerequisites before retrying; main owns the wake`,
+  )), 0));
   offer.accept(rejection);
 });
 const pi = {
@@ -594,6 +596,7 @@ for (let i = 0; i < 250 && !prompt; i += 1) {
 if (offers.length !== 1) throw new Error(`expected one rejected branch offer, got ${offers.length}`);
 if (!prompt.includes("FIRSTMATE WATCHER WAKE")) throw new Error(`rejected branch wake did not reach main: ${prompt}`);
 if (!prompt.includes("signal: branch rejection fallback")) throw new Error(`main fallback lost the wake reason: ${prompt}`);
+if (!prompt.includes("branch-outcomes.jsonl") || !prompt.includes("repair this store")) throw new Error(`main fallback lost the branch repair detail: ${prompt}`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 process.exit(0);
 EOF

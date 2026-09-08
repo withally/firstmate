@@ -402,6 +402,44 @@ test_legacy_action_without_silent_retains_wake_validation() {
   pass "legacy action rows without silent remain valid while wake_seq stays strict"
 }
 
+test_action_marker_identity_mismatch_fails_closed() {
+  local home store marker store_snapshot marker_snapshot out status
+  home="$TMP_ROOT/action-marker-mismatch-home"
+  mkdir -p "$home/state/branch-action"
+  store="$home/state/branch-outcomes.jsonl"
+  marker="$home/state/branch-action/wake-42.json"
+  printf '%s\n' \
+    '{"seq":1,"epoch":1,"task":"action-task","wake":"signal: action-task","verdict":"firstmate-action","summary":"authorized action","silent":false,"wake_seq":41}' \
+    > "$store"
+  printf '0\n' > "$home/state/.branch-outcomes-cursor"
+  printf '%s\n' \
+    '{"version":"fm-branch-action-v1","wake_seq":42,"outcome_seq":1,"state":"pending","task":"action-task","verdict":"firstmate-action","summary":"authorized action","wake":"signal: action-task","silent":false}' \
+    > "$marker"
+  store_snapshot=$(cat "$store")
+  marker_snapshot=$(cat "$marker")
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" action-status --seq 1 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "action-status accepted a marker with a mismatched outcome row"
+  assert_contains "$out" "does not match" "action-status mismatch lost its diagnostic"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" action-pending 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "action-pending accepted a marker with a mismatched outcome row"
+  assert_contains "$out" "does not match" "action-pending mismatch lost its diagnostic"
+  [ "$(cat "$store")" = "$store_snapshot" ] || fail "action-pending mismatch changed the outcome store"
+  [ "$(cat "$marker")" = "$marker_snapshot" ] || fail "action-pending mismatch changed the marker"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append-action \
+    --task action-task --wake-seq 42 --summary 'authorized action' --wake 'signal: action-task' 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "append-action reused a marker with a mismatched outcome row"
+  assert_contains "$out" "does not match" "append-action mismatch lost its diagnostic"
+  [ "$(cat "$store")" = "$store_snapshot" ] || fail "append-action mismatch changed the outcome store"
+  [ "$(cat "$marker")" = "$marker_snapshot" ] || fail "append-action mismatch changed the marker"
+  pass "action marker and outcome identity mismatches fail closed without mutation"
+}
+
 test_outcome_cursor_corruption_fails_closed() {
   local home store snapshot out status
   home="$TMP_ROOT/store-corrupt-cursor-home"
@@ -1053,6 +1091,7 @@ test_outcome_startup_replay_preserves_silence
 test_outcome_startup_replay_stops_at_captain_barrier
 test_legacy_action_rows_remain_readable_appendable_and_acknowledgeable
 test_legacy_action_without_silent_retains_wake_validation
+test_action_marker_identity_mismatch_fails_closed
 test_outcome_cursor_corruption_fails_closed
 test_cursor_advancement_refuses_ahead_processed_marker
 test_outcome_sequence_conflicts_fail_closed

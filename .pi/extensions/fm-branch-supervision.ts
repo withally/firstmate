@@ -523,8 +523,11 @@ function parseOutcomeRow(value: unknown): OutcomeRow | null {
   if (row.silent !== undefined && typeof row.silent !== "boolean") return null;
   let wakeSeq: string | undefined;
   if (row.wake_seq !== undefined) {
-    if (row.verdict !== "firstmate-action" || typeof row.wake_seq !== "number" || !Number.isSafeInteger(row.wake_seq) || row.wake_seq < 1) return null;
-    wakeSeq = String(row.wake_seq);
+    if (row.verdict !== "firstmate-action") return null;
+    if (typeof row.wake_seq === "number") {
+      if (!Number.isSafeInteger(row.wake_seq) || row.wake_seq < 1) return null;
+      wakeSeq = String(row.wake_seq);
+    }
   }
   const silent = row.silent === true;
   if (silent && row.verdict !== "routine") return null;
@@ -632,6 +635,7 @@ export default function (pi: ExtensionAPI) {
   let durableReportRevision = 0;
   let conversationWakes = 0;
   let unsafeOutcomeStore = "";
+  let outcomeStoreHealthNotePending = "";
   const maxConversationWakes = positiveIntegerEnv("FM_BRANCH_MAX_WAKES", 16);
   // The task set the wake being handled right now may be reported on, fixed
   // deterministically from the eligible rows before a signal or stale prompt
@@ -930,13 +934,24 @@ export default function (pi: ExtensionAPI) {
   }
 
   function quarantineOutcomeStore(detail: string): void {
-    const firstQuarantine = !unsafeOutcomeStore;
-    if (firstQuarantine) {
-      unsafeOutcomeStore = `supervision branch quarantined: outcome store ${outcomeStoreFile} is unsafe (${detail}); repair this store and its write prerequisites before retrying; main owns the wake`;
+    if (unsafeOutcomeStore) {
+      branchBroken = unsafeOutcomeStore;
+      providerRecovery = null;
+      return;
     }
+    const quarantine = `supervision branch quarantined: outcome store ${outcomeStoreFile} is unsafe (${detail}); repair this store and its write prerequisites before retrying; main owns the wake`;
+    try {
+      deliverBranchHealthNote(quarantine);
+    } catch (error) {
+      const deliveryDetail = error instanceof Error ? error.message : String(error);
+      outcomeStoreHealthNotePending = `${quarantine}; health note delivery failed: ${deliveryDetail}`;
+      providerRecovery = null;
+      throw new Error(outcomeStoreHealthNotePending);
+    }
+    outcomeStoreHealthNotePending = "";
+    unsafeOutcomeStore = quarantine;
     branchBroken = unsafeOutcomeStore;
     providerRecovery = null;
-    if (firstQuarantine) deliverBranchHealthNote(unsafeOutcomeStore);
   }
 
   function requireSafeOutcomeStore(): void {
@@ -1035,6 +1050,12 @@ export default function (pi: ExtensionAPI) {
   // triggered budget over. Nothing here advances the processed marker: only
   // fm_branch_processed does, keyed to the sequence main acknowledges.
   function presentUnprocessedOutcomes(expectedGeneration: number): boolean {
+    if (!actingAsOwner(expectedGeneration)) return false;
+    try {
+      requireSafeOutcomeStore();
+    } catch {
+      return false;
+    }
     const rows = readUnprocessedOutcomes(expectedGeneration);
     if (rows === null) return false;
     if (rows.length === 0) {
@@ -1071,7 +1092,12 @@ export default function (pi: ExtensionAPI) {
   // leave presentation to the run boundary (agent_settled) instead, so one
   // multi-tool run never receives duplicate requests.
   function reconcileUnreadOutcomes(expectedGeneration: number, present = true): boolean {
-    if (!generationOwnsLock(expectedGeneration)) return false;
+    if (!actingAsOwner(expectedGeneration)) return false;
+    try {
+      requireSafeOutcomeStore();
+    } catch {
+      return false;
+    }
     // One-time migration per generation: a home whose outcomes were all
     // delivered before the processed marker existed treats them as processed
     // rather than re-presenting its whole history. Runs before any new row
@@ -1099,11 +1125,14 @@ export default function (pi: ExtensionAPI) {
           if (row.wakeSeq === undefined) {
             // Legacy markers do not establish a wake-linked handoff identity.
             // Every pre-wake_seq shape uses the same visible replay rule.
+            if (!actingAsOwner(expectedGeneration)) return false;
+            if (!runOutcomeScript(["action-retire-legacy", "--seq", String(row.seq)]).ok) return false;
             deliverRoutineOutcome(row);
           } else {
             const actionStatus = runOutcomeScript(["action-status", "--seq", String(row.seq)]);
             if (!actionStatus.ok) return false;
             if (actionStatus.stdout === "started") {
+              if (!actingAsOwner(expectedGeneration)) return false;
               if (!runOutcomeScript(["mark-read", "--through", String(row.seq)]).ok) return false;
               continue;
             } else if (actionStatus.stdout === "pending") return true;
@@ -1112,7 +1141,7 @@ export default function (pi: ExtensionAPI) {
         } else if (row.verdict !== "routine") {
           deliverRoutineOutcome(row);
         }
-        if (!generationOwnsLock(expectedGeneration)) return false;
+        if (!actingAsOwner(expectedGeneration)) return false;
         if (!runOutcomeScript(["mark-read", "--through", String(row.seq)]).ok) return false;
       }
     }
@@ -1207,6 +1236,12 @@ export default function (pi: ExtensionAPI) {
       const status = runOutcomeScript(["action-status", "--seq", seq]);
       if (!status.ok) return false;
       if (status.stdout === "started") {
+        if (!actingAsOwner(expectedGeneration)) return false;
+        try {
+          requireSafeOutcomeStore();
+        } catch {
+          return false;
+        }
         if (runOutcomeScript(["mark-read", "--through", seq]).ok) pendingActionDeliveries.delete(seq);
         else return false;
         continue;
@@ -1220,6 +1255,7 @@ export default function (pi: ExtensionAPI) {
       };
       try {
         if (!actingAsOwner(expectedGeneration)) return false;
+        requireSafeOutcomeStore();
         pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
       } catch (error) {
         console.error(`Firstmate supervision: hidden action delivery failed for seq ${seq}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1292,7 +1328,23 @@ export default function (pi: ExtensionAPI) {
         if (scopeRefusal) {
           return { content: [{ type: "text", text: scopeRefusal }], details: undefined, isError: true };
         }
-        requireSafeOutcomeStore();
+        if (!actingAsOwner(toolGeneration)) {
+          return {
+            content: [{ type: "text", text: "report refused: supervision session was replaced or lost lock ownership" }],
+            details: undefined,
+            isError: true,
+          };
+        }
+        try {
+          requireSafeOutcomeStore();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: "text", text: `report refused: ${detail}` }],
+            details: undefined,
+            isError: true,
+          };
+        }
         const appendArgs = verdict === "firstmate-action"
           ? ["append-action", "--task", task, "--wake-seq", wakeSeq, "--summary", summary]
           : ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(verdict === "routine" || silent)];
@@ -1378,11 +1430,16 @@ export default function (pi: ExtensionAPI) {
       }
     }
     const freshConversation = !sessionManager;
-    const recovery = freshConversation
-      ? recoveryStdout === undefined
-        ? runOutcomeScript(["context"])
-        : { ok: true, stdout: recoveryStdout, detail: "" }
-      : null;
+    let recovery: { ok: boolean; stdout: string; detail: string } | null = null;
+    if (freshConversation) {
+      if (recoveryStdout === undefined) {
+        if (!actingAsOwner(branchGeneration)) throw new Error("supervision session was replaced or lost lock ownership");
+        requireSafeOutcomeStore();
+        recovery = runOutcomeScript(["context"]);
+      } else {
+        recovery = { ok: true, stdout: recoveryStdout, detail: "" };
+      }
+    }
     if (recovery && !recovery.ok) throw new Error(`${DURABLE_CONTEXT_FAILURE_PREFIX} ${recovery.detail}`);
     if (!sessionManager) {
       sessionManager = SessionManager.create(fmRoot, sessionsDir);
@@ -1524,7 +1581,7 @@ ${context.command}
         if (expectedGeneration === generation && !shuttingDown) {
           const detail = error instanceof Error ? error.message : String(error);
           if (detail.startsWith(DURABLE_CONTEXT_FAILURE_PREFIX)) latchDurableContextFailure(detail);
-          else branchBroken = detail;
+          else if (!outcomeStoreHealthNotePending) branchBroken = detail;
         }
         throw error;
       }
@@ -1561,6 +1618,11 @@ ${context.command}
     const wakeSeq = canonicalWakeSequence(String(details.wakeSeq ?? ""));
     if (!wakeSeq || wakeSeq !== pending.wakeSeq) return;
     if (!actingAsOwner(generation)) return;
+    try {
+      requireSafeOutcomeStore();
+    } catch {
+      return;
+    }
     if (!runOutcomeScript(["action-started", "--seq", seq], "main").ok) return;
     if (!runOutcomeScript(["mark-read", "--through", seq]).ok) return;
     pendingActionDeliveries.delete(seq);
@@ -1605,6 +1667,8 @@ ${context.command}
         requireSafeOutcomeStore();
         let recoveryStdout: string | undefined;
         if (conversationWakes >= maxConversationWakes) {
+          if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
+          requireSafeOutcomeStore();
           const recovery = runOutcomeScript(["context"]);
           if (!recovery.ok) throw new Error(`${DURABLE_CONTEXT_FAILURE_PREFIX} ${recovery.detail}`);
           recoveryStdout = recovery.stdout;
@@ -1660,6 +1724,7 @@ ${context.command}
           wakeTaskScope = null;
           if (activeWakeContext === wakeContext) activeWakeContext = null;
         }
+        if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
         requireSafeOutcomeStore();
         const providerError = settledPromptProviderError(sessionManager, entryOffset);
         if (providerError) {
@@ -1673,7 +1738,7 @@ ${context.command}
           throw new Error(detail);
         }
         if (durableReportRevision <= reportRevisionBeforePrompt) {
-          throw new Error("supervision branch prompt settled but produced no durable outcome for its claimed wake rows");
+          throw new Error(outcomeStoreHealthNotePending || "supervision branch prompt settled but produced no durable outcome for its claimed wake rows");
         }
         recordDurableBranchReport(branchForWake.generation, branchForWake.selectionRevision);
         if (!releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration))) {
@@ -1682,7 +1747,9 @@ ${context.command}
         if (!releaseBranchLeases(acceptedGeneration)) {
           throw new Error("could not release the branch's settled task leases");
         }
-        deliverPendingActionDeliveries(acceptedGeneration, wakeContext.eligibleSeqs);
+        if (!deliverPendingActionDeliveries(acceptedGeneration, wakeContext.eligibleSeqs)) {
+          throw new Error(branchBroken || outcomeStoreHealthNotePending || "could not deliver pending firstmate actions");
+        }
       })
       .catch((error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
@@ -1827,7 +1894,6 @@ ${context.command}
     // effects.
     if (!offerEligible(offer)) return;
     if (!actingAsOwner()) return; // cold start pre-lock, secondary session, or shutdown
-    activatePendingActionDeliveries(generation);
     if (afkActive()) return; // the away daemon owns supervision while afk
     const recoveryProbe = Boolean(
       branchBroken &&
@@ -1837,7 +1903,11 @@ ${context.command}
     );
     if (branchBroken && !recoveryProbe) return; // main owns every wake inside the cooldown window
     if (!reconcileUnreadOutcomes(generation)) {
-      branchBroken = "could not reconcile unread supervision outcomes into main";
+      if (outcomeStoreHealthNotePending) {
+        offer.accept(Promise.reject(new Error(outcomeStoreHealthNotePending)));
+      } else if (!branchBroken) {
+        branchBroken = "could not reconcile unread supervision outcomes into main";
+      }
       return;
     }
     if (!collectCurrentMainDialog()) return;
@@ -1896,7 +1966,7 @@ ${context.command}
     currentMainSession = ctx.sessionManager;
     if (!actingAsOwner()) return;
     if (!reconcileUnreadOutcomes(generation, false)) {
-      branchBroken = "could not reconcile unread supervision outcomes into main";
+      if (!branchBroken && !outcomeStoreHealthNotePending) branchBroken = "could not reconcile unread supervision outcomes into main";
       return;
     }
     if (!collectCurrentMainDialog()) return;
@@ -1926,13 +1996,14 @@ ${context.command}
     providerRecovery = null;
     generation += 1;
     unsafeOutcomeStore = "";
+    outcomeStoreHealthNotePending = "";
     conversationWakes = 0;
     mirrorCollection.collectAnchor = null;
     mirrorCollection.pendingCursor = null;
     mirrorCollection.stagedCaptain = null;
     mirrorCollection.reanchor = true;
     if (actingAsOwner(generation) && !reconcileUnreadOutcomes(generation)) {
-      branchBroken = "could not reconcile unread supervision outcomes into main";
+      if (!branchBroken && !outcomeStoreHealthNotePending) branchBroken = "could not reconcile unread supervision outcomes into main";
     }
   });
 
@@ -2431,6 +2502,23 @@ ${context.command}
       if (!processing || through > processing.through) {
         return {
           content: [{ type: "text", text: `acknowledgement refused: seq ${through} was not listed in the active processing request` }],
+          details: undefined,
+          isError: true,
+        };
+      }
+      if (!actingAsOwner()) {
+        return {
+          content: [{ type: "text", text: "acknowledgement refused: this session lost fleet lock ownership" }],
+          details: undefined,
+          isError: true,
+        };
+      }
+      try {
+        requireSafeOutcomeStore();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text", text: `acknowledgement refused: ${detail}` }],
           details: undefined,
           isError: true,
         };

@@ -31,7 +31,9 @@ test_concurrent_append_and_drain() {
     pids="$pids $!"
     i=$((i + 1))
   done
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out1" &
+  # Keep this fixture focused on append/drain overlap rather than the drain's
+  # separate presentation deadline when the watcher family is CPU-contended.
+  FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=30 "$DRAIN" > "$out1" &
   pids="$pids $!"
   for pid in $pids; do
     wait "$pid" || fail "concurrent append/drain subprocess failed"

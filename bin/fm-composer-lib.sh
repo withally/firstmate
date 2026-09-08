@@ -714,7 +714,10 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # exact positive proof they require (`empty`), so unrecognized future verdicts
 # fail safe by default.
 
-# _fm_composer_pi_separator_row: a solid pi separator - nothing but `─`, at
+# _fm_composer_titled_rule_row: Claude's titled-rule composer boundary starts
+# with a long `─` run and includes non-rule title text, so it is distinct from
+# Pi's solid separator and still proves the adjacent bare composer shape.
+# _fm_composer_pi_separator_row: a solid Pi separator - nothing but `─`, at
 # least 8 columns wide. The width floor is a literal substring test so it is
 # byte-exact in every locale.
 _fm_composer_titled_rule_row() {  # <trimmed-row>

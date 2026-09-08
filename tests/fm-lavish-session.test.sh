@@ -95,6 +95,28 @@ fi
   || fail "refused durable end still changed the session"
 pass "durable end refuses while a captain review binding remains open"
 
+BEFORE_POLL=$(jq -s -r 'map(select(.key == "durable"))[0].last_polled_at' "$LEDGER")
+sleep 1
+PATH="$FAKE_BIN:$PATH" FM_HOME="$HOME_DIR" LAVISH_AXI_STATE_DIR="$STATE_DIR" \
+  "$ROOT/bin/fm-procevent-lavish.sh" poll "$DURABLE" --task-id task-one >/dev/null
+AFTER_POLL=$(jq -s -r 'map(select(.key == "durable"))[0].last_polled_at' "$LEDGER")
+BEFORE_POLL="$BEFORE_POLL" AFTER_POLL="$AFTER_POLL" node -e '
+  if (!(Date.parse(process.env.AFTER_POLL) > Date.parse(process.env.BEFORE_POLL))) process.exit(1)' \
+  || fail "a real poll iteration did not refresh the ledger activity clock"
+pass "every Lavish poll iteration refreshes a portable ISO activity timestamp"
+
+OWNER_HOME="$TMP_ROOT/owner-home"
+mkdir -p "$OWNER_HOME/state"
+printf 'worktree=%s\nkind=ship\n' "$(dirname "$ARTIFACT")" > "$OWNER_HOME/state/owner-one.meta"
+printf 'worktree=%s\nkind=ship\n' "$(dirname "$ARTIFACT")" > "$OWNER_HOME/state/owner-two.meta"
+if PATH="$FAKE_BIN:$PATH" FM_HOME="$OWNER_HOME" LAVISH_AXI_STATE_DIR="$STATE_DIR" \
+  "$ROOT/bin/fm-lavish-session.sh" register-auto "$ARTIFACT" >/dev/null 2>&1; then
+  fail "register-auto selected one of two matching task owners"
+fi
+assert_absent "$OWNER_HOME/state/owner-one.lavish-sessions" "ambiguous owner did not create the first ledger"
+assert_absent "$OWNER_HOME/state/owner-two.lavish-sessions" "ambiguous owner did not create the second ledger"
+pass "register-auto refuses multiple matching lifecycle owners"
+
 AUDIT_HOME="$TMP_ROOT/audit-home"
 AUDIT_STATE="$TMP_ROOT/audit-lavish"
 LSOF_FILE="$TMP_ROOT/empty-lsof"
@@ -156,14 +178,46 @@ PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE"
   || fail "apply changed an ambiguous session"
 pass "apply ends only frozen eligible sessions and verifies the transition"
 
+EMPTY_CANDIDATE="$TMP_ROOT/empty-candidates.jsonl"
+: > "$EMPTY_CANDIDATE"
+AUTHORITY="$TMP_ROOT/authority.json"
+AMBIGUOUS="$AMBIGUOUS" AUDIT_STATE="$AUDIT_STATE" node <<'NODE' > "$AUTHORITY"
+const fs = require("node:fs");
+const row = JSON.parse(fs.readFileSync(`${process.env.AUDIT_STATE}/state.json`, "utf8")).sessions.ambiguous;
+process.stdout.write(JSON.stringify({
+  schema:"fm-lavish-session-authority.v1",
+  ruling_date:"2026-09-08",
+  frozen_at:"2026-09-08",
+  ruling:"Apply only captain-authorized ambiguous existing-path sessions, except the three links mentioned on 2026-09-08.",
+  authorized:[{...row,classification:"ambiguous"}],
+  excluded:[
+    {key:"7f59a8c16dff9f19",url:"http://127.0.0.1:4387/session/7f59a8c16dff9f19",file:"/Users/ivan/Projects/firstmate/data/nancy-tennis-directions-board-b2/board/index.html",reason:"kept board named in the 2026-09-08 ruling"},
+    {key:"4ae99e8ad06d4a8c",url:"http://127.0.0.1:4387/session/4ae99e8ad06d4a8c",file:"/Users/ivan/.treehouse/firstmate-bd0d1d/8/firstmate/data/ally-screener-paid-media/board/index.html",reason:"kept board named in the 2026-09-08 ruling"},
+    {key:"cc73671c247bff78",url:"http://127.0.0.1:4387/session/cc73671c247bff78",file:"/Users/ivan/Projects/firstmate/data/syd-board-b1/board/index.html",reason:"kept board named in the 2026-09-08 ruling"},
+  ],
+}, null, 2));
+NODE
+PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
+  "$ROOT/bin/fm-lavish-audit.sh" apply "$EMPTY_CANDIDATE" --authorized "$AUTHORITY" --batch-size 1 >/dev/null
+[ "$(jq -r '.sessions.ambiguous.status' "$AUDIT_STATE/state.json")" = ended ] \
+  || fail "authorized apply did not end the frozen ambiguous session"
+pass "authorized apply requires the exact ruling and three protected board exclusions"
+
 SUMMARY=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" "$ROOT/bin/fm-lavish-audit.sh" summary)
 assert_contains "$SUMMARY" 'total=8' "summary counts total registry rows"
-assert_contains "$SUMMARY" 'open=5' "summary counts open registry rows after apply"
+assert_contains "$SUMMARY" 'open=4' "summary counts open registry rows after apply"
 assert_contains "$SUMMARY" 'feedback=1' "summary counts feedback rows"
-assert_contains "$SUMMARY" 'ended=2' "summary counts ended rows"
+assert_contains "$SUMMARY" 'ended=3' "summary counts ended rows"
 assert_contains "$SUMMARY" 'missing_file=1' "summary counts open missing-file rows"
 assert_contains "$SUMMARY" 'past_expiry=1' "summary counts expired preserved rows after apply"
 pass "summary distinguishes registry counts from live connections"
+
+printf '{not-json}\n' > "$AUDIT_HOME/state/bad-owner.lavish-sessions"
+if FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
+  "$ROOT/bin/fm-lavish-audit.sh" audit >/dev/null 2>&1; then
+  fail "audit converted malformed ownership inventory into an empty eligible inventory"
+fi
+pass "malformed ownership inventory refuses the whole audit"
 
 fm_test_cleanup
 printf 'all fm-lavish-session tests passed\n'

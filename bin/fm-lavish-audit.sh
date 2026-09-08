@@ -533,7 +533,7 @@ if (process.env.AUTHORITY_FILE) {
   if (!isObject(authority) || authority.schema !== "fm-lavish-session-authority.v1" || authority.ruling_date !== "2026-09-08" || authority.frozen_at !== "2026-09-08" || authority.ruling !== process.env.AUTHORIZATION_RULING || !Array.isArray(authority.authorized) || !Array.isArray(authority.excluded) || authority.excluded.length !== 3) fail("authorization file does not carry the frozen 2026-09-08 ruling and three exclusions");
   const keptBoards = new Map([
     ["7f59a8c16dff9f19", {url:"http://127.0.0.1:4387/session/7f59a8c16dff9f19",file:"/Users/ivan/Projects/firstmate/data/nancy-tennis-directions-board-b2/board/index.html"}],
-    ["6aba2ed4c6df33d3", {url:"http://127.0.0.1:4387/session/6aba2ed4c6df33d3",file:"/Users/ivan/Projects/firstmate/data/nancy-direction-board-d1/board/index.html"}],
+    ["4ae99e8ad06d4a8c", {url:"http://127.0.0.1:4387/session/4ae99e8ad06d4a8c",file:"/Users/ivan/.treehouse/firstmate-bd0d1d/8/firstmate/data/ally-screener-paid-media/board/index.html"}],
     ["cc73671c247bff78", {url:"http://127.0.0.1:4387/session/cc73671c247bff78",file:"/Users/ivan/Projects/firstmate/data/syd-board-b1/board/index.html"}],
   ]);
   const exclusions = new Set();

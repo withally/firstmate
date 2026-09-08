@@ -3,7 +3,1640 @@
   "ruling_date": "2026-09-08",
   "frozen_at": "2026-09-08",
   "ruling": "Apply only captain-authorized ambiguous existing-path sessions, except the three links mentioned on 2026-09-08.",
-  "authorized": [],
+  "authorized": [
+    {
+      "key": "00348516af86abfa",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-loewe-page-w8/index.html",
+      "url": "http://127.0.0.1:4387/session/00348516af86abfa",
+      "status": "open",
+      "updated_at": "2026-07-30T22:52:23.950Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "00f4d431d1c83ce1",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/Location-1-day-4-script-fm.html",
+      "url": "http://127.0.0.1:4387/session/00f4d431d1c83ce1",
+      "status": "open",
+      "updated_at": "2026-08-14T10:13:30.303Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "01e03d8567965e87",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-upright-char-r8/gallery.html",
+      "url": "http://127.0.0.1:4387/session/01e03d8567965e87",
+      "status": "open",
+      "updated_at": "2026-07-29T09:32:52.757Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "063fea78b0ab2d22",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-cute-motion-economy-opus-u6/review.html",
+      "url": "http://127.0.0.1:4387/session/063fea78b0ab2d22",
+      "status": "open",
+      "updated_at": "2026-08-01T15:04:40.001Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "06a184da28538f77",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/Location-1-day-1-script.html",
+      "url": "http://127.0.0.1:4387/session/06a184da28538f77",
+      "status": "open",
+      "updated_at": "2026-08-16T07:02:08.907Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "084e8ab0e4205b60",
+      "file": "/Users/ivan/Projects/firstmate/data/memory-review-2026-08-21/.lavish/memory-review.html",
+      "url": "http://127.0.0.1:4387/session/084e8ab0e4205b60",
+      "status": "open",
+      "updated_at": "2026-08-21T08:55:58.091Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "0dfd0a2261dc23a7",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-dirtytalk-game-campaign-opus-m8/slice.html",
+      "url": "http://127.0.0.1:4387/session/0dfd0a2261dc23a7",
+      "status": "open",
+      "updated_at": "2026-08-03T00:17:53.270Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "0e87a0302e8ff079",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-key-screen-storyboard-b7/review.html",
+      "url": "http://127.0.0.1:4387/session/0e87a0302e8ff079",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:33.595Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "0f1cd9e645439376",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-duo-screens-v3/prototype/l1-game-v3.html",
+      "url": "http://127.0.0.1:4387/session/0f1cd9e645439376",
+      "status": "open",
+      "updated_at": "2026-07-30T14:57:49.105Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "1221f67357c63017",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-yard-mission-p0-k6/review.html",
+      "url": "http://127.0.0.1:4387/session/1221f67357c63017",
+      "status": "open",
+      "updated_at": "2026-08-02T03:07:07.003Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "12ff2d553931ee07",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-hype-articles-w9/review.html",
+      "url": "http://127.0.0.1:4387/session/12ff2d553931ee07",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:35.429Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "133ab26ac419a4d4",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-day2-floorseq-family-a1/out/board.html",
+      "url": "http://127.0.0.1:4387/session/133ab26ac419a4d4",
+      "status": "open",
+      "updated_at": "2026-08-26T04:48:50.703Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "13ed28a6b0916ba9",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-cover-lander-k4/index.html",
+      "url": "http://127.0.0.1:4387/session/13ed28a6b0916ba9",
+      "status": "open",
+      "updated_at": "2026-07-30T13:25:51.537Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "14fcd73e42191483",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/dino.html",
+      "url": "http://127.0.0.1:4387/session/14fcd73e42191483",
+      "status": "open",
+      "updated_at": "2026-08-19T09:43:19.185Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "156dadaa56f17869",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-day2-curtains-family-a1/out/board.html",
+      "url": "http://127.0.0.1:4387/session/156dadaa56f17869",
+      "status": "open",
+      "updated_at": "2026-08-26T05:06:16.788Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "15bc062b38cdf572",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-creature-hunt-fable-f5/.lavish/idel-creature-board.html",
+      "url": "http://127.0.0.1:4387/session/15bc062b38cdf572",
+      "status": "open",
+      "updated_at": "2026-08-20T06:01:05.953Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "16434f3d37386bb9",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/study.html",
+      "url": "http://127.0.0.1:4387/session/16434f3d37386bb9",
+      "status": "open",
+      "updated_at": "2026-08-19T10:21:05.196Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "1655e94e35a77127",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-cover-round3-k9/gallery.html",
+      "url": "http://127.0.0.1:4387/session/1655e94e35a77127",
+      "status": "open",
+      "updated_at": "2026-07-29T04:06:04.286Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "18fdf1281bc94117",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/Location-1-day-1-script-reformat.html",
+      "url": "http://127.0.0.1:4387/session/18fdf1281bc94117",
+      "status": "open",
+      "updated_at": "2026-08-17T06:05:25.529Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "190a8637a01b505a",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-creature-hunt-grok-g1/.lavish/board.html",
+      "url": "http://127.0.0.1:4387/session/190a8637a01b505a",
+      "status": "open",
+      "updated_at": "2026-08-20T05:34:01.712Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "19dbec5d7ca1a169",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-opus-v6-o5/review.html",
+      "url": "http://127.0.0.1:4387/session/19dbec5d7ca1a169",
+      "status": "open",
+      "updated_at": "2026-07-31T09:27:05.487Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "223367148752378e",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-cover-round4-p2/gallery.html",
+      "url": "http://127.0.0.1:4387/session/223367148752378e",
+      "status": "open",
+      "updated_at": "2026-07-29T05:31:15.462Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "22a71b146b2151a6",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-consumer-research-v8/review.html",
+      "url": "http://127.0.0.1:4387/session/22a71b146b2151a6",
+      "status": "open",
+      "updated_at": "2026-08-01T15:13:33.896Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "230ffddf07168c2d",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/lighter.html",
+      "url": "http://127.0.0.1:4387/session/230ffddf07168c2d",
+      "status": "open",
+      "updated_at": "2026-08-20T01:19:03.011Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "23c0043ecbb278e9",
+      "file": "/Users/ivan/Projects/pvs-ideation-r3-fable/.lavish/hearth/index.html",
+      "url": "http://127.0.0.1:4387/session/23c0043ecbb278e9",
+      "status": "open",
+      "updated_at": "2026-08-11T01:55:49.959Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "23d3a30c7340702c",
+      "file": "/Users/ivan/Projects/firstmate/.lavish/review-first-2026-08-16.html",
+      "url": "http://127.0.0.1:4387/session/23d3a30c7340702c",
+      "status": "open",
+      "updated_at": "2026-08-16T03:18:49.465Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "26e3a752f33d6000",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-viz-nightstand-anchor-v4/index.html",
+      "url": "http://127.0.0.1:4387/session/26e3a752f33d6000",
+      "status": "open",
+      "updated_at": "2026-08-09T07:39:34.636Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "27e18771d215da87",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-furnace-v3-l7/index.html",
+      "url": "http://127.0.0.1:4387/session/27e18771d215da87",
+      "status": "open",
+      "updated_at": "2026-07-30T23:51:10.669Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "2d13fba848ae2651",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-tc-key-images-k7/articles-review.html",
+      "url": "http://127.0.0.1:4387/session/2d13fba848ae2651",
+      "status": "open",
+      "updated_at": "2026-07-31T05:17:06.735Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "2d1d9615178e1acb",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-full-read.html",
+      "url": "http://127.0.0.1:4387/session/2d1d9615178e1acb",
+      "status": "open",
+      "updated_at": "2026-08-17T09:07:23.157Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "2d41f8af740465e6",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-beautiful-object-y5/gallery.html",
+      "url": "http://127.0.0.1:4387/session/2d41f8af740465e6",
+      "status": "open",
+      "updated_at": "2026-07-29T14:11:43.559Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "2f67255d4bd1bff2",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-dirtytalk-reorder-blocker-r5/review.html",
+      "url": "http://127.0.0.1:4387/session/2f67255d4bd1bff2",
+      "status": "open",
+      "updated_at": "2026-07-31T08:43:23.642Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "2fe3448f4d09d868",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-quiz-opening-creative-f1/prototype/index.html",
+      "url": "http://127.0.0.1:4387/session/2fe3448f4d09d868",
+      "status": "open",
+      "updated_at": "2026-08-14T11:30:30.331Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "32cef3e82b816286",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-eve-walk-fix-x1/out/review/full-dr-dl/eve-walk-set-review.html",
+      "url": "http://127.0.0.1:4387/session/32cef3e82b816286",
+      "status": "open",
+      "updated_at": "2026-08-26T05:40:53.265Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "33e1888c82408fdb",
+      "file": "/Users/ivan/Projects/firstmate/data/secondmate-model-eval-bv-e1/.lavish/model-scorecard.html",
+      "url": "http://127.0.0.1:4387/session/33e1888c82408fdb",
+      "status": "open",
+      "updated_at": "2026-08-31T08:30:13.075Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "3ac79d1211ec55fa",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-calcube-r9/gallery.html",
+      "url": "http://127.0.0.1:4387/session/3ac79d1211ec55fa",
+      "status": "open",
+      "updated_at": "2026-07-29T09:58:48.090Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "3b0fdd794d1497fe",
+      "file": "/Users/ivan/Projects/firstmate/data/blockvalley-viewport-mock/mock.html",
+      "url": "http://127.0.0.1:4387/session/3b0fdd794d1497fe",
+      "status": "open",
+      "updated_at": "2026-08-28T13:00:49.169Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "3b841d7af79c0d2d",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-viz-table-season-v1/page/index.html",
+      "url": "http://127.0.0.1:4387/session/3b841d7af79c0d2d",
+      "status": "open",
+      "updated_at": "2026-08-09T07:45:30.870Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "3d0376b403e59507",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-b-content-audit-r5/review.html",
+      "url": "http://127.0.0.1:4387/session/3d0376b403e59507",
+      "status": "open",
+      "updated_at": "2026-07-30T01:03:23.338Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "3dab4dd7f6a6cfa9",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-day-3-blind-v1.html",
+      "url": "http://127.0.0.1:4387/session/3dab4dd7f6a6cfa9",
+      "status": "open",
+      "updated_at": "2026-08-17T02:41:34.452Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "4062caa64f5a4b1d",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-viz-hearth-shelf-v3/page/hearth-shelf.html",
+      "url": "http://127.0.0.1:4387/session/4062caa64f5a4b1d",
+      "status": "open",
+      "updated_at": "2026-08-09T07:45:17.704Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "47bd0fd338dd7159",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-l1-day1-assets-e1/figma-export/bed-1-set-pilot-review.html",
+      "url": "http://127.0.0.1:4387/session/47bd0fd338dd7159",
+      "status": "open",
+      "updated_at": "2026-08-25T03:11:49.630Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "491ba7c3fa2a5640",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/Location-1-day-5-script-k3.html",
+      "url": "http://127.0.0.1:4387/session/491ba7c3fa2a5640",
+      "status": "open",
+      "updated_at": "2026-08-15T00:11:20.890Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "4d308ec1d4c3c744",
+      "file": "/Users/ivan/Projects/firstmate/data/kin-look-screens-f5/.lavish/board.html",
+      "url": "http://127.0.0.1:4387/session/4d308ec1d4c3c744",
+      "status": "open",
+      "updated_at": "2026-08-19T02:19:12.699Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "4d45fffb588fdb64",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-nightsolo-proto-r7/gallery.html",
+      "url": "http://127.0.0.1:4387/session/4d45fffb588fdb64",
+      "status": "open",
+      "updated_at": "2026-07-29T09:10:41.926Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "4f72b1c1a809b6b3",
+      "file": "/Users/ivan/Projects/firstmate/data/omawild-home-chain-f1/index.html",
+      "url": "http://127.0.0.1:4387/session/4f72b1c1a809b6b3",
+      "status": "open",
+      "updated_at": "2026-09-06T01:51:38.045Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "50e08b1eab033a8d",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-streak-object-d4/gallery.html",
+      "url": "http://127.0.0.1:4387/session/50e08b1eab033a8d",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:30.149Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "516e72ed74190eb2",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-eve-sweep-cast-x1/out/review/eve-hand-sweep-motion-review.html",
+      "url": "http://127.0.0.1:4387/session/516e72ed74190eb2",
+      "status": "open",
+      "updated_at": "2026-08-26T04:50:47.478Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "52030c8f8b333e7b",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/spine.html",
+      "url": "http://127.0.0.1:4387/session/52030c8f8b333e7b",
+      "status": "open",
+      "updated_at": "2026-08-20T00:48:10.124Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "52f131b4c177a5ed",
+      "file": "/Users/ivan/Projects/firstmate/data/blockvalley-ux-v1/board.html",
+      "url": "http://127.0.0.1:4387/session/52f131b4c177a5ed",
+      "status": "open",
+      "updated_at": "2026-08-28T13:19:57.607Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "5697268fb6701a5c",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-t1-deepen-renders-m6/gallery.html",
+      "url": "http://127.0.0.1:4387/session/5697268fb6701a5c",
+      "status": "open",
+      "updated_at": "2026-07-29T03:13:37.690Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "5984d98e57bec724",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-dirtytalk-science-audit-s7/review.html",
+      "url": "http://127.0.0.1:4387/session/5984d98e57bec724",
+      "status": "open",
+      "updated_at": "2026-07-31T07:41:56.272Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "5a2e0444b89a32f5",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-day1-assets-board/index.html",
+      "url": "http://127.0.0.1:4387/session/5a2e0444b89a32f5",
+      "status": "open",
+      "updated_at": "2026-08-28T01:24:38.819Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "5a7905a99092492d",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-cover-round2-b7/gallery.html",
+      "url": "http://127.0.0.1:4387/session/5a7905a99092492d",
+      "status": "open",
+      "updated_at": "2026-07-29T03:43:41.236Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "5e23d01a556cc897",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-pb-chip-icons-opus-i1/contact-sheet.html",
+      "url": "http://127.0.0.1:4387/session/5e23d01a556cc897",
+      "status": "open",
+      "updated_at": "2026-08-05T00:37:04.043Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "5e8ea550cdf8ce0c",
+      "file": "/Users/ivan/Projects/firstmate/.lavish/bearings-board.html",
+      "url": "http://127.0.0.1:4387/session/5e8ea550cdf8ce0c",
+      "status": "open",
+      "updated_at": "2026-08-24T01:25:07.120Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "629e597525c878e8",
+      "file": "/Users/ivan/Projects/firstmate/data/herdr-hermes-phone-setup-j5/review.html",
+      "url": "http://127.0.0.1:4387/session/629e597525c878e8",
+      "status": "open",
+      "updated_at": "2026-08-01T01:10:46.850Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "63358c163c2d9d58",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-bloom-anchor-h4/gallery.html",
+      "url": "http://127.0.0.1:4387/session/63358c163c2d9d58",
+      "status": "open",
+      "updated_at": "2026-07-30T10:03:28.039Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "676a7ac1da0ebe3d",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-day-4-script.html",
+      "url": "http://127.0.0.1:4387/session/676a7ac1da0ebe3d",
+      "status": "open",
+      "updated_at": "2026-08-17T07:02:03.818Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "67e2d8af12deded0",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-eve-walk-fix-x1/out/review/dr-cleanup-only/eve-dr-cleanup-review.html",
+      "url": "http://127.0.0.1:4387/session/67e2d8af12deded0",
+      "status": "open",
+      "updated_at": "2026-08-26T02:56:09.152Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "69603190944cb435",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-onboarding-screens-opus-t5/review.html",
+      "url": "http://127.0.0.1:4387/session/69603190944cb435",
+      "status": "open",
+      "updated_at": "2026-08-01T13:49:23.644Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "6997e44e73e94489",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-leader-product-f5/.lavish/board.html",
+      "url": "http://127.0.0.1:4387/session/6997e44e73e94489",
+      "status": "open",
+      "updated_at": "2026-08-24T02:08:30.585Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "6b08d02dd8b4d0b5",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-duolingo-animation-opus-v7/review.html",
+      "url": "http://127.0.0.1:4387/session/6b08d02dd8b4d0b5",
+      "status": "open",
+      "updated_at": "2026-08-02T03:27:15.579Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "6b51f4be99ab9c8d",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-story.html",
+      "url": "http://127.0.0.1:4387/session/6b51f4be99ab9c8d",
+      "status": "open",
+      "updated_at": "2026-08-17T06:35:24.082Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "6fd453221275826d",
+      "file": "/Users/ivan/Projects/firstmate/data/omawild-home-expedition-f2/index.html",
+      "url": "http://127.0.0.1:4387/session/6fd453221275826d",
+      "status": "open",
+      "updated_at": "2026-09-06T03:00:26.353Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "71dc17f0cad104e8",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-look-ab-board-o5/.lavish/board.html",
+      "url": "http://127.0.0.1:4387/session/71dc17f0cad104e8",
+      "status": "open",
+      "updated_at": "2026-08-22T06:07:48.139Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "7576729b50ec3670",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-dirtytalk-script-v2-o5/review.html",
+      "url": "http://127.0.0.1:4387/session/7576729b50ec3670",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:33.882Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "75dcf745aadddda2",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-l1-gap-proof-r1/.lavish/index.html",
+      "url": "http://127.0.0.1:4387/session/75dcf745aadddda2",
+      "status": "open",
+      "updated_at": "2026-08-25T09:24:29.404Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "77934c2dd48ec086",
+      "file": "/Users/ivan/Projects/firstmate/data/toy-points-review/points.html",
+      "url": "http://127.0.0.1:4387/session/77934c2dd48ec086",
+      "status": "open",
+      "updated_at": "2026-08-11T07:55:10.110Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "78640ebb2576c28b",
+      "file": "/Users/ivan/Projects/pvs-ideation-r3-fable/.lavish/brief/index.html",
+      "url": "http://127.0.0.1:4387/session/78640ebb2576c28b",
+      "status": "open",
+      "updated_at": "2026-08-11T03:25:16.867Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "78a5312713282776",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/worlds.html",
+      "url": "http://127.0.0.1:4387/session/78a5312713282776",
+      "status": "open",
+      "updated_at": "2026-08-19T10:51:15.603Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "7999b176973e5803",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-day-2-blind-v2.html",
+      "url": "http://127.0.0.1:4387/session/7999b176973e5803",
+      "status": "open",
+      "updated_at": "2026-08-17T02:53:11.202Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "7a543cce5f00a279",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-review.html",
+      "url": "http://127.0.0.1:4387/session/7a543cce5f00a279",
+      "status": "open",
+      "updated_at": "2026-08-16T06:47:10.690Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "7e083bade2bd7340",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-calcube-r10-x4/gallery.html",
+      "url": "http://127.0.0.1:4387/session/7e083bade2bd7340",
+      "status": "open",
+      "updated_at": "2026-07-29T10:42:28.783Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "8111cd15f145583c",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/Location-1-day-4-script-k3.html",
+      "url": "http://127.0.0.1:4387/session/8111cd15f145583c",
+      "status": "open",
+      "updated_at": "2026-08-15T00:11:11.958Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "85ca93b6d32d62b8",
+      "file": "/Users/ivan/Projects/firstmate/data/omawild-madeinmay-v2-m8/index.html",
+      "url": "http://127.0.0.1:4387/session/85ca93b6d32d62b8",
+      "status": "open",
+      "updated_at": "2026-07-31T00:07:00.317Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "85cdb2e77ba73904",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-days.html",
+      "url": "http://127.0.0.1:4387/session/85cdb2e77ba73904",
+      "status": "open",
+      "updated_at": "2026-08-13T07:15:14.423Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "8692fd4d2425fa04",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-map-regeneration-review/.lavish/location-1-map-assets.html",
+      "url": "http://127.0.0.1:4387/session/8692fd4d2425fa04",
+      "status": "open",
+      "updated_at": "2026-08-20T01:18:41.365Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "8d1ff022150f01a3",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-strategic-review-x9/review.html",
+      "url": "http://127.0.0.1:4387/session/8d1ff022150f01a3",
+      "status": "open",
+      "updated_at": "2026-07-30T01:22:06.802Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "9148f6b99feb9def",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-market-ux-audit-x7/.lavish/idel-market-readiness/index.html",
+      "url": "http://127.0.0.1:4387/session/9148f6b99feb9def",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:33.593Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "926e41fe9035b3ab",
+      "file": "/Users/ivan/Projects/firstmate/data/kin-look-sky-k3/.lavish/board.html",
+      "url": "http://127.0.0.1:4387/session/926e41fe9035b3ab",
+      "status": "open",
+      "updated_at": "2026-08-19T04:48:59.937Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "9315e87b6ede7f43",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-funnel-screens-c1/.lavish/look.html",
+      "url": "http://127.0.0.1:4387/session/9315e87b6ede7f43",
+      "status": "open",
+      "updated_at": "2026-08-19T00:09:47.678Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "9348a7e9d53a422c",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-alarm-design-v6/gallery.html",
+      "url": "http://127.0.0.1:4387/session/9348a7e9d53a422c",
+      "status": "open",
+      "updated_at": "2026-07-30T07:10:32.409Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "95d84bc5853e4d8b",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/refs.html",
+      "url": "http://127.0.0.1:4387/session/95d84bc5853e4d8b",
+      "status": "open",
+      "updated_at": "2026-08-19T13:16:01.250Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "98684925b1dbfa45",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/Location-1-day-3-script-k3.html",
+      "url": "http://127.0.0.1:4387/session/98684925b1dbfa45",
+      "status": "open",
+      "updated_at": "2026-08-14T09:56:54.448Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "98af896703b64cd3",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-consumer-games-prototype-fable-m12/review.html",
+      "url": "http://127.0.0.1:4387/session/98af896703b64cd3",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:30.317Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "9c95dfa64a0d2a69",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-viz-combined-surface-c1/page/index.html",
+      "url": "http://127.0.0.1:4387/session/9c95dfa64a0d2a69",
+      "status": "open",
+      "updated_at": "2026-08-09T08:01:22.993Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "9f7ce51140dd6c47",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-quiz-combat-reports/.lavish/quiz-combat-board.html",
+      "url": "http://127.0.0.1:4387/session/9f7ce51140dd6c47",
+      "status": "open",
+      "updated_at": "2026-08-20T14:30:44.143Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "a67f03b24cc611d5",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-furnace-v2-h6/index.html",
+      "url": "http://127.0.0.1:4387/session/a67f03b24cc611d5",
+      "status": "open",
+      "updated_at": "2026-07-31T00:27:15.895Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "a6f12e7004f554ff",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-day-3-script.html",
+      "url": "http://127.0.0.1:4387/session/a6f12e7004f554ff",
+      "status": "open",
+      "updated_at": "2026-08-17T06:35:24.287Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "a757f9e7e96e2251",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-arc-synthesis-f3/review/index.html",
+      "url": "http://127.0.0.1:4387/session/a757f9e7e96e2251",
+      "status": "open",
+      "updated_at": "2026-08-05T09:27:31.682Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "aa486da0a4e28314",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-round6-resize-g4/gallery.html",
+      "url": "http://127.0.0.1:4387/session/aa486da0a4e28314",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:30.234Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ab40edc06f73fe03",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-round5b-pin1fix-s7/gallery.html",
+      "url": "http://127.0.0.1:4387/session/ab40edc06f73fe03",
+      "status": "open",
+      "updated_at": "2026-07-29T07:50:09.518Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "abae2c960c0a91fd",
+      "file": "/Users/ivan/Projects/pvs-ideation-r3-fable/.lavish/report.html",
+      "url": "http://127.0.0.1:4387/session/abae2c960c0a91fd",
+      "status": "open",
+      "updated_at": "2026-08-10T12:57:09.227Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "abd0d67cbcfbc017",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-furnace-v4-r4/index.html",
+      "url": "http://127.0.0.1:4387/session/abd0d67cbcfbc017",
+      "status": "open",
+      "updated_at": "2026-07-31T05:03:40.004Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ad4434b12072616e",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-look-screens-k3/.lavish/look.html",
+      "url": "http://127.0.0.1:4387/session/ad4434b12072616e",
+      "status": "open",
+      "updated_at": "2026-08-18T13:39:27.921Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "b4106cba9b7dae2f",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-l1-day1-assets-e1/day1-status-board.html",
+      "url": "http://127.0.0.1:4387/session/b4106cba9b7dae2f",
+      "status": "open",
+      "updated_at": "2026-08-25T01:51:44.983Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "b820228d99fcb230",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/script-governing.html",
+      "url": "http://127.0.0.1:4387/session/b820228d99fcb230",
+      "status": "open",
+      "updated_at": "2026-08-16T06:39:49.123Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "b8d98e551b679502",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-claude-design-o5/creature.html",
+      "url": "http://127.0.0.1:4387/session/b8d98e551b679502",
+      "status": "open",
+      "updated_at": "2026-08-19T14:26:25.419Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "bea3aa9908f5818d",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-onepager-e5/onepager.html",
+      "url": "http://127.0.0.1:4387/session/bea3aa9908f5818d",
+      "status": "open",
+      "updated_at": "2026-07-29T07:08:01.488Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "c0c3a17a7acd0a07",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-chaise-authored-a1/out/board.html",
+      "url": "http://127.0.0.1:4387/session/c0c3a17a7acd0a07",
+      "status": "open",
+      "updated_at": "2026-08-26T04:53:16.368Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "c2ee188626dc7df0",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-motion-creative-opus-d9/motion-board.html",
+      "url": "http://127.0.0.1:4387/session/c2ee188626dc7df0",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:29.790Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "cabe385f6c5007a6",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-99-day-render-p6/gallery.html",
+      "url": "http://127.0.0.1:4387/session/cabe385f6c5007a6",
+      "status": "open",
+      "updated_at": "2026-07-29T12:55:31.991Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "cb59980d2458124e",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-dirtytalk-game-campaign-opus-m8/review.html",
+      "url": "http://127.0.0.1:4387/session/cb59980d2458124e",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:33.780Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "cbe8d2151d1f5925",
+      "file": "/Users/ivan/Projects/firstmate/data/kin-look-screens-g1/.lavish/board.html",
+      "url": "http://127.0.0.1:4387/session/cbe8d2151d1f5925",
+      "status": "open",
+      "updated_at": "2026-08-19T05:20:39.495Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "cccb262ea6e10e0f",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-pair-concept-h2/gallery.html",
+      "url": "http://127.0.0.1:4387/session/cccb262ea6e10e0f",
+      "status": "open",
+      "updated_at": "2026-07-29T13:21:01.820Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "cfcfd3fd47364241",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-round5-refblend-h3/gallery.html",
+      "url": "http://127.0.0.1:4387/session/cfcfd3fd47364241",
+      "status": "open",
+      "updated_at": "2026-07-29T07:35:00.429Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d2d54cf75b5708a6",
+      "file": "/Users/ivan/Projects/pvs/strategy/ideation-2026-08-k3/review.html",
+      "url": "http://127.0.0.1:4387/session/d2d54cf75b5708a6",
+      "status": "open",
+      "updated_at": "2026-08-10T09:25:12.122Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d2d5fcf2f8edde38",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-five-products/articles.html",
+      "url": "http://127.0.0.1:4387/session/d2d5fcf2f8edde38",
+      "status": "open",
+      "updated_at": "2026-07-31T01:09:15.623Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d3a5ed74193c6c6e",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-digital-detox-universe-d7/review.html",
+      "url": "http://127.0.0.1:4387/session/d3a5ed74193c6c6e",
+      "status": "open",
+      "updated_at": "2026-08-07T05:08:23.262Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d3cc76ed993f5a66",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-family-review.html",
+      "url": "http://127.0.0.1:4387/session/d3cc76ed993f5a66",
+      "status": "open",
+      "updated_at": "2026-08-17T01:21:48.357Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d6b62e2e545e77e1",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-game-structure-v1/.lavish/structure.html",
+      "url": "http://127.0.0.1:4387/session/d6b62e2e545e77e1",
+      "status": "open",
+      "updated_at": "2026-08-18T03:42:33.460Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d74d2c25200ed42a",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-l1-day1-assets-e1/figma-export/proofs/day1-amendment8-final-board.html",
+      "url": "http://127.0.0.1:4387/session/d74d2c25200ed42a",
+      "status": "open",
+      "updated_at": "2026-08-25T05:57:39.036Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "d7785081978d67d2",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-design-log-b6/logsheet.html",
+      "url": "http://127.0.0.1:4387/session/d7785081978d67d2",
+      "status": "open",
+      "updated_at": "2026-08-07T05:08:37.790Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "db82656675684ecb",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-rig-fidelity-t8/rig.html",
+      "url": "http://127.0.0.1:4387/session/db82656675684ecb",
+      "status": "open",
+      "updated_at": "2026-07-29T13:39:37.148Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "dcb201dc4d909dba",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-quiz-learnfirst-c16/.lavish/quiz-program.html",
+      "url": "http://127.0.0.1:4387/session/dcb201dc4d909dba",
+      "status": "open",
+      "updated_at": "2026-08-18T01:11:00.182Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "de66983011fc7ef3",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-agency-connection-time-map-m7/review.html",
+      "url": "http://127.0.0.1:4387/session/de66983011fc7ef3",
+      "status": "open",
+      "updated_at": "2026-07-31T09:38:01.273Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "e5354c20992ce973",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-flower-bloom-b5/continuity-review.html",
+      "url": "http://127.0.0.1:4387/session/e5354c20992ce973",
+      "status": "open",
+      "updated_at": "2026-07-31T01:08:22.401Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "e562d48dbb42d80b",
+      "file": "/Users/ivan/Projects/firstmate/data/kin-days15-consumer-f5b/.lavish/kin-days15-consumer.html",
+      "url": "http://127.0.0.1:4387/session/e562d48dbb42d80b",
+      "status": "open",
+      "updated_at": "2026-08-22T05:58:58.417Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "e77092a97419998c",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-days-v2.html",
+      "url": "http://127.0.0.1:4387/session/e77092a97419998c",
+      "status": "open",
+      "updated_at": "2026-08-16T06:39:49.196Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "e7893ed598e4fc9e",
+      "file": "/Users/ivan/Projects/firstmate/data/kin-product-plan-k3/.lavish/plan.html",
+      "url": "http://127.0.0.1:4387/session/e7893ed598e4fc9e",
+      "status": "open",
+      "updated_at": "2026-08-19T00:39:43.614Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ea04dcd2c5b49655",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-eve-r4-walk/.lavish/index.html",
+      "url": "http://127.0.0.1:4387/session/ea04dcd2c5b49655",
+      "status": "open",
+      "updated_at": "2026-08-25T09:56:17.087Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ea8ead9a790b6cee",
+      "file": "/Users/ivan/Projects/firstmate/data/limmi-batteryless-feasibility-f8/review.html",
+      "url": "http://127.0.0.1:4387/session/ea8ead9a790b6cee",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:33.876Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "eb25c65d307ebe32",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-viz-offline-league-v6/page/index.html",
+      "url": "http://127.0.0.1:4387/session/eb25c65d307ebe32",
+      "status": "open",
+      "updated_at": "2026-08-09T07:42:29.149Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ebea37ae0b1fa773",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-look-screens-f5/.lavish/look.html",
+      "url": "http://127.0.0.1:4387/session/ebea37ae0b1fa773",
+      "status": "open",
+      "updated_at": "2026-08-18T13:39:17.604Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ecd8682e4bbb1da3",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-flower-bloom-b5/video-review.html",
+      "url": "http://127.0.0.1:4387/session/ecd8682e4bbb1da3",
+      "status": "open",
+      "updated_at": "2026-07-31T01:32:13.830Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "ef013954cbd21969",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-funnel-screens-g1/.lavish/look.html",
+      "url": "http://127.0.0.1:4387/session/ef013954cbd21969",
+      "status": "open",
+      "updated_at": "2026-08-19T00:09:41.574Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "f0b8f0fd98c21197",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-funnel-screens-k3/.lavish/look.html",
+      "url": "http://127.0.0.1:4387/session/f0b8f0fd98c21197",
+      "status": "open",
+      "updated_at": "2026-08-19T00:09:45.526Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "f20d0d91892fbb74",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-day2-chair-proving-r1/board.html",
+      "url": "http://127.0.0.1:4387/session/f20d0d91892fbb74",
+      "status": "open",
+      "updated_at": "2026-08-26T04:52:27.991Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "f2a44fb777baa8ec",
+      "file": "/Users/ivan/Projects/firstmate/data/carenbloom-furnace-page-f7/index.html",
+      "url": "http://127.0.0.1:4387/session/f2a44fb777baa8ec",
+      "status": "open",
+      "updated_at": "2026-07-30T23:34:09.903Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "f562dfadb2999ea8",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-viz-stakes-ledger-v5/page/index.html",
+      "url": "http://127.0.0.1:4387/session/f562dfadb2999ea8",
+      "status": "open",
+      "updated_at": "2026-08-09T07:44:29.878Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "f78567ba0297cc26",
+      "file": "/Users/ivan/Projects/firstmate/data/recess-hype-editor-e6/review.html",
+      "url": "http://127.0.0.1:4387/session/f78567ba0297cc26",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:35.252Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "fa7053fd0444afcd",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-quiz-opening-proto-x1/prototype/index.html",
+      "url": "http://127.0.0.1:4387/session/fa7053fd0444afcd",
+      "status": "open",
+      "updated_at": "2026-08-14T10:02:06.383Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "fb67369082483021",
+      "file": "/Users/ivan/Projects/firstmate/data/idel-sprout-concept-c1/.lavish/review.html",
+      "url": "http://127.0.0.1:4387/session/fb67369082483021",
+      "status": "open",
+      "updated_at": "2026-08-20T12:01:07.121Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "fc783b7879f4d793",
+      "file": "/Users/ivan/Projects/firstmate/.lavish/three-parked-decisions-2026-07-15.html",
+      "url": "http://127.0.0.1:4387/session/fc783b7879f4d793",
+      "status": "open",
+      "updated_at": "2026-08-03T00:13:30.157Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    },
+    {
+      "key": "fdbf52f8fa5fc5a2",
+      "file": "/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-day-5-script.html",
+      "url": "http://127.0.0.1:4387/session/fdbf52f8fa5fc5a2",
+      "status": "open",
+      "updated_at": "2026-08-17T07:02:04.312Z",
+      "evidence": [
+        "captain-authorized-ambiguous",
+        "no-positive-closed-task-owner"
+      ],
+      "classification": "ambiguous"
+    }
+  ],
   "excluded": [
     {
       "key": "7f59a8c16dff9f19",
@@ -12,9 +1645,9 @@
       "reason": "kept board named in the 2026-09-08 ruling"
     },
     {
-      "key": "6aba2ed4c6df33d3",
-      "url": "http://127.0.0.1:4387/session/6aba2ed4c6df33d3",
-      "file": "/Users/ivan/Projects/firstmate/data/nancy-direction-board-d1/board/index.html",
+      "key": "4ae99e8ad06d4a8c",
+      "url": "http://127.0.0.1:4387/session/4ae99e8ad06d4a8c",
+      "file": "/Users/ivan/.treehouse/firstmate-bd0d1d/8/firstmate/data/ally-screener-paid-media/board/index.html",
       "reason": "kept board named in the 2026-09-08 ruling"
     },
     {

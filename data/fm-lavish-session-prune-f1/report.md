@@ -1,87 +1,62 @@
-# Lavish session prune f1
+# Lavish session lifecycle and conservative prune report
 
-## Scope and custody
+## Outcome
 
-This report records the accepted 2026-09-08 lifecycle ruling and the evidence retained by the implementation.
-The implementation is local to Firstmate and does not open, modify, or push `kunchenguid/lavish-axi`.
-Missing artifact paths remain unsupported by Lavish 0.1.63 and are never mutated.
+Firstmate now owns Lavish sessions through an explicit per-task or home ledger, teardown-time ephemeral ending, verified safe-park transfer, a narrow lifecycle-owner `retire-and-end`, a bootstrap registry diagnostic, and a dry-run-first audit/apply helper.
+The captain-authorized migration verified 76 ambiguous session transitions to ended before stopping on the first contradictory result, as required.
+One already-ended protected review was re-served, so the net registry change was 75 fewer open rows: 372 before and 297 after.
+The target of at most 20 genuinely active open sessions was not reached because Lavish reported success without ending one session, the stop-on-contradiction contract left 60 frozen candidates unattempted, and 111 missing-path rows remain unsupported by Lavish 0.1.63.
+Every ended board remains on disk and can be re-served because this migration deleted no artifact files.
 
-## Final numbers
+## Live migration
 
-The final read-only investigation snapshot contained 416 registry rows: 371 open, 18 feedback, and 27 ended.
-The crash-diagnosis snapshot contained 415 rows: 370 open, 18 feedback, and 27 ended.
-Of those 370 open rows, 8 mapped to current ordinary task metadata and 362 were lifecycle-closed or unowned from Firstmate's perspective.
-The 370 open rows included 267 existing artifact paths and 103 missing artifact paths.
-Firstmate held 22 registered Lavish process-event sources, 9 live poll processes, and 2 Chrome SSE streams at inspection time.
-The bootstrap diagnostic distinguishes registry rows from live connections, stays silent below 20 open rows, and warns from 50 open rows without pruning.
+The migration snapshot contained 417 total rows: 372 open, 18 feedback, and 27 ended.
+An early classifier pass incorrectly treated retained Nancy direction key `6aba2ed4c6df33d3` as eligible because it recognized closed backlog rows but not their retained `hold-kind` field.
+The supported `lavish-axi end <file>` path temporarily ended that row and verified its transition.
+The retained backlog record was then found, the session was restored through supported no-open serve semantics, and the classifier was corrected and regression-tested.
+The final classifier preserves that row with `retained-backlog-hold:parked` evidence.
 
-## Ambiguous evidence retained
+The captain subsequently authorized ending all 136 existing-path ambiguous rows in the frozen set except three review artifacts mentioned that day.
+Those kept artifacts were Nancy tennis directions key `7f59a8c16dff9f19`, Ally paid media key `4ae99e8ad06d4a8c`, and the 食·養·打 review under `data/syd-board-b1/board/` key `cc73671c247bff78`.
+The apply helper ended and verified 76 rows in batches of ten.
+After 70 successful transitions, the eighth batch stopped at key `85cdb2e77ba73904` for `/Users/ivan/Projects/firstmate/data/pilo-university-game-direction-f2/.lavish/location-1-days.html` because `lavish-axi end` exited successfully but the registry row remained open.
+The contradictory row was not retried, and the remaining 60 frozen candidates were not attempted.
+The protected Nancy tennis directions and Ally paid-media sessions remained open.
+The protected 食·養·打 review had already been ended historically, so it was re-served through supported no-open semantics and remains open.
 
-The three kept boards are excluded by exact key, URL, and artifact path in `authorized-2026-09-08.json`.
-The fleet bearings board is a home-owned durable review with owner `home` and path `$FM_HOME/.lavish/bearings-board.html`.
-Unreadable or malformed primary or registered secondmate inventory refuses classification rather than producing an eligible row.
-Multiple matching task metadata rows, multiple live ledger rows, unlisted ledger homes, browser connections, registered sources, bindings, feedback, prompts, holds, and unacknowledged delivery remain preservation or ambiguity evidence.
-Ledger rows are finalized only after the Lavish state transition is verified, and ledger read/replace operations are locked.
+The final snapshot contains 417 total rows: 297 open, 18 feedback, and 102 ended.
+Of the open rows, 253 were past the new 48-hour idle expiry.
+The snapshot had 23 active poll registrations, ten mapped live poll clients, and three unmapped Chrome connections.
+The shared server was not stopped, restarted, signalled, or reconfigured.
+No Lavish record, Firstmate state record, chat, attachment, or artifact file was deleted.
 
-## Apply contract
+## Remaining ambiguous evidence
 
-Plain `apply` accepts only a frozen eligible candidate.
-`apply --authorized [<authority-file>]` additionally accepts only rows explicitly listed as ambiguous in a validated authority file with the exact 2026-09-08 ruling and three exclusions.
-Every row is rechecked against its frozen key, file, URL, status, and timestamp before ending.
-Application stops at the first contradiction, operates in batches of at most 50, recounts after each batch, and never deletes records, state, chat, attachments, or artifact files.
+The final read-only audit classified 245 rows as preserve and 172 as ambiguous.
+The ambiguous set contained 61 existing artifacts with `idle-expired:48h,unmapped-browser-connections:3` evidence and 111 missing artifacts with `unsupported-by-current-Lavish,artifact-missing` evidence.
+The 61 existing rows include the contradictory key plus the 60 frozen candidates left unattempted after the stop.
+The 111 missing-path rows were skipped because Lavish 0.1.63 requires `realpath` of an existing file for its supported one-session end command.
+No replacement file was synthesized and `state.json` was not edited.
 
-## 6. SAFEGUARD design — upstream issue draft
+The final preserve set contained 102 historical ended rows plus current task ownership, retained worktrees, captain holds, decision bindings, registered or live process-event sources, feedback or prompts, unacknowledged delivery, mapped clients, unresolved layout-warning repair, and the three explicit kept boards.
+Unreadable or malformed home inventory now refuses eligibility, multiple candidate owners remain ambiguous, and an unkeyed browser connection cannot be bypassed by ordinary apply.
 
-### Title
+## Implementation and verification
 
-`Bound live-session listeners and release SSE/watchers on end`
+`bin/fm-lavish-session.sh` owns the locked ledger, supported end path, home-owned durable bearings board, real poll activity time, and verified ledger finalization.
+`bin/fm-lavish-audit.sh` owns conservative classification, frozen candidates, the explicit 2026-09-08 authorization record, bounded apply, and read-only coverage of the primary and registered secondmate homes.
+`bin/fm-procevent-lavish.sh arm` registers ownership and refreshes activity on every poll iteration.
+Plain `retire` remains narrow, while `retire-and-end` preflights the durable-end guard before removing any source or binding.
+`bin/fm-teardown.sh` ends and verifies task and secondmate-child ephemeral sessions before process reaping or worktree return.
+`bin/fm-bootstrap.sh` stays silent below 20 open registry rows and emits one actionable warning from 50 upward while distinguishing historical rows from live connections.
+Bootstrap reports the past-expiry count but never ends a session automatically.
 
-### Body
+Behavior tests execute the public scripts against isolated Firstmate homes and Lavish state directories.
+They cover ledger registration and locking, owner ambiguity, home-owned bearings, poll activity, verified end and finalization, safe-park ordering, durable-end preflight, conservative inventory failure, authorized frozen apply, secondmate-child teardown, bootstrap thresholds, and summary counts.
 
-Lavish 0.1.63 uses one process-global EventEmitter and installs callbacks per live connection.
-Each `/api/poll` request adds `feedback` and `ended` listeners.
-Each `/events/:key` SSE connection adds `reload`, `agent-reply`, `agent-presence`, `layout-warnings`, and `ended` listeners.
-The handlers filter by key after every global emit, so event cost is linear in all live connections and Node warns when the eleventh connection/listener arrives.
+## Upstream custody
 
-Disconnect cleanup is present and works, so the warning alone should not be called a historical-session leak.
-The end path is incomplete, though.
-`POST /api/end` marks the session ended and emits `ended`, but it neither removes/closes the session's chokidar watcher nor terminates matching SSE responses.
-The browser receives `ended` and disables its UI, but its `EventSource` remains open.
-Those callbacks and the watcher survive until the tab disconnects or the whole server shuts down.
-
-#### Reproduction
-
-1. Start an isolated Lavish 0.1.63 server with isolated state.
-2. Create and open eleven small HTML artifacts.
-3. Hold one agent poll open for each artifact.
-4. Observe `MaxListenersExceededWarning` for `feedback` and `ended` when listener eleven is registered.
-5. Attach eleven SSE clients to the corresponding `/events/:key` routes.
-6. Observe warnings for `reload`, `agent-reply`, `agent-presence`, `layout-warnings`, and `ended`.
-7. End one session with `lavish-axi end <existing-file>` while leaving its SSE client connected.
-8. Observe the final `ended` event, then observe that the stream remains connected and a watcher for that key remains in the server map.
-9. Emit an event for one key and observe every listener execute its key filter although only one client consumes the event.
-
-#### Expected
-
-Listener count should be bounded independently of the number of live review sessions.
-Ending a session should send one final ended event, close/remove its SSE subscribers, and close/remove its file watcher.
-Browser clients should close or unsubscribe from their EventSource when they enter ended state.
-
-#### Suggested implementation
-
-Replace per-connection global EventEmitter subscriptions with keyed subscriber maps, such as `Map<sessionKey, Set<pollWaiter>>` and `Map<sessionKey, Set<sseResponse>>`, and dispatch directly to the changed key.
-Alternatively keep one shared listener per event and route through keyed maps, but do not add one emitter listener per response.
-On end, deliver the final event, terminate and remove the matching SSE responses, close and delete the matching watcher, and clear any keyed waiters after their terminal response.
-Have the browser call `EventSource.close()` on end; if the local SharedWorker solution is adopted, unsubscribe the key and close the origin stream when its subscriber set reaches zero.
-Add tests asserting bounded emitter/listener counts with at least 50 live sessions and asserting watcher/SSE cleanup after end.
-Do not solve this by raising or disabling `setMaxListeners`, because that preserves global O(N) fan-out and hides missing end cleanup.
-
-### Existing related work
-
-The closed upstream issue https://github.com/kunchenguid/lavish-axi/issues/171 added the ended event and read-only browser UI, but its fix stops short of closing the stream or watcher.
-An all-issue keyword scan found no existing listener-bounding, bulk-end, archive, or prune issue; open issue https://github.com/kunchenguid/lavish-axi/issues/308 concerns a read-only session list.
-
-The local-only commit `c9f08d3cb10c68435e10d000673bc167db849bb3` already prototypes browser connection sharing with a SharedWorker.
-Its retained E2E report at `data/lavish-chrome-connlimit-c1/findings.md:28-48` shows eleven tabs loading with only two Chrome sockets and working live updates.
-That commit is based on older local main, is not installed, and does not by itself fix agent-poll fan-out or watcher/SSE cleanup on end.
-It is useful salvage material, not current proof that upstream is fixed.
+The verbatim section 6 note is in `data/fm-lavish-session-prune-f1/upstream-issue-draft.md`.
+No issue or pull request was opened against `kunchenguid/lavish-axi`.
+Nothing was pushed to that repository.
+The draft remains parked for a later captain decision.

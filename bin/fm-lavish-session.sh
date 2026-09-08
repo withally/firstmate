@@ -283,10 +283,10 @@ touch_ledger_poll() {
     fm_lock_release "$lock"
     return 1
   }
-  ARTIFACT_REAL="$real" NOW="$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" LEDGER="$ledger" node <<'NODE' > "$tmp"
+  ARTIFACT_REAL="$real" LEDGER="$ledger" node <<'NODE' > "$tmp"
 const fs = require("node:fs");
 const rows = fs.readFileSync(process.env.LEDGER, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
-for (const row of rows) if (!row.ended_at && row.artifact === process.env.ARTIFACT_REAL) row.last_polled_at = process.env.NOW;
+for (const row of rows) if (!row.ended_at && row.artifact === process.env.ARTIFACT_REAL) row.last_polled_at = new Date().toISOString();
 for (const row of rows) process.stdout.write(`${JSON.stringify(row)}\n`);
 NODE
   rc=$?

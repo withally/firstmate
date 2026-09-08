@@ -535,6 +535,75 @@ EOF
   pass "Pi dispatcher branch offer owns accepted wakes and falls back to main"
 }
 
+test_pi_branch_rejection_falls_back_to_main() {
+  local repo home plugin stop out status
+  repo="$TMP_ROOT/pi-branch-rejection-root"
+  home="$TMP_ROOT/pi-branch-rejection-home"
+  stop="$TMP_ROOT/pi-branch-rejection.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'signal: branch rejection fallback\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const offers = [];
+let prompt = "";
+let tool = null;
+const handlers = new Map();
+const bus = {
+  on(channel, handler) {
+    handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+    return () => {};
+  },
+  emit(channel, data) {
+    for (const handler of handlers.get(channel) ?? []) handler(data);
+  },
+};
+bus.on("fm-branch-supervision:dispatch", (offer) => {
+  offers.push(offer.message);
+  const rejection = new Promise((_, reject) => setTimeout(() => reject(new Error("branch refused the wake")), 0));
+  offer.accept(rejection);
+});
+const pi = {
+  on() {},
+  events: bus,
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt = message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/branch-rejection.meta`, "project=/projects/approved\nwindow=branch-rejection\n");
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\tsignal\tbranch-rejection.status\tsignal: branch rejection fallback\n");
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("branch-rejection", {}, undefined, undefined, {});
+for (let i = 0; i < 250 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (offers.length !== 1) throw new Error(`expected one rejected branch offer, got ${offers.length}`);
+if (!prompt.includes("FIRSTMATE WATCHER WAKE")) throw new Error(`rejected branch wake did not reach main: ${prompt}`);
+if (!prompt.includes("signal: branch rejection fallback")) throw new Error(`main fallback lost the wake reason: ${prompt}`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "the real watcher boundary must return a rejected branch wake to main: $out"
+  [ -z "$out" ] || fail "Pi branch-rejection fallback test printed output: $out"
+  pass "Pi returns a rejected branch wake to main"
+}
+
 test_pi_branch_offer_flags_heartbeat() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-branch-heartbeat-root"
@@ -3608,6 +3677,7 @@ test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_branch_offer_owns_actionable_wake
+test_pi_branch_rejection_falls_back_to_main
 test_pi_branch_offer_flags_heartbeat
 test_pi_heartbeat_is_not_ridden_into_main_by_a_co_present_check
 test_pi_main_only_check_classes_stay_on_main

@@ -147,6 +147,7 @@ const effortPinFile = join(config, "supervision-branch-effort");
 const wakeCoalesceMs = positiveIntegerEnv("FM_TEST_BRANCH_WAKE_COALESCE_MS", 250);
 const BRANCH_WAKE_STATUS_TAIL_BYTES = 4096;
 const BRANCH_STATUS_FILE_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}\.status$/;
+const DURABLE_CONTEXT_FAILURE_PREFIX = "could not rebuild durable branch context:";
 
 // Same tool set in the same order on every request (part of the cached
 // prefix). "bash" resolves to the customTools override below, which injects
@@ -654,13 +655,20 @@ export default function (pi: ExtensionAPI) {
   let wakeCoalesceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingWakeGeneration = -1;
   const pendingWakeMessages: string[] = [];
-  const pendingWakeSettlements: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
+  type WakeSettlement = { resolve: () => void; reject: (error: unknown) => void };
+  type DeferredStaleRecheck = {
+    message: string;
+    generation: number;
+    recoveryProbe: boolean;
+    settlements: WakeSettlement[];
+  };
+  const pendingWakeSettlements: WakeSettlement[] = [];
   let pendingWakeRecoveryProbe = false;
   const lastDeliveredStaleByWindow = new Map<string, string>();
   // One same-text offer can arrive after the active turn's eligible-row
   // snapshot. Remember only the newest signal per window and re-run the normal
   // durable queue scan once the serialized turn has settled.
-  const deferredStaleRechecks = new Map<string, { message: string; generation: number }>();
+  const deferredStaleRechecks = new Map<string, DeferredStaleRecheck>();
   const pendingMirror: MirrorItem[] = [];
   const mirrorCollection: MirrorCollectionState = {
     collectAnchor: null,
@@ -729,6 +737,15 @@ export default function (pi: ExtensionAPI) {
     const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${text}`, display: true };
     if (mainStreaming) pi.sendMessage(message, { deliverAs: "nextTurn" });
     else pi.sendMessage(message, {});
+  }
+
+  function latchDurableContextFailure(detail: string): void {
+    const alreadyLatched = branchBroken === detail;
+    branchBroken = detail;
+    providerRecovery = null;
+    if (!alreadyLatched) {
+      deliverBranchHealthNote(`Supervision branch paused: ${detail}; main will handle wakes until durable context is safe.`);
+    }
   }
 
   function recordSettledProviderError(detail: string): void {
@@ -1361,7 +1378,7 @@ export default function (pi: ExtensionAPI) {
         ? runOutcomeScript(["context"])
         : { ok: true, stdout: recoveryStdout, detail: "" }
       : null;
-    if (recovery && !recovery.ok) throw new Error("could not rebuild durable branch context");
+    if (recovery && !recovery.ok) throw new Error(`${DURABLE_CONTEXT_FAILURE_PREFIX} ${recovery.detail}`);
     if (!sessionManager) {
       sessionManager = SessionManager.create(fmRoot, sessionsDir);
       conversationWakes = 0;
@@ -1500,7 +1517,9 @@ ${context.command}
       } catch (error) {
         if (buildRevision !== branchSelectionRevision) continue;
         if (expectedGeneration === generation && !shuttingDown) {
-          branchBroken = error instanceof Error ? error.message : String(error);
+          const detail = error instanceof Error ? error.message : String(error);
+          if (detail.startsWith(DURABLE_CONTEXT_FAILURE_PREFIX)) latchDurableContextFailure(detail);
+          else branchBroken = detail;
         }
         throw error;
       }
@@ -1542,6 +1561,28 @@ ${context.command}
     pendingActionDeliveries.delete(seq);
   });
 
+  function drainDeferredStaleRechecks(expectedGeneration: number): void {
+    if (deferredStaleRechecks.size === 0) return;
+    const deferred = [...deferredStaleRechecks.entries()];
+    deferredStaleRechecks.clear();
+    for (const [window, item] of deferred) {
+      lastDeliveredStaleByWindow.delete(window);
+      if (item.generation !== expectedGeneration || item.generation !== generation || shuttingDown) {
+        const error = new Error("supervision session was replaced before handling the deferred stale wake");
+        item.settlements.forEach(({ reject }) => reject(error));
+        continue;
+      }
+      if (pendingWakeMessages.length > 0 && pendingWakeGeneration !== item.generation) flushPendingWakes();
+      pendingWakeGeneration = item.generation;
+      pendingWakeRecoveryProbe ||= item.recoveryProbe;
+      const previous = pendingWakeMessages.findIndex((candidate) => staleWakeWindow(candidate) === window);
+      if (previous >= 0) pendingWakeMessages.splice(previous, 1);
+      pendingWakeMessages.push(item.message);
+      pendingWakeSettlements.push(...item.settlements);
+    }
+    if (pendingWakeMessages.length > 0) flushPendingWakes();
+  }
+
   function enqueueWake(messages: readonly string[], acceptedGeneration: number, recoveryProbe = false): Promise<void> {
     const message = wakeBatchMessage(messages);
     const acceptedSelectionRevision = branchSelectionRevision;
@@ -1555,7 +1596,7 @@ ${context.command}
         let recoveryStdout: string | undefined;
         if (conversationWakes >= maxConversationWakes) {
           const recovery = runOutcomeScript(["context"]);
-          if (!recovery.ok) throw new Error(`could not rebuild durable branch context: ${recovery.detail}`);
+          if (!recovery.ok) throw new Error(`${DURABLE_CONTEXT_FAILURE_PREFIX} ${recovery.detail}`);
           recoveryStdout = recovery.stdout;
           branch?.session.dispose();
           branch = null;
@@ -1636,10 +1677,17 @@ ${context.command}
       .catch((error: unknown) => {
         releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
         releaseBranchLeases(acceptedGeneration);
+        for (const candidate of messages) {
+          const window = staleWakeWindow(candidate);
+          if (window) lastDeliveredStaleByWindow.delete(window);
+        }
+        const detail = error instanceof Error ? error.message : String(error);
+        if (detail.startsWith(DURABLE_CONTEXT_FAILURE_PREFIX)) latchDurableContextFailure(detail);
         throw error;
       })
       .finally(() => {
         if (recoveryProbe) finishProviderProbe(acceptedGeneration, acceptedSelectionRevision);
+        drainDeferredStaleRechecks(acceptedGeneration);
       });
     branchChain = delivery.catch(() => {});
     return delivery;
@@ -1673,11 +1721,30 @@ ${context.command}
       flushPendingWakes();
     }
     const staleWindow = staleWakeWindow(message);
-    if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) {
-      deferredStaleRechecks.set(staleWindow, { message, generation: acceptedGeneration });
-      return Promise.resolve();
+    const settlement = new Promise<void>((resolve, reject) => {
+      pendingWakeSettlements.push({ resolve, reject });
+    });
+    settlement.catch(() => {});
+    if (staleWindow && lastDeliveredStaleByWindow.has(staleWindow)) {
+      const existing = deferredStaleRechecks.get(staleWindow);
+      if (existing && existing.generation === acceptedGeneration) {
+        existing.message = message;
+        existing.recoveryProbe ||= recoveryProbe;
+        existing.settlements.push(...pendingWakeSettlements.splice(-1));
+      } else {
+        if (existing) {
+          const error = new Error("supervision session was replaced before handling the deferred stale wake");
+          existing.settlements.forEach(({ reject }) => reject(error));
+        }
+        deferredStaleRechecks.set(staleWindow, {
+          message,
+          generation: acceptedGeneration,
+          recoveryProbe,
+          settlements: pendingWakeSettlements.splice(-1),
+        });
+      }
+      return settlement;
     }
-    if (staleWindow) deferredStaleRechecks.delete(staleWindow);
     pendingWakeGeneration = acceptedGeneration;
     pendingWakeRecoveryProbe ||= recoveryProbe;
     if (staleWindow) {
@@ -1685,10 +1752,6 @@ ${context.command}
       if (previous >= 0) pendingWakeMessages.splice(previous, 1);
     }
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
-    const settlement = new Promise<void>((resolve, reject) => {
-      pendingWakeSettlements.push({ resolve, reject });
-    });
-    settlement.catch(() => {});
     if (urgentWake(message) && !staleWindow) {
       flushPendingWakes();
       return settlement;

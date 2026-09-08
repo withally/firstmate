@@ -2840,6 +2840,119 @@ EOF
   pass "stale offers coalesce before the model while all durable sequences are acknowledged"
 }
 
+test_deferred_stale_recheck_drains_after_active_wake() {
+  local repo home out result
+  repo="$TMP_ROOT/stale-deferred-root"
+  home="$TMP_ROOT/stale-deferred-home"
+  mkdir -p "$home/state"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { bus, makeOffer, fire, defaultSessionCtx, home }; })()`);
+const { bus, makeOffer, fire, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync, readFileSync } from "node:fs";
+
+writeFileSync(`${home}/state/.wake-queue`, "1\t1\tstale\tfm-branch-driver\told reason\n");
+fire("session_start", {}, defaultSessionCtx);
+let promptCount = 0;
+let duplicate;
+globalThis.__fmOnBranchPrompt = async ({ session, text }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const drain = await bash.execute("drain", { command: "bin/fm-wake-drain.sh" });
+  if (drain.isError) throw new Error(JSON.stringify(drain));
+  const output = drain.details.stdout;
+  const ack = `${output}\n${drain.details.stderr}`.split("\n").find((line) => line.startsWith("WAKE_ACK_REQUIRED:"));
+  if (!ack) throw new Error(`missing ack: ${output}`);
+  const acknowledged = await bash.execute("ack", { command: ack.slice(ack.indexOf("bin/fm-wake-drain.sh")) });
+  if (acknowledged.isError) throw new Error(JSON.stringify(acknowledged));
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  await report.execute("report", { task: "branch-driver", verdict: "routine", summary: `stale task checked ${promptCount}` });
+  if (promptCount === 1) {
+    if (!text.includes("old reason")) throw new Error(`first stale prompt lost its reason: ${text}`);
+    writeFileSync(`${home}/state/.wake-queue`, "2\t2\tstale\tfm-branch-driver\told reason\n");
+    duplicate = makeOffer("stale: fm-branch-driver (old reason)");
+    bus.emit("fm-branch-supervision:dispatch", duplicate);
+    if (!duplicate.accepted) throw new Error("same-window stale recheck was not accepted");
+  }
+};
+const first = makeOffer("stale: fm-branch-driver (old reason)");
+bus.emit("fm-branch-supervision:dispatch", first);
+if (!first.accepted) throw new Error("initial stale wake was not accepted");
+await first.settlement;
+if (!duplicate) throw new Error("the active-wake duplicate was not observed");
+await duplicate.settlement;
+if (promptCount !== 2) throw new Error(`deferred stale row opened ${promptCount} prompts`);
+if (readFileSync(`${home}/state/.wake-queue`, "utf8").trim()) throw new Error("deferred stale sequence remained unclaimed");
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "a same-window stale row arriving during a prompt must be rechecked after settlement: $out"
+  pass "same-window stale rows recheck after the active branch wake settles"
+}
+
+test_deferred_stale_recheck_clears_suppression_after_failure() {
+  local repo home out result
+  repo="$TMP_ROOT/stale-deferred-failure-root"
+  home="$TMP_ROOT/stale-deferred-failure-home"
+  mkdir -p "$home/state"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { bus, makeOffer, fire, defaultSessionCtx, home }; })()`);
+const { bus, makeOffer, fire, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+fire("session_start", {}, defaultSessionCtx);
+writeFileSync(`${home}/state/.wake-queue`, "1\t1\tstale\tfm-branch-driver\tretry reason\n");
+let promptCount = 0;
+let duplicate;
+let retry;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const drain = await bash.execute("drain", { command: "bin/fm-wake-drain.sh" });
+  if (drain.isError) throw new Error(JSON.stringify(drain));
+  const output = drain.details.stdout;
+  const ack = `${output}\n${drain.details.stderr}`.split("\n").find((line) => line.startsWith("WAKE_ACK_REQUIRED:"));
+  if (!ack) throw new Error(`missing ack: ${output}`);
+  const acknowledged = await bash.execute("ack", { command: ack.slice(ack.indexOf("bin/fm-wake-drain.sh")) });
+  if (acknowledged.isError) throw new Error(JSON.stringify(acknowledged));
+  if (promptCount === 1) {
+    writeFileSync(`${home}/state/.wake-queue`, "2\t2\tstale\tfm-branch-driver\tretry reason\n");
+    duplicate = makeOffer("stale: fm-branch-driver (retry reason)");
+    bus.emit("fm-branch-supervision:dispatch", duplicate);
+    if (!duplicate.accepted) throw new Error("same-window stale retry was not accepted");
+    return;
+  }
+  if (promptCount === 2) throw new Error("deferred stale recheck failed");
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  await report.execute("report", { task: "branch-driver", verdict: "routine", summary: "stale retry completed" });
+};
+const first = makeOffer("stale: fm-branch-driver (retry reason)");
+bus.emit("fm-branch-supervision:dispatch", first);
+if (!first.accepted) throw new Error("initial stale retry was not accepted");
+await first.settlement.then(() => { throw new Error("the first stale wake unexpectedly settled"); }, () => {});
+if (!duplicate) throw new Error("the active-wake duplicate was not observed");
+await duplicate.settlement.then(() => { throw new Error("the deferred stale failure unexpectedly settled"); }, () => {});
+if (promptCount !== 2) throw new Error(`deferred stale failure opened ${promptCount} prompts`);
+writeFileSync(`${home}/state/.wake-queue`, "3\t3\tstale\tfm-branch-driver\tretry reason\n");
+retry = makeOffer("stale: fm-branch-driver (retry reason)");
+bus.emit("fm-branch-supervision:dispatch", retry);
+if (!retry.accepted) throw new Error("stale retry was suppressed after a failed recheck");
+await retry.settlement;
+if (promptCount !== 3) throw new Error(`stale retry did not reach the branch after failure: ${promptCount}`);
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "a failed stale recheck must clear its suppression for a later retry: $out"
+  pass "failed stale rechecks clear suppression for later retries"
+}
+
 test_branch_rollover_preserves_durable_decisions() {
   local repo home out result
   repo="$TMP_ROOT/rollover-root"
@@ -2885,8 +2998,8 @@ test_branch_rollover_refuses_unsafe_context_without_disposing_branch() {
   PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_BRANCH_MAX_WAKES=1 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
-await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, defaultSessionCtx }; })()`);
-const { dispatch, fire, defaultSessionCtx } = globalThis.__t;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, defaultSessionCtx, sentToMain }; })()`);
+const { dispatch, fire, defaultSessionCtx, sentToMain } = globalThis.__t;
 import { writeFileSync, symlinkSync } from "node:fs";
 
 writeFileSync(`${process.env.FM_HOME}/state/branch-driver.status`, "working: active\n");
@@ -2905,6 +3018,13 @@ if (!second.accepted) throw new Error("unsafe rollover wake was not accepted");
 const failure = await second.settlement.then(() => null, (error) => error);
 if (!(failure instanceof Error) || !failure.message.includes("unsafe status path")) {
   throw new Error(`unsafe context failure was not surfaced: ${String(failure)}`);
+}
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 || !diagnostics[0].message.content.includes("unsafe status path")) {
+  throw new Error(`unsafe context failure was not surfaced visibly to main: ${JSON.stringify(sentToMain)}`);
+}
+if (dispatch("signal: later wake after unsafe context").accepted) {
+  throw new Error("unsafe context failure did not latch the branch fallback");
 }
 const sessions = globalThis.__fmSessions;
 if (sessions.length !== 1 || sessions[0].disposed) throw new Error("unsafe context disposed the live branch");
@@ -4635,6 +4755,8 @@ test_branch_mirror_filters_order_and_cursor
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation
 test_unsafe_store_refuses_branch_shell_and_preserves_status
 test_stale_batch_keeps_latest_offer_and_all_ack_rows
+test_deferred_stale_recheck_drains_after_active_wake
+test_deferred_stale_recheck_clears_suppression_after_failure
 test_branch_rollover_preserves_durable_decisions
 test_branch_rollover_refuses_unsafe_context_without_disposing_branch
 test_branch_rollover_preserves_staged_current_mirror

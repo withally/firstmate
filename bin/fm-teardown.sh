@@ -179,6 +179,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-treehouse-lease-lib.sh
+. "$SCRIPT_DIR/fm-treehouse-lease-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-control-lib.sh
@@ -755,6 +757,9 @@ BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
+if [ -d "$WT" ]; then
+  fm_treehouse_worktree_unowned "$STATE" "$WT" "$META" || exit 1
+fi
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
@@ -1367,13 +1372,24 @@ cleanup_stale_lock_for_safety_check() {
 
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
+teardown_treehouse_return_command() {
+  local dir=$1 cd_dir=$2 lease_id holder
+  lease_id=$(fm_meta_get "$META" treehouse_lease_id)
+  holder=$(fm_meta_get "$META" treehouse_lease_holder)
+  if [ "$dir" = "$(fm_meta_get "$META" worktree)" ] && { [ -n "$lease_id" ] || [ -n "$holder" ]; }; then
+    fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
+  else
+    (cd "$cd_dir" && treehouse return --force "$dir")
+  fi
+}
+
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
   local out lock attempt=0 max_retries lock_desc
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
-  if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+  if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
   fi
@@ -1398,7 +1414,7 @@ teardown_treehouse_return() {
     echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
-    if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+    if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
@@ -1425,7 +1441,7 @@ teardown_treehouse_return() {
           return 1
         fi
       fi
-      if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+      if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" 2>&1 ); then
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
@@ -2805,6 +2821,23 @@ else
   fi
 fi
 
+# Verify allocation identity before branch, hook, process, or endpoint mutation.
+TREEHOUSE_LEASE_ID=$(fm_meta_get "$META" treehouse_lease_id)
+TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$META" treehouse_lease_holder)
+if [ -n "$TREEHOUSE_LEASE_ID" ] || [ -n "$TREEHOUSE_LEASE_HOLDER" ]; then
+  fm_treehouse_lease_verify "$PROJ" "$WT" "$TREEHOUSE_LEASE_ID" "$TREEHOUSE_LEASE_HOLDER" || {
+    echo "REFUSED: treehouse lease identity changed for $WT" >&2
+    exit 1
+  }
+fi
+
+# Every landed/discard-work refusal above has now passed (or --force skipped
+# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
+# --force, and before ANY destructive step below - a still-parked run or a
+# leaked process can own live work in this exact worktree. Not for
+# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
+# dedicated process-event and firstmate-home removal machinery further below,
+# not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
@@ -2963,7 +2996,7 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" \
+rm -f "$STATE/$ID.lease-acquisition" "$STATE/$ID.turn-ended" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \

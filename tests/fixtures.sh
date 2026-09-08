@@ -258,7 +258,29 @@ fm_test_make_spawn_fakebin() {
   shift
   fakebin=$(fm_fakebin "$dir")
   fm_test_fake_tmux_spawn "$fakebin"
-  fm_fake_exit0 "$fakebin" treehouse "$@"
+  fm_fake_exit0 "$fakebin" "$@"
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  get)
+    holder=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --lease-holder ]; then holder=$2; shift; fi
+      shift
+    done
+    jq -n --arg path "$FM_FAKE_PANE_PATH" --arg holder "$holder" \
+      '{path:$path,lease_id:"fixture-lease",lease_holder:$holder,status:"leased"}' > "$FM_HOME/fixture-lease.json"
+    [ -z "${FM_FAKE_TREEHOUSE_LEASE:-}" ] || touch "$FM_FAKE_TREEHOUSE_LEASE"
+    cat "$FM_HOME/fixture-lease.json"
+    ;;
+  status) jq -s '.' "$FM_HOME/fixture-lease.json" ;;
+  return)
+    [ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf 'treehouse %s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+    [ -z "${FM_FAKE_TREEHOUSE_LEASE:-}" ] || rm -f "$FM_FAKE_TREEHOUSE_LEASE"
+    ;;
+esac
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 

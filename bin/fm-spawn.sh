@@ -258,6 +258,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-treehouse-lease-lib.sh
+. "$SCRIPT_DIR/fm-treehouse-lease-lib.sh"
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved raw_bytes
@@ -791,6 +793,9 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
+SPAWN_TREEHOUSE_LEASE_ID=
+SPAWN_TREEHOUSE_LEASE_HOLDER=
 SPAWN_NORMAL_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_PROJECTED=0
 SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
@@ -846,6 +851,9 @@ spawn_abort_preserve_meta() {
   {
     printf 'window=%s\n' "$T"
     printf 'endpoint_task_id=%s\n' "$ID"
+    printf 'spawn_gen=%s\n' "$SPAWN_GEN"
+    printf 'treehouse_lease_id=%s\n' "$SPAWN_TREEHOUSE_LEASE_ID"
+    printf 'treehouse_lease_holder=%s\n' "$SPAWN_TREEHOUSE_LEASE_HOLDER"
     printf 'worktree=%s\n' "$WT"
     printf 'project=%s\n' "$PROJ_ABS"
     printf 'harness=%s\n' "$HARNESS"
@@ -880,7 +888,8 @@ spawn_abort_preserve_meta() {
 
 spawn_abort_return_worktree() {
   local out reason
-  if out=$( ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) 2>&1 ); then
+  if out=$( fm_treehouse_lease_return "$PROJ_ABS" "$WT" "$SPAWN_TREEHOUSE_LEASE_ID" "$SPAWN_TREEHOUSE_LEASE_HOLDER" 2>&1 ); then
+    rm -f "$STATE/$ID.lease-acquisition"
     return 0
   fi
   reason=$(printf '%s' "$out" | LC_ALL=C tr '\t\r\n' '   ' | cut -c1-1200)
@@ -957,6 +966,7 @@ spawn_abort_cleanup() {
             echo "window=$W"
             echo "endpoint_task_id=$ID"
             echo "cleanup_recovery=orca"
+            echo "spawn_gen=$SPAWN_GEN"
             echo "worktree=${WT:-}"
             echo "project=$PROJ_ABS"
             echo "harness=$HARNESS"
@@ -2782,49 +2792,49 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
-  #
-  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
-  # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
-  # transiently reports an unrelated stale path (seen live as another real git
-  # checkout entirely) before the shell catches up with treehouse get's cd. That
-  # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
-  # below (it resolves to a real, distinct worktree top-level too), so accepting it
-  # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
-  # two consecutive reads to agree on the same non-project path before accepting it;
-  # a mismatch just becomes the new candidate rather than resetting the wait, so a
-  # pane that is already settled by the first real read only costs the one existing
-  # inter-poll sleep as confirmation, not a whole extra cycle on top.
-  candidate=""
+  # Allocation authority comes from treehouse's durable lease, never a pane cwd.
+  SPAWN_TREEHOUSE_LEASE_HOLDER="$STATE/$ID:$SPAWN_GEN"
+  lease_journal="$STATE/$ID.lease-acquisition"
+  if [ -e "$lease_journal" ] || [ -L "$lease_journal" ]; then
+    echo "error: unresolved lease acquisition at $lease_journal; refusing a second acquisition" >&2
+    exit 1
+  fi
+  (umask 077; set -C; cd "$PROJ_ABS" && treehouse get --lease --json \
+    --lease-holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" > "$lease_journal") || exit 1
+  lease_json=$(cat "$lease_journal") || exit 1
+  WT=$(printf '%s' "$lease_json" | jq -er '.path | select(type == "string" and startswith("/"))') || exit 1
+  SPAWN_TREEHOUSE_LEASE_ID=$(printf '%s' "$lease_json" | jq -er '.lease_id | select(type == "string" and length > 0)') || {
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    echo "error: treehouse did not prove a fresh lease for $WT; refusing spawn" >&2
+    exit 1
+  }
+  if [ "$(printf '%s' "$lease_json" | jq -r '.lease_holder')" != "$SPAWN_TREEHOUSE_LEASE_HOLDER" ]; then
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    echo "error: treehouse lease holder mismatch for $WT; refusing spawn" >&2
+    exit 1
+  fi
+  if ! fm_treehouse_worktree_unowned "$STATE" "$WT"; then
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    exit 1
+  fi
+  if ! fm_treehouse_lease_verify "$PROJ_ABS" "$WT" "$SPAWN_TREEHOUSE_LEASE_ID" "$SPAWN_TREEHOUSE_LEASE_HOLDER"; then
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
+    echo "error: could not prove fresh treehouse lease for $WT; refusing spawn" >&2
+    exit 1
+  fi
+  printf -v worktree_cd 'cd -- %q' "$WT"
+  spawn_send_text_line "$WT_TARGET" "$worktree_cd"
+  worktree_entered=0
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ]; then
-      p_real=$(real_path_or_raw "$p")
-      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
-        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
-          WT="$p"
-          break
-        fi
-        candidate="$p_real"
-      else
-        candidate=""
-      fi
-    else
-      candidate=""
+    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" = "$(real_path_or_raw "$WT")" ]; then
+      worktree_entered=1
+      break
     fi
     sleep 1
   done
-  if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+  if [ "$worktree_entered" != 1 ]; then
+    echo "error: endpoint did not enter leased worktree $WT within 60s" >&2
     exit 1
   fi
 
@@ -3213,9 +3223,12 @@ else
   fi
 fi
 
+if [ "$RELAUNCH" -eq 1 ]; then
+  SPAWN_TREEHOUSE_LEASE_ID=$(fm_meta_get "$STATE/$ID.meta" treehouse_lease_id)
+  SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$STATE/$ID.meta" treehouse_lease_holder)
+fi
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
-SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
 if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
@@ -3253,6 +3266,8 @@ preserve_relaunch_meta() {
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
+  echo "treehouse_lease_id=$SPAWN_TREEHOUSE_LEASE_ID"
+  echo "treehouse_lease_holder=$SPAWN_TREEHOUSE_LEASE_HOLDER"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;

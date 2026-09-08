@@ -106,6 +106,7 @@ test_stale_pool_base_refreshes_before_branching() {
       "$branch_head" "$current" "$(cat "$POOL_DIR/advanced-main.txt")"
   fi
 
+  rm -f "$HOME_DIR/state/$id.meta"
   id='pool-current-base-repeat-r1'
   fm_test_spawn_brief "$HOME_DIR" "$id"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
@@ -397,6 +398,7 @@ strand_submodule_pin_via_spawn() {  # <seed-id>
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"
   assert_contains "$out" "spawned $id" "the spawn that moves the submodule pin did not report success"
+  rm -f "$HOME_DIR/state/$id.meta"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$ADVANCED_SHA" ] \
     || fail "the first spawn did not move the pooled base across the moved submodule pin"
   [ "$(git -C "$POOL_DIR/ui" rev-parse HEAD)" = "$SUBPIN1" ] \
@@ -547,6 +549,30 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
     "spawn discarded the untracked file while refusing the pool"
   pass "a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line"
 }
+
+test_duplicate_pool_lease_refuses_without_partial_meta() {
+  local rec id out status
+  id='pool-first-owner'
+  rec=$(make_case duplicate-lease "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  expect_code 0 "$?" "first owner must launch"
+  cp "$HOME_DIR/state/$id.meta" "$CASE_DIR/owner-before"
+  id='pool-second-owner'
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  # The fake allocator deliberately hands back the just-returned path while
+  # the previous task's durable ownership record still exists.
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "duplicate owner launched"
+  assert_contains "$out" "refusing duplicate lease" "duplicate lease must refuse"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "duplicate spawn left a partial record"
+  cmp "$CASE_DIR/owner-before" "$HOME_DIR/state/pool-first-owner.meta" || fail "survivor record changed"
+  [ ! -s "$CASE_DIR/treehouse.log" ] || fail "duplicate refusal returned the survivor's slot"
+  pass "duplicate pool allocation refuses without a partial task record or survivor cleanup"
+}
+
+test_duplicate_pool_lease_refuses_without_partial_meta
 
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching

@@ -6,9 +6,10 @@
 #   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
-# reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
-# git identity and fixture builders, state/<id>.meta writers, and the common
-# string/exit-code/file assertions. Shared fake-toolchain and spawn-world
+# reporters, fail-closed temp-root and owned-fixture-process cleanup,
+# fakebin/PATH-shim helpers, deterministic git identity and fixture builders,
+# state/<id>.meta writers, and the common string/exit-code/file assertions.
+# Shared fake-toolchain and spawn-world
 # builders live in tests/fixtures.sh; wake-queue mocks in wake-helpers.sh;
 # secondmate-lifecycle mocks in secondmate-helpers.sh. Suite-specific fakes
 # that encode a single test's terminal or lifecycle assumptions still belong
@@ -269,9 +270,11 @@ pass() {
 # --- self-cleaning temp root ------------------------------------------------
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
-# on EXIT/INT/TERM. A test file that needs extra teardown (e.g. killing a
-# daemon) should define its own EXIT trap and call fm_test_cleanup from inside
-# it so registered dirs are still removed.
+# after its owned fixture processes have closed on EXIT/INT/TERM. A test file
+# that needs extra teardown (e.g. killing a daemon) should define its own EXIT
+# trap and call fm_test_cleanup from inside it so registered dirs are still
+# removed. Ambiguous or surviving owned groups fail closed and preserve their
+# cleanup evidence instead of deleting a root that may still be in use.
 #
 # The call site is almost always `TMP_ROOT=$(fm_test_tmproot prefix)`, which
 # forks a subshell to capture stdout. Anything that function does to the

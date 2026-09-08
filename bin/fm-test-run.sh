@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # fm-test-run.sh - single owner of Firstmate's behavior-test runner, lane
 # composition for portable CI shards, local --jobs for proven-concurrent work,
-# timing markers, and the complete-regression coverage guard.
+# owned-fixture cleanup, timing markers, and the complete-regression coverage
+# guard.
 #
 # Selection modes (exactly one of: --all, --family, --changed, --lane,
 # --proven-isolated, or script paths):
@@ -2085,6 +2086,9 @@ record_script_result() {
 # positive, a script that outruns it is terminated and reported as exit 124: a
 # hung script must become a bounded failure rather than an unbounded suite,
 # because an unbounded suite is what silently outruns its caller's budget.
+# Each script also receives a private owned-child registry, which is cleaned
+# after the script exits; an ambiguous or surviving registered group fails the
+# script and keeps the run directory as evidence for a safe follow-up.
 run_script_bounded() {  # <script> <out> <stream> <id>
   local script=$1 out=$2 stream=$3 id=$4
   local rc cleanup_rc registry="$RUN_TMP/owned.$id"

@@ -1794,6 +1794,8 @@ configure_secondmate_with_herdr_child() {  # <case-dir>
     "endpoint_task_id=child-herdr" \
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
+    "treehouse_lease_id=fixture-lease-task-x1" \
+    "treehouse_lease_holder=teardown-test-task-x1" \
     "kind=ship" \
     "mode=local-only" \
     "backend=herdr" \
@@ -2008,6 +2010,8 @@ configure_nested_secondmate_with_herdr_grandchild() {  # <case-dir>
     "endpoint_task_id=grandchild-herdr" \
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
+    "treehouse_lease_id=fixture-lease-task-x1" \
+    "treehouse_lease_holder=teardown-test-task-x1" \
     "kind=ship" \
     "mode=local-only" \
     "backend=herdr" \

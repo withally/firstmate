@@ -552,7 +552,6 @@ seed_exit_cleanup() {
 SEED_HOME=
 SEED_HOME_ACQUIRED=0
 SEED_HOME_CREATED=0
-SEED_ID=
 SEED_TREEHOUSE_LEASE_RECORD=
 SEED_TREEHOUSE_ACQUISITION_RECORD=
 SEED_TREEHOUSE_LEASE_ID=
@@ -669,9 +668,9 @@ seed_reconcile_treehouse_home_acquisition() {
   local receipt_path=${SEED_TREEHOUSE_LEASE_RECORD:-}
   local holder journal_wt journal_lease wt lease dirty unlanded tmp
   local receipt_present=0
-  [ -n "$journal" ] && { [ -e "$journal" ] || [ -L "$journal" ]; } || {
+  if [ -z "$journal" ] || { [ ! -e "$journal" ] && [ ! -L "$journal" ]; }; then
     [ -n "$receipt_path" ] && { [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; } || return 0
-  }
+  fi
   if [ -e "$journal" ] || [ -L "$journal" ]; then
     [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
     jq -e --arg project "$FM_ROOT" '
@@ -989,7 +988,6 @@ seed_home() {
   fi
 
   mkdir -p "$STATE" || return 1
-  SEED_ID=$id
   SEED_TREEHOUSE_LEASE_RECORD="$STATE/$id.treehouse-lease"
   SEED_TREEHOUSE_ACQUISITION_RECORD="$STATE/$id.lease-acquisition"
   SEED_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")

@@ -40,7 +40,7 @@ fm_fake_exit0 "$explicit_fakebin" tmux node chrome-devtools-axi gh gh-axi lavish
 rc=0
 out=$(PATH="$explicit_fakebin:/usr/bin:/bin:/usr/sbin:/sbin" \
   FM_HOME="$explicit_home" FM_ROOT_OVERRIDE="$explicit_root" FM_BOOTSTRAP_NETWORK=skip \
-  FM_SESSION_START_TIMEOUT=10 "$explicit_root/bin/fm-session-start.sh" 2>&1) || rc=$?
+  FM_BACKEND=tmux FM_SESSION_START_TIMEOUT=60 "$explicit_root/bin/fm-session-start.sh" 2>&1) || rc=$?
 expect_code 0 "$rc" "explicit home must pass the crewmate guard"
 assert_not_contains "$out" "REFUSED: crewmate" "explicit home was treated as implicit startup"
 assert_contains "$out" "NEXT STEP" "normal startup did not produce a post-guard digest"

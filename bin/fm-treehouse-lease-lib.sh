@@ -65,9 +65,13 @@ fm_treehouse_lease_receipt_read() { # <record> [project] [worktree] [lease-id] [
   [ -z "$expected_worktree" ] || [ "$worktree" = "$expected_worktree" ] || return 1
   [ -z "$expected_lease_id" ] || [ "$lease_id" = "$expected_lease_id" ] || return 1
   [ -z "$expected_holder" ] || [ "$holder" = "$expected_holder" ] || return 1
+  # shellcheck disable=SC2034 # Public receipt outputs consumed by lifecycle callers.
   FM_TREEHOUSE_RECORD_PROJECT=$project
+  # shellcheck disable=SC2034 # Public receipt outputs consumed by lifecycle callers.
   FM_TREEHOUSE_RECORD_WORKTREE=$worktree
+  # shellcheck disable=SC2034 # Public receipt outputs consumed by lifecycle callers.
   FM_TREEHOUSE_RECORD_LEASE_ID=$lease_id
+  # shellcheck disable=SC2034 # Public receipt outputs consumed by lifecycle callers.
   FM_TREEHOUSE_RECORD_HOLDER=$holder
 }
 
@@ -83,6 +87,22 @@ fm_treehouse_pool_listing() { # <project>
         ((.lease_id | type) == "string" and (.lease_id | length) > 0 and
          (.lease_holder | type) == "string" and (.lease_holder | length) > 0)))
   ' >/dev/null
+}
+
+# Absence of inline lease fields is not proof of an unpooled worktree.
+# Even an available slot belongs to the provider and must never be raw-deleted.
+fm_treehouse_worktree_unpooled() { # <project> <worktree>
+  local project=$1 worktree=$2 path physical pool_physical
+  [ -n "$project" ] && [ -n "$worktree" ] || return 1
+  physical=$(cd "$worktree" && pwd -P) || return 1
+  fm_treehouse_pool_listing "$project" || return 1
+  while IFS= read -r path; do
+    [ "$path" != "$worktree" ] && [ "$path" != "$physical" ] || return 1
+    if [ -d "$path" ]; then
+      pool_physical=$(cd "$path" && pwd -P) || return 1
+      [ "$pool_physical" != "$physical" ] || return 1
+    fi
+  done < <(printf '%s' "$FM_TREEHOUSE_POOL_LISTING" | jq -r '.[].path')
 }
 
 fm_treehouse_lease_status() { # <project> <worktree> <lease-id> <holder>
@@ -117,7 +137,6 @@ fm_treehouse_lease_holder_status() { # <project> <holder>
   FM_TREEHOUSE_HOLDER_STATUS=$(printf '%s' "$result" | jq -r '.status') || return 1
   FM_TREEHOUSE_HOLDER_WORKTREE=$(printf '%s' "$result" | jq -r '.path // empty') || return 1
   FM_TREEHOUSE_HOLDER_LEASE_ID=$(printf '%s' "$result" | jq -r '.lease_id // empty') || return 1
-  FM_TREEHOUSE_HOLDER_LEASE_HOLDER=$(printf '%s' "$result" | jq -r '.holder // empty') || return 1
 }
 
 fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]

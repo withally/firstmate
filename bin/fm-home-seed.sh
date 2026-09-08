@@ -648,24 +648,87 @@ seed_lease_field() {
   printf '%s' "$value"
 }
 
+seed_write_treehouse_lease_receipt() {
+  local worktree=$1 lease_id=$2 holder=$3 tmp
+  local receipt=${SEED_TREEHOUSE_LEASE_RECORD:-}
+  [ -n "$receipt" ] || return 1
+  [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  tmp="$receipt.tmp.${BASHPID:-$$}"
+  (umask 077; set -C; {
+    printf 'schema=fm-secondmate-treehouse-lease.v1\n'
+    printf 'project=%s\n' "$FM_ROOT"
+    printf 'worktree=%s\n' "$worktree"
+    printf 'treehouse_lease_id=%s\n' "$lease_id"
+    printf 'treehouse_lease_holder=%s\n' "$holder"
+  } > "$tmp") || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$receipt" || { rm -f -- "$tmp"; return 1; }
+}
+
 seed_reconcile_treehouse_home_acquisition() {
-  local journal=${SEED_TREEHOUSE_ACQUISITION_RECORD:-} holder listing receipt wt lease dirty unlanded record_project
-  [ -n "$journal" ] && { [ -e "$journal" ] || [ -L "$journal" ]; } || return 0
-  [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
-  holder=$(jq -er '.lease_holder | select(type == "string" and length > 0)' "$journal") || return 1
-  record_project=$(jq -er '.project | select(type == "string" and length > 0)' "$journal") || return 1
-  [ -n "$holder" ] && [ "$record_project" = "$FM_ROOT" ] || return 1
-  listing=$(cd "$FM_ROOT" && treehouse status --json) || return 1
-  receipt=$(printf '%s' "$listing" | jq -ce --arg holder "$holder" '
-    if type != "array" then error("invalid pool") else
-    [.[] | select(.status == "leased" and .lease_holder == $holder)]
-    | if length > 1 then error("ambiguous holder") else . end end') || return 1
-  if [ "$(printf '%s' "$receipt" | jq length)" = 0 ]; then
-    rm -f -- "$journal"
-    return 0
+  local journal=${SEED_TREEHOUSE_ACQUISITION_RECORD:-}
+  local receipt_path=${SEED_TREEHOUSE_LEASE_RECORD:-}
+  local holder journal_wt journal_lease wt lease dirty unlanded tmp
+  local receipt_present=0
+  [ -n "$journal" ] && { [ -e "$journal" ] || [ -L "$journal" ]; } || {
+    [ -n "$receipt_path" ] && { [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; } || return 0
+  }
+  if [ -e "$journal" ] || [ -L "$journal" ]; then
+    [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+    jq -e --arg project "$FM_ROOT" '
+      .schema == "fm-secondmate-lease-acquisition.v1" and
+      (.project | type) == "string" and .project == $project and
+      (.lease_holder | type) == "string" and (.lease_holder | length) > 0 and
+      ((.path // "") == "" or ((.path | type) == "string" and (.path | startswith("/")))) and
+      ((.lease_id // "") == "" or ((.lease_id | type) == "string" and (.lease_id | length) > 0)) and
+      ((.path // "") == "" or (.lease_id // "") != "") and
+      ((.lease_id // "") == "" or (.path // "") != "")
+    ' "$journal" >/dev/null || return 1
+    holder=$(jq -er '.lease_holder' "$journal") || return 1
+    journal_wt=$(jq -r '.path // empty' "$journal") || return 1
+    journal_lease=$(jq -r '.lease_id // empty' "$journal") || return 1
   fi
-  wt=$(printf '%s' "$receipt" | jq -er '.[0].path | select(type == "string" and startswith("/"))') || return 1
-  lease=$(printf '%s' "$receipt" | jq -er '.[0].lease_id | select(type == "string" and length > 0)') || return 1
+  if [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; then
+    receipt_present=1
+    fm_treehouse_lease_receipt_read "$receipt_path" "$FM_ROOT" "$journal_wt" "$journal_lease" "$holder" || return 1
+    holder=$FM_TREEHOUSE_RECORD_HOLDER
+    wt=$FM_TREEHOUSE_RECORD_WORKTREE
+    lease=$FM_TREEHOUSE_RECORD_LEASE_ID
+  fi
+  if [ "$receipt_present" -eq 1 ]; then
+    fm_treehouse_lease_status "$FM_ROOT" "$wt" "$lease" "$holder" || return 1
+    case "$FM_TREEHOUSE_LEASE_STATUS" in
+      released)
+        rm -f -- "$journal" "$receipt_path"
+        return 0
+        ;;
+      conflict) return 1 ;;
+    esac
+  elif [ -n "$journal_wt" ]; then
+    wt=$journal_wt
+    lease=$journal_lease
+    fm_treehouse_lease_status "$FM_ROOT" "$wt" "$lease" "$holder" || return 1
+    case "$FM_TREEHOUSE_LEASE_STATUS" in
+      released) rm -f -- "$journal"; return 0 ;;
+      conflict) return 1 ;;
+    esac
+    seed_write_treehouse_lease_receipt "$wt" "$lease" "$holder" || return 1
+  else
+    fm_treehouse_lease_holder_status "$FM_ROOT" "$holder" || return 1
+    case "$FM_TREEHOUSE_HOLDER_STATUS" in
+      released) rm -f -- "$journal"; return 0 ;;
+      conflict) return 1 ;;
+    esac
+    wt=$FM_TREEHOUSE_HOLDER_WORKTREE
+    lease=$FM_TREEHOUSE_HOLDER_LEASE_ID
+    case "$wt" in /*) ;; *) return 1 ;; esac
+    [ -n "$lease" ] || return 1
+    tmp=$(mktemp "$STATE/.lease-receipt.XXXXXX") || return 1
+    if ! jq --arg path "$wt" --arg lease "$lease" '.path=$path | .lease_id=$lease' "$journal" > "$tmp" \
+      || ! mv -f "$tmp" "$journal"; then
+      rm -f "$tmp"; return 1
+    fi
+    seed_write_treehouse_lease_receipt "$wt" "$lease" "$holder" || return 1
+  fi
   seed_rollback_target "$wt" "treehouse-acquired home" >/dev/null || return 1
   fm_treehouse_worktree_unowned "$STATE" "$wt" "" "$journal" || return 1
   [ "$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null)" = "$wt" ] || return 1
@@ -929,16 +992,13 @@ seed_home() {
   SEED_ID=$id
   SEED_TREEHOUSE_LEASE_RECORD="$STATE/$id.treehouse-lease"
   SEED_TREEHOUSE_ACQUISITION_RECORD="$STATE/$id.lease-acquisition"
-  [ ! -e "$SEED_TREEHOUSE_LEASE_RECORD" ] && [ ! -L "$SEED_TREEHOUSE_LEASE_RECORD" ] || {
-    echo "error: secondmate $id has an unresolved treehouse lease record at $SEED_TREEHOUSE_LEASE_RECORD" >&2
-    return 1
-  }
   SEED_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
   fm_lock_acquire_wait "$SEED_REGISTRY_LOCK" || return 1
   SEED_REGISTRY_LOCK_HELD=1
   trap seed_exit_cleanup EXIT
 
-  if [ -e "$SEED_TREEHOUSE_ACQUISITION_RECORD" ] || [ -L "$SEED_TREEHOUSE_ACQUISITION_RECORD" ]; then
+  if [ -e "$SEED_TREEHOUSE_ACQUISITION_RECORD" ] || [ -L "$SEED_TREEHOUSE_ACQUISITION_RECORD" ] \
+    || [ -e "$SEED_TREEHOUSE_LEASE_RECORD" ] || [ -L "$SEED_TREEHOUSE_LEASE_RECORD" ]; then
     seed_reconcile_treehouse_home_acquisition || {
       echo "error: secondmate $id has unresolved treehouse acquisition evidence after registry lock acquisition" >&2
       return 1

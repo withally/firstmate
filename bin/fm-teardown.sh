@@ -5,6 +5,18 @@
 # scout tasks before reporting success (a secondmate teardown transitions none,
 # since secondmates are not backlog items), then refresh/prune the project's
 # clone for PR-based ship tasks.
+# Usage: fm-teardown.sh <task-id> [--force | --recover-from <record-in-state>]
+# An absent task record is recovered from <id>.meta.recovery, or the explicitly
+# named retained record inside this home's state directory. Recovery requires a
+# spawn generation (or an explicit legacy record, assigned a recovery generation
+# after proof), exact endpoint/worktree identity, no dirty work, and a
+# remote-contained HEAD; it supports recovery-grade tmux and Herdr endpoints.
+# Other backends and ambiguous identities refuse. Recovery never uses --force
+# or the scout scratch exemption. The ordinary captain-hold and teardown gates
+# still run after identity recovery. Exotic task records always refuse.
+# Completed physical cleanup writes <id>.retired before metadata removal, so
+# repeated teardown replays any pending backlog transition and says already
+# retired without repeating destructive operations.
 # Removing state/<id>.meta and landing the backlog transition are one step, not
 # two: bin/fm-backlog-transition-lib.sh owns that invariant, and both halves run
 # under the task's own meta lock before this script reports success. Recorded
@@ -209,6 +221,14 @@ if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
 fi
 ID=$1
 FORCE=${2:-}
+RECOVER_FROM=
+RECOVERY_EXPLICIT=0
+if [ "$FORCE" = --recover-from ]; then
+  [ "$#" -eq 3 ] || { echo "Usage: fm-teardown.sh <id> --recover-from <record-in-state>" >&2; exit 2; }
+  RECOVER_FROM=$3
+  RECOVERY_EXPLICIT=1
+  FORCE=
+fi
 fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
@@ -281,16 +301,92 @@ CONTROL_LOCK_HELD=1
 fm_refuse_if_gate_agent
 FM_LOCK_LOG_PREFIX=teardown
 
+# An absent record can be recovered only from retained identity evidence.
+# Exotic records never enter recovery. Retired receipts acknowledge completed
+# cleanup without rerunning endpoint or worktree mutations.
 META="$STATE/$ID.meta"
-fm_backlog_record_present "$META" "task record" "$STATE" || {
-  echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
-  exit 1
-}
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
+TEARDOWN_ORPHAN_RECOVERY=0
+if [ ! -e "$META" ] && [ ! -L "$META" ]; then
+  if [ -e "$STATE/$ID.retired" ] || [ -L "$STATE/$ID.retired" ]; then
+    fm_backlog_record_present "$STATE/$ID.retired" "retirement receipt" "$STATE" || {
+      echo "REFUSED: $FM_BACKLOG_TRANSITION_ERROR" >&2; exit 1;
+    }
+    if [ "$(fm_meta_get "$STATE/$ID.retired" retirement_task_id)" != "$ID" ] \
+      || [ "$(fm_meta_get "$STATE/$ID.retired" retirement_complete)" != 1 ]; then
+      echo "REFUSED: retirement receipt identity mismatch for $ID" >&2; exit 1
+    fi
+    fm_backlog_close_marker_replay "$STATE" "$STATE/$ID.backlog-close" "$DATA" || {
+      echo "REFUSED: $FM_BACKLOG_TRANSITION_ERROR" >&2; exit 1;
+    }
+    echo "already retired: $ID"
+    exit 0
+  fi
+  [ -n "$RECOVER_FROM" ] || RECOVER_FROM="$META.recovery"
+  fm_backlog_record_present "$RECOVER_FROM" "orphan recovery record" "$STATE" || {
+    echo "REFUSED: task record is absent; $FM_BACKLOG_TRANSITION_ERROR; supply --recover-from with retained exact task metadata" >&2
+    exit 1
+  }
+  recovery_spawn_gen=
+  if fm_backlog_meta_spawn_gen "$RECOVER_FROM" "$STATE"; then
+    recovery_spawn_gen=$FM_BACKLOG_META_SPAWN_GEN
+  elif [ "$RECOVERY_EXPLICIT" != 1 ] || [ "$(awk -F= '$1 == "spawn_gen" {n++} END {print n+0}' "$RECOVER_FROM")" != 0 ]; then
+    echo "REFUSED: orphan recovery needs an exact spawn generation or explicit legacy identity record" >&2; exit 1
+  fi
+  fm_backend_validate_task_endpoint "$RECOVER_FROM" "$ID" || exit 1
+  recovery_backend=$FM_BACKEND_VALIDATED_BACKEND
+  recovery_target=$FM_BACKEND_VALIDATED_TARGET
+  recovery_wt=$(fm_meta_get "$RECOVER_FROM" worktree)
+  recovery_project=$(fm_meta_get "$RECOVER_FROM" project)
+  [ -d "$recovery_wt" ] && [ -d "$recovery_project" ] || {
+    echo "REFUSED: orphan recovery needs the exact existing project and worktree" >&2; exit 1;
+  }
+  recovery_real=$(cd "$recovery_wt" && pwd -P) || exit 1
+  [ "$(git -C "$recovery_wt" rev-parse --show-toplevel 2>/dev/null)" = "$recovery_real" ] \
+    && [ "$(cd "$recovery_project" && pwd -P)" != "$recovery_real" ] || {
+      echo "REFUSED: orphan recovery worktree is not isolated" >&2; exit 1;
+    }
+  recovery_common=$(git -C "$recovery_wt" rev-parse --git-common-dir) || exit 1
+  recovery_project_common=$(git -C "$recovery_project" rev-parse --git-common-dir) || exit 1
+  case "$recovery_common" in /*) ;; *) recovery_common="$recovery_wt/$recovery_common" ;; esac
+  case "$recovery_project_common" in /*) ;; *) recovery_project_common="$recovery_project/$recovery_project_common" ;; esac
+  [ "$(cd "$recovery_common" && pwd -P)" = "$(cd "$recovery_project_common" && pwd -P)" ] || {
+    echo "REFUSED: orphan worktree belongs to a different project" >&2; exit 1;
+  }
+  fm_treehouse_worktree_unowned "$STATE" "$recovery_wt" || exit 1
+  fm_backend_source "$recovery_backend" || exit 1
+  case "$recovery_backend" in
+    tmux) recovery_cwd=$(fm_backend_tmux_current_path "$recovery_target") ;;
+    herdr) recovery_cwd=$(fm_backend_herdr_current_path "$recovery_target") ;;
+    *) echo "REFUSED: orphan endpoint identity recovery is unverified for $recovery_backend" >&2; exit 1 ;;
+  esac
+  if [ -n "$recovery_cwd" ]; then
+    [ "$(cd "$recovery_cwd" 2>/dev/null && pwd -P)" = "$recovery_real" ] || {
+      echo "REFUSED: orphan endpoint is not in its recorded worktree" >&2; exit 1;
+    }
+  elif [ "$(fm_backend_agent_state "$recovery_backend" "$recovery_target")" != missing ]; then
+    echo "REFUSED: orphan endpoint identity is ambiguous" >&2; exit 1
+  fi
+  # Orphan recovery has no scout/force carveout: unknown work must survive.
+  recovery_dirty=$(git -C "$recovery_wt" status --porcelain --untracked-files=all) || exit 1
+  [ -z "$recovery_dirty" ] || { echo "REFUSED: orphan worktree has unlanded changes" >&2; exit 1; }
+  git -C "$recovery_wt" fetch --all --quiet || exit 1
+  recovery_unlanded=$(git -C "$recovery_wt" rev-list HEAD --not --remotes) || exit 1
+  [ -z "$recovery_unlanded" ] || { echo "REFUSED: orphan branch is not remote-contained" >&2; exit 1; }
+  recovery_tmp="$STATE/.$ID.meta.recover.$$"
+  [ -n "$recovery_spawn_gen" ] || recovery_spawn_gen="r$(date +%s).${BASHPID:-$$}.$RANDOM"
+  (umask 077; set -C; {
+    awk -F= '$1 != "spawn_gen"' "$RECOVER_FROM"
+    printf 'spawn_gen=%s\n' "$recovery_spawn_gen"
+  } > "$recovery_tmp") || exit 1
+  fm_backlog_record_publish "$recovery_tmp" "$META" "task record" "$STATE" || exit 1
+  TEARDOWN_ORPHAN_RECOVERY=1
+  FORCE=
+fi
 fm_backlog_record_present "$META" "task record" "$STATE" || {
-  echo "error: teardown refused after locking: $FM_BACKLOG_TRANSITION_ERROR" >&2
+  echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
 TEARDOWN_META_KIND=$(fm_meta_get "$META" kind)
@@ -3007,6 +3103,13 @@ rm -f "$STATE/$ID.lease-acquisition" "$STATE/$ID.turn-ended" \
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.
 rm -rf "$STATE/$ID.inbox"
+# Publish the completed physical cleanup identity before removing its metadata.
+# Pending backlog transitions remain replayable under the same meta lock.
+if [ "$KIND" != secondmate ]; then
+  retirement_tmp="$STATE/.$ID.retired.$$"
+  (umask 077; set -C; { cat "$META"; printf 'retirement_task_id=%s\nretirement_complete=1\n' "$ID"; } > "$retirement_tmp") || exit 1
+  fm_backlog_record_publish "$retirement_tmp" "$STATE/$ID.retired" "retirement receipt" "$STATE" || exit 1
+fi
 # The record is gone, so the backlog must not still show this task in flight
 # when teardown reports success. Still under this task's meta lock, so a steer
 # racing the same id stays serialized exactly as it was before. A captain-held
@@ -3038,6 +3141,9 @@ else
     exit 1
   fi
 fi
+if [ -d "$STATE" ]; then
+  fm_backlog_record_remove "$META.recovery" "task recovery record" "$STATE" || exit 1
+fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
@@ -3048,5 +3154,6 @@ fi
 if [ -d "$STATE" ]; then
   "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 fi
+[ "$TEARDOWN_ORPHAN_RECOVERY" != 1 ] || echo "orphan recovery: exact identity verified and retired"
 echo "teardown $ID complete (window $T, worktree $WT)"
 backlog_refresh_reminder

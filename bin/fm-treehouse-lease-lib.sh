@@ -10,16 +10,15 @@ fm_treehouse_lease_verify() { # <project> <worktree> <lease-id> <holder>
 }
 
 fm_treehouse_lease_identity_from_pool() { # <project> <worktree> [holder]
-  local project=$1 worktree=$2 expected_holder=${3:-} listing
+  local project=$1 worktree=$2 expected_holder=${3:-} result
   [ -n "$project" ] && [ -n "$worktree" ] || return 1
-  listing=$(cd "$project" && treehouse status --json) || return 1
-  printf '%s' "$listing" | jq -er --arg path "$worktree" --arg expected "$expected_holder" '
-    [ .[] | select(.path == $path
-      and .status == "leased"
-      and (.lease_id | type) == "string" and (.lease_id | length) > 0
-      and (.lease_holder | type) == "string" and (.lease_holder | length) > 0
-      and ($expected == "" or .lease_holder == $expected)) ]
-    | if length == 1 then .[0] | [.lease_id, .lease_holder] | @tsv else empty end'
+  fm_treehouse_pool_listing "$project" || return 1
+  result=$(printf '%s' "$FM_TREEHOUSE_POOL_LISTING" | jq -er \
+    --arg path "$worktree" --arg expected "$expected_holder" '
+      [.[] | select(.status == "leased" and .path == $path
+        and ($expected == "" or .lease_holder == $expected))]
+      | if length == 1 then .[0] | [.lease_id, .lease_holder] | @tsv else empty end') || return 1
+  printf '%s\n' "$result"
 }
 
 fm_treehouse_lease_return() { # <project> <worktree> <lease-id> <holder>
@@ -92,11 +91,12 @@ fm_treehouse_lease_status() { # <project> <worktree> <lease-id> <holder>
   fm_treehouse_pool_listing "$project" || return 1
   result=$(printf '%s' "$FM_TREEHOUSE_POOL_LISTING" | jq -er \
     --arg path "$worktree" --arg id "$lease_id" --arg holder "$holder" '
+      ([.[] | select(.status == "leased" and .path == $path and .lease_id == $id and .lease_holder == $holder)] | length) as $full_count |
       ([.[] | select(.status == "leased" and .path == $path)] | length) as $path_count |
-      ([.[] | select(.status == "leased" and .lease_id == $id and .lease_holder == $holder)] | length) as $exact_count |
+      ([.[] | select(.status == "leased" and .lease_id == $id)] | length) as $lease_count |
       ([.[] | select(.status == "leased" and .lease_holder == $holder)] | length) as $holder_count |
-      if $path_count == 1 and $exact_count == 1 and $holder_count == 1 then "held"
-      elif $path_count == 0 and $exact_count == 0 and $holder_count == 0 then "released"
+      if $full_count == 1 and $path_count == 1 and $lease_count == 1 and $holder_count == 1 then "held"
+      elif $path_count == 0 and $lease_count == 0 and $holder_count == 0 then "released"
       else "conflict"
       end') || return 1
   FM_TREEHOUSE_LEASE_STATUS=$result

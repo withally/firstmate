@@ -36,7 +36,6 @@ set -u
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
-SESSION_START="$ROOT/bin/fm-session-start.sh"
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-session-start-tests)
 SESSION_START_TEST_HARNESS_PID=$$
@@ -63,7 +62,9 @@ new_world() {
   mkdir -p "$home/state" "$home/data" "$home/config" "$fakebin"
   git init -q -b main "$root"
   printf '# Firstmate test root\n' > "$root/AGENTS.md"
-  ln -s "$ROOT/bin" "$root/bin"
+  cp -R "$ROOT/bin" "$root/bin"
+  ln -s "$ROOT/docs" "$root/docs"
+  ln -s "$ROOT/.agents" "$root/.agents"
   git -C "$root" add AGENTS.md bin
   git -C "$root" commit -q --allow-empty -m init
   printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
@@ -517,11 +518,11 @@ run_session_start() {
   if [ -n "$pi_harness" ]; then
     env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-      "$SESSION_START"
+      "$root/bin/fm-session-start.sh"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-      "$SESSION_START"
+      "$root/bin/fm-session-start.sh"
   fi
 }
 
@@ -531,7 +532,7 @@ run_pi_session_start() {  # <home> <root> <path> [fm-session-start args...]
   env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS=pi \
     FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-    "$SESSION_START" "$@"
+    "$root/bin/fm-session-start.sh" "$@"
 }
 
 run_named_harness_session_start() {  # <harness> <home> <root> <path> [fm-session-start args...]
@@ -540,7 +541,7 @@ run_named_harness_session_start() {  # <harness> <home> <root> <path> [fm-sessio
   env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
     FM_FAKE_HARNESS="$harness" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-    "$SESSION_START" "$@"
+    "$root/bin/fm-session-start.sh" "$@"
 }
 
 # prepare_session_start_secondmate <name>: a throwaway main home and Pi
@@ -569,7 +570,7 @@ EOF
     printf 'harness=pi\n'
     printf 'home=%s\n' "$mate"
   } > "$home/state/$id.meta"
-  ln -s "$ROOT/bin" "$root/bin"
+  : # new_world already installed the executable fixture
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   fm_fake_exit0 "$fakebin" pi
@@ -616,7 +617,7 @@ EOF
     printf 'herdr_tab_id=t-old\n'
     printf 'herdr_pane_id=p-old\n'
   } > "$home/state/$id.meta"
-  ln -s "$ROOT/bin" "$root/bin"
+  : # new_world already installed the executable fixture
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   fm_fake_exit0 "$fakebin" pi
@@ -1484,7 +1485,7 @@ EOF
   worktree="$world/child-worktree"
   crew_state="$world/slow-crew-state.sh"
   calls="$world/no-mistakes-state.calls"
-  ln -s "$ROOT/bin" "$root/bin"
+  : # new_world already installed the executable fixture
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   fm_git_init_commit "$worktree"
@@ -1878,6 +1879,11 @@ make_hanging_tool() {
   local fakebin=$1 name=$2
   cat > "$fakebin/$name" <<'SH'
 #!/usr/bin/env bash
+# Scope verification precedes the digest; hang only the bootstrap work this
+# fixture is designed to exercise.
+case "$*" in
+  *"rev-parse --git-dir"|*"rev-parse --git-common-dir") printf '.git\n'; exit 0 ;;
+esac
 trap '' TERM
 sleep 600
 SH
@@ -2071,7 +2077,7 @@ SH
   # shellcheck disable=SC2016 # $$ must expand in the launched shell, not here.
   out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
-    bash -c 'export FM_FAKE_HARNESS_PID=$$; exec "$1" 8 "$2"' _ "$nest" "$SESSION_START")
+    bash -c 'export FM_FAKE_HARNESS_PID=$$; exec "$1" 8 "$2"' _ "$nest" "$root/bin/fm-session-start.sh")
 
   assert_contains "$out" "lock acquired: harness pid" \
     "the runtime bound's wrapper processes pushed the harness out of the bounded ancestry walk"
@@ -2106,7 +2112,7 @@ EOF
   append_wake "$home/state" signal task-r "done: queued after the re-emit too" || fail "seed second wake failed"
   reemit=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_FAKE_HARNESS_PID=$$ PATH="$fakebin:$BASE_PATH" \
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-    "$SESSION_START" --reemit)
+    "$root/bin/fm-session-start.sh" --reemit)
 
   assert_contains "$reemit" "SESSION START (CONTEXT RE-EMIT) - $home" "--reemit did not label itself"
   assert_not_contains "$reemit" "SECONDMATE_LIVENESS" "--reemit repeated a mutating sweep startup already ran"
@@ -2325,7 +2331,7 @@ EOF
 
   reemit=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-    "$SESSION_START" --reemit)
+    "$root/bin/fm-session-start.sh" --reemit)
 
   # A re-emit skips the sweeps because it ALREADY ran them, not because it lacks
   # the lock, so it must still own repair rather than deferring to a lock holder.
@@ -2340,7 +2346,7 @@ EOF
   printf '%s\n' "$holder_pid" > "$home/state/.lock"
   readonly_out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-    "$SESSION_START" --reemit)
+    "$root/bin/fm-session-start.sh" --reemit)
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 

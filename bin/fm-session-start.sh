@@ -218,7 +218,7 @@
 #             again, while an equal baseline emits no instruction refresh.
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME_EXPLICIT=0
 [ "${FM_HOME+x}" = x ] && FM_HOME_EXPLICIT=1
@@ -259,7 +259,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if ! fm_primary_scope_matches "$FM_ROOT" "$STATE"; then
+SCRIPT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
+OVERRIDE_ROOT=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || OVERRIDE_ROOT=
+if [ "$OVERRIDE_ROOT" != "$SCRIPT_ROOT" ]; then
+  echo "REFUSED: crewmate session start cannot use a cross-root FM_ROOT_OVERRIDE; run the primary entrypoint only from its own checkout." >&2
+  exit 2
+fi
+if ! fm_primary_scope_matches "$SCRIPT_ROOT" "$STATE"; then
   if [ "$FM_HOME_EXPLICIT" = 1 ]; then
     echo "REFUSED: session start requires a valid primary or marked secondmate home; crewmate task worktrees cannot own session-start locks, watchers, or supervision." >&2
   else

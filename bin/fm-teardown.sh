@@ -2314,6 +2314,10 @@ safe_rm_rf() {
 safe_rm_rf_child_worktree() {
   local target=$1 project=$2 lock
   validate_child_worktree_for_removal "$target" "$project" >/dev/null || return 1
+  fm_treehouse_worktree_unpooled "$project" "$target" || {
+    echo "REFUSED: child worktree $target has no exact lease identity and cannot be proved outside the treehouse pool" >&2
+    return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+  }
   lock=$(worktree_git_lock_path "$target") || lock=
   if [ -n "$lock" ] && [ -e "$lock" ]; then
     cleanup_stale_lock_for_safety_check "$target" || return $?
@@ -2723,7 +2727,7 @@ preflight_descendant_task_locks() {
 }
 
 validate_firstmate_home_children_removal() {
-  local home=$1 sub_state child_meta child_id child_wt child_proj child_kind child_home child_backend child_orca_worktree_id
+  local home=$1 sub_state child_meta child_id child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_lease_id child_holder
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2750,6 +2754,19 @@ validate_firstmate_home_children_removal() {
     elif [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
       child_proj=$(meta_value "$child_meta" project)
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+      child_lease_id=$(meta_value "$child_meta" treehouse_lease_id)
+      child_holder=$(meta_value "$child_meta" treehouse_lease_holder)
+      if [ -n "$child_lease_id" ] || [ -n "$child_holder" ]; then
+        fm_treehouse_lease_verify "$child_proj" "$child_wt" "$child_lease_id" "$child_holder" || {
+          echo "REFUSED: child $child_id has incomplete or conflicting treehouse lease identity" >&2
+          return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+        }
+      else
+        fm_treehouse_worktree_unpooled "$child_proj" "$child_wt" || {
+          echo "REFUSED: child worktree $child_wt has no exact lease identity and cannot be proved outside the treehouse pool" >&2
+          return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+        }
+      fi
     fi
   done
 }

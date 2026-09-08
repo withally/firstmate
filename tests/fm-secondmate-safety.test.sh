@@ -2114,6 +2114,7 @@ EOF
 set -u
 printf 'treehouse %s\n' "$*" >> "${FM_FAKE_TMUX_LOG:-/dev/null}"
 case "${1:-}" in
+  status) printf '[]\n'; exit 0 ;;
   return)
     shift
     target=
@@ -2859,6 +2860,70 @@ EOF
   pass "force teardown refuses unregistered child worktree paths"
 }
 
+test_child_recovery_pool_matrix() {
+  local scenario fixture home subhome project worktree fakebin rc
+for scenario in leased available alias malformed unavailable partial conflicting exact unpooled; do
+  fixture="$TMP_ROOT/$scenario"
+  home="$fixture/home"
+  subhome="$fixture/subhome"
+  project="$subhome/projects/app"
+  worktree="$fixture/worktree"
+  mkdir -p "$home/state" "$home/data" "$subhome/state"
+  fm_git_worktree "$project" "$worktree" fixture-child
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  fm_write_secondmate_meta "$home/state/domain.meta" "$subhome"
+  fm_write_meta "$subhome/state/child.meta" \
+    'window=firstmate:fm-child' 'endpoint_task_id=child' 'spawn_gen=fixture-child' \
+    "worktree=$worktree" "project=$project" 'harness=echo' 'kind=ship' 'mode=no-mistakes' 'yolo=off'
+  printf '%s\n' "- domain - fixture (home: $subhome; scope: fixture; projects: app; added 2026-09-08)" > "$home/data/secondmates.md"
+  case "$scenario" in
+    partial) printf 'treehouse_lease_id=fixture-lease-child\n' >> "$subhome/state/child.meta" ;;
+    conflicting) printf 'treehouse_lease_id=stale-lease\ntreehouse_lease_holder=child\n' >> "$subhome/state/child.meta" ;;
+    exact) printf 'treehouse_lease_id=fixture-lease-child\ntreehouse_lease_holder=child\n' >> "$subhome/state/child.meta" ;;
+  esac
+  fakebin=$(make_fake_tmux "$fixture/fake")
+  mv "$fakebin/treehouse" "$fakebin/treehouse-original"
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  [ "$RECOVERY_SCENARIO" != unavailable ] || exit 17
+  cat "$RECOVERY_LISTING"
+else
+  exec "$(dirname "$0")/treehouse-original" "$@"
+fi
+SH
+  chmod +x "$fakebin/treehouse"
+  case "$scenario" in
+    leased|partial|conflicting|exact) jq -n --arg path "$worktree" '[{path:$path,status:"leased",lease_id:"fixture-lease-child",lease_holder:"child"}]' > "$fixture/listing" ;;
+    available) jq -n --arg path "$worktree" '[{path:$path,status:"available"}]' > "$fixture/listing" ;;
+    alias)
+      ln -s "$worktree" "$fixture/alias"
+      jq -n --arg path "$fixture/alias" '[{path:$path,status:"available"}]' > "$fixture/listing"
+      ;;
+    malformed) printf '[{"status":"leased"}]\n' > "$fixture/listing" ;;
+    *) printf '[]\n' > "$fixture/listing" ;;
+  esac
+  printf 'child\n' > "$fixture/fake/lease"
+  rc=0
+  PATH="$fakebin:$PATH" FM_HOME="$home" RECOVERY_SCENARIO="$scenario" \
+    RECOVERY_LISTING="$fixture/listing" FM_FAKE_TMUX_LOG="$fixture/fake/tmux.log" \
+    FM_FAKE_TMUX_CAPTURE="$fixture/fake/pane.txt" FM_FAKE_TREEHOUSE_LEASE_FILE="$fixture/fake/lease" \
+    "$ROOT/bin/fm-teardown.sh" domain --force > "$fixture/result" 2>&1 || rc=$?
+  if [ "$scenario" = unpooled ] || [ "$scenario" = exact ]; then
+    [ "$rc" -eq 0 ] || fail "unpooled cleanup refused: $(cat "$fixture/result")"
+    [ ! -e "$worktree" ] || fail "unpooled child was retained"
+  else
+    [ "$rc" -ne 0 ] || fail "$scenario legacy child cleanup succeeded"
+    [ -d "$worktree" ] || fail "$scenario child worktree removed"
+    [ -f "$subhome/state/child.meta" ] || fail "$scenario child identity removed"
+    [ -f "$home/state/domain.meta" ] || fail "$scenario parent identity removed"
+    [ -f "$fixture/fake/lease" ] || fail "$scenario lease returned"
+    assert_no_grep 'kill-window' "$fixture/fake/tmux.log" "$scenario endpoint killed before lease preflight"
+  fi
+  pass "$scenario legacy child recovery"
+done
+}
+
 test_secondmate_force_teardown_retains_child_with_empty_lease_path() {
   local home subhome childproj fakebin err log
   home="$TMP_ROOT/empty-lease-path-home"
@@ -3159,3 +3224,5 @@ test_secondmate_idle_pane_is_not_stale
 test_secondmate_charter_brief_is_idle_by_default
 test_backlog_handoff_aborts_safely
 test_backlog_handoff_refuses_done_items_and_non_secondmate_homes
+
+test_child_recovery_pool_matrix

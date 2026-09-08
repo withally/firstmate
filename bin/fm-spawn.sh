@@ -796,6 +796,7 @@ CONFIG_INHERIT_LOCK_HELD=0
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_TREEHOUSE_LEASE_ID=
 SPAWN_TREEHOUSE_LEASE_HOLDER=
+SPAWN_ACQUISITION_STARTED=0
 SPAWN_NORMAL_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_PROJECTED=0
 SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
@@ -985,6 +986,10 @@ spawn_abort_cleanup() {
         fi
       fi
     fi
+  fi
+  if [ "$SPAWN_ACQUISITION_STARTED" = 1 ] && [ -z "${WT:-}" ]; then
+    fm_treehouse_acquisition_reconcile "$STATE" "$ID" "$PROJ_ABS" ||
+      echo "warning: acquisition receipt retained; retry spawn to reconcile its exact lease" >&2
   fi
   if [ "$SPAWN_NORMAL_ABORT_CLEANUP" = 1 ]; then
     if [ "$SPAWN_NORMAL_ABORT_PROJECTED" = 1 ]; then
@@ -2118,9 +2123,7 @@ real_path_or_raw() {  # <path>
   fi
 }
 
-if [ "$RELAUNCH" -eq 0 ]; then
-  fm_backlog_record_remove "$STATE/$ID.retired" "retirement receipt" "$STATE" || exit 1
-fi
+
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -2435,6 +2438,19 @@ fi
 if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
   echo "error: task $ID has a pending authoritative backlog close at $STATE/$ID.backlog-close; finish or repair that close before dispatching a new worker" >&2
   exit 1
+fi
+
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  for prior in "$STATE/$ID.meta" "$STATE/$ID.meta.recovery" "$STATE/$ID.meta.publication" "$STATE/$ID.retiring"; do
+    if [ -e "$prior" ] || [ -L "$prior" ]; then
+      echo "error: unresolved lifecycle record $prior; finish teardown before reusing this id" >&2
+      exit 1
+    fi
+  done
+  fm_treehouse_acquisition_reconcile "$STATE" "$ID" "$PROJ_ABS" || {
+    echo "error: unresolved acquisition receipt; cannot safely reconcile its exact lease" >&2; exit 1;
+  }
+  fm_backlog_record_remove "$STATE/$ID.retired" "retirement receipt" "$STATE" || exit 1
 fi
 
 W="fm-$ID"
@@ -2816,9 +2832,17 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     echo "error: unresolved lease acquisition at $lease_journal; refusing a second acquisition" >&2
     exit 1
   fi
-  (umask 077; set -C; cd "$PROJ_ABS" && treehouse get --lease --json \
-    --lease-holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" > "$lease_journal") || exit 1
-  lease_json=$(cat "$lease_journal") || exit 1
+  (umask 077; set -C; jq -n --arg project "$PROJ_ABS" --arg holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" \
+    '{schema:"fm-lease-acquisition.v1",project:$project,lease_holder:$holder}' > "$lease_journal") || exit 1
+  SPAWN_ACQUISITION_STARTED=1
+  lease_json=$(cd "$PROJ_ABS" && treehouse get --lease --json \
+    --lease-holder "$SPAWN_TREEHOUSE_LEASE_HOLDER") || exit 1
+  # Bind the response only after proving its holder. The pre-call intent remains
+  # sufficient to reconcile a truncated or invalid response without adopting it.
+  if ! printf '%s' "$lease_json" | jq -e --arg holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" \
+    '.lease_holder == $holder and (.lease_id|type == "string") and (.path|type == "string")' >/dev/null; then
+    echo "error: treehouse did not prove a fresh lease; receipt retained for reconciliation" >&2; exit 1
+  fi
   WT=$(printf '%s' "$lease_json" | jq -er '.path | select(type == "string" and startswith("/"))') || exit 1
   SPAWN_TREEHOUSE_LEASE_ID=$(printf '%s' "$lease_json" | jq -er '.lease_id | select(type == "string" and length > 0)') || {
     SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
@@ -2830,7 +2854,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     echo "error: treehouse lease holder mismatch for $WT; refusing spawn" >&2
     exit 1
   fi
-  if ! fm_treehouse_worktree_unowned "$STATE" "$WT"; then
+  if ! fm_treehouse_worktree_unowned "$STATE" "$WT" "" "$lease_journal"; then
     SPAWN_NORMAL_ABORT_RETURN_ALLOWED=0
     exit 1
   fi
@@ -2839,6 +2863,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     echo "error: could not prove fresh treehouse lease for $WT; refusing spawn" >&2
     exit 1
   fi
+  receipt_tmp=$(mktemp "$STATE/.lease-receipt.XXXXXX") || exit 1
+  printf '%s' "$lease_json" | jq --arg project "$PROJ_ABS" \
+    '. + {schema:"fm-lease-acquisition.v1",project:$project}' > "$receipt_tmp" \
+    && mv -f "$receipt_tmp" "$lease_journal" || exit 1
   printf -v worktree_cd 'cd -- %q' "$WT"
   spawn_send_text_line "$WT_TARGET" "$worktree_cd"
   worktree_entered=0
@@ -3343,6 +3371,10 @@ spawn_commit_backlog_transition() {
 
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=1
+  if ! fm_backlog_record_retire_recovery "$STATE/$ID.meta" "$STATE"; then
+    echo "error: previous task recovery record could not retire ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+    exit 1
+  fi
   if ! fm_backlog_atomic_transition publish "$SPAWN_META_TMP" "$STATE/$ID.meta" "task record" "$STATE"; then
     echo "error: replacement task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
@@ -3557,6 +3589,11 @@ trap - HUP INT TERM
 if [ "$SPAWN_BACKLOG_COMMIT_STATUS" -ne 0 ]; then
   exit "$SPAWN_BACKLOG_COMMIT_STATUS"
 fi
+if [ "$SPAWN_ACQUISITION_STARTED" = 1 ]; then
+  rm -f "$STATE/$ID.lease-acquisition" || exit 1
+  SPAWN_ACQUISITION_STARTED=0
+fi
+
 fm_lock_release "$SPAWN_META_LOCK"
 SPAWN_META_LOCK_HELD=0
 if [ -n "$SPAWN_DEFERRED_SIGNAL" ]; then

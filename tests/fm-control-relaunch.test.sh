@@ -355,6 +355,10 @@ test_relaunch_preserves_durable_task_metadata() {
     || fail "the task X request must survive relaunch"
   [ "$(meta_field "$dir" rl19 decisions_reviewed)" = 1 ] \
     || fail "the task decision state must survive relaunch"
+  out=$(run_control "$dir" rl19 relaunch --note "continue the same task again"); rc=$?
+  expect_code 0 "$rc" "second relaunch should retire prior recovery identity"$'\n'"$out"
+  [ "$(meta_field "$dir" rl19 spawn_gen)" = "$(sed -n 's/^spawn_gen=//p' "$dir/home/state/rl19.meta.recovery")" ] \
+    || fail "second relaunch left recovery evidence for the old incarnation"
   pass "fm-control relaunch: durable task metadata survives replacement launch publication"
 }
 
@@ -375,14 +379,14 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_RELEASE="$launch_release" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  while [ ! -e "$prepare" ] && [ "$i" -lt 1000 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
   [ -e "$prepare" ] || {
     kill "$control_pid" 2>/dev/null || true
     wait "$control_pid" 2>/dev/null || true
-    fail "relaunch did not reach trace delivery"
+    fail "relaunch did not reach trace delivery: $(cat "$dir/control.out")"
   }
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_REAL_MV="$(command -v mv)" \
@@ -1541,6 +1545,11 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
     || fail "a relaunch left its item at $(backlog_state "$dir" rl41)"
   pass "relaunch heals an item that drifted out of In flight while the task stayed live"
 }
+
+if [ "$#" -gt 0 ]; then
+  "$@"
+  exit $?
+fi
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata

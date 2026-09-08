@@ -597,6 +597,77 @@ test_recovery_record_blocks_duplicate_pool_lease() {
   pass "retained recovery metadata blocks a duplicate pooled lease"
 }
 
+test_failed_allocation_response_reconciles_receipt() {
+  local rec id out rc=0
+  id=allocation-response-failure
+  rec=$(make_case allocation-response "$id")
+  read_case_record "$rec"
+  mv "$FAKEBIN_DIR/treehouse" "$FAKEBIN_DIR/treehouse-base"
+  cat > "$FAKEBIN_DIR/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = get ] && [ ! -e "$FM_HOME/failed-once" ]; then
+  "$(dirname "$0")/treehouse-base" "$@" >/dev/null
+  touch "$FM_HOME/failed-once"
+  exit 1
+fi
+exec "$(dirname "$0")/treehouse-base" "$@"
+SH
+  chmod +x "$FAKEBIN_DIR/treehouse"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "provider allocation error did not fail spawn"
+  assert_absent "$HOME_DIR/state/$id.meta" "failed allocation published partial metadata"
+  assert_absent "$HOME_DIR/state/$id.lease-acquisition" "exact safe allocation was not reconciled"
+  assert_grep 'if-lease-holder' "$CASE_DIR/treehouse.log" "allocation cleanup was not conditional"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || fail "reconciled retry failed: $out"
+  pass "allocation with a lost response releases its receipted lease and retries"
+}
+
+test_publication_failure_preserves_identity() {
+  local rec id out rc=0
+  id=publication-failure
+  rec=$(make_case publication-failure "$id")
+  read_case_record "$rec"
+  cat > "$FAKEBIN_DIR/mv" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in */publication-failure.meta) exit 1 ;; esac
+done
+exec /bin/mv "$@"
+SH
+  chmod +x "$FAKEBIN_DIR/mv"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "metadata publication failure did not refuse"
+  assert_absent "$HOME_DIR/state/$id.meta" "failed publication left primary metadata"
+  assert_absent "$HOME_DIR/state/$id.meta.recovery" "rollback stranded recovery sidecar"
+  assert_absent "$HOME_DIR/state/$id.meta.publication" "rollback stranded publication marker"
+  assert_grep 'if-lease-holder' "$CASE_DIR/treehouse.log" "rollback did not return its exact lease"
+  rm "$FAKEBIN_DIR/mv"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || fail "rolled-back publication could not retry: $out"
+  pass "interrupted metadata publication rolls back the paired records and exact lease"
+}
+
+test_pending_close_preserves_retirement_receipt() {
+  local rec id out rc=0
+  id=pending-receipt
+  rec=$(make_case pending-receipt "$id")
+  read_case_record "$rec"
+  printf 'retirement_task_id=%s\nretirement_complete=1\n' "$id" > "$HOME_DIR/state/$id.retired"
+  cp "$HOME_DIR/state/$id.retired" "$CASE_DIR/receipt-before"
+  printf 'pending\n' > "$HOME_DIR/state/$id.backlog-close"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "pending backlog close did not refuse dispatch"
+  cmp "$CASE_DIR/receipt-before" "$HOME_DIR/state/$id.retired" || fail "spawn erased pending cleanup evidence"
+  pass "pending backlog close preserves its retirement receipt"
+}
+
+if [ "$#" -gt 0 ]; then
+  for test_name in "$@"; do "$test_name"; done
+  exit 0
+fi
+test_pending_close_preserves_retirement_receipt
+test_failed_allocation_response_reconciles_receipt
+test_publication_failure_preserves_identity
+
 test_duplicate_pool_lease_refuses_without_partial_meta
 test_recovery_record_blocks_duplicate_pool_lease
 

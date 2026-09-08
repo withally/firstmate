@@ -144,7 +144,7 @@ validate_payload() {  # <data.json>
 }
 
 command_build() {
-  local data=${1-} board json tmp sid extracted
+  local data=${1-} board json tmp sid extracted state_override
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -f "$data" ] || fail "board data does not exist: $data"
@@ -195,7 +195,8 @@ command_build() {
   printf 'bound: %s\n' "$sid"
 
   if "$SCRIPT_DIR/fm-procevent.sh" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid"; then
-    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="${FM_STATE_OVERRIDE:-$FM_HOME/state}" \
+    state_override=${FM_STATE_OVERRIDE:-$FM_HOME/state}
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$state_override" \
       "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$board" home >/dev/null \
       || fail "cannot refresh the board Lavish ownership ledger"
     printf 'already-armed: %s\n' "$sid"

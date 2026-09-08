@@ -48,6 +48,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
+LAVISH_STATE_FILE="${FM_LAVISH_STATE_FILE:-${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}/state.json}"
 
 TEMPLATE="${FM_BEARINGS_BOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/bearings/assets/board-template.html}"
 PLACEHOLDER='__FM_BEARINGS_BOARD_DATA__'
@@ -66,7 +67,13 @@ fail() {
   exit 1
 }
 
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
+LAVISH_STATE_DIR=$(fm_lavish_state_dir "$LAVISH_STATE_FILE") \
+  || fail "FM_LAVISH_STATE_FILE must be an absolute Lavish state.json path"
+
 board_path() { printf '%s/.lavish/bearings-board.html\n' "$FM_HOME"; }
+lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
 
 validate_payload() {  # <data.json>
   jq -e --arg schema "$BOARD_SCHEMA" '
@@ -137,7 +144,7 @@ validate_payload() {  # <data.json>
 }
 
 command_build() {
-  local data=${1-} board json tmp sid extracted
+  local data=${1-} board json tmp sid extracted state_override
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -f "$data" ] || fail "board data does not exist: $data"
@@ -178,7 +185,7 @@ command_build() {
   printf 'board: %s\n' "$board"
 
   command -v lavish-axi >/dev/null 2>&1 || fail "lavish-axi is not installed"
-  lavish-axi "$board" || fail "cannot establish the board Lavish session"
+  lavish_cli "$board" || fail "cannot establish the board Lavish session"
   printf 'served: %s\n' "$board"
 
   sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$board") \
@@ -188,9 +195,13 @@ command_build() {
   printf 'bound: %s\n' "$sid"
 
   if "$SCRIPT_DIR/fm-procevent.sh" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid"; then
+    state_override=${FM_STATE_OVERRIDE:-$FM_HOME/state}
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$state_override" \
+      "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$board" home >/dev/null \
+      || fail "cannot refresh the board Lavish ownership ledger"
     printf 'already-armed: %s\n' "$sid"
   else
-    "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$board" >/dev/null \
+    "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$board" --task-id home >/dev/null \
       || fail "cannot arm the board as a process-event source"
     printf 'armed: %s\n' "$sid"
   fi

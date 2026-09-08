@@ -20,9 +20,36 @@ command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
-  mkdir -p "$home/state" "$home/data"
+  mkdir -p "$home/state" "$home/data" "$home/lavish"
   fakebin=$(fm_fakebin "$home")
-  fm_fake_exit0 "$fakebin" lavish-axi
+  cat > "$fakebin/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -f "$1" ]; then
+  ARTIFACT="$1" STATE_FILE="$LAVISH_AXI_STATE_DIR/state.json" node <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const file = fs.realpathSync(process.env.ARTIFACT);
+const state = fs.existsSync(process.env.STATE_FILE)
+  ? JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"))
+  : {sessions:{}};
+const key = crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
+state.sessions[key] = {
+  key,
+  file,
+  url: "http://127.0.0.1:4387/session/" + key,
+  status: "open",
+  pending_prompts: 0,
+  prompts: [],
+  updated_at: new Date().toISOString(),
+};
+fs.mkdirSync(path.dirname(process.env.STATE_FILE), {recursive:true});
+fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state, null, 2));
+NODE
+fi
+SH
+  chmod +x "$fakebin/lavish-axi"
   printf '%s\n' "$home"
 }
 
@@ -35,6 +62,7 @@ render() {  # <home> <charted-json> [charted_more] [charted_warning_more]
     charted:$charted, charted_more:$more, charted_warning_more:$warning_more}' > "$data"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    LAVISH_AXI_STATE_DIR="$home/lavish" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$BOARD" build "$data" >/dev/null || fail "the board did not build"
   node "$HARNESS" "$home/.lavish/bearings-board.html" \

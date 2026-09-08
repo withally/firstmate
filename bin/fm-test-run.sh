@@ -1364,6 +1364,12 @@ families_for_changed_path() {
     docs/fm-test-isolation-proof.json)
       printf '%s\n' pure-contract-unit
       ;;
+    data/fm-lavish-session-prune-f1/authorized-2026-09-08.json)
+      printf '%s\n' "__script__:fm-lavish-session.test.sh"
+      ;;
+    data/fm-lavish-session-prune-f1/report.md|\
+    data/fm-lavish-session-prune-f1/upstream-issue-draft.md)
+      ;;
     .github/*|.tasks.toml|AGENTS.md|CLAUDE.md|CONTRIBUTING.md|\
     docs/configuration.md|docs/supervision-protocols/*)
       printf '%s\n' pure-contract-unit

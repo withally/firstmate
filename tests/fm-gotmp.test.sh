@@ -112,6 +112,11 @@ fm_tasks_axi_backend_available() { return 1; }
 fm_tasks_axi_compatible() { return 1; }
 fm_backlog_backend_manual() { return 1; }
 SH
+  cat > "$fake/bin/fm-lavish-session.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fake/bin/fm-lavish-session.sh"
   ln -s "$ROOT/bin/fm-backlog-transition-lib.sh" "$fake/bin/fm-backlog-transition-lib.sh"
   # Meta with a nonexistent worktree so the dirty/treehouse blocks skip.
   cat > "$fake/state/$id.meta" <<META
@@ -202,6 +207,11 @@ fm_tasks_axi_backend_available() { return 1; }
 fm_tasks_axi_compatible() { return 1; }
 fm_backlog_backend_manual() { return 1; }
 SH
+  cat > "$fake/bin/fm-lavish-session.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fake/bin/fm-lavish-session.sh"
   ln -s "$ROOT/bin/fm-backlog-transition-lib.sh" "$fake/bin/fm-backlog-transition-lib.sh"
   # No tasktmp= line at all.
   cat > "$fake/state/$id.meta" <<META

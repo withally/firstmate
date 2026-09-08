@@ -2,7 +2,7 @@
 # Lavish adapter for the generic process-to-event runner.
 #
 # Usage:
-#   fm-procevent-lavish.sh arm <artifact.html>
+#   fm-procevent-lavish.sh arm <artifact.html> [--task-id <task-id>]
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh source-acknowledgements
@@ -12,6 +12,7 @@
 #   fm-procevent-lavish.sh read <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
+#   fm-procevent-lavish.sh retire-and-end <task-id> <artifact.html>
 #   fm-procevent-lavish.sh poll <artifact.html>
 #
 # classify   Print the lifecycle state a handler should act on: feedback, ended,
@@ -133,6 +134,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+LAVISH_STATE_FILE="${FM_LAVISH_STATE_FILE:-${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}/state.json}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -140,9 +143,31 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+LAVISH_STATE_DIR=$(fm_lavish_state_dir "$LAVISH_STATE_FILE") \
+  || die "FM_LAVISH_STATE_FILE must be an absolute Lavish state.json path"
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
+
+lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
+
+source_registration_matches() {
+  local source_file=$1 tmp status=1
+  shift
+  [ -f "$source_file" ] && [ ! -L "$source_file" ] || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-lavish-source.XXXXXX") || return 2
+  {
+    printf 'adapter=lavish\n'
+    printf 'argc=%s\n' "$#"
+    printf 'argv:\n'
+    printf '%s\n' "$@"
+  } > "$tmp" || { rm -f "$tmp"; return 2; }
+  if cmp -s "$tmp" "$source_file"; then status=0; fi
+  rm -f "$tmp"
+  return "$status"
+}
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -162,20 +187,52 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local artifact=${1-} id real
+  local artifact=${1-} id real task='' source_file source_published=0
+  local -a poll_args
   [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
+  if [ "$#" -eq 3 ] && [ "$2" = --task-id ]; then
+    task=$3
+  elif [ "$#" -ne 1 ]; then
+    usage
+  fi
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   poll_retry_delay >/dev/null
   id=$(cmd_source_id "$artifact") || exit 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
     || die "cannot resolve the artifact path: $artifact"
+  poll_args=("$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real")
+  if [ -n "$task" ]; then poll_args+=(--task-id "$task"); fi
+  source_file="$STATE/procevent/$id.source"
+  if [ -e "$source_file" ] || [ -L "$source_file" ]; then
+    source_registration_matches "$source_file" "${poll_args[@]}" \
+      || die "cannot arm over an existing process-event registration: $id"
+  else
+    if ! "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- "${poll_args[@]}"; then
+      if source_registration_matches "$source_file" "${poll_args[@]}" \
+        && ! "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --if-matches lavish -- "${poll_args[@]}" >/dev/null 2>&1; then
+        die "Lavish process-event registration failed and source rollback was refused: $id"
+      fi
+      die "cannot publish the Lavish process-event source: $id"
+    fi
+    source_published=1
+  fi
+  if [ -n "$task" ]; then
+    if ! "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" "$task" >/dev/null; then
+      if [ "$source_published" -eq 1 ] && ! "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --if-matches lavish -- "${poll_args[@]}" >/dev/null 2>&1; then
+        die "Lavish ownership registration failed and source rollback was refused: $id"
+      fi
+      die "cannot record Lavish ownership for $real"
+    fi
+  elif ! "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" >/dev/null; then
+    if [ "$source_published" -eq 1 ] && ! "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --if-matches lavish -- "${poll_args[@]}" >/dev/null 2>&1; then
+      die "Lavish ownership registration failed and source rollback was refused: $id"
+    fi
+    die "cannot record Lavish ownership for $real"
+  fi
   # This adapter's own listener command, which runs the plain blocking form with
   # no --timeout-ms so completion is a server event, and absorbs only the exact
   # transient interruption. Registering raw poll output is what let that
   # interruption reach the runner as a captured result.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
-    -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
 }
@@ -185,6 +242,15 @@ cmd_retire() {
   [ -n "$artifact" ] || usage
   id=$(cmd_source_id "$artifact") || exit 1
   "$SCRIPT_DIR/fm-procevent.sh" retire "$id"
+}
+
+cmd_retire_and_end() {
+  local task=${1-} artifact=${2-} id
+  [ "$#" -eq 2 ] || usage
+  "$SCRIPT_DIR/fm-lavish-session.sh" preflight-end "$task" "$artifact" || exit 1
+  id=$(cmd_source_id "$artifact") || exit 1
+  "$SCRIPT_DIR/fm-lavish-session.sh" end-with-source "$task" "$artifact" "$id" || exit 1
+  cmd_retire "$artifact"
 }
 
 # The bounded quiet retry described in the header. The bound is a constant
@@ -264,10 +330,14 @@ poll_retry_delay() {
 }
 
 cmd_poll() {
-  local artifact=${1-} delay attempt=0 response cleanup_command rc filter_rc
+  local artifact=${1-} delay attempt=0 response cleanup_command rc filter_rc task=
   local pipeline_status
   [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
+  if [ "$#" -eq 3 ] && [ "$2" = --task-id ]; then
+    task=$3
+  elif [ "$#" -ne 1 ]; then
+    usage
+  fi
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   delay=$(poll_retry_delay) || exit 1
   response=$(mktemp "${TMPDIR:-/tmp}/fm-lavish-poll.XXXXXX") || die "cannot stage the poll response"
@@ -284,7 +354,12 @@ cmd_poll() {
     trap "$cleanup_command; trap - $signal; kill -$signal $$" "$signal"
   done
   while :; do
-    lavish-axi poll "$artifact" | poll_response_filter "$response"
+    if [ -n "$task" ]; then
+      "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" "$task" || exit 1
+    else
+      "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" || exit 1
+    fi
+    lavish_cli poll "$artifact" | poll_response_filter "$response"
     pipeline_status=("${PIPESTATUS[@]}")
     rc=${pipeline_status[0]}
     filter_rc=${pipeline_status[1]}
@@ -334,7 +409,7 @@ cmd_acknowledge() {
   artifact=$(session_file "$file")
   [ -n "$artifact" ] || die "captured delivery has no session file"
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
-  lavish-axi poll "$artifact" --ack "$delivery_id" --timeout-ms 1 >/dev/null
+  lavish_cli poll "$artifact" --ack "$delivery_id" --timeout-ms 1 >/dev/null
 }
 
 # Read one field of the response's leading `session:` block. Those fields are
@@ -680,6 +755,7 @@ cmd_read() {
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
+  retire-and-end) shift; cmd_retire_and_end "$@" ;;
   poll)      shift; cmd_poll "$@" ;;
   source-acknowledgements) [ "$#" -eq 1 ] || usage ;;
   acknowledge) shift; cmd_acknowledge "$@" ;;

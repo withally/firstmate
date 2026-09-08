@@ -19,7 +19,7 @@ command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
-  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects" "$home/lavish"
   cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
   cat > "$home/data/backlog.md" <<'EOF'
 ## In flight
@@ -29,7 +29,7 @@ make_home() {  # <name>
 ## Done
 EOF
   fakebin=$(fm_fakebin "$home")
-  fm_fake_exit0 "$fakebin" tmux treehouse no-mistakes gh gh-axi
+  fm_fake_exit0 "$fakebin" lavish-axi tmux treehouse no-mistakes gh gh-axi
   printf '%s\n' "$home"
 }
 
@@ -41,8 +41,28 @@ run_lavish() {  # <home> <command args...>
   shift
   PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    LAVISH_AXI_STATE_DIR="$home/lavish" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent-lavish.sh" "$@"
+}
+
+seed_lavish_state() {  # <home> <artifact>
+  local home=$1 artifact=$2
+  ARTIFACT="$artifact" STATE_FILE="$home/lavish/state.json" node <<'NODE'
+const fs = require("node:fs");
+const file = fs.realpathSync(process.env.ARTIFACT);
+const session = {
+  key: "fixture",
+  file,
+  url: "http://127.0.0.1:4387/session/fixture",
+  status: "open",
+  pending_prompts: 0,
+  prompts: [],
+  chat: [],
+  updated_at: new Date().toISOString(),
+};
+fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({sessions:{fixture:session}}, null, 2));
+NODE
 }
 
 run_bearings() {  # <home>
@@ -757,7 +777,7 @@ test_bound_channel_answers_close_at_answer_time() {
 
   artifact="$home/data/$id/review.html"
   printf '<h1>Sample eval proposal</h1>\n' > "$artifact"
-  fm_fake_exit0 "$home/fakebin" lavish-axi
+  seed_lavish_state "$home" "$artifact"
   sid=$(run_lavish "$home" source-id "$artifact") || fail "could not derive the review source id"
   run_captain "$home" bind "$sid" >/dev/null \
     || fail "could not bind the review source to the keyed-answer intake"
@@ -878,7 +898,7 @@ test_unbound_source_closes_no_hold() {
 
   artifact="$home/data/$id/review.html"
   printf '<h1>Unbound</h1>\n' > "$artifact"
-  fm_fake_exit0 "$home/fakebin" lavish-axi
+  seed_lavish_state "$home" "$artifact"
   sid=$(run_lavish "$home" source-id "$artifact") || fail "could not derive the unbound source id"
   run_lavish "$home" arm "$artifact" >/dev/null || fail "could not arm the unbound review"
 

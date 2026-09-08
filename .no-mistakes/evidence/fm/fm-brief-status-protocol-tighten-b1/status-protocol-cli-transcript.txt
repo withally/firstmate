@@ -1,0 +1,116 @@
+END-TO-END GENERATED BRIEF STATUS PROTOCOL
+home=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home
+
+[fresh no-mistakes: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/fresh-no-mistakes/brief.md]
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+Definition of done:
+# Definition of done
+Delivery contract: mode=no-mistakes
+The task is complete only when committed on your branch.
+After committing the implementation, append `working: implementation committed and validation started` only if that phase change has not already been reported, then run /no-mistakes to validate and ship a PR.
+A local commit, local validation pass, or pipeline start is never a `done:` event.
+
+You drive no-mistakes by responding to its gates, not by implementing fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+
+[fresh direct-PR: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/fresh-direct-PR/brief.md]
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+Definition of done:
+# Definition of done
+Delivery contract: mode=direct-PR
+This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+The task is complete only when committed on your branch.
+When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.
+Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+
+[fresh local-only: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/fresh-local-only/brief.md]
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: work started or implementation committed and validation started.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+Definition of done:
+# Definition of done
+Delivery contract: mode=local-only
+This task ships **local-only**: no remote, no PR, no pipeline.
+The task is complete only when committed on your branch `fm/fresh-local-only`. Do NOT push, do NOT open a PR, do NOT merge.
+Keep your branch a clean fast-forward onto the current default branch - if `main` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+When it is implemented and committed, append `done: ready in branch fm/fresh-local-only` to the status file and stop.
+The configured merge authority approves the ready branch, then firstmate merges it into local `main` through the guarded fast-forward path.
+
+[fresh scout: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/fresh-scout/brief.md]
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: starting the investigation, entering a distinct research phase, or beginning report writing.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+Definition of done:
+# Definition of done
+Write your findings to `/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/fresh-scout/report.md`.
+The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.
+Before reporting done, read and follow `/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.agents/skills/captain-hold-lifecycle/SKILL.md` and pass its shared completion gate for the report and any visual review.
+Only after the report exists and is complete, append `done: {one-line conclusion}` to the status file and stop.
+If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
+
+PROMOTED SCOUT HANDOFFS
+
+[promote no-mistakes]
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+promoted promoted-no-mistakes to ship mode=no-mistakes yolo=off (teardown protection restored)
+wrote ship instructions for mode=no-mistakes: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/promoted-no-mistakes/ship-instructions.md
+next: FM_HOME=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home bin/fm-send.sh fm-promoted-no-mistakes "$(cat /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/promoted-no-mistakes/ship-instructions.md)"
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+   Never append a `resolved:` echo of a firstmate steer; moving its message into `handled/` is the acknowledgement.
+Definition of done delivered to promoted worker:
+# Definition of done
+Delivery contract: mode=no-mistakes
+The task is complete only when committed on your branch.
+After committing the implementation, append `working: implementation committed and validation started` only if that phase change has not already been reported, then run /no-mistakes to validate and ship a PR.
+A local commit, local validation pass, or pipeline start is never a `done:` event.
+
+You drive no-mistakes by responding to its gates, not by implementing fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+
+[promote direct-PR]
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+promoted promoted-direct-PR to ship mode=direct-PR yolo=off (teardown protection restored)
+wrote ship instructions for mode=direct-PR: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/promoted-direct-PR/ship-instructions.md
+next: FM_HOME=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home bin/fm-send.sh fm-promoted-direct-PR "$(cat /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/promoted-direct-PR/ship-instructions.md)"
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+   Never append a `resolved:` echo of a firstmate steer; moving its message into `handled/` is the acknowledgement.
+Definition of done delivered to promoted worker:
+# Definition of done
+Delivery contract: mode=direct-PR
+This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+The task is complete only when committed on your branch.
+When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.
+Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+
+[promote local-only]
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+promoted promoted-local-only to ship mode=local-only yolo=off (teardown protection restored)
+wrote ship instructions for mode=local-only: /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/promoted-local-only/ship-instructions.md
+next: FM_HOME=/Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home bin/fm-send.sh fm-promoted-local-only "$(cat /Users/ivan/.no-mistakes/worktrees/37852af5566c/01M20GSHBZTV19YET6Q396NQ0S/.status-protocol-e2e.0lnNk1/home/data/promoted-local-only/ship-instructions.md)"
+   Each status-file append wakes the supervisor and costs a full supervision turn.
+   Append `working:` only for a genuine phase change the supervisor would act on: work started or implementation committed and validation started.
+   Never append `working:` for a sub-step, a verification pass, or the start of re-review.
+   Never append a `resolved:` echo of a firstmate steer; moving its message into `handled/` is the acknowledgement.
+Definition of done delivered to promoted worker:
+# Definition of done
+Delivery contract: mode=local-only
+This task ships **local-only**: no remote, no PR, no pipeline.
+The task is complete only when committed on your branch `fm/promoted-local-only`. Do NOT push, do NOT open a PR, do NOT merge.
+Keep your branch a clean fast-forward onto the current default branch - if `main` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+When it is implemented and committed, append `done: ready in branch fm/promoted-local-only` to the status file and stop.
+The configured merge authority approves the ready branch, then firstmate merges it into local `main` through the guarded fast-forward path.

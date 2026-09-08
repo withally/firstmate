@@ -291,6 +291,11 @@ Append only when this protocol requires it; never use status as a progress log.'
 
   brief="$home/data/status-protocol-scout/brief.md"
   # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: starting the investigation, entering a distinct research phase, or beginning report writing.' "$brief" \
+    "scout scaffold lost its research/report phase-only working rule"
+  assert_no_grep 'implementation committed and validation started, or PR opened' "$brief" \
+    "scout scaffold still names ship-only working phases"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
   assert_grep 'Only after the report exists and is complete, append `done: {one-line conclusion}`' "$brief" \
     "scout scaffold permits done before its report exists"
   pass "fm-brief.sh: generated status protocol wakes only for actionable phases and terminal outcomes"

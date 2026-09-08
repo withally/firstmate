@@ -462,7 +462,7 @@ The report is the only thing that survives, so anything worth keeping must be in
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    $SILENT_OPERATIONAL_INPUT_RULE
    $STATUS_WAKE_REMINDER
-   Append \`working:\` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.
+   Append \`working:\` only for a genuine phase change the supervisor would act on: starting the investigation, entering a distinct research phase, or beginning report writing.
    Never append \`working:\` for a sub-step, a verification pass, or the start of re-review.
    Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full
    https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate

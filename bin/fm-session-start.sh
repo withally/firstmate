@@ -220,6 +220,16 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# A task checkout must never silently become a primary operational home.
+# Explicit FM_HOME remains the authority for an intentional isolated home.
+if [ -z "${FM_HOME:-}" ] && [ -f "$FM_ROOT/.git" ]; then
+  case "$(cd "$FM_ROOT" && pwd -P)" in
+    */.treehouse/*)
+      echo "REFUSED: crewmate task worktree has no FM_HOME; session start, locks, watchers, and supervision belong to the primary only." >&2
+      exit 2
+      ;;
+  esac
+fi
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"

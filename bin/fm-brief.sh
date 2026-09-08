@@ -445,6 +445,8 @@ IFS= read -r -d '' TASK_SECTION <<'EOF' || true
 EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
 
+CREWMATE_BOUNDARY="AGENTS.md sections 3 and 8, and every session-start, lock, watcher, and supervision command, belong to the primary only and are forbidden for the crewmate."
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -454,6 +456,7 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
+$CREWMATE_BOUNDARY
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
@@ -535,6 +538,7 @@ $MERGE_AUTHORITY_SECTION
 $HERDR_SECTION
 
 # Setup
+$CREWMATE_BOUNDARY
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.

@@ -220,22 +220,16 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-# A task checkout must never silently become a primary operational home.
-# Explicit FM_HOME remains the authority for an intentional isolated home.
-if [ -z "${FM_HOME:-}" ] && [ -f "$FM_ROOT/.git" ]; then
-  case "$(cd "$FM_ROOT" && pwd -P)" in
-    */.treehouse/*)
-      echo "REFUSED: crewmate task worktree has no FM_HOME; session start, locks, watchers, and supervision belong to the primary only." >&2
-      exit 2
-      ;;
-  esac
-fi
+FM_HOME_EXPLICIT=0
+[ "${FM_HOME+x}" = x ] && FM_HOME_EXPLICIT=1
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 COMPLETION_FILE="$STATE/.session-start-complete"
 AGENTS_BASELINE_FILE="$STATE/.session-start-agents-baseline"
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 
 REEMIT=0
 SESSION_SOURCE=
@@ -264,6 +258,15 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if ! fm_primary_scope_matches "$FM_ROOT" "$STATE"; then
+  if [ "$FM_HOME_EXPLICIT" = 1 ]; then
+    echo "REFUSED: session start requires a valid primary or marked secondmate home; crewmate task worktrees cannot own session-start locks, watchers, or supervision." >&2
+  else
+    echo "REFUSED: crewmate task worktree has no FM_HOME or valid primary/secondmate scope; session start, locks, watchers, and supervision belong to the primary only." >&2
+  fi
+  exit 2
+fi
 
 # --- 0. runtime bound ---------------------------------------------------------
 # The ordered stage list is the contract behind the truncation banner: the child

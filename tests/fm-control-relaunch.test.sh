@@ -140,6 +140,7 @@ new_case() {
 add_ship_task() {
   local dir=$1 id=$2 harness=${3:-claude}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
+  local lease_id="fixture-lease-$id" lease_holder="fixture-holder-$id"
   fm_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
@@ -162,7 +163,16 @@ EOF
     echo "tasktmp=/tmp/fm-$id"
     echo "model=default"
     echo "effort=default"
+    echo "treehouse_lease_id=$lease_id"
+    echo "treehouse_lease_holder=$lease_holder"
   } > "$home/state/$id.meta"
+  cat > "$dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\\n' '[{"path":"$wt","status":"leased","lease_id":"$lease_id","lease_holder":"$lease_holder"}]'
+fi
+EOF
+  chmod +x "$dir/fakebin/treehouse"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
@@ -1476,6 +1486,27 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
+test_spawn_relaunch_refuses_a_changed_treehouse_lease() {
+  local dir out rc
+  dir=$(new_case lease-drift rl39)
+  add_ship_task "$dir" rl39 claude
+  printf 'zsh' > "$dir/fake/command"
+  cat > "$dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\\n' '[{"path":"$dir/wt","status":"leased","lease_id":"replacement-lease","lease_holder":"replacement-holder"}]'
+fi
+EOF
+  chmod +x "$dir/fakebin/treehouse"
+  out=$(run_spawn "$dir" rl39 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "a relaunch with a changed lease should refuse"
+  assert_contains "$out" "treehouse lease identity changed" \
+    "the changed-lease refusal should name the identity mismatch"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "a changed lease must refuse before replacement launch"
+  pass "fm-spawn relaunch refuses when the recorded treehouse lease is no longer current"
+}
+
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it() {
   local dir out rc=0
   command -v tasks-axi >/dev/null 2>&1 || {
@@ -1561,5 +1592,6 @@ test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_inconsistent_persisted_merge_authority
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_spawn_relaunch_refuses_a_changed_treehouse_lease
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight

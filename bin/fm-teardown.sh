@@ -249,6 +249,11 @@ if [ "$FORCE" = --force ] && [ "$(fm_lease_actor)" = branch ]; then
   exit "$FM_LEASE_REFUSE_EXIT"
 fi
 fm_lease_guard "$ID" "teardown (fm-teardown)"
+TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
+  echo "error: could not resolve the task-set lock for $STATE" >&2
+  exit 1
+}
+TASK_SET_LOCK_HELD=0
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
 META_LOCK=
@@ -287,10 +292,19 @@ teardown_release_locks() {
     fm_lock_release "$CONTROL_LOCK" || true
     CONTROL_LOCK_HELD=0
   fi
+  if [ "$TASK_SET_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$TASK_SET_LOCK" || true
+    TASK_SET_LOCK_HELD=0
+  fi
   fm_lease_guard_release || true
   return "$status"
 }
 trap teardown_release_locks EXIT
+fm_lock_acquire_wait "$TASK_SET_LOCK" || {
+  echo "error: could not acquire the task-set lock for $STATE" >&2
+  exit 1
+}
+TASK_SET_LOCK_HELD=1
 fm_lock_try_acquire "$CONTROL_LOCK" || {
   echo "error: another lifecycle action is already running for task $ID; nothing was changed" >&2
   exit 1
@@ -355,31 +369,47 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
   [ "$(cd "$recovery_common" && pwd -P)" = "$(cd "$recovery_project_common" && pwd -P)" ] || {
     echo "REFUSED: orphan worktree belongs to a different project" >&2; exit 1;
   }
-  fm_treehouse_worktree_unowned "$STATE" "$recovery_wt" || exit 1
+  fm_treehouse_worktree_unowned "$STATE" "$recovery_wt" "$RECOVER_FROM" || exit 1
   fm_backend_source "$recovery_backend" || exit 1
   case "$recovery_backend" in
-    tmux) recovery_cwd=$(fm_backend_tmux_current_path "$recovery_target") ;;
-    herdr) recovery_cwd=$(fm_backend_herdr_current_path "$recovery_target") ;;
+    tmux) recovery_cwd=$(fm_backend_tmux_current_path "$recovery_target" || true) ;;
+    herdr) recovery_cwd=$(fm_backend_herdr_current_path "$recovery_target" || true) ;;
     *) echo "REFUSED: orphan endpoint identity recovery is unverified for $recovery_backend" >&2; exit 1 ;;
   esac
   if [ -n "$recovery_cwd" ]; then
     [ "$(cd "$recovery_cwd" 2>/dev/null && pwd -P)" = "$recovery_real" ] || {
       echo "REFUSED: orphan endpoint is not in its recorded worktree" >&2; exit 1;
     }
-  elif [ "$(fm_backend_agent_state "$recovery_backend" "$recovery_target")" != missing ]; then
+  else
+    recovery_endpoint_state=$(fm_backend_agent_state "$recovery_backend" "$recovery_target" || true)
+    [ "$recovery_endpoint_state" = missing ] || {
     echo "REFUSED: orphan endpoint identity is ambiguous" >&2; exit 1
+    }
   fi
   # Orphan recovery has no scout/force carveout: unknown work must survive.
-  recovery_dirty=$(git -C "$recovery_wt" status --porcelain --untracked-files=all) || exit 1
+  recovery_dirty=$(git -C "$recovery_wt" status --porcelain --untracked-files=all --ignored) || exit 1
   [ -z "$recovery_dirty" ] || { echo "REFUSED: orphan worktree has unlanded changes" >&2; exit 1; }
   git -C "$recovery_wt" fetch --all --quiet || exit 1
   recovery_unlanded=$(git -C "$recovery_wt" rev-list HEAD --not --remotes) || exit 1
   [ -z "$recovery_unlanded" ] || { echo "REFUSED: orphan branch is not remote-contained" >&2; exit 1; }
+  recovery_lease_identity=$(fm_treehouse_lease_identity_from_pool "$recovery_project" "$recovery_wt") || {
+    echo "REFUSED: orphan recovery could not re-derive the current treehouse lease identity for $recovery_wt" >&2
+    exit 1
+  }
+  IFS=$'\t' read -r recovery_lease_id recovery_lease_holder <<EOF
+$recovery_lease_identity
+EOF
+  [ -n "$recovery_lease_id" ] && [ -n "$recovery_lease_holder" ] || {
+    echo "REFUSED: orphan recovery could not prove a complete treehouse lease identity for $recovery_wt" >&2
+    exit 1
+  }
   recovery_tmp="$STATE/.$ID.meta.recover.$$"
   [ -n "$recovery_spawn_gen" ] || recovery_spawn_gen="r$(date +%s).${BASHPID:-$$}.$RANDOM"
   (umask 077; set -C; {
-    awk -F= '$1 != "spawn_gen"' "$RECOVER_FROM"
+    awk -F= '$1 != "spawn_gen" && $1 != "treehouse_lease_id" && $1 != "treehouse_lease_holder"' "$RECOVER_FROM"
     printf 'spawn_gen=%s\n' "$recovery_spawn_gen"
+    printf 'treehouse_lease_id=%s\n' "$recovery_lease_id"
+    printf 'treehouse_lease_holder=%s\n' "$recovery_lease_holder"
   } > "$recovery_tmp") || exit 1
   fm_backlog_record_publish "$recovery_tmp" "$META" "task record" "$STATE" || exit 1
   TEARDOWN_ORPHAN_RECOVERY=1
@@ -1406,6 +1436,7 @@ STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS
 TEARDOWN_TREEHOUSE_LOCK_REFUSED=2
 TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
 TEARDOWN_PROCEVENT_RESTORE_FAILED=4
+TEARDOWN_TREEHOUSE_LEASE_REFUSED=5
 
 # True when treehouse/git stderr shows the transient index.lock "File exists" race.
 # Other return failures must not enter the retry path.
@@ -1469,27 +1500,49 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return_command() {
-  local dir=$1 cd_dir=$2 lease_id holder
-  lease_id=$(fm_meta_get "$META" treehouse_lease_id)
-  holder=$(fm_meta_get "$META" treehouse_lease_holder)
-  if [ "$dir" = "$(fm_meta_get "$META" worktree)" ] && { [ -n "$lease_id" ] || [ -n "$holder" ]; }; then
+  local dir=$1 cd_dir=$2 identity_meta=${3:-$META} expected_holder=${4:-}
+  local lease_id holder identity recorded_worktree
+  lease_id=$(fm_meta_get "$identity_meta" treehouse_lease_id)
+  holder=$(fm_meta_get "$identity_meta" treehouse_lease_holder)
+  recorded_worktree=$(fm_meta_get "$identity_meta" worktree)
+  if [ -n "$lease_id" ] || [ -n "$holder" ]; then
+    if [ "$dir" != "$recorded_worktree" ] || [ -z "$lease_id" ] || [ -z "$holder" ]; then
+      echo "REFUSED: treehouse return for $dir has no complete identity-bound lease tuple; use --recover-from with retained exact task metadata" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    fi
     fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
   else
-    (cd "$cd_dir" && treehouse return --force "$dir")
+    identity=$(fm_treehouse_lease_identity_from_pool "$cd_dir" "$dir" "$expected_holder" || true)
+    if [ -z "$identity" ]; then
+      echo "REFUSED: treehouse return for $dir has no identity-bound lease; use --recover-from with retained exact task metadata" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    fi
+    IFS=$'\t' read -r lease_id holder <<EOF
+$identity
+EOF
+    [ -n "$lease_id" ] && [ -n "$holder" ] || {
+      echo "REFUSED: treehouse return for $dir has no complete identity-bound lease tuple; use --recover-from with retained exact task metadata" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    }
+    fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
   fi
 }
 
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
-  local out lock attempt=0 max_retries lock_desc
+  local identity_meta=${5:-$META} expected_holder=${6:-}
+  local out lock attempt=0 max_retries lock_desc command_rc
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
-  if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" 2>&1 ); then
+  if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
+  else
+    command_rc=$?
   fi
   [ -n "$out" ] && printf '%s\n' "$out" >&2
+  [ "$command_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ] && return "$command_rc"
 
   if ! treehouse_return_is_index_lock_error "$out"; then
     return 1
@@ -1510,12 +1563,15 @@ teardown_treehouse_return() {
     echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
-    if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" 2>&1 ); then
+    if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
+    else
+      command_rc=$?
     fi
     [ -n "$out" ] && printf '%s\n' "$out" >&2
+    [ "$command_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ] && return "$command_rc"
 
     if ! treehouse_return_is_index_lock_error "$out"; then
       echo "teardown: $label return failed with a non-lock error after retry; aborting" >&2
@@ -1537,12 +1593,15 @@ teardown_treehouse_return() {
           return 1
         fi
       fi
-      if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" 2>&1 ); then
+      if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" 2>&1 ); then
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
+      else
+        command_rc=$?
       fi
       [ -n "$out" ] && printf '%s\n' "$out" >&2
+      [ "$command_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ] && return "$command_rc"
       echo "teardown: $label return still failing after stale-lock cleanup" >&2
       return 1
     fi
@@ -2172,7 +2231,7 @@ remove_firstmate_home() {
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
     fi
-    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" || {
+    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$META" || {
       echo "error: treehouse return failed for $label $abs_home_path; lease may still be held" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
@@ -2663,11 +2722,12 @@ cleanup_firstmate_home_children() {
         "$child_wt/.opencode/plugins/fm-busy-state.js" \
         "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
       if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
-        if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
+        if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree" "" "$child_meta"; then
           :
         else
           child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
+          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ] \
+             || [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ]; then
             return "$child_return_rc"
           fi
           safe_rm_rf_child_worktree "$child_wt" "$child_proj"
@@ -2920,7 +2980,11 @@ fi
 # Verify allocation identity before branch, hook, process, or endpoint mutation.
 TREEHOUSE_LEASE_ID=$(fm_meta_get "$META" treehouse_lease_id)
 TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$META" treehouse_lease_holder)
-if [ -n "$TREEHOUSE_LEASE_ID" ] || [ -n "$TREEHOUSE_LEASE_HOLDER" ]; then
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  if [ -z "$TREEHOUSE_LEASE_ID" ] || [ -z "$TREEHOUSE_LEASE_HOLDER" ]; then
+    echo "REFUSED: task $ID has no complete treehouse lease identity; use --recover-from with retained exact task metadata for identity-bound recovery" >&2
+    exit 1
+  fi
   fm_treehouse_lease_verify "$PROJ" "$WT" "$TREEHOUSE_LEASE_ID" "$TREEHOUSE_LEASE_HOLDER" || {
     echo "REFUSED: treehouse lease identity changed for $WT" >&2
     exit 1

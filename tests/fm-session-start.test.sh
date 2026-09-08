@@ -62,6 +62,9 @@ new_world() {
   fakebin="$w/fakebin"
   mkdir -p "$home/state" "$home/data" "$home/config" "$fakebin"
   git init -q -b main "$root"
+  printf '# Firstmate test root\n' > "$root/AGENTS.md"
+  ln -s "$ROOT/bin" "$root/bin"
+  git -C "$root" add AGENTS.md bin
   git -C "$root" commit -q --allow-empty -m init
   printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
 }

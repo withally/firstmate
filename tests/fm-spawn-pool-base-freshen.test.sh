@@ -106,7 +106,7 @@ test_stale_pool_base_refreshes_before_branching() {
       "$branch_head" "$current" "$(cat "$POOL_DIR/advanced-main.txt")"
   fi
 
-  rm -f "$HOME_DIR/state/$id.meta"
+  rm -f "$HOME_DIR/state/$id.meta" "$HOME_DIR/state/$id.meta.recovery"
   id='pool-current-base-repeat-r1'
   fm_test_spawn_brief "$HOME_DIR" "$id"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
@@ -400,7 +400,7 @@ strand_submodule_pin_via_spawn() {  # <seed-id>
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"
   assert_contains "$out" "spawned $id" "the spawn that moves the submodule pin did not report success"
-  rm -f "$HOME_DIR/state/$id.meta"
+  rm -f "$HOME_DIR/state/$id.meta" "$HOME_DIR/state/$id.meta.recovery"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$ADVANCED_SHA" ] \
     || fail "the first spawn did not move the pooled base across the moved submodule pin"
   [ "$(git -C "$POOL_DIR/ui" rev-parse HEAD)" = "$SUBPIN1" ] \
@@ -574,7 +574,31 @@ test_duplicate_pool_lease_refuses_without_partial_meta() {
   pass "duplicate pool allocation refuses without a partial task record or survivor cleanup"
 }
 
+test_recovery_record_blocks_duplicate_pool_lease() {
+  local rec id out status recovery_before
+  id='pool-recovery-owner'
+  rec=$(make_case recovery-owner "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  expect_code 0 "$?" "recovery owner must launch"
+  recovery_before="$HOME_DIR/state/$id.meta.recovery"
+  [ -f "$recovery_before" ] || fail "recovery owner publication did not retain its recovery record"
+  rm -f "$HOME_DIR/state/$id.meta"
+  id='pool-recovery-contender'
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn accepted a pool slot owned only by a recovery record"
+  assert_contains "$out" "refusing duplicate lease" \
+    "recovery-only owner did not participate in duplicate detection"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "recovery-only duplicate left a partial task record"
+  [ -f "$recovery_before" ] || fail "recovery-only duplicate removed the survivor's recovery record"
+  [ ! -s "$CASE_DIR/treehouse.log" ] || fail "recovery-only duplicate returned the survivor's slot"
+  pass "retained recovery metadata blocks a duplicate pooled lease"
+}
+
 test_duplicate_pool_lease_refuses_without_partial_meta
+test_recovery_record_blocks_duplicate_pool_lease
 
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching

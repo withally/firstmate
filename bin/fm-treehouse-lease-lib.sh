@@ -13,6 +13,19 @@ fm_treehouse_lease_verify() { # <project> <worktree> <lease-id> <holder>
       (.[0] | .status == "leased" and .lease_id == $id and .lease_holder == $holder)' >/dev/null
 }
 
+fm_treehouse_lease_identity_from_pool() { # <project> <worktree> [holder]
+  local project=$1 worktree=$2 expected_holder=${3:-} listing
+  [ -n "$project" ] && [ -n "$worktree" ] || return 1
+  listing=$(cd "$project" && treehouse status --json) || return 1
+  printf '%s' "$listing" | jq -er --arg path "$worktree" --arg expected "$expected_holder" '
+    [ .[] | select(.path == $path
+      and .status == "leased"
+      and (.lease_id | type) == "string" and (.lease_id | length) > 0
+      and (.lease_holder | type) == "string" and (.lease_holder | length) > 0
+      and ($expected == "" or .lease_holder == $expected)) ]
+    | if length == 1 then .[0] | [.lease_id, .lease_holder] | @tsv else empty end'
+}
+
 fm_treehouse_lease_return() { # <project> <worktree> <lease-id> <holder>
   local project=$1 worktree=$2 lease_id=$3 holder=$4
   [ -n "$lease_id" ] && [ -n "$holder" ] || return 1
@@ -22,9 +35,18 @@ fm_treehouse_lease_return() { # <project> <worktree> <lease-id> <holder>
 
 fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]
   local state=$1 worktree=$2 excluded=${3:-} physical owner_meta owner_wt owner_real
+  local excluded_recovery excluded_primary
   physical=$(cd "$worktree" && pwd -P) || return 1
-  for owner_meta in "$state"/*.meta; do
+  excluded_recovery=
+  excluded_primary=
+  case "$excluded" in
+    *.meta) excluded_recovery="$excluded.recovery" ;;
+    *.meta.recovery) excluded_primary=${excluded%.recovery} ;;
+  esac
+  for owner_meta in "$state"/*.meta "$state"/*.meta.recovery; do
     [ "$owner_meta" != "$excluded" ] || continue
+    [ "$owner_meta" != "$excluded_recovery" ] || continue
+    [ "$owner_meta" != "$excluded_primary" ] || continue
     [ -e "$owner_meta" ] || [ -L "$owner_meta" ] || continue
     if [ ! -f "$owner_meta" ] || [ -L "$owner_meta" ]; then
       echo "error: cannot establish worktree ownership from $owner_meta" >&2

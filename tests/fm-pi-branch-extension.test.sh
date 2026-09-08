@@ -2797,6 +2797,44 @@ EOF
   pass "unsafe store quarantines shell writes, preserves held status, and returns unacknowledged wakes to main"
 }
 
+test_unwritable_outcome_store_blocks_branch_before_shell() {
+  local repo home out result
+  repo="$TMP_ROOT/unwritable-outcome-root"
+  home="$TMP_ROOT/unwritable-outcome-home"
+  mkdir -p "$home/state"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, outcomeScript, defaultSessionCtx, home }; })()`);
+const { dispatch, fire, outcomeScript, defaultSessionCtx, home } = globalThis.__t;
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
+
+outcomeScript(["append", "--task", "branch-driver", "--verdict", "routine", "--summary", "writeability seed"]);
+fire("session_start", {}, defaultSessionCtx);
+chmodSync(`${home}/state/branch-outcomes.jsonl`, 0o444);
+let prompts = 0;
+globalThis.__fmOnBranchPrompt = async () => {
+  prompts += 1;
+  writeFileSync(`${home}/state/branch-shell-side-effect`, "branch reached shell\n");
+};
+const offer = dispatch("signal: read-only outcome store");
+if (!offer.accepted) throw new Error("read-only outcome store wake was not accepted for fallback");
+const failure = await offer.settlement.then(() => null, (error) => error);
+if (!(failure instanceof Error) || !failure.message.includes("writable")) {
+  throw new Error(`read-only outcome store failure was not surfaced: ${String(failure)}`);
+}
+if (prompts !== 0 || existsSync(`${home}/state/branch-shell-side-effect`)) {
+  throw new Error("branch reached its shell before outcome persistence was writable");
+}
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "an unwritable outcome store must block branch shell access before a prompt: $out"
+  pass "unwritable outcome storage blocks branch shell access before side effects"
+}
+
 test_stale_batch_keeps_latest_offer_and_all_ack_rows() {
   local repo home out result
   repo="$TMP_ROOT/stale-batch-root"
@@ -2891,6 +2929,56 @@ EOF
   out=$(cat "$TMP_ROOT/node-output")
   expect_code 0 "$result" "a same-window stale row arriving during a prompt must be rechecked after settlement: $out"
   pass "same-window stale rows recheck after the active branch wake settles"
+}
+
+test_stale_recheck_is_rearmed_after_successful_settlement() {
+  local repo home out result
+  repo="$TMP_ROOT/stale-rearmed-root"
+  home="$TMP_ROOT/stale-rearmed-home"
+  mkdir -p "$home/state"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { bus, makeOffer, fire, defaultSessionCtx, home }; })()`);
+const { bus, makeOffer, fire, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+fire("session_start", {}, defaultSessionCtx);
+writeFileSync(`${home}/state/.wake-queue`, "1\t1\tstale\tfm-branch-driver\trearmed reason\n");
+let promptCount = 0;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  promptCount += 1;
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const drain = await bash.execute("drain", { command: "bin/fm-wake-drain.sh" });
+  if (drain.isError) throw new Error(JSON.stringify(drain));
+  const output = drain.details.stdout;
+  const ack = `${output}\n${drain.details.stderr}`.split("\n").find((line) => line.startsWith("WAKE_ACK_REQUIRED:"));
+  if (!ack) throw new Error(`missing ack: ${output}`);
+  const acknowledged = await bash.execute("ack", { command: ack.slice(ack.indexOf("bin/fm-wake-drain.sh")) });
+  if (acknowledged.isError) throw new Error(JSON.stringify(acknowledged));
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  await report.execute("report", { task: "branch-driver", verdict: "routine", summary: `rearmed stale task checked ${promptCount}` });
+};
+const first = makeOffer("stale: fm-branch-driver (rearmed reason)");
+bus.emit("fm-branch-supervision:dispatch", first);
+if (!first.accepted) throw new Error("initial stale wake was not accepted");
+await first.settlement;
+writeFileSync(`${home}/state/.wake-queue`, "2\t2\tstale\tfm-branch-driver\trearmed reason\n");
+const later = makeOffer("stale: fm-branch-driver (rearmed reason)");
+bus.emit("fm-branch-supervision:dispatch", later);
+if (!later.accepted) throw new Error("later stale wake was not accepted after settlement");
+await Promise.race([
+  later.settlement,
+  new Promise((_, reject) => setTimeout(() => reject(new Error("later stale wake settlement hung")), 1000)),
+]);
+if (promptCount !== 2) throw new Error(`later stale row opened ${promptCount} prompts`);
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "a later stale row must not remain suppressed after successful settlement: $out"
+  pass "stale suppression clears after successful settlement"
 }
 
 test_deferred_stale_recheck_clears_suppression_after_failure() {
@@ -4754,8 +4842,10 @@ test_branch_predrain_recheck_noops_already_drained_wake
 test_branch_mirror_filters_order_and_cursor
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation
 test_unsafe_store_refuses_branch_shell_and_preserves_status
+test_unwritable_outcome_store_blocks_branch_before_shell
 test_stale_batch_keeps_latest_offer_and_all_ack_rows
 test_deferred_stale_recheck_drains_after_active_wake
+test_stale_recheck_is_rearmed_after_successful_settlement
 test_deferred_stale_recheck_clears_suppression_after_failure
 test_branch_rollover_preserves_durable_decisions
 test_branch_rollover_refuses_unsafe_context_without_disposing_branch

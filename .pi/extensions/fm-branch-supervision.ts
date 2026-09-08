@@ -1561,9 +1561,14 @@ ${context.command}
     pendingActionDeliveries.delete(seq);
   });
 
-  function drainDeferredStaleRechecks(expectedGeneration: number): void {
-    if (deferredStaleRechecks.size === 0) return;
+  function drainDeferredStaleRechecks(expectedGeneration: number, settledMessages: readonly string[]): void {
     const deferred = [...deferredStaleRechecks.entries()];
+    const deferredWindows = new Set(deferred.map(([window]) => window));
+    for (const candidate of settledMessages) {
+      const window = staleWakeWindow(candidate);
+      if (window && !deferredWindows.has(window)) lastDeliveredStaleByWindow.delete(window);
+    }
+    if (deferred.length === 0) return;
     deferredStaleRechecks.clear();
     for (const [window, item] of deferred) {
       lastDeliveredStaleByWindow.delete(window);
@@ -1687,7 +1692,7 @@ ${context.command}
       })
       .finally(() => {
         if (recoveryProbe) finishProviderProbe(acceptedGeneration, acceptedSelectionRevision);
-        drainDeferredStaleRechecks(acceptedGeneration);
+        drainDeferredStaleRechecks(acceptedGeneration, messages);
       });
     branchChain = delivery.catch(() => {});
     return delivery;

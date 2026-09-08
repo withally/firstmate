@@ -39,6 +39,35 @@ test_store_validation_refuses_unsafe_paths_and_markers() {
   pass "store validation refuses unsafe files and marker bounds without consuming outcomes"
 }
 
+test_store_validation_refuses_unwritable_write_prerequisites() {
+  local home task target
+  home="$TMP_ROOT/validate-write-home"
+  task=write-check
+  mkdir -p "$home/state"
+  printf 'project=/projects/write-check\n' > "$home/state/$task.meta"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task "$task" --verdict routine --summary 'writeability probe' >/dev/null \
+    || fail "writeability fixture append"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-read --through 1 \
+    || fail "writeability fixture cursor"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" processed-init \
+    || fail "writeability fixture processed marker"
+  for target in \
+    "$home/state/branch-outcomes.jsonl" \
+    "$home/state/.branch-outcomes-cursor" \
+    "$home/state/.branch-outcomes-processed" \
+    "$home/state/.branch-outcome-index-ready" \
+    "$home/state/.$task.branch-outcome-index"; do
+    chmod 0444 "$target"
+    if FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null 2>&1; then
+      fail "validation accepted read-only write prerequisite: $target"
+    fi
+    chmod 0600 "$target"
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null \
+    || fail "validation rejected restored write prerequisites"
+  pass "store validation refuses read-only outcome and sidecar files"
+}
+
 test_context_rebuild_is_read_only_and_bounded() {
   local home out before rc
   home="$TMP_ROOT/context-home"
@@ -996,6 +1025,7 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
 }
 
 test_store_validation_refuses_unsafe_paths_and_markers
+test_store_validation_refuses_unwritable_write_prerequisites
 test_context_rebuild_is_read_only_and_bounded
 test_context_rebuild_refuses_unsafe_status_files
 test_branch_prompt_is_byte_stable_and_above_cache_floor

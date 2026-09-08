@@ -629,6 +629,28 @@ processed_init_locked() {
   fi
 }
 
+validate_write_prerequisites() {
+  local path probe
+  if [ ! -d "$STATE" ] || [ ! -w "$STATE" ] || [ ! -x "$STATE" ]; then
+    echo "error: outcome store state directory is not writable" >&2
+    return 1
+  fi
+  for path in "$STORE" "$CURSOR" "$PROCESSED" "$OUTCOME_INDEX_READY" "$STATE"/.*.branch-outcome-index; do
+    if [ -L "$path" ] || { [ -e "$path" ] && { [ ! -f "$path" ] || [ ! -r "$path" ] || [ ! -w "$path" ]; }; }; then
+      echo "error: outcome store write prerequisite is not a writable regular file: $path" >&2
+      return 1
+    fi
+  done
+  probe=$(mktemp "$STATE/.branch-outcome-write-probe.XXXXXX") || {
+    echo "error: outcome store state directory cannot create a write probe" >&2
+    return 1
+  }
+  rm -f -- "$probe" || {
+    echo "error: outcome store state directory cannot remove a write probe" >&2
+    return 1
+  }
+}
+
 held_lock_owned_by_ancestor() {
   local owner owner_pid pid parent depth=0
   case "$PPID" in ''|*[!0-9]*|0|1) return 1 ;; esac
@@ -675,6 +697,10 @@ case "$CMD" in
     [ "$#" -eq 0 ] || usage
     fm_lock_acquire_wait "$LOCK"
     if ! print_unprocessed >/dev/null; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    if ! validate_write_prerequisites; then
       fm_lock_release "$LOCK"
       exit 1
     fi

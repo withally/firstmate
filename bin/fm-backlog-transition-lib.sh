@@ -468,9 +468,39 @@ fm_backlog_record_present() {
   return 0
 }
 
+# Task metadata and its recovery/publication records share one incarnation.
+# Publication keeps a write-ahead snapshot until both records exist; removal
+# validates the pair and removes all three, including after an interrupted unlink.
+fm_backlog_task_identity_matches() {
+  local old=$1 new=$2 key a b
+  for key in spawn_gen worktree window treehouse_lease_id treehouse_lease_holder; do
+    a=$(fm_meta_get "$old" "$key")
+    b=$(fm_meta_get "$new" "$key")
+    [ -z "$a" ] || [ "$a" = "$b" ] || return 1
+  done
+}
+
 fm_backlog_record_remove() {
-  local path=$1 label=$2 root=$3
+  local path=$1 label=$2 root=$3 peer anchor=
   fm_backlog_record_parent_authorized "$path" "$label" "$root" || return 1
+  case "$path" in
+    *.meta)
+      for peer in "$path" "$path.recovery" "$path.publication"; do
+        [ -e "$peer" ] || [ -L "$peer" ] || continue
+        fm_backlog_record_present "$peer" "$label" "$root" || return 1
+        if [ -n "$anchor" ] && ! fm_backlog_task_identity_matches "$peer" "$anchor"; then
+          FM_BACKLOG_TRANSITION_ERROR="conflicting task identity at $peer"; return 1
+        fi
+        anchor=$peer
+      done
+      for peer in "$path" "$path.recovery" "$path.publication"; do
+        if ! rm -f "$peer" || [ -e "$peer" ] || [ -L "$peer" ]; then
+          FM_BACKLOG_TRANSITION_ERROR="$label could not be removed at $peer"; return 1
+        fi
+      done
+      return 0
+      ;;
+  esac
   if [ -e "$path" ] || [ -L "$path" ]; then
     fm_backlog_record_present "$path" "$label" "$root" || return 1
   fi
@@ -478,11 +508,28 @@ fm_backlog_record_remove() {
     FM_BACKLOG_TRANSITION_ERROR="$label could not be removed at $path"
     return 1
   fi
-  return 0
+}
+
+# A relaunch owns the existing metadata lock and has proved its old endpoint
+# exited. Retire only recovery evidence matching that authoritative record;
+# an unfinished publication is never eligible for incarnation replacement.
+fm_backlog_record_retire_recovery() { # <meta> <state>
+  local meta=$1 root=$2
+  fm_backlog_record_present "$meta" "task record" "$root" || return 1
+  if [ -e "$meta.publication" ] || [ -L "$meta.publication" ]; then
+    FM_BACKLOG_TRANSITION_ERROR="unfinished task publication at $meta.publication"; return 1
+  fi
+  if [ -e "$meta.recovery" ] || [ -L "$meta.recovery" ]; then
+    fm_backlog_record_present "$meta.recovery" "task recovery record" "$root" || return 1
+    fm_backlog_task_identity_matches "$meta.recovery" "$meta" || {
+      FM_BACKLOG_TRANSITION_ERROR="conflicting task recovery identity"; return 1;
+    }
+    rm -f "$meta.recovery" || return 1
+  fi
 }
 
 fm_backlog_record_publish() {
-  local source=$1 target=$2 label=$3 root=$4 recovery_tmp
+  local source=$1 target=$2 label=$3 root=$4 tmp peer
   fm_backlog_record_present "$source" "$label staged record" "$root" || return 1
   fm_backlog_record_parent_authorized "$target" "$label target" "$root" || return 1
   if [ -e "$target" ] || [ -L "$target" ]; then
@@ -491,23 +538,32 @@ fm_backlog_record_publish() {
   if [ "$label" = "task record" ]; then
     case "$target" in
       *.meta)
-        fm_backlog_record_parent_authorized "$target.recovery" "task recovery record" "$root" || return 1
-        if [ -e "$target.recovery" ] || [ -L "$target.recovery" ]; then
-          fm_backlog_record_present "$target.recovery" "task recovery record" "$root" || return 1
+        for peer in "$target.recovery" "$target.publication"; do
+          fm_backlog_record_parent_authorized "$peer" "task recovery record" "$root" || return 1
+          if [ -e "$peer" ] || [ -L "$peer" ]; then
+            fm_backlog_record_present "$peer" "task recovery record" "$root" || return 1
+            fm_backlog_task_identity_matches "$peer" "$source" || {
+              FM_BACKLOG_TRANSITION_ERROR="conflicting task identity at $peer"; return 1;
+            }
+          fi
+        done
+        tmp=$(mktemp "$root/.task-publication.XXXXXX") || return 1
+        if ! cat "$source" > "$tmp" || ! mv -f "$tmp" "$target.publication"; then
+          rm -f "$tmp"; return 1
         fi
-        recovery_tmp=$(mktemp "$root/.task-recovery.XXXXXX") || return 1
-        if ! (umask 077; cat "$source" > "$recovery_tmp" && mv -f "$recovery_tmp" "$target.recovery"); then
-          rm -f "$recovery_tmp"
-          FM_BACKLOG_TRANSITION_ERROR="could not retain task recovery identity at $target.recovery"
-          return 1
+        tmp=$(mktemp "$root/.task-recovery.XXXXXX") || return 1
+        if ! cat "$target.publication" > "$tmp" || ! mv -f "$tmp" "$target.recovery"; then
+          rm -f "$tmp"; return 1
         fi
         ;;
     esac
   fi
   if ! mv -f "$source" "$target" 2>/dev/null || ! fm_backlog_record_present "$target" "$label" "$root"; then
-    [ -n "$FM_BACKLOG_TRANSITION_ERROR" ] \
-      || FM_BACKLOG_TRANSITION_ERROR="$label publication failed at $target"
+    FM_BACKLOG_TRANSITION_ERROR="$label publication failed at $target; retained publication record requires reconciliation"
     return 1
+  fi
+  if [ "$label" = "task record" ]; then
+    case "$target" in *.meta) rm -f "$target.publication" || return 1 ;; esac
   fi
   return 0
 }

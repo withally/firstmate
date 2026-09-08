@@ -1320,6 +1320,7 @@ export default function (pi: ExtensionAPI) {
   async function createBranch(
     branchGeneration: number,
     selectionRevision: number,
+    recoveryStdout?: string,
   ): Promise<{ session: AgentSession; sessionManager: SessionManager }> {
     // Resolved first, before any session file or prompt work: a model pin Pi
     // cannot honor must fail before this build leaves anything behind. Every
@@ -1355,7 +1356,11 @@ export default function (pi: ExtensionAPI) {
       }
     }
     const freshConversation = !sessionManager;
-    const recovery = freshConversation ? runOutcomeScript(["context"]) : null;
+    const recovery = freshConversation
+      ? recoveryStdout === undefined
+        ? runOutcomeScript(["context"])
+        : { ok: true, stdout: recoveryStdout, detail: "" }
+      : null;
     if (recovery && !recovery.ok) throw new Error("could not rebuild durable branch context");
     if (!sessionManager) {
       sessionManager = SessionManager.create(fmRoot, sessionsDir);
@@ -1462,14 +1467,18 @@ ${context.command}
     return { session: created.session, sessionManager };
   }
 
-  async function ensureBranch(expectedGeneration: number, recoveryProbe = false): Promise<BranchSession> {
+  async function ensureBranch(
+    expectedGeneration: number,
+    recoveryProbe = false,
+    recoveryStdout?: string,
+  ): Promise<BranchSession> {
     if (!actingAsOwner(expectedGeneration)) throw new Error("supervision session was replaced or lost lock ownership");
     if (branchBroken && !(recoveryProbe && providerRecovery?.probeInFlight)) throw new Error(branchBroken);
     if (branch) return branch;
     while (true) {
       const buildRevision = branchSelectionRevision;
       try {
-        const created = await createBranch(expectedGeneration, buildRevision);
+        const created = await createBranch(expectedGeneration, buildRevision, recoveryStdout);
         if (buildRevision !== branchSelectionRevision) {
           try {
             created.session.dispose();
@@ -1543,17 +1552,16 @@ ${context.command}
         }
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
         requireSafeOutcomeStore();
+        let recoveryStdout: string | undefined;
         if (conversationWakes >= maxConversationWakes) {
-          // Serialized after the preceding prompt and its durable settlement.
-          // No conversation-derived summary or old mirror enters the new file.
+          const recovery = runOutcomeScript(["context"]);
+          if (!recovery.ok) throw new Error(`could not rebuild durable branch context: ${recovery.detail}`);
+          recoveryStdout = recovery.stdout;
           branch?.session.dispose();
           branch = null;
           branchSessionFile = "";
-          pendingMirror.length = 0;
-          if (mirrorCollection.pendingCursor) writeMirrorCursor(mirrorCollection.pendingCursor);
-          mirrorCollection.pendingCursor = null;
         }
-        const branchForWake = await ensureBranch(acceptedGeneration, recoveryProbe);
+        const branchForWake = await ensureBranch(acceptedGeneration, recoveryProbe, recoveryStdout);
         const { session, sessionManager } = branchForWake;
         await flushMirror(session, acceptedGeneration);
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");

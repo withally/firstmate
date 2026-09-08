@@ -60,6 +60,32 @@ test_context_rebuild_is_read_only_and_bounded() {
   pass "durable context retains open decisions without acknowledgement and fails closed on overflow"
 }
 
+test_context_rebuild_refuses_unsafe_status_files() {
+  local home err kind rc target
+  home="$TMP_ROOT/context-unsafe-status-home"
+  mkdir -p "$home/state"
+  target="$home/open.status"
+  printf 'needs-decision [key=release]: approve release?\n' > "$target"
+  for kind in symlink fifo directory unreadable; do
+    case "$kind" in
+      symlink) ln -s "$target" "$home/state/task.status" ;;
+      fifo) mkfifo "$home/state/task.status" ;;
+      directory) mkdir "$home/state/task.status" ;;
+      unreadable)
+        printf 'needs-decision [key=release]: approve release?\n' > "$home/state/task.status"
+        chmod 000 "$home/state/task.status"
+        ;;
+    esac
+    err="$home/$kind.err"
+    FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" context > /dev/null 2> "$err"
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "context accepted unsafe $kind status path"
+    [ -s "$err" ] || fail "context gave no diagnostic for unsafe $kind status path"
+    if [ "$kind" = directory ]; then rmdir "$home/state/task.status"; else rm -f "$home/state/task.status"; fi
+  done
+  pass "durable context refuses unsafe task status paths with a diagnostic"
+}
+
 # --- byte-stable branch prompt ------------------------------------------------
 
 test_branch_prompt_is_byte_stable_and_above_cache_floor() {
@@ -971,6 +997,7 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
 
 test_store_validation_refuses_unsafe_paths_and_markers
 test_context_rebuild_is_read_only_and_bounded
+test_context_rebuild_refuses_unsafe_status_files
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence

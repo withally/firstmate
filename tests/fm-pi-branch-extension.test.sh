@@ -2876,6 +2876,86 @@ EOF
   pass "branch rollover drops handled history and preserves open durable decisions"
 }
 
+test_branch_rollover_refuses_unsafe_context_without_disposing_branch() {
+  local repo home out status
+  repo="$TMP_ROOT/rollover-unsafe-context-root"
+  home="$TMP_ROOT/rollover-unsafe-context-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_BRANCH_MAX_WAKES=1 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, defaultSessionCtx }; })()`);
+const { dispatch, fire, defaultSessionCtx } = globalThis.__t;
+import { writeFileSync, symlinkSync } from "node:fs";
+
+writeFileSync(`${process.env.FM_HOME}/state/branch-driver.status`, "working: active\n");
+fire("session_start", {}, defaultSessionCtx);
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  await report.execute("report", { task: "branch-driver", verdict: "routine", summary: "wake settled" });
+};
+const first = dispatch("signal: first wake");
+if (!first.accepted) throw new Error("first wake was not accepted");
+await first.settlement;
+writeFileSync(`${process.env.FM_HOME}/outside.status`, "needs-decision [key=release]: approve release?\n");
+symlinkSync(`${process.env.FM_HOME}/outside.status`, `${process.env.FM_HOME}/state/unsafe.status`);
+const second = dispatch("signal: unsafe rollover");
+if (!second.accepted) throw new Error("unsafe rollover wake was not accepted");
+const failure = await second.settlement.then(() => null, (error) => error);
+if (!(failure instanceof Error) || !failure.message.includes("unsafe status path")) {
+  throw new Error(`unsafe context failure was not surfaced: ${String(failure)}`);
+}
+const sessions = globalThis.__fmSessions;
+if (sessions.length !== 1 || sessions[0].disposed) throw new Error("unsafe context disposed the live branch");
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "unsafe recovery context must keep the live branch and reject the wake: $out"
+  pass "unsafe recovery context rejects rollover without disposing the live branch"
+}
+
+test_branch_rollover_preserves_staged_current_mirror() {
+  local repo home out status
+  repo="$TMP_ROOT/rollover-mirror-root"
+  home="$TMP_ROOT/rollover-mirror-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_BRANCH_MAX_WAKES=1 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, dispatch, settle, defaultSessionCtx }; })()`);
+const { fire, dispatch, settle, defaultSessionCtx } = globalThis.__t;
+
+fire("session_start", {}, defaultSessionCtx);
+let releaseFirstWake;
+globalThis.__fmPromptGate = new Promise((resolve) => { releaseFirstWake = resolve; });
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  await report.execute("report", { task: "branch-driver", verdict: "routine", summary: "wake settled" });
+};
+const first = dispatch("signal: first wake");
+await settle(() => globalThis.__fmPromptStarted === true, "first wake prompt");
+fire("before_agent_start", { prompt: "captain request staged before concurrent wake" }, defaultSessionCtx);
+const second = dispatch("signal: concurrent wake");
+releaseFirstWake();
+await first.settlement;
+await second.settlement;
+const sessions = globalThis.__fmSessions;
+if (sessions.length !== 2 || !sessions[0].disposed) throw new Error("wake limit did not rotate the branch");
+const mirrored = sessions[1].ops.filter((op) => op.kind === "custom").map((op) => op.message.content);
+if (!mirrored.includes("[captain] captain request staged before concurrent wake")) {
+  throw new Error(`staged captain request was lost at rollover: ${JSON.stringify(mirrored)}`);
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "branch rollover must deliver the staged current mirror before the next wake: $out"
+  pass "branch rollover carries a staged captain request into the fresh conversation"
+}
+
 test_branch_session_is_new_at_every_main_session_start() {
   local repo home out status first_pointer
   repo="$TMP_ROOT/fresh-session-root"
@@ -4556,6 +4636,8 @@ test_branch_mirror_reanchors_for_the_new_session_branch_conversation
 test_unsafe_store_refuses_branch_shell_and_preserves_status
 test_stale_batch_keeps_latest_offer_and_all_ack_rows
 test_branch_rollover_preserves_durable_decisions
+test_branch_rollover_refuses_unsafe_context_without_disposing_branch
+test_branch_rollover_preserves_staged_current_mirror
 test_branch_session_is_new_at_every_main_session_start
 test_branch_model_pin_applies_and_absent_pin_keeps_the_default
 test_unpinned_branch_follows_main_model_changes_live

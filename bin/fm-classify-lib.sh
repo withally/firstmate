@@ -575,9 +575,17 @@ EOF
 scan_open_decisions() {  # <state>
   local state=$1 f task open line
   for f in "$state"/*.status; do
+    if [ -L "$f" ] || { [ -e "$f" ] && { [ ! -f "$f" ] || [ ! -r "$f" ]; }; }; then
+      printf 'error: refusing open-decision fold for unsafe status path: %s\n' "$f" >&2
+      return 1
+    fi
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
-    open=$(status_open_decisions "$f") || continue
+    open=$(status_open_decisions "$f") || return 1
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || {
+      printf 'error: refusing open-decision fold for unsafe status path: %s\n' "$f" >&2
+      return 1
+    }
     [ -n "$open" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue

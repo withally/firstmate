@@ -26,9 +26,9 @@ The supervision branch itself is Pi-only by construction:
   A fleet-wide heartbeat keeps its own all-or-nothing rule (see "Heartbeat routing" below): it takes every branch-ownable unread row or none of them.
   A co-present main-owned check row no longer defers that review to main, because it is not fleet context the branch is missing and main is woken for it on its own triggering close.
 - The branch itself: `.pi/extensions/fm-branch-supervision.ts` creates the branch session, serializes wakes, mirrors dialog, and merges outcomes.
-  The branch conversation lasts for exactly one main session: every main session start - a cold start, `/new`, `/resume`, `/fork`, or a reload - opens a NEW branch conversation, and a conversation recorded by an earlier session is never reopened as the live one.
+  A branch conversation never crosses a main session boundary: every main session start - a cold start, `/new`, `/resume`, `/fork`, or a reload - opens a NEW branch conversation, and a conversation recorded by an earlier session is never reopened as the live one.
   That keeps the branch reasoning from the current generated prompt and the current main dialog rather than from weeks of accumulated thread, where a superseded rule could still outweigh today's.
-  Only a rebuild inside one main session, which is what a model or effort change triggers, continues that session's own conversation, and `state/.branch-session` records it.
+  A model or effort rebuild may continue the current bounded conversation, and `state/.branch-session` records it.
   Earlier conversations stay on disk under `state/branch-session/`, exactly as Pi keeps its own session files, and are never reopened as live branch context; the effort picker may only inspect the model named by the current pointer as the last-resort lookup documented in [configuration.md](configuration.md#pi-supervision-branch-model-and-effort-configsupervision-branch-model-configsupervision-branch-effort).
   Nothing captain-facing rides on that conversation: the durable outcome store and its processed marker are what carry unacknowledged outcomes across the boundary, and they re-present on the new main session exactly as they do after a crash.
   It checks the current extension generation and `state/.lock` ownership before each guarded branch side effect so replacement or lock loss cannot let an old continuation mutate the new session.
@@ -80,6 +80,26 @@ The mirror cursor is durable (`state/.branch-mirror-cursor`), so within one main
 Every main session start re-anchors the mirror to the current main session's start, because that start also opens a new branch conversation: the cursor records what the PREVIOUS branch conversation received, so without the reset a `/resume` or reload, which keeps main's own session file, would leave the new branch blind to dialog main itself still has.
 The reset is bounded by the current main session and costs only re-delivered read-only context, and the cursor keeps advancing incrementally from there.
 The branch prompt frames mirrored text as context for judgment, never as instructions addressed to the branch; an authorization addressed to main (for example "you may merge when green") does not relax the branch's role limits.
+
+## Bounded branch context
+
+`FM_BRANCH_MAX_WAKES` sets the maximum number of wake prompts in one branch conversation (default 16, positive integer; invalid values use the default).
+Attempts count even when their provider or report fails, so failures cannot grow a conversation forever.
+Before the next wake, the serialized branch chain disposes the old session and creates a fresh one from the byte-stable generated system prompt and the outcome store's `context` command.
+That command is the owner of the recovery summary format and size limit.
+It carries the latest durable per-task outcomes, every unprocessed captain outcome including unread outcomes, and open decisions rebuilt through the authoritative status-log fold.
+Conversation memory is never a recovery source.
+If the summary cannot be safely rebuilt or fits no longer within its limit, the wake returns to main; no open obligation is silently dropped to make room.
+Rollover never advances the outcome cursor, processed marker, or any decision resolution.
+
+Handled wake rows and prior mirrored dialog may be discarded at rollover.
+Mirrored dialog remains advisory context; durable task records and open decisions remain authoritative, and a worker must persist a consequential finding through its report before settlement.
+New dialog continues to mirror incrementally after rollover, while main-session replacement retains its existing mirror re-anchor behavior.
+Earlier branch files remain on disk for diagnosis and are not loaded into the new conversation.
+
+Stale offers for the same endpoint coalesce to the latest offer during the existing short batch window before model invocation.
+The drain's existing `fm_wake_print_deduped` owner likewise presents one latest stale row per endpoint while the eligible grant retains every underlying sequence for acknowledgement.
+Signal and check semantics, main-owned rows, and durable queue ownership are unchanged.
 
 ## Two-stage noise filter
 

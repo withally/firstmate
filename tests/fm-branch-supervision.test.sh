@@ -14,6 +14,27 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-branch-supervision)
 fm_git_identity fmtest fmtest@example.invalid
 
+test_context_rebuild_is_read_only_and_bounded() {
+  local home out before rc
+  home="$TMP_ROOT/context-home"
+  mkdir -p "$home/state"
+  printf 'needs-decision [key=ship]: approve ship?\nworking: later noise\n' > "$home/state/task.status"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task task --verdict captain --summary 'approval remains open' >/dev/null || fail "context fixture append"
+  before=$(cat "$home/state/branch-outcomes.jsonl")
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" context) || fail "context rebuild"
+  case "$out" in *'approval remains open'*'approve ship?'*) ;; *) fail "context lost pending captain or buried decision: $out" ;; esac
+  [ ! -e "$home/state/.branch-outcomes-cursor" ] || fail "context advanced read cursor"
+  [ ! -e "$home/state/.branch-outcomes-processed" ] || fail "context advanced processing marker"
+  [ "$before" = "$(cat "$home/state/branch-outcomes.jsonl")" ] || fail "context rewrote outcomes"
+  printf '%s\n' "$(printf '%33000s' x)" >> "$home/state/task.status"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task task --verdict captain --summary "$(printf '%33000s' x)" >/dev/null || fail "large context fixture"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" context 2>/dev/null)
+  rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] || fail "oversized context silently truncated obligations"
+  [ ! -d "$home/state/.branch-outcomes.lock" ] || fail "context failure stranded lock"
+  pass "durable context retains open decisions without acknowledgement and fails closed on overflow"
+}
+
 # --- byte-stable branch prompt ------------------------------------------------
 
 test_branch_prompt_is_byte_stable_and_above_cache_floor() {
@@ -923,6 +944,7 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
   pass "the branch cannot force a teardown or bypass fm-control for a relaunch"
 }
 
+test_context_rebuild_is_read_only_and_bounded
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence

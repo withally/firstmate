@@ -1,7 +1,7 @@
 // Firstmate supervision branch for Pi (docs/pi-supervision-branch.md).
 //
 // A second AgentSession - the supervision BRANCH - inside the same pi process
-// as the captain's MAIN session, living for exactly one main session: every
+// as the captain's MAIN session, bounded within one main session: every
 // main session start (cold start, /new, /resume, /fork, reload) opens a NEW
 // branch conversation, so the branch reasons from today's generated prompt and
 // the current main dialog instead of an older thread's accumulated memory. The
@@ -628,6 +628,8 @@ export default function (pi: ExtensionAPI) {
   // so a prompt can prove that it created a durable outcome after claiming its
   // wake rows without relying on provider text or incidental session shape.
   let durableReportRevision = 0;
+  let conversationWakes = 0;
+  const maxConversationWakes = positiveIntegerEnv("FM_BRANCH_MAX_WAKES", 16);
   // The task set the wake being handled right now may be reported on, fixed
   // deterministically from the eligible rows before a signal or stale prompt
   // opens and cleared when it settles: exactly the tasks those rows resolve
@@ -1330,11 +1332,13 @@ export default function (pi: ExtensionAPI) {
         sessionManager = null;
       }
     }
+    const freshConversation = !sessionManager;
+    const recovery = freshConversation ? runOutcomeScript(["context"]) : null;
+    if (recovery && !recovery.ok) throw new Error("could not rebuild durable branch context");
     if (!sessionManager) {
       sessionManager = SessionManager.create(fmRoot, sessionsDir);
+      conversationWakes = 0;
     }
-    branchSessionGeneration = branchGeneration;
-    branchSessionFile = sessionManager.getSessionFile() ?? "";
     // The branch loads no project resources at all: extensions off (so it can
     // never spawn its own branch), skills/context files off (they vary per
     // home and would destabilize the byte-stable prefix). Its whole standing
@@ -1412,12 +1416,25 @@ ${context.command}
       throw new Error("supervision session was replaced or lost lock ownership");
     }
     try {
+      if (recovery?.stdout) {
+        await created.session.sendCustomMessage(
+          { customType: "fm-branch-recovery", content: `DURABLE SUPERVISION CONTEXT (re-read live state before acting):\n${recovery.stdout}`, display: false },
+          { triggerTurn: false },
+        );
+      }
+      if (!actingAsOwner(branchGeneration)) throw new Error("supervision session was replaced during context rebuild");
+    } catch (error) {
+      created.session.dispose();
+      throw error;
+    }
+    // Publish only after recovery context landed; a failed construction must
+    // never reopen a partial file without its durable obligations.
+    branchSessionGeneration = branchGeneration;
+    branchSessionFile = sessionManager.getSessionFile() ?? "";
+    try {
       writeFileSync(sessionPointer, `${sessionManager.getSessionFile()}\n`);
     } catch {
-      // The pointer is a durable record of the branch's current conversation
-      // for operators and for the effort picker's last-resort model lookup;
-      // reopening reads the in-memory record above, so a failed write costs
-      // neither the live session nor its replacement.
+      // The in-memory pointer remains authoritative within this generation.
     }
     return { session: created.session, sessionManager };
   }
@@ -1502,6 +1519,16 @@ ${context.command}
           throw new Error("supervision session was replaced before handling the accepted wake");
         }
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
+        if (conversationWakes >= maxConversationWakes) {
+          // Serialized after the preceding prompt and its durable settlement.
+          // No conversation-derived summary or old mirror enters the new file.
+          branch?.session.dispose();
+          branch = null;
+          branchSessionFile = "";
+          pendingMirror.length = 0;
+          if (mirrorCollection.pendingCursor) writeMirrorCursor(mirrorCollection.pendingCursor);
+          mirrorCollection.pendingCursor = null;
+        }
         const branchForWake = await ensureBranch(acceptedGeneration, recoveryProbe);
         const { session, sessionManager } = branchForWake;
         await flushMirror(session, acceptedGeneration);
@@ -1542,6 +1569,7 @@ ${context.command}
         const entryOffset = sessionManager.getEntries().length;
         wakeTaskScope = heartbeat ? null : { rows: [...scope.eligibleSeqs], tasks: new Set(scope.eligibleTasks) };
         try {
+          conversationWakes += 1;
           await session.prompt(
             `FIRSTMATE SUPERVISION WAKE: ${message}\n\nHandle this per your operating procedure and finish with fm_branch_report.`,
           );
@@ -1613,17 +1641,21 @@ ${context.command}
     const staleWindow = staleWakeWindow(message);
     if (staleWindow && lastDeliveredStaleByWindow.get(staleWindow) === message) {
       deferredStaleRechecks.set(staleWindow, { message, generation: acceptedGeneration });
-      return;
+      return Promise.resolve();
     }
     if (staleWindow) deferredStaleRechecks.delete(staleWindow);
     pendingWakeGeneration = acceptedGeneration;
     pendingWakeRecoveryProbe ||= recoveryProbe;
+    if (staleWindow) {
+      const previous = pendingWakeMessages.findIndex((candidate) => staleWakeWindow(candidate) === staleWindow);
+      if (previous >= 0) pendingWakeMessages.splice(previous, 1);
+    }
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
     const settlement = new Promise<void>((resolve, reject) => {
       pendingWakeSettlements.push({ resolve, reject });
     });
     settlement.catch(() => {});
-    if (urgentWake(message)) {
+    if (urgentWake(message) && !staleWindow) {
       flushPendingWakes();
       return settlement;
     }
@@ -1786,6 +1818,7 @@ ${context.command}
     consecutiveProviderErrors = 0;
     providerRecovery = null;
     generation += 1;
+    conversationWakes = 0;
     mirrorCollection.collectAnchor = null;
     mirrorCollection.pendingCursor = null;
     mirrorCollection.stagedCaptain = null;

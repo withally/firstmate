@@ -92,6 +92,11 @@
 #     of the process holding $STATE/.branch-outcomes.lock (fm-wake-drain.sh may
 #     run its redirected presentation body in a subshell on Bash 3.2); it skips
 #     the nested acquire so drain's bounded lock wait remains the deadline.
+#   fm-branch-outcome.sh context
+#     Read-only recovery context: latest outcome per task (summary capped at
+#     512 characters), all unprocessed captain outcomes, and the authoritative
+#     open-decision fold. Refuse output over 32768 bytes rather than lose an
+#     open obligation. Never advances delivery or processing markers.
 #   fm-branch-outcome.sh list [--recent <n>]
 #     Print the last n records (default 20), read or not.
 #   fm-branch-outcome.sh startup-replay
@@ -122,7 +127,7 @@ OUTCOME_INDEX_MAX_BYTES=512
 OUTCOME_INDEX_READY="$STATE/.branch-outcome-index-ready"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | list [--recent <n>] | startup-replay" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | context | list [--recent <n>] | startup-replay" >&2
   exit 2
 }
 
@@ -1010,6 +1015,39 @@ case "$CMD" in
     if [ "$HELD_LOCK" -eq 0 ]; then
       fm_lock_release "$LOCK"
     fi
+    ;;
+  context)
+    [ "$#" -eq 0 ] || usage
+    fm_lock_acquire_wait "$LOCK"
+    trap 'fm_lock_release "$LOCK"' EXIT
+    LAST=$(last_seq) || exit 1
+    READ=$(read_cursor) || exit 1
+    DONE=$(read_processed) || exit 1
+    [ "$DONE" -le "$READ" ] && [ "$READ" -le "$LAST" ] || {
+      echo "error: invalid outcome context markers" >&2
+      exit 1
+    }
+    CONTEXT=
+    if [ -s "$STORE" ]; then
+      CONTEXT=$(jq -cs --argjson processed "$DONE" '
+        (group_by(.task) | map(last | {seq, task, verdict, summary:(.summary[0:512])})) as $latest
+        | {latest:$latest, pending_captain:map(select(.verdict == "captain" and .seq > $processed))}
+      ' "$STORE") || exit 1
+    fi
+    fm_lock_release "$LOCK"
+    trap - EXIT
+    OPEN=$(scan_open_decisions "$STATE") || exit 1
+    if [ -n "$OPEN" ]; then
+      CONTEXT="$CONTEXT
+OPEN DECISIONS (authoritative status fold):
+$OPEN"
+    fi
+    BYTES=$(printf '%s' "$CONTEXT" | wc -c | tr -d ' ')
+    if [ "$BYTES" -gt 32768 ]; then
+      echo "error: durable branch context exceeds 32768 bytes; main must handle this wake" >&2
+      exit 1
+    fi
+    [ -z "$CONTEXT" ] || printf '%s\n' "$CONTEXT"
     ;;
   list)
     RECENT=20

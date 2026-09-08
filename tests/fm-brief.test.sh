@@ -284,10 +284,20 @@ Append only when this protocol requires it; never use status as a progress log.'
   id="status-protocol-direct"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.' "$brief" \
+    "direct-PR scaffold lost its mode-specific working rule"
   assert_grep 'done: PR {url}' "$brief" \
     "direct-PR scaffold lost its terminal done form"
   assert_no_grep 'done: PR {url} checks green' "$brief" \
     "direct-PR scaffold inherited the no-mistakes terminal form"
+
+  id="status-protocol-local-only"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started or implementation committed and validation started.' "$brief" \
+    "local-only scaffold lost its mode-specific working rule"
+  assert_no_grep 'implementation committed and validation started, or PR opened' "$brief" \
+    "local-only scaffold still permits a PR working phase"
 
   brief="$home/data/status-protocol-scout/brief.md"
   # shellcheck disable=SC2016 # Backticks are literal generated brief prose.

@@ -92,8 +92,12 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-status-lib.sh
+. "$SCRIPT_DIR/fm-status-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 SILENT_OPERATIONAL_INPUT_RULE=$FM_OPERATIONAL_SILENT_REPLY_RULE
+STATUS_WORKING_RULE=
+STATUS_NO_PROGRESS_RULE=
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -186,6 +190,14 @@ elif [ "$MERGE_AUTHORITY_SET" -eq 1 ]; then
   echo "error: --merge-authority applies only to ship briefs; secondmate charters resolve each project from data/projects.md" >&2
   exit 1
 fi
+if [ "$KIND" = scout ]; then
+  STATUS_WORKING_RULE=$(fm_status_working_rule scout)
+elif [ "$KIND" = ship ]; then
+  STATUS_WORKING_RULE=$(fm_status_working_rule "$MODE")
+fi
+if [ "$KIND" != secondmate ]; then
+  STATUS_NO_PROGRESS_RULE=$(fm_status_no_progress_rule)
+fi
 ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
@@ -215,11 +227,7 @@ shell_quote() {
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
-IFS= read -r -d '' STATUS_WAKE_REMINDER <<'EOF' || true
-Each status-file append wakes the supervisor and costs a full supervision turn.
-Append only when this protocol requires it; never use status as a progress log.
-EOF
-STATUS_WAKE_REMINDER=${STATUS_WAKE_REMINDER%$'\n'}
+STATUS_WAKE_REMINDER=$(fm_status_wake_reminder)
 
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
@@ -462,8 +470,8 @@ The report is the only thing that survives, so anything worth keeping must be in
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    $SILENT_OPERATIONAL_INPUT_RULE
    $STATUS_WAKE_REMINDER
-   Append \`working:\` only for a genuine phase change the supervisor would act on: starting the investigation, entering a distinct research phase, or beginning report writing.
-   Never append \`working:\` for a sub-step, a verification pass, or the start of re-review.
+   $STATUS_WORKING_RULE
+   $STATUS_NO_PROGRESS_RULE
    Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full
    https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate
    copies that URL from your line rather than assembling one.
@@ -546,8 +554,8 @@ $RULE1
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    $SILENT_OPERATIONAL_INPUT_RULE
    $STATUS_WAKE_REMINDER
-   Append \`working:\` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.
-   Never append \`working:\` for a sub-step, a verification pass, or the start of re-review.
+   $STATUS_WORKING_RULE
+   $STATUS_NO_PROGRESS_RULE
    Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full
    https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate
    copies that URL from your line rather than assembling one.

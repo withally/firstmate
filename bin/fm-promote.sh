@@ -34,6 +34,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-status-lib.sh
+. "$SCRIPT_DIR/fm-status-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -194,6 +196,9 @@ PROMOTION_ASK_USER_BLOCK=
 if [ "$MODE" = no-mistakes ]; then
   PROMOTION_ASK_USER_BLOCK=$(fm_ask_user_escalation_block "$DATA" "$ID")
 fi
+PROMOTION_STATUS_WAKE_REMINDER=$(fm_status_wake_reminder)
+PROMOTION_STATUS_WORKING_RULE=$(fm_status_working_rule "$MODE")
+PROMOTION_STATUS_NO_PROGRESS_RULE=$(fm_status_no_progress_rule)
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
 TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
@@ -213,7 +218,10 @@ EOF
 3. Return to a clean default-branch base, then create your branch: \`git checkout -b fm/$ID\`.
 4. Carry over only the intended fix changes. Leave scratch commits, debug edits, and experiment files behind.
 5. If you reproduced a bug, turn that reproduction into a regression test.
-6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
+6. These ship instructions supersede the scout delivery rules and report-based Definition of done. The shared status protocol rules carry over unchanged, but the mode-specific working-phase rule below supersedes the scout wording. The instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule carry over unchanged.
+   $PROMOTION_STATUS_WAKE_REMINDER
+   $PROMOTION_STATUS_WORKING_RULE
+   $PROMOTION_STATUS_NO_PROGRESS_RULE
 $PROMOTION_ASK_USER_BLOCK
 7. Treat the scout-time Firstmate spec and any unmarked legacy \`# Task\` text as investigation context, not captain intent or ship-time instructions.
 EOF

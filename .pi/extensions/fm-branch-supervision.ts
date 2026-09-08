@@ -1074,15 +1074,19 @@ export default function (pi: ExtensionAPI) {
         if (row.verdict === "captain") {
           if (!ensureVisibleCaptainOutcome(row)) return false;
         } else if (row.verdict === "firstmate-action") {
-          const actionStatus = runOutcomeScript(["action-status", "--seq", String(row.seq)]);
-          if (!actionStatus.ok) return false;
-          if (actionStatus.stdout === "none" && row.wakeSeq === undefined) {
+          if (row.wakeSeq === undefined) {
+            // Legacy markers do not establish a wake-linked handoff identity.
+            // Every pre-wake_seq shape uses the same visible replay rule.
             deliverRoutineOutcome(row);
-          } else if (actionStatus.stdout === "started") {
-            if (!runOutcomeScript(["mark-read", "--through", String(row.seq)]).ok) return false;
-            continue;
-          } else if (actionStatus.stdout === "pending") return true;
-          else return false;
+          } else {
+            const actionStatus = runOutcomeScript(["action-status", "--seq", String(row.seq)]);
+            if (!actionStatus.ok) return false;
+            if (actionStatus.stdout === "started") {
+              if (!runOutcomeScript(["mark-read", "--through", String(row.seq)]).ok) return false;
+              continue;
+            } else if (actionStatus.stdout === "pending") return true;
+            else return false;
+          }
         } else if (row.verdict !== "routine") {
           deliverRoutineOutcome(row);
         }

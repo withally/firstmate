@@ -1182,6 +1182,51 @@ EOF
   pass "legacy firstmate-action without wake_seq replays visibly without migration"
 }
 
+test_legacy_marker_variants_replay_visibly_never_handoff() {
+  local repo home out result
+  repo="$TMP_ROOT/legacy-markers-root"
+  home="$TMP_ROOT/legacy-markers-home"
+  mkdir -p "$home/state/branch-action" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, outcomeScript, sentToMain, mainUserMessages, defaultSessionCtx, home }; })()`);
+const { fire, outcomeScript, sentToMain, mainUserMessages, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync, readFileSync } from "node:fs";
+const rows = [undefined, false, false].map((silent, index) => ({
+  seq: index + 1, epoch: 1, task: `legacy-${index}`, verdict: "firstmate-action", wake: "old signal",
+  summary: `visible legacy variant ${index}`, ...(silent === undefined ? {} : { silent }),
+  ...(index === 2 ? { statusEndpoint: 0, statusIdent: "" } : {}),
+}));
+const before = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+writeFileSync(`${home}/state/branch-outcomes.jsonl`, before);
+for (let index = 0; index < 2; index++) {
+  writeFileSync(`${home}/state/branch-action/outcome-${index + 1}.json`, JSON.stringify({
+    version: "fm-branch-action-v1", wake_seq: null, outcome_seq: index + 1,
+    state: index === 0 ? "pending" : "started", task: rows[index].task,
+    verdict: "firstmate-action", summary: rows[index].summary, wake: "old signal", silent: false,
+  }) + "\n");
+}
+const markerBefore = readFileSync(`${home}/state/branch-action/outcome-1.json`, "utf8");
+const replay = outcomeScript(["startup-replay"]);
+for (const row of rows) if (!replay.includes(row.summary)) throw new Error("shell startup skipped a legacy variant");
+writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
+writeFileSync(`${home}/state/.branch-outcomes-processed`, "0\n");
+fire("session_start", {}, defaultSessionCtx);
+const visible = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+for (const row of rows) if (!visible.some((sent) => sent.message.content.includes(row.summary))) throw new Error(`Pi startup skipped ${row.summary}`);
+if (mainUserMessages.length || sentToMain.some((sent) => sent.options.triggerTurn || sent.message.details?.verdict === "firstmate-action")) throw new Error("legacy marker caused handoff");
+if (outcomeScript(["unread"])) throw new Error("legacy marker stranded the cursor");
+if (readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8") !== before || readFileSync(`${home}/state/branch-action/outcome-1.json`, "utf8") !== markerBefore) throw new Error("legacy replay mutated durable records");
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "all pre-wake_seq shapes must replay visibly without handoff: $out"
+  pass "legacy pending, started, and absent action markers replay visibly without handoff or rewriting"
+}
+
 test_pending_action_send_failure_retries_on_later_reconciliation() {
   local repo home out status
   repo="$TMP_ROOT/action-send-failure-root"
@@ -4490,6 +4535,7 @@ test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_firstmate_action_startup_recovery_hands_off_legacy_row
 test_pending_firstmate_action_blocks_later_outcome_reconciliation
 test_legacy_action_without_wake_seq_replays_visibly_without_migration
+test_legacy_marker_variants_replay_visibly_never_handoff
 test_pending_action_send_failure_retries_on_later_reconciliation
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
 test_captain_outcome_is_exactly_once_across_crash_reload_and_unrelated_response

@@ -492,7 +492,7 @@ fi
 
 spawn_remote_secondmate() {
   local id=$1 remote host root home harness positional model effort backend out rc meta tmp
-  local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation
+  local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation remote_spawn_gen
   local remote_traceparent remote_recorded_traceparent sm_primary_head sync_out sync_rc
   local -a launch_args
   id=${POS[0]:-}
@@ -576,6 +576,8 @@ spawn_remote_secondmate() {
       ;;
   esac
   meta="$STATE/$id.meta"
+  remote_spawn_gen=$(fm_meta_get "$meta" spawn_gen 2>/dev/null || true)
+  [ -n "$remote_spawn_gen" ] || remote_spawn_gen=$SPAWN_GEN
   if [ -e "$meta" ] || [ -L "$meta" ]; then
     if ! fm_backlog_record_present "$meta" "task record" "$STATE" \
       || [ "$(fm_meta_get "$meta" kind)" != secondmate ] \
@@ -719,6 +721,7 @@ spawn_remote_secondmate() {
   {
     echo "window=remote:$id"
     echo "endpoint_task_id=$id"
+    echo "spawn_gen=$remote_spawn_gen"
     echo "worktree=$home"
     echo "project=$root"
     echo "harness=$harness"
@@ -800,6 +803,7 @@ SPAWN_ACQUISITION_STARTED=0
 SPAWN_NORMAL_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_PROJECTED=0
 SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
+SPAWN_POST_LAUNCH_ABORT=0
 SPAWN_PARENT_BINDING_STALE_REASON=
 
 spawn_fresh_commit_rollback() {
@@ -905,7 +909,7 @@ spawn_abort_return_worktree() {
 
 spawn_abort_cleanup() {
   local status=$?
-  local normal_endpoint_clean=0 normal_return_clean=0
+  local normal_endpoint_clean=0 normal_return_clean=0 orca_recovery_path
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
      && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
@@ -981,12 +985,23 @@ spawn_abort_cleanup() {
             echo "backend=orca"
             echo "orca_worktree_id=$ORCA_WORKTREE_ID"
             [ -z "${ORCA_TERMINAL:-}" ] || echo "terminal=$ORCA_TERMINAL"
-          } > "$SPAWN_META_TMP" 2>/dev/null \
-            && fm_backlog_atomic_transition publish "$SPAWN_META_TMP" "$STATE/$ID.meta" "task record" "$STATE" \
-            || true
+          } > "$SPAWN_META_TMP" 2>/dev/null
+          if ! fm_backlog_atomic_transition publish "$SPAWN_META_TMP" "$STATE/$ID.meta" "task record" "$STATE"; then
+            orca_recovery_path="$STATE/$ID.meta.recovery"
+            if [ ! -e "$orca_recovery_path" ] && [ ! -L "$orca_recovery_path" ] \
+              && mv -f "$SPAWN_META_TMP" "$orca_recovery_path"; then
+              SPAWN_META_TMP=
+            fi
+            echo "error: Orca cleanup recovery metadata could not be published for $ID; provider identity remains retained for reconciliation" >&2
+            status=1
+          fi
         fi
       fi
     fi
+  fi
+  if [ "$SPAWN_POST_LAUNCH_ABORT" = 1 ]; then
+    SPAWN_NORMAL_ABORT_CLEANUP=1
+    SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
   fi
   if [ "$SPAWN_ACQUISITION_STARTED" = 1 ] \
      && { [ -z "${WT:-}" ] || [ "$SPAWN_NORMAL_ABORT_CLEANUP" != 1 ] \
@@ -1001,7 +1016,9 @@ spawn_abort_cleanup() {
         normal_endpoint_clean=1
       fi
     elif fm_backend_kill "$BACKEND" "$T" 2>/dev/null; then
-      normal_endpoint_clean=1
+      case "$(fm_backend_agent_state "$BACKEND" "$T" 2>/dev/null || true)" in
+        dead|missing) normal_endpoint_clean=1 ;;
+      esac
     fi
     if [ "$normal_endpoint_clean" = 1 ] && [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" = 1 ]; then
       if spawn_abort_worktree_has_no_unlanded_work; then
@@ -3433,6 +3450,7 @@ fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_CLEANUP=0
 SPAWN_NORMAL_ABORT_RETURN_ALLOWED=1
+SPAWN_POST_LAUNCH_ABORT=1
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
@@ -3598,6 +3616,7 @@ if [ "$BACKLOG_TRANSITION" = 1 ]; then
   trap 'SPAWN_DEFERRED_SIGNAL=TERM' TERM
 fi
 SPAWN_BACKLOG_COMMIT_STATUS=0
+SPAWN_POST_LAUNCH_ABORT=1
 if spawn_commit_backlog_transition; then
   SPAWN_FRESH_COMMIT_PENDING=0
 else
@@ -3606,6 +3625,9 @@ else
     SPAWN_BACKLOG_COMMIT_STATUS=0
     SPAWN_FRESH_COMMIT_PENDING=0
   fi
+fi
+if [ "$SPAWN_BACKLOG_COMMIT_STATUS" -eq 0 ]; then
+  SPAWN_POST_LAUNCH_ABORT=0
 fi
 if [ "$SPAWN_BACKLOG_COMMIT_STATUS" -ne 0 ]; then
   if [ "$RELAUNCH" -eq 0 ]; then

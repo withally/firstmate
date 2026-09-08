@@ -391,6 +391,13 @@ seeded_origin_url() {
 
 acquire_treehouse_home() {
   local id=$1 home home_json lease_id lease_holder tmp
+  local journal=${SEED_TREEHOUSE_ACQUISITION_RECORD:-$STATE/$id.lease-acquisition}
+  [ ! -e "$journal" ] && [ ! -L "$journal" ] || {
+    echo "error: secondmate $id has an unresolved treehouse acquisition at $journal" >&2
+    return 1
+  }
+  (umask 077; set -C; jq -n --arg project "$FM_ROOT" --arg holder "$id" \
+    '{schema:"fm-secondmate-lease-acquisition.v1",project:$project,lease_holder:$holder}' > "$journal") || return 1
   home_json=$(cd "$FM_ROOT" && treehouse get --lease --lease-holder "$id" --json) || {
     echo "error: treehouse get --lease failed to lease a firstmate home" >&2
     return 1
@@ -422,13 +429,15 @@ acquire_treehouse_home() {
     printf 'treehouse_lease_holder=%s\n' "$lease_holder"
   } > "$tmp") || { rm -f "$tmp"; return 1; }
   mv -f -- "$tmp" "$SEED_TREEHOUSE_LEASE_RECORD" || { rm -f "$tmp"; return 1; }
-  printf '%s\n' "$home"
+  rm -f -- "$journal" || return 1
+  SEED_HOME=$home
 }
 
 ensure_home() {
   local id=$1 requested=$2 home
   if [ "$requested" = "-" ]; then
-    home=$(acquire_treehouse_home "$id")
+    acquire_treehouse_home "$id"
+    home=$SEED_HOME
     verify_firstmate_home "$home"
     return
   fi
@@ -543,7 +552,9 @@ seed_exit_cleanup() {
 SEED_HOME=
 SEED_HOME_ACQUIRED=0
 SEED_HOME_CREATED=0
+SEED_ID=
 SEED_TREEHOUSE_LEASE_RECORD=
+SEED_TREEHOUSE_ACQUISITION_RECORD=
 SEED_TREEHOUSE_LEASE_ID=
 SEED_TREEHOUSE_LEASE_HOLDER=
 SEED_HOME_BACKED_UP=0
@@ -637,6 +648,37 @@ seed_lease_field() {
   printf '%s' "$value"
 }
 
+seed_reconcile_treehouse_home_acquisition() {
+  local journal=${SEED_TREEHOUSE_ACQUISITION_RECORD:-} holder listing receipt wt lease dirty unlanded record_project
+  [ -n "$journal" ] && { [ -e "$journal" ] || [ -L "$journal" ]; } || return 0
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+  holder=$(jq -er '.lease_holder | select(type == "string" and length > 0)' "$journal") || return 1
+  record_project=$(jq -er '.project | select(type == "string" and length > 0)' "$journal") || return 1
+  [ -n "$holder" ] && [ "$record_project" = "$FM_ROOT" ] || return 1
+  listing=$(cd "$FM_ROOT" && treehouse status --json) || return 1
+  receipt=$(printf '%s' "$listing" | jq -ce --arg holder "$holder" '
+    if type != "array" then error("invalid pool") else
+    [.[] | select(.status == "leased" and .lease_holder == $holder)]
+    | if length > 1 then error("ambiguous holder") else . end end') || return 1
+  if [ "$(printf '%s' "$receipt" | jq length)" = 0 ]; then
+    rm -f -- "$journal"
+    return 0
+  fi
+  wt=$(printf '%s' "$receipt" | jq -er '.[0].path | select(type == "string" and startswith("/"))') || return 1
+  lease=$(printf '%s' "$receipt" | jq -er '.[0].lease_id | select(type == "string" and length > 0)') || return 1
+  seed_rollback_target "$wt" "treehouse-acquired home" >/dev/null || return 1
+  fm_treehouse_worktree_unowned "$STATE" "$wt" "" "$journal" || return 1
+  [ "$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null)" = "$wt" ] || return 1
+  [ "$(cd "$FM_ROOT" && pwd -P)" != "$wt" ] || return 1
+  dirty=$(git -C "$wt" status --porcelain --untracked-files=all --ignored) || return 1
+  [ -z "$dirty" ] || return 1
+  git -C "$wt" fetch --all --quiet || return 1
+  unlanded=$(git -C "$wt" rev-list HEAD --not --remotes) || return 1
+  [ -z "$unlanded" ] || return 1
+  fm_treehouse_lease_return "$FM_ROOT" "$wt" "$lease" "$holder" || return 1
+  rm -f -- "$journal" "$SEED_TREEHOUSE_LEASE_RECORD"
+}
+
 seed_remove_created_home() {
   local home=$1 abs_home
   abs_home=$(seed_rollback_target "$home" "created home") || return 0
@@ -684,9 +726,20 @@ seed_rollback() {
     rmdir "$(dirname "$SEED_PARENT_BRIEF")" 2>/dev/null || true
   fi
 
+  if [ "$SEED_HOME_ACQUIRED" = 1 ] && [ -z "${SEED_HOME:-}" ] \
+    && { [ -e "$SEED_TREEHOUSE_ACQUISITION_RECORD" ] || [ -L "$SEED_TREEHOUSE_ACQUISITION_RECORD" ]; }; then
+    seed_reconcile_treehouse_home_acquisition || \
+      echo "warning: treehouse acquisition evidence retained; lease may still be held" >&2
+  fi
+
   if [ -n "${SEED_HOME:-}" ] && [ "$SEED_HOME" != "/" ]; then
     if [ "$SEED_HOME_ACQUIRED" = 1 ]; then
-      seed_return_treehouse_home "$SEED_HOME"
+      if [ -e "$SEED_TREEHOUSE_ACQUISITION_RECORD" ] || [ -L "$SEED_TREEHOUSE_ACQUISITION_RECORD" ]; then
+        seed_reconcile_treehouse_home_acquisition || \
+          echo "warning: treehouse acquisition evidence retained; lease may still be held" >&2
+      else
+        seed_return_treehouse_home "$SEED_HOME"
+      fi
     elif [ "$SEED_HOME_CREATED" = 1 ]; then
       seed_remove_created_home "$SEED_HOME"
     else
@@ -873,7 +926,9 @@ seed_home() {
   fi
 
   mkdir -p "$STATE" || return 1
+  SEED_ID=$id
   SEED_TREEHOUSE_LEASE_RECORD="$STATE/$id.treehouse-lease"
+  SEED_TREEHOUSE_ACQUISITION_RECORD="$STATE/$id.lease-acquisition"
   [ ! -e "$SEED_TREEHOUSE_LEASE_RECORD" ] && [ ! -L "$SEED_TREEHOUSE_LEASE_RECORD" ] || {
     echo "error: secondmate $id has an unresolved treehouse lease record at $SEED_TREEHOUSE_LEASE_RECORD" >&2
     return 1
@@ -882,6 +937,17 @@ seed_home() {
   fm_lock_acquire_wait "$SEED_REGISTRY_LOCK" || return 1
   SEED_REGISTRY_LOCK_HELD=1
   trap seed_exit_cleanup EXIT
+
+  if [ -e "$SEED_TREEHOUSE_ACQUISITION_RECORD" ] || [ -L "$SEED_TREEHOUSE_ACQUISITION_RECORD" ]; then
+    seed_reconcile_treehouse_home_acquisition || {
+      echo "error: secondmate $id has unresolved treehouse acquisition evidence after registry lock acquisition" >&2
+      return 1
+    }
+  fi
+  if [ -e "$SEED_TREEHOUSE_LEASE_RECORD" ] || [ -L "$SEED_TREEHOUSE_LEASE_RECORD" ]; then
+    echo "error: secondmate $id has unresolved lease evidence after registry lock acquisition" >&2
+    return 1
+  fi
 
   validate_registry
   for project in "$@"; do
@@ -913,8 +979,8 @@ seed_home() {
 
   if [ "$requested_home" = "-" ]; then
     SEED_HOME_ACQUIRED=1
-    home=$(acquire_treehouse_home "$id")
-    SEED_HOME="$home"
+    acquire_treehouse_home "$id"
+    home=$SEED_HOME
     home=$(verify_firstmate_home "$home")
   else
     requested_abs=$(abs_path_for_new "$requested_home")

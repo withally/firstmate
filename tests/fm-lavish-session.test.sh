@@ -52,6 +52,13 @@ exit 0
 SH
 chmod +x "$FAKE_BIN/lavish-axi"
 fm_fake_exit0 "$FAKE_BIN" curl
+fm_fake_exit0 "$FAKE_BIN" lsof
+
+if PATH="$FAKE_BIN:$PATH" FM_HOME="$HOME_DIR" FM_LAVISH_STATE_FILE="$TMP_ROOT/custom-lavish.json" \
+  "$ROOT/bin/fm-lavish-session.sh" register task-one "$ARTIFACT" ephemeral-worktree >/dev/null 2>&1; then
+  fail "an unsupported custom Lavish state filename was accepted"
+fi
+pass "unsupported Lavish state filenames are rejected before lifecycle mutation"
 
 write_store open
 PATH="$FAKE_BIN:$PATH" FM_HOME="$HOME_DIR" LAVISH_AXI_STATE_DIR="$STATE_DIR" \
@@ -119,8 +126,6 @@ pass "register-auto refuses multiple matching lifecycle owners"
 
 AUDIT_HOME="$TMP_ROOT/audit-home"
 AUDIT_STATE="$TMP_ROOT/audit-lavish"
-LSOF_FILE="$TMP_ROOT/empty-lsof"
-: > "$LSOF_FILE"
 mkdir -p "$AUDIT_HOME/state/procevent" "$AUDIT_HOME/data/closed-task" "$AUDIT_STATE" "$TMP_ROOT/audit"
 CURRENT="$TMP_ROOT/audit/current/board.html"
 ELIGIBLE="$AUDIT_HOME/data/closed-task/board.html"
@@ -156,7 +161,7 @@ process.stdout.write(JSON.stringify({sessions}, null, 2));
 NODE
 
 FREEZE="$TMP_ROOT/candidates.jsonl"
-OUT=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
+OUT=$(PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" \
   "$ROOT/bin/fm-lavish-audit.sh" audit --freeze "$FREEZE")
 assert_contains "$OUT" $'preserve\tcurrent\t' "current task ownership is preserved"
 assert_contains "$OUT" $'eligible\teligible\t' "positively closed task is eligible"
@@ -170,7 +175,7 @@ assert_contains "$OUT" $'preserve\texpired-worktree\tretained-worktree-file' "re
 assert_grep '"key":"eligible"' "$FREEZE" "freeze contains the eligible key"
 pass "audit classifies every isolated registry row conservatively and freezes only eligible rows"
 
-PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
+PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" \
   "$ROOT/bin/fm-lavish-audit.sh" apply "$FREEZE" --batch-size 1 >/dev/null
 [ "$(jq -r '.sessions.eligible.status' "$AUDIT_STATE/state.json")" = ended ] \
   || fail "apply did not end its frozen eligible session"
@@ -197,13 +202,13 @@ process.stdout.write(JSON.stringify({
   ],
 }, null, 2));
 NODE
-PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
+PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" \
   "$ROOT/bin/fm-lavish-audit.sh" apply "$EMPTY_CANDIDATE" --authorized "$AUTHORITY" --batch-size 1 >/dev/null
 [ "$(jq -r '.sessions.ambiguous.status' "$AUDIT_STATE/state.json")" = ended ] \
   || fail "authorized apply did not end the frozen ambiguous session"
 pass "authorized apply requires the exact ruling and three protected board exclusions"
 
-SUMMARY=$(FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" "$ROOT/bin/fm-lavish-audit.sh" summary)
+SUMMARY=$(PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" "$ROOT/bin/fm-lavish-audit.sh" summary)
 assert_contains "$SUMMARY" 'total=8' "summary counts total registry rows"
 assert_contains "$SUMMARY" 'open=4' "summary counts open registry rows after apply"
 assert_contains "$SUMMARY" 'feedback=1' "summary counts feedback rows"
@@ -213,7 +218,7 @@ assert_contains "$SUMMARY" 'past_expiry=1' "summary counts expired preserved row
 pass "summary distinguishes registry counts from live connections"
 
 printf '{not-json}\n' > "$AUDIT_HOME/state/bad-owner.lavish-sessions"
-if FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" FM_LAVISH_LSOF_FILE="$LSOF_FILE" \
+if PATH="$FAKE_BIN:$PATH" FM_HOME="$AUDIT_HOME" LAVISH_AXI_STATE_DIR="$AUDIT_STATE" \
   "$ROOT/bin/fm-lavish-audit.sh" audit >/dev/null 2>&1; then
   fail "audit converted malformed ownership inventory into an empty eligible inventory"
 fi

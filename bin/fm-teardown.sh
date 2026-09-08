@@ -7,13 +7,15 @@
 # clone for PR-based ship tasks.
 # Removing state/<id>.meta and landing the backlog transition are one step, not
 # two: bin/fm-backlog-transition-lib.sh owns that invariant, and both halves run
-# under the task's own meta lock before this script reports success. Because the
-# completion links (the PR, the report path, a local-main note) live only in the
-# record being removed, the intended transition is recorded in
-# state/<id>.backlog-close first, so a process killed between the halves leaves
-# the next session start enough to finish it; a landed transition removes that
-# record. A transition that fails is fatal and loud, preserves its pending-close
-# record, and is retried by the next session start. The transition is skipped on a
+# under the task's own meta lock before this script reports success. Recorded
+# ephemeral Lavish sessions are ended and verified before the intended transition
+# is published, so a process killed between those stages leaves the task records
+# intact and the next run can finish it; a landed transition removes that record.
+# Because the completion links (the PR, the report path, a local-main note) live
+# only in the record being removed, the intended transition is recorded in
+# state/<id>.backlog-close before that record is removed. A transition that fails
+# is fatal and loud, preserves its pending-close record, and is retried by the
+# next session start. The transition is skipped on a
 # config/backlog-backend=manual home and in a home that keeps no
 # data/backlog.md; those cases print the manual follow-up. An automatic-backend
 # home with a backlog but no compatible tasks-axi refuses before cleanup.
@@ -2582,7 +2584,7 @@ cleanup_firstmate_home_children() {
 }
 
 preflight_firstmate_home_lavish_children() {
-  local home=$1 sub_state child_meta child_id child_kind child_wt child_home failures=''
+  local home=$1 sub_state child_meta child_id child_kind child_wt child_home ledger ledger_id failures=''
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2602,6 +2604,19 @@ preflight_firstmate_home_lavish_children() {
         failures="$failures $child_id"
       fi
     fi
+  done
+  for ledger in "$sub_state"/*.lavish-sessions; do
+    [ -e "$ledger" ] || [ -L "$ledger" ] || continue
+    ledger_id=$(basename "$ledger" .lavish-sessions)
+    if [ -f "$sub_state/$ledger_id.meta" ] && [ ! -L "$sub_state/$ledger_id.meta" ]; then
+      continue
+    fi
+    {
+      if ! FM_HOME="$home" FM_STATE_OVERRIDE="$sub_state" \
+          "$SCRIPT_DIR/fm-lavish-session.sh" end-ephemeral "$ledger_id" >/dev/null 2>&1; then
+        failures="$failures $ledger_id"
+      fi
+    }
   done
   if [ -n "$failures" ]; then
     echo "REFUSED: forced secondmate cleanup could not end every ephemeral Lavish session for child tasks:$failures" >&2
@@ -2764,6 +2779,13 @@ BACKLOG_TRANSITION=$TEARDOWN_BACKLOG_TRANSITION
 BACKLOG_TRANSITION_FLAGS=()
 [ "$BACKLOG_TRANSITION" = close ] || BACKLOG_TRANSITION_FLAGS=(--retain)
 BACKLOG_SKIP_REASON=
+if [ "$KIND" != secondmate ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-lavish-session.sh" end-ephemeral "$ID" || {
+      echo "error: could not end every recorded ephemeral Lavish session for $ID; preserving the worktree and task records" >&2
+      exit 1
+    }
+fi
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
   backlog_done_args || {
     echo "error: the pending backlog $BACKLOG_TRANSITION for $ID is not replayable; refusing destructive teardown" >&2
@@ -2783,22 +2805,7 @@ else
   fi
 fi
 
-# Every landed/discard-work refusal above has now passed (or --force skipped
-# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
-# --force, and before ANY destructive step below - a still-parked run or a
-# leaked process can own live work in this exact worktree. Not for
-# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
-# dedicated process-event and firstmate-home removal machinery further below,
-# not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
-  # Lavish's supported end command requires the source file to still exist.
-  # The ledger owner therefore closes and verifies every recorded ephemeral
-  # review before process reaping or worktree return can remove that file.
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    "$SCRIPT_DIR/fm-lavish-session.sh" end-ephemeral "$ID" || {
-      echo "error: could not end every recorded ephemeral Lavish session for $ID; preserving the worktree and task records" >&2
-      exit 1
-    }
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi

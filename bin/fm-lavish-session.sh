@@ -11,6 +11,7 @@
 #   fm-lavish-session.sh register-auto <artifact.html> [<task-id>]
 #   fm-lavish-session.sh safe-park <task-id> <worktree-artifact.html> <durable-artifact.html>
 #   fm-lavish-session.sh end <task-id> <artifact.html>
+#   fm-lavish-session.sh end-with-source <task-id> <artifact.html> <source-id>
 #   fm-lavish-session.sh preflight-end <task-id> <artifact.html>
 #   fm-lavish-session.sh end-ephemeral <task-id>
 #   fm-lavish-session.sh poll-activity <artifact.html> [<task-id>]
@@ -31,8 +32,12 @@ LAVISH_STATE_FILE="${FM_LAVISH_STATE_FILE:-${LAVISH_AXI_STATE_DIR:-$HOME/.lavish
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+LAVISH_STATE_DIR=$(fm_lavish_state_dir "$LAVISH_STATE_FILE") \
+  || die "FM_LAVISH_STATE_FILE must be an absolute Lavish state.json path"
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
 validate_task_id() {
@@ -46,8 +51,15 @@ canonical_file() {
 
 ledger_path() { printf '%s/%s.lavish-sessions\n' "$STATE" "$1"; }
 ledger_lock_path() { printf '%s/.%s.lavish-sessions.lock\n' "$STATE" "$1"; }
-lavish_state_dir() { printf '%s\n' "${LAVISH_STATE_FILE%/*}"; }
-lavish_cli() { LAVISH_AXI_STATE_DIR="$(lavish_state_dir)" command lavish-axi "$@"; }
+lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
+
+ledger_is_safe() {
+  local ledger=$1
+  if [ -e "$ledger" ] || [ -L "$ledger" ]; then
+    [ -f "$ledger" ] && [ ! -L "$ledger" ] || return 1
+  fi
+  return 0
+}
 
 session_json_for_file() {
   ARTIFACT_REAL="$1" LAVISH_STATE_FILE="$LAVISH_STATE_FILE" node <<'NODE'
@@ -70,6 +82,7 @@ write_registration() {
   lock=$(ledger_lock_path "$task")
   home_real=$(canonical_file "$FM_HOME")
   mkdir -p "$STATE" || die "cannot create state directory: $STATE"
+  ledger_is_safe "$ledger" || die "Lavish ledger is not a safe regular file: $ledger"
   fm_lock_acquire_wait "$lock" || die "cannot lock the Lavish ledger for $task"
   tmp=$(umask 077; mktemp "$STATE/.${task}.lavish-sessions.XXXXXX") \
     || { fm_lock_release "$lock"; die "cannot stage the Lavish ledger"; }
@@ -245,12 +258,17 @@ NODE
 ledger_rows_unlocked() {
   local task=$1 disposition=${2-} ledger
   ledger=$(ledger_path "$task")
-  [ -f "$ledger" ] && [ ! -L "$ledger" ] || return 0
-  DISPOSITION="$disposition" LEDGER="$ledger" node <<'NODE'
+  ledger_is_safe "$ledger" || return 1
+  [ -f "$ledger" ] || return 0
+  TASK_ID="$task" DISPOSITION="$disposition" LEDGER="$ledger" node <<'NODE'
 const fs = require("node:fs");
 for (const line of fs.readFileSync(process.env.LEDGER, "utf8").split("\n")) {
   if (!line) continue;
   const row = JSON.parse(line);
+  if (!row || typeof row !== "object" || Array.isArray(row) || typeof row.task_id !== "string" || row.task_id !== process.env.TASK_ID || typeof row.home !== "string" || typeof row.artifact !== "string" || typeof row.key !== "string" || !["ephemeral-worktree", "durable-review"].includes(row.disposition) || (row.ended_at !== undefined && typeof row.ended_at !== "string")) {
+    console.error("Lavish ledger has an invalid row");
+    process.exit(1);
+  }
   if (row.ended_at) continue;
   if (process.env.DISPOSITION && row.disposition !== process.env.DISPOSITION) continue;
   process.stdout.write(`${row.artifact}\t${row.key}\t${row.disposition}\n`);
@@ -262,7 +280,8 @@ ledger_rows() {
   local task=$1 disposition=${2-} lock ledger rows rc
   lock=$(ledger_lock_path "$task")
   ledger=$(ledger_path "$task")
-  [ -f "$ledger" ] && [ ! -L "$ledger" ] || return 0
+  ledger_is_safe "$ledger" || return 1
+  [ -f "$ledger" ] || return 0
   fm_lock_acquire_wait "$lock" || return $?
   rows=$(ledger_rows_unlocked "$task" "$disposition") || {
     rc=$?
@@ -276,7 +295,8 @@ ledger_rows() {
 touch_ledger_poll() {
   local task=$1 real=$2 ledger lock tmp rc
   ledger=$(ledger_path "$task")
-  [ -f "$ledger" ] && [ ! -L "$ledger" ] || return 0
+  ledger_is_safe "$ledger" || return 1
+  [ -f "$ledger" ] || return 0
   lock=$(ledger_lock_path "$task")
   fm_lock_acquire_wait "$lock" || return $?
   tmp=$(umask 077; mktemp "$STATE/.${task}.lavish-sessions.XXXXXX") || {
@@ -309,7 +329,8 @@ cmd_poll_activity() {
     return 0
   fi
   for ledger in "$STATE"/*.lavish-sessions; do
-    [ -f "$ledger" ] && [ ! -L "$ledger" ] || continue
+    [ -e "$ledger" ] || [ -L "$ledger" ] || continue
+    ledger_is_safe "$ledger" || die "Lavish ledger is not a safe regular file: $ledger"
     name=${ledger##*/}; name=${name%.lavish-sessions}
     validate_task_id "$name"
     touch_ledger_poll "$name" "$real" || die "cannot refresh the Lavish poll activity ledger"
@@ -317,37 +338,65 @@ cmd_poll_activity() {
 }
 
 guard_durable_end() {
-  local task=$1 real=$2 key=$3 allow_source=${4-} source_id result hold_status=0 session_json
+  local task=$1 real=$2 key=$3 allow_source=${4-} source_id result hold_status=0 session_json source_path origin_path handled_path data_override
   source_id=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$real") || return 1
-  [ ! -e "$STATE/procevent/$source_id.source" ] || [ "$source_id" = "$allow_source" ] \
-    || die "durable Lavish review still has a registered process-event source: $source_id"
-  [ ! -e "$STATE/decision-bindings/$source_id.origin" ] \
-    || die "durable Lavish review still has an open decision binding: $source_id"
+  source_path="$STATE/procevent/$source_id.source"
+  if [ -e "$source_path" ] || [ -L "$source_path" ]; then
+    [ -f "$source_path" ] && [ ! -L "$source_path" ] \
+      || die "durable Lavish review has an unsafe process-event source: $source_id"
+    [ "$source_id" = "$allow_source" ] \
+      || die "durable Lavish review still has a registered process-event source: $source_id"
+  fi
+  origin_path="$STATE/decision-bindings/$source_id.origin"
+  if [ -e "$origin_path" ] || [ -L "$origin_path" ]; then
+    [ -f "$origin_path" ] && [ ! -L "$origin_path" ] \
+      || die "durable Lavish review has an unsafe decision binding: $source_id"
+    die "durable Lavish review still has an open decision binding: $source_id"
+  fi
   for result in "$STATE/procevent-inbox/$source_id".*.result; do
-    [ -e "$result" ] || continue
-    [ -e "${result%.result}.handled" ] \
-      || die "durable Lavish review still has an unacknowledged delivery: $source_id"
+    [ -e "$result" ] || [ -L "$result" ] || continue
+    [ -f "$result" ] && [ ! -L "$result" ] \
+      || die "durable Lavish review has an unsafe delivery result: $source_id"
+    handled_path="${result%.result}.handled"
+    if [ -e "$handled_path" ] || [ -L "$handled_path" ]; then
+      [ -f "$handled_path" ] && [ ! -L "$handled_path" ] \
+        || die "durable Lavish review has an unsafe delivery marker: $source_id"
+    else
+      die "durable Lavish review still has an unacknowledged delivery: $source_id"
+    fi
   done
   session_json=$(session_json_for_file "$real") || return 1
   SESSION_JSON="$session_json" KEY="$key" node <<'NODE' \
     || die "durable Lavish review still has feedback, prompts, or unresolved layout warnings: $key"
 const row = JSON.parse(process.env.SESSION_JSON);
 if (row.key !== process.env.KEY || row.status !== "open") process.exit(1);
-if (Number(row.pending_prompts || 0) > 0 || (row.prompts || []).length > 0 || (row.layout_warnings || []).length > 0) process.exit(1);
+if (row.pending_prompts !== undefined && (!Number.isInteger(row.pending_prompts) || row.pending_prompts < 0)) process.exit(1);
+if (row.prompts !== undefined && (!Array.isArray(row.prompts) || row.prompts.length > 0)) process.exit(1);
+if (row.pending_deliveries !== undefined && (!Array.isArray(row.pending_deliveries) || row.pending_deliveries.length > 0)) process.exit(1);
+if (row.layout_warnings !== undefined && (!Array.isArray(row.layout_warnings) || row.layout_warnings.length > 0)) process.exit(1);
+if (row.layout_warnings_pending !== undefined && typeof row.layout_warnings_pending !== "boolean") process.exit(1);
+if (row.layout_warning_repair_open !== undefined && typeof row.layout_warning_repair_open !== "boolean") process.exit(1);
+if (row.layout_warnings_pending === true || row.layout_warning_repair_open === true) process.exit(1);
 NODE
-  if [ -f "$FM_HOME/data/backlog.md" ] && command -v tasks-axi >/dev/null 2>&1; then
-    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-captain-hold.sh" open "$task" >/dev/null 2>&1 || hold_status=$?
-    case "$hold_status" in
-      0) die "durable Lavish review belongs to a task still held for the captain: $task" ;;
-      1) ;;
-      *) die "cannot determine whether task $task is still held for the captain" ;;
-    esac
-  fi
+  data_override="${FM_DATA_OVERRIDE-$FM_HOME/data}"
+  FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$data_override" \
+    "$SCRIPT_DIR/fm-captain-hold.sh" open "$task" >/dev/null 2>&1 || hold_status=$?
+  case "$hold_status" in
+    0) die "durable Lavish review belongs to a task still held for the captain: $task" ;;
+    1) ;;
+    *) die "cannot determine whether task $task is still held for the captain" ;;
+  esac
+  local -a audit_args=(guard "$task" "$real" "$key")
+  if [ -n "$allow_source" ]; then audit_args+=(--allow-source "$allow_source"); fi
+  FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$data_override" \
+    "$SCRIPT_DIR/fm-lavish-audit.sh" "${audit_args[@]}" >/dev/null \
+    || die "durable Lavish end guard refused: $key"
 }
 
 find_active_row() {
-  local task=$1 real=$2 row
-  row=$(ledger_rows "$task" | awk -F '\t' -v file="$real" '$1 == file { print; exit }')
+  local task=$1 real=$2 row ledger_text
+  ledger_text=$(ledger_rows "$task") || die "cannot read the Lavish ledger for $task"
+  row=$(printf '%s\n' "$ledger_text" | awk -F '\t' -v file="$real" '$1 == file { print; exit }')
   [ -n "$row" ] || die "artifact is not an active recorded session for task $task: $real"
   printf '%s\n' "$row"
 }
@@ -362,7 +411,7 @@ cmd_preflight_end() {
   disposition=${row##*$'\t'}
   if [ "$disposition" = durable-review ]; then
     source_id=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$real") || exit 1
-    guard_durable_end "$task" "$real" "$key" "$source_id"
+    guard_durable_end "$task" "$real" "$key" "$source_id" || exit 1
   fi
 }
 
@@ -375,7 +424,24 @@ cmd_end() {
   key=${row#*$'\t'}; key=${key%%$'\t'*}
   disposition=${row##*$'\t'}
   if [ "$disposition" = durable-review ]; then
-    guard_durable_end "$task" "$real" "$key"
+    guard_durable_end "$task" "$real" "$key" || exit 1
+  fi
+  end_recorded_file "$task" "$real" "$key"
+}
+
+cmd_end_with_source() {
+  [ "$#" -eq 3 ] || usage
+  local task=$1 artifact=$2 allow_source=$3 real row key disposition source_id
+  validate_task_id "$task"
+  [ -n "$allow_source" ] || die "a process-event source id is required"
+  real=$(canonical_file "$artifact")
+  row=$(find_active_row "$task" "$real")
+  key=${row#*$'\t'}; key=${key%%$'\t'*}
+  disposition=${row##*$'\t'}
+  source_id=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$real") || exit 1
+  [ "$source_id" = "$allow_source" ] || die "process-event source does not match the Lavish artifact"
+  if [ "$disposition" = durable-review ]; then
+    guard_durable_end "$task" "$real" "$key" "$allow_source" || exit 1
   fi
   end_recorded_file "$task" "$real" "$key"
 }
@@ -401,7 +467,8 @@ cmd_remove_ledger() {
   [ "$#" -eq 1 ] || usage
   validate_task_id "$task"
   ledger=$(ledger_path "$task")
-  [ -e "$ledger" ] || return 0
+  [ -e "$ledger" ] || [ -L "$ledger" ] || return 0
+  ledger_is_safe "$ledger" || die "Lavish ledger is not a safe regular file: $ledger"
   lock=$(ledger_lock_path "$task")
   fm_lock_acquire_wait "$lock" || die "cannot lock the Lavish ledger for $task"
   remaining=$(ledger_rows_unlocked "$task") || {
@@ -422,7 +489,8 @@ cmd_remove_ledger() {
 finalize_key_in_ledger() {
   local task=$1 key=$2 ledger lock tmp rc
   ledger=$(ledger_path "$task")
-  [ -f "$ledger" ] && [ ! -L "$ledger" ] || return 0
+  ledger_is_safe "$ledger" || return 1
+  [ -f "$ledger" ] || return 0
   lock=$(ledger_lock_path "$task")
   fm_lock_acquire_wait "$lock" || return $?
   tmp=$(umask 077; mktemp "$STATE/.${task}.lavish-sessions.XXXXXX") || {
@@ -449,7 +517,8 @@ cmd_finalize_key() {
   [ "$#" -eq 1 ] || usage
   [ -n "$key" ] && [[ "$key" != *$'\n'* ]] || die "Lavish key is invalid"
   for ledger in "$STATE"/*.lavish-sessions; do
-    [ -f "$ledger" ] && [ ! -L "$ledger" ] || continue
+    [ -e "$ledger" ] || [ -L "$ledger" ] || continue
+    ledger_is_safe "$ledger" || die "Lavish ledger is not a safe regular file: $ledger"
     task=${ledger##*/}; task=${task%.lavish-sessions}
     validate_task_id "$task"
     finalize_key_in_ledger "$task" "$key" || die "cannot finalize Lavish ledger rows for $key"
@@ -506,6 +575,7 @@ case "${1:-}" in
   safe-park) shift; cmd_safe_park "$@" ;;
   preflight-end) shift; cmd_preflight_end "$@" ;;
   end) shift; cmd_end "$@" ;;
+  end-with-source) shift; cmd_end_with_source "$@" ;;
   end-ephemeral) shift; cmd_end_ephemeral "$@" ;;
   poll-activity) shift; cmd_poll_activity "$@" ;;
   finalize-key) shift; cmd_finalize_key "$@" ;;

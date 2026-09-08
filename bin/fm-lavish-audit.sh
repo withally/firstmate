@@ -5,6 +5,7 @@
 #   fm-lavish-audit.sh [audit] [--freeze <candidate.jsonl>] [--expiry-hours <hours>]
 #                         [--preserve-paths <file>]
 #   fm-lavish-audit.sh summary
+#   fm-lavish-audit.sh guard <task-id> <artifact.html> <key> [--allow-source <source-id>]
 #   fm-lavish-audit.sh apply <candidate.jsonl> [--authorized [<authority.json>]]
 #                         [--batch-size <1..50>] [--expiry-hours <hours>]
 #                         [--preserve-paths <file>]
@@ -42,12 +43,15 @@ AUTHORIZATION_RULING='Apply only captain-authorized ambiguous existing-path sess
 
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+LAVISH_STATE_DIR=$(fm_lavish_state_dir "$LAVISH_STATE_FILE") \
+  || die "FM_LAVISH_STATE_FILE must be an absolute Lavish state.json path"
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
-lavish_state_dir() { printf '%s\n' "${LAVISH_STATE_FILE%/*}"; }
-lavish_cli() { LAVISH_AXI_STATE_DIR="$(lavish_state_dir)" command lavish-axi "$@"; }
+lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
 
 make_homes_file() {
   local out=$1 registry="$FM_HOME/data/secondmates.md" line home
@@ -77,11 +81,11 @@ make_homes_file() {
 }
 
 run_audit_node() {
-  local mode=$1 homes_file=$2 freeze=${3-}
+  local mode=$1 homes_file=$2 freeze=${3-} guard_task=${4-} guard_file=${5-} guard_key=${6-} guard_home=${7-} guard_allow_source=${8-}
   AUDIT_MODE="$mode" HOMES_FILE="$homes_file" FREEZE_FILE="$freeze" \
     LAVISH_STATE_FILE="$LAVISH_STATE_FILE" ATTACHED_FILE="${FM_LAVISH_ATTACHED_KEYS_FILE:-}" \
-    LSOF_FILE="${FM_LAVISH_LSOF_FILE:-}" LAVISH_PORT="${LAVISH_AXI_PORT:-4387}" \
     EXPIRY_HOURS="${FM_LAVISH_IDLE_EXPIRY_HOURS:-48}" PRESERVE_PATHS_FILE="${FM_LAVISH_PRESERVE_PATHS_FILE:-}" \
+    GUARD_TASK="$guard_task" GUARD_FILE="$guard_file" GUARD_KEY="$guard_key" GUARD_HOME="$guard_home" GUARD_ALLOW_SOURCE="$guard_allow_source" \
     node <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
@@ -108,6 +112,7 @@ const sources = new Set();
 const decisions = new Set();
 const unacked = new Set();
 const attached = new Map();
+const sourceHomes = new Map();
 const preservePaths = new Set();
 const inventoryErrors = [];
 let unreadableHome = false;
@@ -128,15 +133,20 @@ const addLedger = (key, row) => {
   if (!ledgers.has(key)) ledgers.set(key, []);
   ledgers.get(key).push(row);
 };
+const addSource = (sid, home) => {
+  sources.add(sid);
+  if (!sourceHomes.has(sid)) sourceHomes.set(sid, []);
+  sourceHomes.get(sid).push(home);
+};
 const sourceId = file => `lavish-${crypto.createHash("sha256").update(file).digest("hex").slice(0,16)}`;
 
-const listDir = (home, dir, label) => {
+const listDir = (home, dir, label, optional = true) => {
   try {
     const stat = fs.lstatSync(dir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("not a safe directory");
     return fs.readdirSync(dir);
   } catch (error) {
-    if (error.code === "ENOENT") return [];
+    if (error.code === "ENOENT" && optional) return [];
     addInventoryError(home, `${label} is unreadable: ${error.message}`);
     return [];
   }
@@ -194,8 +204,8 @@ for (const rawHome of homes) {
 for (const home of normalizedHomes) {
   const stateDir = path.join(home, "state");
   const dataDir = path.join(home, "data");
-  const stateNames = listDir(home, stateDir, "state directory");
-  listDir(home, dataDir, "data directory");
+  const stateNames = listDir(home, stateDir, "state directory", false);
+  listDir(home, dataDir, "data directory", false);
 
   for (const name of stateNames.filter(item => item.endsWith(".meta"))) {
     const task = name.slice(0, -5);
@@ -213,6 +223,9 @@ for (const home of normalizedHomes) {
         let secondmateHome;
         try { secondmateHome = fs.realpathSync(fields.home); } catch (error) { throw new Error(`secondmate metadata home is unreadable: ${error.message}`); }
         if (!normalizedHomes.includes(secondmateHome)) throw new Error("secondmate metadata home is not in registered home inventory");
+        let worktree = fields.worktree;
+        try { worktree = fs.realpathSync(worktree); } catch (error) { if (error.code !== "ENOENT") throw error; }
+        meta.push({task,home:secondmateHome,worktree});
         continue;
       }
       if (!isString(fields.worktree) || !fields.worktree) throw new Error("task metadata has no worktree");
@@ -270,7 +283,7 @@ for (const home of normalizedHomes) {
     const text = readInventoryFile(home, file, "process-event source", false);
     if (text === null) continue;
     if (!/^adapter=lavish\n/m.test(text) || !/^argv:\n/m.test(text)) addInventoryError(home, `malformed process-event source: ${file}`);
-    sources.add(name.slice(0, -7));
+    addSource(name.slice(0, -7), home);
     activePollRegistrations++;
   }
 
@@ -319,16 +332,11 @@ if (process.env.ATTACHED_FILE) {
 let browserConnections = 0;
 try {
   let lsof;
-  if (process.env.LSOF_FILE) {
-    lsof = readInventoryFile("runtime", process.env.LSOF_FILE, "lsof evidence", false);
-    if (lsof === null) throw new Error("lsof evidence is unreadable");
-  } else {
-    try {
-      lsof = cp.execFileSync("lsof", ["-nP", `-iTCP:${process.env.LAVISH_PORT}`, "-sTCP:ESTABLISHED"], {encoding:"utf8"});
-    } catch (error) {
-      if (error.stdout === undefined) throw error;
-      lsof = String(error.stdout);
-    }
+  try {
+    lsof = cp.execFileSync("lsof", ["-nP", "-iTCP:4387", "-sTCP:ESTABLISHED"], {encoding:"utf8"});
+  } catch (error) {
+    if (error.status !== 1 || error.stdout === undefined) throw error;
+    lsof = String(error.stdout);
   }
   browserConnections = lsof.split("\n").filter(line => /^(Google|Chromium|Chrome)\s/.test(line)).length;
 } catch (error) {
@@ -360,8 +368,9 @@ const lastActivityFor = (row, ledgerRows) => {
   return values.length ? Math.max(...values) : NaN;
 };
 const homeBoardOwnersFor = file => normalizedHomes.filter(home => file === path.join(home, ".lavish", "bearings-board.html")).map(home => ({home,task:"home"}));
-const validSessionRow = row => {
+const validSessionRow = (row, registryKey) => {
   if (!isObject(row) || !isString(row.key) || !row.key || /[\r\n]/.test(row.key) || !isString(row.file) || !path.isAbsolute(row.file) || /[\r\n]/.test(row.file)) return false;
+  if (registryKey !== undefined && row.key !== registryKey) return false;
   if (row.url !== undefined && !isString(row.url)) return false;
   if (row.updated_at !== undefined && (!isString(row.updated_at) || (row.updated_at && !Number.isFinite(Date.parse(row.updated_at))))) return false;
   if (row.pending_prompts !== undefined && (!Number.isInteger(row.pending_prompts) || row.pending_prompts < 0)) return false;
@@ -369,6 +378,9 @@ const validSessionRow = row => {
   for (const field of ["layout_warnings_pending", "layout_warning_repair_open"]) if (row[field] !== undefined && typeof row[field] !== "boolean") return false;
   return ["open", "feedback", "ended"].includes(row.status);
 };
+for (const [registryKey, row] of Object.entries(state.sessions)) {
+  if (!validSessionRow(row, registryKey)) addInventoryError("Lavish state", "malformed Lavish registry row: " + registryKey);
+}
 const evidenceFor = row => {
   const evidence = [];
   if (!validSessionRow(row)) return {classification:"ambiguous",evidence:["malformed-registry-row"]};
@@ -386,10 +398,14 @@ const evidenceFor = row => {
   if ([...preservePaths].some(item => row.file === item || (item.endsWith(path.sep) && row.file.startsWith(item)))) return {classification:"preserve",evidence:["captain-preserve-path"]};
 
   const sid = sourceId(row.file);
-  const currentOwners = currentOwnersFor(row.file);
-  const rowLedgers = ledgerRowsFor(row.key);
-  const dataOwners = dataOwnersFor(row.file);
-  const boardOwners = homeBoardOwnersFor(row.file);
+  const guardTarget = Boolean(process.env.GUARD_KEY) && row.key === process.env.GUARD_KEY && row.file === process.env.GUARD_FILE;
+  const guardOwnerAllowed = owner => guardTarget && owner.home === process.env.GUARD_HOME && (owner.task_id || owner.task) === process.env.GUARD_TASK;
+  const withoutGuardOwner = owners => owners.filter(owner => !guardOwnerAllowed(owner));
+  const currentOwners = withoutGuardOwner(currentOwnersFor(row.file));
+  const rowLedgers = withoutGuardOwner(ledgerRowsFor(row.key));
+  const dataOwners = withoutGuardOwner(dataOwnersFor(row.file));
+  const openDataOwners = dataOwners.filter(owner => !closed.has(ownerKey(owner.home, owner.task)));
+  const boardOwners = withoutGuardOwner(homeBoardOwnersFor(row.file));
   const ownerIdentities = new Set();
   for (const owner of currentOwners) ownerIdentities.add(ownerKey(owner.home, owner.task));
   for (const owner of rowLedgers) ownerIdentities.add(ownerKey(owner.home, owner.task_id));
@@ -401,8 +417,10 @@ const evidenceFor = row => {
   const ambiguousOwnership = ownerIdentities.size > 1 || duplicateLedger || unlistedLedger;
   if (currentOwners.length) for (const owner of currentOwners) evidence.push(`current-task:${owner.task}`);
   for (const owner of rowLedgers) {
+    evidence.push(`ledger-owner:${owner.task_id}`);
     if (currentOwners.some(item => item.home === owner.home && item.task === owner.task_id)) evidence.push(`ledger-live-task:${owner.task_id}`);
   }
+  for (const owner of openDataOwners) evidence.push(`data-owner:${owner.task}`);
   for (const owner of boardOwners) evidence.push(`home-durable-review:${owner.home}`);
   for (const owner of [...rowLedgers, ...dataOwners]) {
     const key = ownerKey(owner.home, owner.task_id || owner.task);
@@ -412,12 +430,19 @@ const evidenceFor = row => {
   if (ambiguousOwnership) evidence.push("ambiguous-ownership");
   if (row.status === "feedback" || Number(row.pending_prompts || 0) > 0 || (row.prompts || []).length > 0) evidence.push("feedback-or-pending-prompts");
   if ((row.pending_deliveries || []).length > 0 || unacked.has(sid)) evidence.push("unacknowledged-delivery");
-  if (sources.has(sid)) evidence.push("registered-process-event-source");
   if (decisions.has(sid)) evidence.push("open-decision-binding");
   if (attached.has(row.key)) for (const kind of attached.get(row.key)) evidence.push(`attached-${kind}`);
   if ((row.layout_warnings || []).length > 0 || row.layout_warnings_pending || row.layout_warning_repair_open) evidence.push("unresolved-layout-warning-repair");
+  const sourceHomesForRow = sourceHomes.get(sid) || [];
+  const sourceOwnedByGuard = guardTarget && process.env.GUARD_ALLOW_SOURCE === sid && sourceHomesForRow.length === 1 && sourceHomesForRow[0] === process.env.GUARD_HOME;
+  if (!guardTarget && sources.has(sid)) evidence.push("registered-process-event-source");
+  if (guardTarget) {
+    if (browserConnections > 0) evidence.push(`unmapped-browser-connections:${browserConnections}`);
+    if (sources.has(sid) && !sourceOwnedByGuard) evidence.push("registered-process-event-source");
+    return {classification:evidence.length ? "blocked" : "ready",evidence};
+  }
   if (ambiguousOwnership) return {classification:"ambiguous",evidence};
-  if (evidence.some(item => !item.startsWith("retained-backlog-hold:") && !item.startsWith("current-task:") && !item.startsWith("ledger-live-task:") && !item.startsWith("home-durable-review:")) || currentOwners.length || rowLedgers.some(owner => currentOwners.some(item => item.home === owner.home && item.task === owner.task_id)) || boardOwners.length || [...rowLedgers, ...dataOwners].some(owner => held.has(ownerKey(owner.home, owner.task_id || owner.task)))) return {classification:"preserve",evidence};
+  if (evidence.some(item => !item.startsWith("retained-backlog-hold:") && !item.startsWith("current-task:") && !item.startsWith("ledger-live-task:") && !item.startsWith("ledger-owner:") && !item.startsWith("data-owner:") && !item.startsWith("home-durable-review:")) || currentOwners.length || rowLedgers.length || openDataOwners.length || boardOwners.length || [...rowLedgers, ...dataOwners].some(owner => held.has(ownerKey(owner.home, owner.task_id || owner.task)))) return {classification:"preserve",evidence};
   if (row.file.includes(`${path.sep}.treehouse${path.sep}`)) return {classification:"preserve",evidence:["retained-worktree-file"]};
 
   if (unreadableHome) return {classification:"ambiguous",evidence:["ownership-incomplete-unreadable-home"]};
@@ -453,6 +478,13 @@ for (const row of rows) {
   if (process.env.AUDIT_MODE === "audit") process.stdout.write(`${verdict.classification}\t${row?.key || "<missing-key>"}\t${verdict.evidence.join(",")}\t${row?.file || "<missing-file-field>"}\n`);
 }
 if (unreadableHome) fail(`home inventory is unreadable or malformed; refusing eligibility: ${inventoryErrors.join("; ")}`);
+if (process.env.AUDIT_MODE === "guard") {
+  const target = rows.find(row => isObject(row) && row.key === process.env.GUARD_KEY && row.file === process.env.GUARD_FILE);
+  if (!target) fail("durable Lavish guard target is absent from the registry");
+  const verdict = evidenceFor(target);
+  if (verdict.classification !== "ready") fail("durable Lavish end guard refused: " + verdict.evidence.join(","));
+  process.stdout.write("durable Lavish end guard: ready\n");
+}
 if (process.env.AUDIT_MODE === "summary") {
   process.stdout.write(`Lavish registry rows: total=${counts.total} open=${counts.open} feedback=${counts.feedback} ended=${counts.ended} missing_file=${counts.missing_file} past_expiry=${counts.past_expiry} expiry_hours=${expiryHours} with_live_task=${counts.with_live_task} without_live_task=${counts.without_live_task}; live connections: attached_clients=${counts.attached_clients} unmapped_browser_connections=${counts.unmapped_browser_connections}; active_poll_registrations=${counts.active_poll_registrations}\n`);
 }
@@ -494,6 +526,33 @@ cmd_summary() {
   trap "rm -f -- '$homes'" EXIT
   make_homes_file "$homes"
   run_audit_node summary "$homes"
+}
+
+canonical_file() {
+  perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$1" 2>/dev/null \
+    || die "cannot resolve path: $1"
+}
+
+cmd_guard() {
+  [ "$#" -ge 3 ] || usage
+  local task=$1 artifact=$2 key=$3 allow_source='' real homes guard_home
+  shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --allow-source) [ "$#" -ge 2 ] || usage; allow_source=$2; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  case "$task" in ''|*[!A-Za-z0-9._-]*) die "task id must be a privacy-safe slug: $task" ;; esac
+  case "$key" in ''|*$'\n'*|*$'\r'*) die "Lavish key is invalid" ;; esac
+  real=$(canonical_file "$artifact")
+  [ -f "$real" ] && [ ! -L "$real" ] || die "artifact is not a safe regular file: $artifact"
+  guard_home=$(canonical_file "$FM_HOME")
+  homes=$(mktemp "${TMPDIR:-/tmp}/fm-lavish-homes.XXXXXX") || die "cannot stage home inventory"
+  trap "rm -f -- '$homes'" EXIT
+  make_homes_file "$homes"
+  run_audit_node guard "$homes" '' "$task" "$real" "$key" "$guard_home" "$allow_source" >/dev/null \
+    || die "durable Lavish end guard refused: $key"
 }
 
 count_registry() {
@@ -553,6 +612,9 @@ if (process.env.AUTHORITY_FILE) {
   for (const row of candidate) if (exclusions.has(row.key) || authority.excluded.some(item => item.file === row.file || item.url === row.url)) fail(`candidate is one of the three kept boards: ${row.key}`);
 }
 const seen = new Set();
+for (const row of candidate) {
+  if (["7f59a8c16dff9f19", "4ae99e8ad06d4a8c", "cc73671c247bff78"].includes(row.key)) fail("candidate is one of the three kept boards: " + row.key);
+}
 for (const row of candidate) {
   if (seen.has(row.key)) fail(`candidate contains duplicate key: ${row.key}`);
   seen.add(row.key);
@@ -614,11 +676,9 @@ cmd_apply() {
 $(LINE="$line" node -e 'const r=JSON.parse(process.env.LINE); process.stdout.write([r.key,r.file,r.url||"",r.status,r.updated_at||"",r.authorization||""].join("\t"))')
 EOF
     [ -n "$key" ] || die "apply queue contains an unsupported row"
-    if [ $((processed % batch)) -eq 0 ]; then
-      audit_output=$(FM_LAVISH_IDLE_EXPIRY_HOURS="$expiry" FM_LAVISH_PRESERVE_PATHS_FILE="$preserve_paths" \
-        run_audit_node audit "$homes") \
-        || die "could not reclassify frozen candidate: $key"
-    fi
+    audit_output=$(FM_LAVISH_IDLE_EXPIRY_HOURS="$expiry" FM_LAVISH_PRESERVE_PATHS_FILE="$preserve_paths" \
+      run_audit_node audit "$homes") \
+      || die "could not reclassify frozen candidate: $key"
     current=$(KEY="$key" LAVISH_STATE_FILE="$LAVISH_STATE_FILE" node -e 'const fs=require("node:fs");const s=JSON.parse(fs.readFileSync(process.env.LAVISH_STATE_FILE,"utf8"));const r=(s.sessions||{})[process.env.KEY];if(!r)process.exit(1);process.stdout.write([r.file,r.url||"",r.status,r.updated_at||""].join("\t"))') \
       || die "frozen candidate key is absent: $key"
     [ "$current" = "$file"$'\t'"$expected_url"$'\t'"$expected_status"$'\t'"$expected_updated" ] \
@@ -645,6 +705,7 @@ EOF
 case "${1:-audit}" in
   audit) [ "$#" -eq 0 ] || shift; cmd_audit "$@" ;;
   summary) shift; cmd_summary "$@" ;;
+  guard) shift; cmd_guard "$@" ;;
   apply) shift; cmd_apply "$@" ;;
   -h|--help|help) usage ;;
   *) usage ;;

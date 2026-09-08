@@ -142,12 +142,15 @@ LAVISH_STATE_FILE="${FM_LAVISH_STATE_FILE:-${LAVISH_AXI_STATE_DIR:-$HOME/.lavish
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+LAVISH_STATE_DIR=$(fm_lavish_state_dir "$LAVISH_STATE_FILE") \
+  || die "FM_LAVISH_STATE_FILE must be an absolute Lavish state.json path"
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
-lavish_state_dir() { printf '%s\n' "${LAVISH_STATE_FILE%/*}"; }
-lavish_cli() { LAVISH_AXI_STATE_DIR="$(lavish_state_dir)" command lavish-axi "$@"; }
+lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -179,6 +182,11 @@ cmd_arm() {
   id=$(cmd_source_id "$artifact") || exit 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
     || die "cannot resolve the artifact path: $artifact"
+  if [ -n "$task" ]; then
+    "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" "$task" >/dev/null
+  else
+    "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" >/dev/null
+  fi || die "cannot record Lavish ownership for $real"
   # This adapter's own listener command, which runs the plain blocking form with
   # no --timeout-ms so completion is a server event, and absorbs only the exact
   # transient interruption. Registering raw poll output is what let that
@@ -189,16 +197,6 @@ cmd_arm() {
   else
     "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
       -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
-  fi
-  if [ "${FM_LAVISH_LEDGER_TEST_BYPASS:-0}" != 1 ]; then
-    if [ -n "$task" ]; then
-      "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" "$task" >/dev/null
-    else
-      "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" >/dev/null
-    fi || {
-      "$SCRIPT_DIR/fm-procevent.sh" retire "$id" >/dev/null 2>&1 || true
-      die "cannot record Lavish ownership for $real"
-    }
   fi
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
@@ -212,11 +210,12 @@ cmd_retire() {
 }
 
 cmd_retire_and_end() {
-  local task=${1-} artifact=${2-}
+  local task=${1-} artifact=${2-} id
   [ "$#" -eq 2 ] || usage
   "$SCRIPT_DIR/fm-lavish-session.sh" preflight-end "$task" "$artifact" || exit 1
-  cmd_retire "$artifact" || exit 1
-  "$SCRIPT_DIR/fm-lavish-session.sh" end "$task" "$artifact"
+  id=$(cmd_source_id "$artifact") || exit 1
+  "$SCRIPT_DIR/fm-lavish-session.sh" end-with-source "$task" "$artifact" "$id" || exit 1
+  cmd_retire "$artifact"
 }
 
 # The bounded quiet retry described in the header. The bound is a constant
@@ -320,12 +319,10 @@ cmd_poll() {
     trap "$cleanup_command; trap - $signal; kill -$signal $$" "$signal"
   done
   while :; do
-    if [ "${FM_LAVISH_LEDGER_TEST_BYPASS:-0}" != 1 ]; then
-      if [ -n "$task" ]; then
-        "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" "$task" || exit 1
-      else
-        "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" || exit 1
-      fi
+    if [ -n "$task" ]; then
+      "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" "$task" || exit 1
+    else
+      "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" || exit 1
     fi
     lavish_cli poll "$artifact" | poll_response_filter "$response"
     pipeline_status=("${PIPESTATUS[@]}")

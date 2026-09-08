@@ -2,7 +2,6 @@
 # Behavior tests for Lavish delivery acknowledgement through the real
 # process-event capture path and a protocol-faithful fake lavish-axi.
 set -u
-export FM_LAVISH_LEDGER_TEST_BYPASS=1
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -84,18 +83,25 @@ chmod +x "$FAKE_BIN/lavish-axi"
 
 run_scenario() {  # <scenario>
   local scenario=$1 home="$TMP_ROOT/$1-home" artifact="$TMP_ROOT/$1.html" id out
-  mkdir -p "$home/state"
+  artifact="$home/data/$scenario/review.html"
+  mkdir -p "$home/state" "$home/data/$scenario" "$home/lavish"
   printf '<h1>%s</h1>\n' "$scenario" > "$artifact"
+  ARTIFACT="$artifact" node <<'NODE' > "$home/lavish/state.json"
+const fs = require("node:fs");
+const file = fs.realpathSync(process.env.ARTIFACT);
+const session = {key:"session",file,url:"http://127.0.0.1:4387/session/session",status:"open",pending_prompts:0,prompts:[],chat:[],updated_at:"2026-09-08T00:00:00.000Z"};
+process.stdout.write(JSON.stringify({sessions:{session}}, null, 2));
+NODE
   id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
   LAVISH_SOURCE_ID=$id LAVISH_SCENARIO=$scenario LAVISH_LOG="$TMP_ROOT/$scenario.log" \
-    PATH="$FAKE_BIN:$PATH" FM_HOME="$home" \
+    PATH="$FAKE_BIN:$PATH" FM_HOME="$home" LAVISH_AXI_STATE_DIR="$home/lavish" \
     "$ROOT/bin/fm-procevent-lavish.sh" arm "$artifact" >/dev/null
   if [ "$scenario" = bound-feed-failure ]; then
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
       "$ROOT/bin/fm-captain-hold.sh" bind "$id" >/dev/null
   fi
   out=$(LAVISH_SOURCE_ID=$id LAVISH_SCENARIO=$scenario LAVISH_LOG="$TMP_ROOT/$scenario.log" \
-    PATH="$FAKE_BIN:$PATH" FM_HOME="$home" \
+    PATH="$FAKE_BIN:$PATH" FM_HOME="$home" LAVISH_AXI_STATE_DIR="$home/lavish" \
     FM_PROCEVENT_MAX_OUTPUT_BYTES=$([ "$scenario" = truncated ] || [ "$scenario" = partial-truncated ] && printf 256 || printf 1048576) \
     "$ROOT/bin/fm-procevent.sh" start "$id" 2>&1)
   printf '%s\n%s\n%s\n' "$home" "$id" "$out"

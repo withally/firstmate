@@ -67,9 +67,13 @@ fail() {
   exit 1
 }
 
+# shellcheck source=bin/fm-lavish-lib.sh
+. "$SCRIPT_DIR/fm-lavish-lib.sh"
+LAVISH_STATE_DIR=$(fm_lavish_state_dir "$LAVISH_STATE_FILE") \
+  || fail "FM_LAVISH_STATE_FILE must be an absolute Lavish state.json path"
+
 board_path() { printf '%s/.lavish/bearings-board.html\n' "$FM_HOME"; }
-lavish_state_dir() { printf '%s\n' "${LAVISH_STATE_FILE%/*}"; }
-lavish_cli() { LAVISH_AXI_STATE_DIR="$(lavish_state_dir)" command lavish-axi "$@"; }
+lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
 
 validate_payload() {  # <data.json>
   jq -e --arg schema "$BOARD_SCHEMA" '
@@ -191,6 +195,9 @@ command_build() {
   printf 'bound: %s\n' "$sid"
 
   if "$SCRIPT_DIR/fm-procevent.sh" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid"; then
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="${FM_STATE_OVERRIDE:-$FM_HOME/state}" \
+      "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$board" home >/dev/null \
+      || fail "cannot refresh the board Lavish ownership ledger"
     printf 'already-armed: %s\n' "$sid"
   else
     "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$board" --task-id home >/dev/null \

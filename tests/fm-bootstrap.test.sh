@@ -408,8 +408,8 @@ ROWS
 test_lavish_registry_thresholds() {
   local case_dir fakebin state out
   case_dir="$TMP_ROOT/lavish-registry"
-  state="$case_dir/lavish-state.json"
-  mkdir -p "$case_dir/home/config"
+  state="$case_dir/lavish/state.json"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data" "$case_dir/lavish"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   fakebin=$(make_fake_toolchain "$case_dir")
   STATE_FILE="$state" COUNT=19 node <<'NODE'

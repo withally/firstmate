@@ -11,7 +11,6 @@
 # Legacy responses without delivery_id keep the older source-side loss window,
 # while the runner's own capture-before-announcement guarantee applies to both.
 set -u
-export FM_LAVISH_LEDGER_TEST_BYPASS=1
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -61,6 +60,18 @@ procevent_teardown() {
 }
 trap procevent_teardown EXIT
 new_home() { mkdir -p "$1/state"; }
+lavish_arm_fixture() {  # <fake-bin> <home> <artifact>
+  local fake_bin=$1 home=$2 artifact=$3
+  mkdir -p "$home/lavish"
+  ARTIFACT="$artifact" node <<'NODE' > "$home/lavish/state.json"
+const fs = require("node:fs");
+const file = fs.realpathSync(process.env.ARTIFACT);
+const session = {key:"fixture",file,url:"http://127.0.0.1:4387/session/fixture",status:"open",pending_prompts:0,prompts:[],chat:[],updated_at:"2026-09-08T00:00:00.000Z"};
+process.stdout.write(JSON.stringify({sessions:{fixture:session}}, null, 2));
+NODE
+  PATH="$fake_bin:$PATH" FM_HOME="$home" LAVISH_AXI_STATE_DIR="$home/lavish" \
+    "$ROOT/bin/fm-procevent-lavish.sh" arm "$artifact" >/dev/null
+}
 wake_payloads() { awk -F '\t' '{print $5}' "$1/state/.wake-queue" 2>/dev/null; }
 
 first_result() {  # <home> <source-id>: print the first captured result, if any
@@ -595,11 +606,12 @@ else
 fi
 SH
 chmod +x "$LAVISH_BIN/lavish-axi"
-REVIEW_ART="$TMP_ROOT/review.html"
+REVIEW_ART="$HLT/data/hlt-review/review.html"
+mkdir -p "$(dirname "$REVIEW_ART")"
 printf '<h1>review</h1>\n' > "$REVIEW_ART"
 lavish_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
 PE_TRACKED+=("$HLT|$lavish_id")
-PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" arm "$REVIEW_ART" >/dev/null
+lavish_arm_fixture "$LAVISH_BIN" "$HLT" "$REVIEW_ART"
 for _ in $(seq 1 6); do
   PATH="$LAVISH_BIN:$PATH" pe "$HLT" reconcile >/dev/null
   sleep 0.3
@@ -635,12 +647,12 @@ cat > "$EMPTY_BIN/lavish-axi" <<'SH'
 printf 'session:\n  file: /quiet.html\n  status: ended\n  ended_by: user\n'
 SH
 chmod +x "$EMPTY_BIN/lavish-axi"
-QUIET_ART="$TMP_ROOT/quiet-board.html"
+QUIET_ART="$HEMPTY/data/quiet-review/quiet-board.html"
+mkdir -p "$(dirname "$QUIET_ART")"
 printf '<h1>quiet</h1>\n' > "$QUIET_ART"
 quiet_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$QUIET_ART")
 PE_TRACKED+=("$HEMPTY|$quiet_id")
-PATH="$EMPTY_BIN:$PATH" FM_HOME="$HEMPTY" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$QUIET_ART" >/dev/null
+lavish_arm_fixture "$EMPTY_BIN" "$HEMPTY" "$QUIET_ART"
 quiet_out=$(PATH="$EMPTY_BIN:$PATH" pe "$HEMPTY" start "$quiet_id" 2>&1)
 assert_not_contains "$quiet_out" "not-autohandled" \
   "a durably silenced result was reported as still unacknowledged"
@@ -681,12 +693,12 @@ cat > "$ANSWER_BIN/lavish-axi" <<'SH'
 printf 'session:\n  file: /answered.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{tag,text,prompt}:\n  "choice","Option B","Context data: {\\"question\\":\\"noop-check-routing\\",\\"answer\\":\\"b\\"}"\n'
 SH
 chmod +x "$ANSWER_BIN/lavish-axi"
-ANSWER_ART="$TMP_ROOT/answered-board.html"
+ANSWER_ART="$HANSWER/data/answered-review/answered-board.html"
+mkdir -p "$(dirname "$ANSWER_ART")"
 printf '<h1>answered</h1>\n' > "$ANSWER_ART"
 answer_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ANSWER_ART")
 PE_TRACKED+=("$HANSWER|$answer_id")
-PATH="$ANSWER_BIN:$PATH" FM_HOME="$HANSWER" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ANSWER_ART" >/dev/null
+lavish_arm_fixture "$ANSWER_BIN" "$HANSWER" "$ANSWER_ART"
 PATH="$ANSWER_BIN:$PATH" pe "$HANSWER" reconcile >/dev/null
 wait_for "$HANSWER/state/.wake-queue" \
   || fail "a board close carrying the captain's real answer produced no wake"
@@ -743,13 +755,13 @@ export FM_LAVISH_POLL_RETRY_DELAY=0
 # Two interruptions, then the captain's real feedback: the retries are silent and
 # only the feedback becomes a captured result and a check wake.
 HRETRY="$TMP_ROOT/hretry"; new_home "$HRETRY"
-RETRY_ART="$TMP_ROOT/retry-board.html"
+RETRY_ART="$HRETRY/data/retry-review/retry-board.html"
+mkdir -p "$(dirname "$RETRY_ART")"
 printf '<h1>retry</h1>\n' > "$RETRY_ART"
 retry_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$RETRY_ART")
 PE_TRACKED+=("$HRETRY|$retry_id")
 LAVISH_COUNT="$TMP_ROOT/retry-count"; LAVISH_SCRIPT="interrupt interrupt feedback"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HRETRY" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$RETRY_ART" >/dev/null
+lavish_arm_fixture "$LAVISH_SCRIPTED_BIN" "$HRETRY" "$RETRY_ART"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" pe "$HRETRY" reconcile >/dev/null
 wait_for "$HRETRY/state/.wake-queue" || fail "feedback after interrupted polls produced no wake"
 [ "$(cat "$LAVISH_COUNT")" = 3 ] \
@@ -767,13 +779,13 @@ pass "a transient Lavish poll interruption is retried quietly and never announce
 # Exhaustion is news: after the bounded retries the same exact response is
 # captured and announced normally rather than being swallowed forever.
 HEXH="$TMP_ROOT/hexh"; new_home "$HEXH"
-EXH_ART="$TMP_ROOT/exhaust-board.html"
+EXH_ART="$HEXH/data/exhaust-review/exhaust-board.html"
+mkdir -p "$(dirname "$EXH_ART")"
 printf '<h1>exhaust</h1>\n' > "$EXH_ART"
 exh_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$EXH_ART")
 PE_TRACKED+=("$HEXH|$exh_id")
 LAVISH_COUNT="$TMP_ROOT/exhaust-count"; LAVISH_SCRIPT="interrupt"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HEXH" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$EXH_ART" >/dev/null
+lavish_arm_fixture "$LAVISH_SCRIPTED_BIN" "$HEXH" "$EXH_ART"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" pe "$HEXH" start "$exh_id" >/dev/null
 [ "$(cat "$LAVISH_COUNT")" = 13 ] \
   || fail "the retry bound polled $(cat "$LAVISH_COUNT") times, not the first poll plus 12 bounded retries"
@@ -790,13 +802,13 @@ pass "an interruption that outlives the bounded retries is captured and announce
 # A different SERVER_ERROR is a genuine error, never a retry: no fail-open drift
 # from the one exact transient response this adapter owns.
 HOTHER="$TMP_ROOT/hother"; new_home "$HOTHER"
-OTHER_ART="$TMP_ROOT/other-board.html"
+OTHER_ART="$HOTHER/data/other-review/other-board.html"
+mkdir -p "$(dirname "$OTHER_ART")"
 printf '<h1>other</h1>\n' > "$OTHER_ART"
 other_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$OTHER_ART")
 PE_TRACKED+=("$HOTHER|$other_id")
 LAVISH_COUNT="$TMP_ROOT/other-count"; LAVISH_SCRIPT="other-server-error"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HOTHER" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$OTHER_ART" >/dev/null
+lavish_arm_fixture "$LAVISH_SCRIPTED_BIN" "$HOTHER" "$OTHER_ART"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" pe "$HOTHER" start "$other_id" >/dev/null
 [ "$(cat "$LAVISH_COUNT")" = 1 ] \
   || fail "an unrelated SERVER_ERROR was retried $(cat "$LAVISH_COUNT") times instead of surfacing at once"
@@ -810,13 +822,13 @@ unset FM_LAVISH_POLL_RETRY_DELAY
 # A whitespace variant is not the exact transient response and must surface on
 # the first poll instead of drifting into the quiet retry policy.
 HNEAR="$TMP_ROOT/hnear"; new_home "$HNEAR"
-NEAR_ART="$TMP_ROOT/near-board.html"
+NEAR_ART="$HNEAR/data/near-review/near-board.html"
+mkdir -p "$(dirname "$NEAR_ART")"
 printf '<h1>near</h1>\n' > "$NEAR_ART"
 near_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$NEAR_ART")
 PE_TRACKED+=("$HNEAR|$near_id")
 LAVISH_COUNT="$TMP_ROOT/near-count"; LAVISH_SCRIPT="near-interrupt feedback"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HNEAR" FM_LAVISH_POLL_RETRY_DELAY=0 \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$NEAR_ART" >/dev/null
+FM_LAVISH_POLL_RETRY_DELAY=0 lavish_arm_fixture "$LAVISH_SCRIPTED_BIN" "$HNEAR" "$NEAR_ART"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HNEAR" pe "$HNEAR" start "$near_id" >/dev/null
 [ "$(cat "$LAVISH_COUNT")" = 1 ] \
   || fail "a near-match interruption was retried instead of surfacing on its first poll"
@@ -829,7 +841,8 @@ pass "only the literal two-line interruption enters the quiet retry policy"
 # The public arm boundary refuses invalid retry intervals before it publishes a
 # source registration, rather than arming a listener that can only fail later.
 HINVALID="$TMP_ROOT/hinvalid"; new_home "$HINVALID"
-INVALID_ART="$TMP_ROOT/invalid-delay-board.html"
+INVALID_ART="$HINVALID/data/invalid-review/invalid-delay-board.html"
+mkdir -p "$(dirname "$INVALID_ART")"
 printf '<h1>invalid delay</h1>\n' > "$INVALID_ART"
 invalid_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$INVALID_ART")
 for invalid_delay in 61 invalid; do
@@ -858,7 +871,8 @@ quoted_staged=("$QUOTED_TMPDIR"/fm-lavish-poll.*)
 pass "poll cleanup safely handles an apostrophe-containing TMPDIR"
 
 HSTREAM="$TMP_ROOT/hstream"; new_home "$HSTREAM"
-STREAM_ART="$TMP_ROOT/stream-board.html"
+STREAM_ART="$HSTREAM/data/stream-review/stream-board.html"
+mkdir -p "$(dirname "$STREAM_ART")"
 STREAM_TMPDIR="$TMP_ROOT/stream-stage"
 LAVISH_STREAM_READY="$TMP_ROOT/stream-ready"
 LAVISH_STREAM_RELEASE="$TMP_ROOT/stream-release"
@@ -867,8 +881,7 @@ printf '<h1>stream</h1>\n' > "$STREAM_ART"
 stream_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$STREAM_ART")
 PE_TRACKED+=("$HSTREAM|$stream_id")
 LAVISH_COUNT="$TMP_ROOT/stream-count"; LAVISH_SCRIPT="stream"
-PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HSTREAM" \
-  "$ROOT/bin/fm-procevent-lavish.sh" arm "$STREAM_ART" >/dev/null
+lavish_arm_fixture "$LAVISH_SCRIPTED_BIN" "$HSTREAM" "$STREAM_ART"
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" TMPDIR="$STREAM_TMPDIR" \
   LAVISH_STREAM_READY="$LAVISH_STREAM_READY" LAVISH_STREAM_RELEASE="$LAVISH_STREAM_RELEASE" \
   FM_PROCEVENT_MAX_OUTPUT_BYTES=100 pe "$HSTREAM" reconcile >/dev/null

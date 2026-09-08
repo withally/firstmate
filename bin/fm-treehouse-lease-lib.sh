@@ -12,18 +12,34 @@ fm_treehouse_lease_verify() { # <project> <worktree> <lease-id> <holder>
 fm_treehouse_lease_identity_from_pool() { # <project> <worktree> [holder]
   local project=$1 worktree=$2 expected_holder=${3:-} result
   [ -n "$project" ] && [ -n "$worktree" ] || return 1
+  case "$worktree" in /*) ;; *) return 1 ;; esac
   fm_treehouse_pool_listing "$project" || return 1
   result=$(printf '%s' "$FM_TREEHOUSE_POOL_LISTING" | jq -er \
     --arg path "$worktree" --arg expected "$expected_holder" '
-      [.[] | select(.status == "leased" and .path == $path
-        and ($expected == "" or .lease_holder == $expected))]
-      | if length == 1 then .[0] | [.lease_id, .lease_holder] | @tsv else empty end') || return 1
+      [.[] | select(.status == "leased")] as $leased |
+      [$leased[] | select(.path == $path)] as $path_matches |
+      if ($path_matches | length) != 1
+        or ($expected != "" and $path_matches[0].lease_holder != $expected) then
+        empty
+      else
+        $path_matches[0] as $row |
+        ([$leased[] | select(.lease_id == $row.lease_id)] | length) as $lease_count |
+        ([$leased[] | select(.lease_holder == $row.lease_holder)] | length) as $holder_count |
+        ([$leased[] | select(.lease_holder == $expected)] | length) as $expected_holder_count |
+        if $lease_count == 1 and $holder_count == 1
+          and ($expected == "" or $expected_holder_count == 1) then
+          [$row.lease_id, $row.lease_holder] | @tsv
+        else
+          empty
+        end
+      end') || return 1
   printf '%s\n' "$result"
 }
 
 fm_treehouse_lease_return() { # <project> <worktree> <lease-id> <holder>
   local project=$1 worktree=$2 lease_id=$3 holder=$4
-  [ -n "$lease_id" ] && [ -n "$holder" ] || return 1
+  [ -n "$worktree" ] && [ -n "$lease_id" ] && [ -n "$holder" ] || return 1
+  case "$worktree" in /*) ;; *) return 1 ;; esac
   (cd "$project" && treehouse return --force --if-lease-id "$lease_id" \
     --if-lease-holder "$holder" "$worktree")
 }
@@ -111,6 +127,7 @@ fm_treehouse_worktree_unpooled() { # <project> <worktree>
 fm_treehouse_lease_status() { # <project> <worktree> <lease-id> <holder>
   local project=$1 worktree=$2 lease_id=$3 holder=$4 result
   [ -n "$project" ] && [ -n "$worktree" ] && [ -n "$lease_id" ] && [ -n "$holder" ] || return 1
+  case "$worktree" in /*) ;; *) return 1 ;; esac
   fm_treehouse_pool_listing "$project" || return 1
   result=$(printf '%s' "$FM_TREEHOUSE_POOL_LISTING" | jq -er \
     --arg path "$worktree" --arg id "$lease_id" --arg holder "$holder" '
@@ -131,10 +148,19 @@ fm_treehouse_lease_holder_status() { # <project> <holder>
   fm_treehouse_pool_listing "$project" || return 1
   result=$(printf '%s' "$FM_TREEHOUSE_POOL_LISTING" | jq -cer \
     --arg holder "$holder" '
-      [.[] | select(.status == "leased" and .lease_holder == $holder)]
-      | if length == 0 then {status:"released"}
-        elif length == 1 then
-          .[0] | {status:"held",path:.path,lease_id:.lease_id,holder:.lease_holder}
+      . as $all |
+      [$all[] | select(.status == "leased" and .lease_holder == $holder)] as $matches |
+      if ($matches | length) == 0 then {status:"released"}
+        elif ($matches | length) == 1 then
+          $matches[0] as $row |
+          ([$all[] | select(.status == "leased" and .path == $row.path)] | length) as $path_count |
+          ([$all[] | select(.status == "leased" and .lease_id == $row.lease_id)] | length) as $lease_count |
+          ([$all[] | select(.status == "leased" and .lease_holder == $row.lease_holder)] | length) as $holder_count |
+          if $path_count == 1 and $lease_count == 1 and $holder_count == 1 then
+            {status:"held",path:$row.path,lease_id:$row.lease_id,holder:$row.lease_holder}
+          else
+            {status:"conflict"}
+          end
         else {status:"conflict"}
         end') || return 1
   FM_TREEHOUSE_HOLDER_STATUS=$(printf '%s' "$result" | jq -r '.status') || return 1
@@ -145,6 +171,7 @@ fm_treehouse_lease_holder_status() { # <project> <holder>
 fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]
   local state=$1 worktree=$2 excluded=${3:-} excluded_journal=${4:-} physical owner_meta owner_wt owner_real
   local excluded_recovery excluded_publication excluded_primary
+  case "$worktree" in /*) ;; *) return 1 ;; esac
   physical=$(cd "$worktree" && pwd -P) || return 1
   excluded_recovery=
   excluded_publication=

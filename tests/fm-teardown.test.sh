@@ -3063,6 +3063,32 @@ SH
   pass "treehouse lease cleanup rejects split identities and malformed listings"
 }
 
+test_treehouse_legacy_identity_rejects_duplicate_components_and_relative_paths() {
+  local case_dir out rc
+  case_dir=$(make_case lease-identity-duplicate-path)
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"lease-one","lease_holder":"holder-one"},{"path":"$case_dir/wt","status":"leased","lease_id":"lease-two","lease_holder":"holder-two"}]'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  rc=0
+  out=$(PATH="$case_dir/fakebin:$PATH" bash -c \
+    '. "$0/bin/fm-treehouse-lease-lib.sh"; fm_treehouse_lease_identity_from_pool "$1" "$2" holder-one' \
+    "$ROOT" "$case_dir/project" "$case_dir/wt" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "legacy identity derivation accepted a duplicate physical path"
+
+  rc=0
+  out=$(PATH="$case_dir/fakebin:$PATH" bash -c \
+    '. "$0/bin/fm-treehouse-lease-lib.sh"; fm_treehouse_lease_status "$1" relative/wt lease-one holder-one' \
+    "$ROOT" "$case_dir/project" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "lease status accepted a relative recorded worktree path"
+  pass "treehouse legacy identity rejects duplicate components and relative paths"
+}
+
 test_backlog_identity_pair_requires_project() {
   local case_dir other out rc
   case_dir=$(make_case identity-project-pair)
@@ -3233,6 +3259,7 @@ test_orphan_recovery_allows_missing_endpoint
 test_orphan_recovery_preserves_ignored_work
 test_orphan_recovery_preserves_dirty_work_and_mismatched_endpoint
 test_treehouse_identity_requires_authoritative_tuple_and_listing
+test_treehouse_legacy_identity_rejects_duplicate_components_and_relative_paths
 test_backlog_identity_pair_requires_project
 test_retirement_replay_rejects_malformed_pool_listing
 

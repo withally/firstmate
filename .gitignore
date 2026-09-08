@@ -1,6 +1,8 @@
 projects/
 state/
-data/
+data/*
+!data/fm-lavish-session-prune-f1/
+data/fm-lavish-session-prune-f1/*
 scratchpad*
 .no-mistakes/
 .lavish/

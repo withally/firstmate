@@ -408,6 +408,27 @@ test_changed_dependency_selection_and_unmapped_failure() {
   pass "changed selection covers dependents, fails closed for live unmapped source, and accepts retired unconsumed source"
 }
 
+test_changed_lavish_authority_selects_lavish_test() {
+  local tmp repo listed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-lavish-authority.XXXXXX")
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests" "$repo/data/fm-lavish-session-prune-f1"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$repo/tests/fm-lavish-session.test.sh"
+  printf '{}\n' >"$repo/data/fm-lavish-session-prune-f1/authorized-2026-09-08.json"
+  chmod +x "$repo/bin/fm-test-run.sh" "$repo/tests/fm-lavish-session.test.sh"
+  git -C "$repo" init -q
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+
+  printf '{"changed":true}\n' >"$repo/data/fm-lavish-session-prune-f1/authorized-2026-09-08.json"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-lavish-session.test.sh" \
+    "Lavish authority changes must select their behavior test"
+  rm -rf "$tmp"
+  pass "changed Lavish authority selects its behavior test"
+}
+
 # A direct test reference is per-script evidence. Widening it to the referencing
 # test's whole family is what turned a one-line change to a shared helper into
 # every real-Herdr E2E, including scripts with no dependency on it at all.
@@ -1673,6 +1694,7 @@ test_task_marker_refuses_the_primary_checkout
 test_changed_runner_surfaces_select_their_family
 test_shell_line_ending_policy_selects_runner_contract
 test_changed_dependency_selection_and_unmapped_failure
+test_changed_lavish_authority_selects_lavish_test
 test_changed_bin_reference_selects_per_script_not_per_family
 test_changed_uses_bounded_automatic_concurrency
 test_windows_posix_mode_emulation_does_not_fail_parallel_runs

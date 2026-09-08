@@ -1468,6 +1468,29 @@ detect_local_config() {
     echo "BOOTSTRAP_INFO: tasks-axi available"
   fi
   detect_home_summary_publication
+  detect_lavish_registry
+}
+
+# Lavish's registry is historical state, not a live-connection count.
+# This read-only startup diagnostic stays silent below the 20-session target,
+# reports a non-actionable fact from 20 through 49, and emits one actionable
+# warning from 50 upward.
+detect_lavish_registry() {
+  local lavish_state summary open
+  lavish_state="${FM_LAVISH_STATE_FILE:-${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}/state.json}"
+  [ -f "$lavish_state" ] && [ ! -L "$lavish_state" ] || return 0
+  summary=$(FM_HOME="$FM_HOME" FM_LAVISH_STATE_FILE="$lavish_state" \
+    "$SCRIPT_DIR/fm-lavish-audit.sh" summary 2>/dev/null) || {
+      echo "LAVISH_REGISTRY_WARNING: registry audit failed; run bin/fm-lavish-audit.sh audit"
+      return 0
+    }
+  open=$(printf '%s\n' "$summary" | sed -n 's/.* registry rows: .* open=\([0-9][0-9]*\).*/\1/p')
+  case "$open" in ''|*[!0-9]*) echo "LAVISH_REGISTRY_WARNING: registry count was unreadable; run bin/fm-lavish-audit.sh audit"; return 0 ;; esac
+  if [ "$open" -ge 50 ]; then
+    printf 'LAVISH_REGISTRY_WARNING: %s; these are historical registry rows, not live connections; run bin/fm-lavish-audit.sh audit\n' "$summary"
+  elif [ "$open" -ge 20 ]; then
+    printf 'BOOTSTRAP_INFO: %s; these are historical registry rows, not live connections\n' "$summary"
+  fi
 }
 
 # This home's ledger publication is deliberately best-effort: every lifecycle

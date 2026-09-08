@@ -808,6 +808,13 @@ Never run the registered blocking source command directly in a conversational tu
 
 ## Process-to-event sources (state/procevent)
 
+Lavish review sessions have a default 48-hour idle expiry in `bin/fm-lavish-audit.sh`.
+The clock uses Lavish's `updated_at` for creation and re-serve activity plus Firstmate's ledgered arm time; an active poll, current task, retained hold, decision binding, feedback, or other live review owner still preserves the session.
+Bootstrap reports how many open registry rows are past the expiry but never ends them.
+Ending remains an explicit frozen-candidate `bin/fm-lavish-audit.sh apply` operation.
+Plain apply accepts only eligible rows; `apply --authorized [<authority-file>]` additionally accepts ambiguous existing-path rows explicitly listed in a frozen authority file carrying the 2026-09-08 ruling and three kept-board exclusions.
+Unreadable or malformed primary or registered secondmate inventory refuses eligibility, and missing artifact paths remain unsupported by Lavish 0.1.63.
+
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
 `bin/fm-procevent.sh` owns the generic contract; built-in adapters retain their tracked `bin/fm-procevent-<adapter>.sh` commands, while an explicitly bound external adapter routes through the trusted host contract above.
 `bin/fm-procevent-lavish.sh` is the first built-in adapter and wraps only the currently published `lavish-axi poll` interface.

@@ -21,7 +21,7 @@ TMP_ROOT=$(fm_test_tmproot fm-procevent-lavish-live)
 BUILD="$TMP_ROOT/lavish-build"
 HOME_DIR="$TMP_ROOT/home"
 STATE_DIR="$TMP_ROOT/lavish-state"
-ARTIFACT="$TMP_ROOT/review.html"
+ARTIFACT="$HOME_DIR/data/live-review/review.html"
 SERVER_STARTED=0
 SOURCE_ID=
 
@@ -48,7 +48,7 @@ CHECKED_OUT_COMMIT=$(git -C "$LAVISH_SOURCE" rev-parse --verify 'HEAD^{commit}' 
 [ -d "$LAVISH_SOURCE/node_modules" ] \
   || fail "patched Lavish dependencies are absent; this guard never installs them"
 
-mkdir -p "$BUILD" "$HOME_DIR/state" "$STATE_DIR"
+mkdir -p "$BUILD" "$HOME_DIR/state" "$HOME_DIR/data/live-review" "$STATE_DIR"
 git -C "$LAVISH_SOURCE" archive "$EXPECTED_COMMIT_FULL" | tar -x -C "$BUILD" \
   || fail "could not archive patched Lavish into the scratch build"
 ln -s "$LAVISH_SOURCE/node_modules" "$BUILD/node_modules"

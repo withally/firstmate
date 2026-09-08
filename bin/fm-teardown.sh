@@ -1624,11 +1624,35 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return_command() {
-  local dir=$1 cd_dir=$2 identity_meta=${3:-$META} expected_holder=${4:-}
-  local lease_id holder recorded_worktree lease_identity
-  lease_id=$(fm_meta_get "$identity_meta" treehouse_lease_id)
-  holder=$(fm_meta_get "$identity_meta" treehouse_lease_holder)
-  recorded_worktree=$(fm_meta_get "$identity_meta" worktree)
+  local dir=$1 cd_dir=$2 identity_meta=${3:-$META} expected_holder=${4:-} receipt=${5:-}
+  local lease_id holder recorded_worktree lease_identity inline_lease_id inline_holder inline_worktree
+  if [ -n "$receipt" ] && { [ -e "$receipt" ] || [ -L "$receipt" ]; }; then
+    fm_treehouse_lease_receipt_read "$receipt" "$cd_dir" "$dir" || {
+      echo "REFUSED: treehouse return for $dir has malformed or conflicting durable lease evidence" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    }
+    lease_id=$FM_TREEHOUSE_RECORD_LEASE_ID
+    holder=$FM_TREEHOUSE_RECORD_HOLDER
+    recorded_worktree=$FM_TREEHOUSE_RECORD_WORKTREE
+    inline_lease_id=$(fm_meta_get "$identity_meta" treehouse_lease_id)
+    inline_holder=$(fm_meta_get "$identity_meta" treehouse_lease_holder)
+    inline_worktree=$(fm_meta_get "$identity_meta" worktree)
+    if [ -n "$inline_lease_id" ] || [ -n "$inline_holder" ] || [ -n "$inline_worktree" ]; then
+      [ -n "$inline_lease_id" ] && [ -n "$inline_holder" ] && [ -n "$inline_worktree" ] || {
+        echo "REFUSED: treehouse return for $dir has a partial inline lease tuple" >&2
+        return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+      }
+      [ "$inline_lease_id" = "$lease_id" ] && [ "$inline_holder" = "$holder" ] \
+        && [ "$inline_worktree" = "$recorded_worktree" ] || {
+        echo "REFUSED: treehouse return for $dir has conflicting inline and durable lease identity" >&2
+        return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+      }
+    fi
+  else
+    lease_id=$(fm_meta_get "$identity_meta" treehouse_lease_id)
+    holder=$(fm_meta_get "$identity_meta" treehouse_lease_holder)
+    recorded_worktree=$(fm_meta_get "$identity_meta" worktree)
+  fi
   if [ -n "$lease_id" ] || [ -n "$holder" ]; then
     if [ "$dir" != "$recorded_worktree" ] || [ -z "$lease_id" ] || [ -z "$holder" ]; then
       echo "REFUSED: treehouse return for $dir has no complete identity-bound lease tuple; use --recover-from with retained exact task metadata" >&2
@@ -1658,12 +1682,12 @@ EOF
 
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
-  local identity_meta=${5:-$META} expected_holder=${6:-}
+  local identity_meta=${5:-$META} expected_holder=${6:-} receipt=${7:-}
   local out lock attempt=0 max_retries lock_desc command_rc
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
-  if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" 2>&1 ); then
+  if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" "$receipt" 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
   else
@@ -1691,7 +1715,7 @@ teardown_treehouse_return() {
     echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
-    if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" 2>&1 ); then
+    if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" "$receipt" 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
@@ -1721,7 +1745,7 @@ teardown_treehouse_return() {
           return 1
         fi
       fi
-      if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" 2>&1 ); then
+      if out=$( teardown_treehouse_return_command "$dir" "$cd_dir" "$identity_meta" "$expected_holder" "$receipt" 2>&1 ); then
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
@@ -2279,8 +2303,13 @@ safe_rm_rf() {
 }
 
 safe_rm_rf_child_worktree() {
-  local target=$1 project=$2
+  local target=$1 project=$2 lock
   validate_child_worktree_for_removal "$target" "$project" >/dev/null || return 1
+  lock=$(worktree_git_lock_path "$target") || lock=
+  if [ -n "$lock" ] && [ -e "$lock" ]; then
+    cleanup_stale_lock_for_safety_check "$target" || return $?
+    [ ! -e "$lock" ] || return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
+  fi
   rm -rf -- "$target"
 }
 
@@ -2337,20 +2366,68 @@ EOF
   printf '%s\n' "$abs_home_path"
 }
 
+teardown_treehouse_lease_receipt_path() {
+  local identity_meta=$1
+  printf '%s.treehouse-lease\n' "${identity_meta%.meta}"
+}
+
+teardown_treehouse_prepare_receipt() {
+  local identity_meta=$1 expected_id=$2 home=$3 receipt
+  local inline_lease_id inline_holder inline_worktree
+  TEARDOWN_TREEHOUSE_RECEIPT=
+  TEARDOWN_TREEHOUSE_RECEIPT_PRESENT=0
+  receipt=$(teardown_treehouse_lease_receipt_path "$identity_meta")
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    fm_treehouse_lease_receipt_read "$receipt" "$FM_ROOT" "$home" || {
+      echo "REFUSED: durable treehouse lease evidence for $identity_meta is malformed or conflicts with $home" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    }
+    [ -z "$expected_id" ] || [ "$FM_TREEHOUSE_RECORD_HOLDER" = "$expected_id" ] || {
+      echo "REFUSED: durable treehouse lease evidence for $identity_meta belongs to $FM_TREEHOUSE_RECORD_HOLDER, not $expected_id" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    }
+    inline_lease_id=$(meta_value "$identity_meta" treehouse_lease_id)
+    inline_holder=$(meta_value "$identity_meta" treehouse_lease_holder)
+    inline_worktree=$(meta_value "$identity_meta" worktree)
+    if [ -n "$inline_lease_id" ] || [ -n "$inline_holder" ] || [ -n "$inline_worktree" ]; then
+      [ -n "$inline_lease_id" ] && [ -n "$inline_holder" ] && [ -n "$inline_worktree" ] || {
+        echo "REFUSED: inline treehouse lease identity for $identity_meta is partial" >&2
+        return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+      }
+      [ "$inline_lease_id" = "$FM_TREEHOUSE_RECORD_LEASE_ID" ] \
+        && [ "$inline_holder" = "$FM_TREEHOUSE_RECORD_HOLDER" ] \
+        && [ "$inline_worktree" = "$FM_TREEHOUSE_RECORD_WORKTREE" ] || {
+        echo "REFUSED: inline and durable treehouse lease identity disagree for $identity_meta" >&2
+        return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+      }
+    fi
+    TEARDOWN_TREEHOUSE_RECEIPT=$receipt
+    TEARDOWN_TREEHOUSE_RECEIPT_PRESENT=1
+  fi
+}
+
 remove_firstmate_home() {
   local home=$1 label=$2 expected_id=${3:-} identity_meta=${4:-$META}
   local abs_home_path process_event_backup lease_id lease_holder recorded_home
   [ -n "$home" ] || return 0
+  teardown_treehouse_prepare_receipt "$identity_meta" "$expected_id" "$home" || return $?
   if [ ! -e "$home" ]; then
+    if [ "$TEARDOWN_TREEHOUSE_RECEIPT_PRESENT" = 1 ]; then
+      teardown_treehouse_return "$home" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" "$TEARDOWN_TREEHOUSE_RECEIPT" || return $?
+      return 0
+    fi
     lease_id=$(meta_value "$identity_meta" treehouse_lease_id)
     lease_holder=$(meta_value "$identity_meta" treehouse_lease_holder)
     recorded_home=$(meta_value "$identity_meta" worktree)
     if [ -n "$lease_id" ] || [ -n "$lease_holder" ]; then
       [ -n "$lease_id" ] && [ -n "$lease_holder" ] && [ "$home" = "$recorded_home" ] || {
         echo "REFUSED: missing $label has no complete identity-bound lease record" >&2
-        return 1
+        return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
       }
-      teardown_treehouse_return "$home" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" || return 1
+      teardown_treehouse_return "$home" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" || return $?
+    elif [ -n "$expected_id" ]; then
+      echo "REFUSED: missing $label has no durable exact lease identity" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
     fi
     return 0
   fi
@@ -2361,7 +2438,7 @@ remove_firstmate_home() {
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
     return 1
   fi
-  if firstmate_home_has_treehouse_slot "$abs_home_path"; then
+  if [ "$TEARDOWN_TREEHOUSE_RECEIPT_PRESENT" = 1 ] || firstmate_home_has_treehouse_slot "$abs_home_path"; then
     command -v treehouse >/dev/null 2>&1 || {
       echo "error: treehouse command not found; cannot return $label $abs_home_path" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
@@ -2372,7 +2449,7 @@ remove_firstmate_home() {
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
     fi
-    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" || {
+    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" "$TEARDOWN_TREEHOUSE_RECEIPT" || {
       echo "error: treehouse return failed for $label $abs_home_path; lease may still be held" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
@@ -2800,7 +2877,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_lease_id child_lease_holder child_receipt
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   preflight_firstmate_home_lavish_children "$home" || return 1
@@ -2851,6 +2928,8 @@ cleanup_firstmate_home_children() {
           cleanup_firstmate_home_children "$child_home" || return $?
         fi
         remove_firstmate_home "$child_home" "child firstmate home" "$child_id" "$child_meta" || return $?
+        child_receipt=$(teardown_treehouse_lease_receipt_path "$child_meta")
+        rm -f -- "$child_receipt" || return 1
       fi
     elif [ "$child_backend" = orca ]; then
       if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
@@ -2860,29 +2939,32 @@ cleanup_firstmate_home_children() {
       fi
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ -n "$child_wt" ]; then
+      child_lease_id=$(meta_value "$child_meta" treehouse_lease_id)
+      child_lease_holder=$(meta_value "$child_meta" treehouse_lease_holder)
       if [ -d "$child_wt" ]; then
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
           "$child_wt/.opencode/plugins/fm-busy-state.js" \
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
-        if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
+        if [ -n "$child_lease_id" ] || [ -n "$child_lease_holder" ]; then
+          [ -n "$child_lease_id" ] && [ -n "$child_lease_holder" ] \
+            && [ -n "$child_proj" ] && [ -d "$child_proj" ] \
+            && command -v treehouse >/dev/null 2>&1 || return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
           if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree" "" "$child_meta"; then
             :
           else
             child_return_rc=$?
-            if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ] \
-               || [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ]; then
-              return "$child_return_rc"
-            fi
-            safe_rm_rf_child_worktree "$child_wt" "$child_proj"
+            return "$child_return_rc"
           fi
         else
-          safe_rm_rf_child_worktree "$child_wt" "$child_proj"
+          safe_rm_rf_child_worktree "$child_wt" "$child_proj" || return $?
         fi
-      elif [ -n "$(meta_value "$child_meta" treehouse_lease_id)" ] \
-        || [ -n "$(meta_value "$child_meta" treehouse_lease_holder)" ]; then
+      elif [ -n "$child_lease_id" ] || [ -n "$child_lease_holder" ]; then
         [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1 || return 1
         teardown_treehouse_return "$child_wt" "$child_proj" "child worktree" "" "$child_meta" "$child_id" || return $?
+      else
+        echo "REFUSED: missing child worktree $child_wt has no complete identity-bound lease record" >&2
+        return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
       fi
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id" || return 1

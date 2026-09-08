@@ -1,0 +1,19 @@
+Codex max-effort spawn evidence
+Date: 2026-09-08
+
+Installed capability:
+codex-cli 0.153.4
+gpt-6-astra supported reasoning levels: low, medium, high, xhigh, max, ultra
+
+Public spawn probe: fm_test_run_spawn -> bin/fm-spawn.sh -> fake tmux send-keys capture
+model: gpt-6-astra
+
+case=max status=0
+spawned codex-max-probe harness=codex kind=ship mode=no-mistakes yolo=off
+launch=... codex --model 'gpt-6-astra' -c 'model_reasoning_effort="max"' --dangerously-bypass-approvals-and-sandbox ...
+meta: model=gpt-6-astra; effort=max
+
+case=xhigh status=0
+spawned codex-xhigh-probe harness=codex kind=ship mode=no-mistakes yolo=off
+launch=... codex --model 'gpt-6-astra' -c 'model_reasoning_effort="xhigh"' --dangerously-bypass-approvals-and-sandbox ...
+meta: model=gpt-6-astra; effort=xhigh

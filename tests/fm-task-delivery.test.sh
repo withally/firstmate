@@ -433,6 +433,8 @@ STUB
       "$mode: promoted worker did not receive the status protocol handoff"
     assert_grep "Each status-file append wakes the supervisor and costs a full supervision turn." "$payload" \
       "$mode: promoted worker did not receive the status wake-cost reminder"
+    assert_grep 'Never append a `resolved:` echo of a firstmate steer; moving its message into `handled/` is the acknowledgement.' "$payload" \
+      "$mode: promoted worker did not receive the no-resolved-echo rule"
     case "$mode" in
       no-mistakes|direct-PR)
         assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.' "$payload" \

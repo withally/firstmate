@@ -199,6 +199,7 @@ fi
 PROMOTION_STATUS_WAKE_REMINDER=$(fm_status_wake_reminder)
 PROMOTION_STATUS_WORKING_RULE=$(fm_status_working_rule "$MODE")
 PROMOTION_STATUS_NO_PROGRESS_RULE=$(fm_status_no_progress_rule)
+PROMOTION_STATUS_NO_RESOLVED_ECHO_RULE=$(fm_status_no_resolved_echo_rule)
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
 TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
@@ -222,6 +223,7 @@ EOF
    $PROMOTION_STATUS_WAKE_REMINDER
    $PROMOTION_STATUS_WORKING_RULE
    $PROMOTION_STATUS_NO_PROGRESS_RULE
+   $PROMOTION_STATUS_NO_RESOLVED_ECHO_RULE
 $PROMOTION_ASK_USER_BLOCK
 7. Treat the scout-time Firstmate spec and any unmarked legacy \`# Task\` text as investigation context, not captain intent or ship-time instructions.
 EOF

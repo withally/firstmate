@@ -29,3 +29,7 @@ fm_status_working_rule() {  # <scout|no-mistakes|direct-PR|local-only>
 fm_status_no_progress_rule() {
   printf '%s\n' 'Never append `working:` for a sub-step, a verification pass, or the start of re-review.'
 }
+
+fm_status_no_resolved_echo_rule() {
+  printf '%s\n' 'Never append a `resolved:` echo of a firstmate steer; moving its message into `handled/` is the acknowledgement.'
+}

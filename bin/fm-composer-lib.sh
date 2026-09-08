@@ -315,7 +315,7 @@ fm_composer_strip_ghost() {
 # outside its composer and the composer verdict is therefore always `unknown`.
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
-FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|([^[:space:]]+[[:space:]]+)?[^[:space:]]+…([[:space:]]+\([0-9]+[smh]([[:space:]]+[0-9]+[smh])?([[:space:]]+[·•][^)]*)?\))?)[[:space:]]*$'
+FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|([^[:space:]]+[[:space:]]+)?[^[:space:]]+…([[:space:]]+\([0-9]+[smh]([[:space:]]+[0-9]+[smh])?([[:space:]]+[·•][^)]*)?\)))[[:space:]]*$'
 FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX='Press up to edit queued messages'
 FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX='Running…[[:space:]]+\([0-9]+[smh].*timeout'
 FM_DELIVERY_CLAUDE_PERMISSION_MODE_REGEX='(bypass[[:space:]]+permissions|auto[[:space:]]+mode|accept[[:space:]]+edits|plan[[:space:]]+mode)'

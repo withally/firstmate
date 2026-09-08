@@ -844,7 +844,7 @@ test_claude_current_footer_requires_selected_composer_adjacency
 test_claude_2_1_263_titled_rule_and_permission_modes() {
   local fixture_root="$ROOT/tests/fixtures/claude-2.1.263-herdr-composer"
   local caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
-  local idle busy mode screen rc verdict
+  local idle busy ordinary mode screen rc verdict
   idle=$(cat "$fixture_root/auto-mode-idle.txt")
   busy=$(cat "$fixture_root/auto-mode-busy.txt")
 
@@ -861,6 +861,16 @@ test_claude_2_1_263_titled_rule_and_permission_modes() {
 
   printf '%s\n' "$busy" | fm_claude_current_footer_busy "$caps" \
     || fail "Claude 2.1.263 auto-mode active footer must read rendered-busy"
+
+  ordinary=$(printf '%s\n' "$idle" | awk '{ if ($0 ~ /⏵⏵ auto mode on/) print "Deployment…"; else print }')
+  [ "$ordinary" != "$idle" ] || fail "ordinary ellipsis fixture did not replace the Claude status footer"
+  if printf '%s\n' "$ordinary" | fm_claude_current_footer_busy "$caps"; then
+    fail "an ordinary ellipsis row without a duration must not read rendered-busy"
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] \
+    || fail "an ordinary ellipsis row without a duration must stay idle, got rc=$rc"
 
   for mode in 'bypass permissions' 'auto mode' 'accept edits' 'plan mode'; do
     screen=${idle/'auto mode'/"$mode"}

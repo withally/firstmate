@@ -424,6 +424,25 @@ STUB
       "$mode: promoted worker did not receive the Captain's intent subsection"
     assert_grep "## Firstmate spec" "$payload" \
       "$mode: promoted worker did not receive the Firstmate spec subsection"
+    assert_grep "The shared status protocol rules carry over unchanged, but the mode-specific working-phase rule below supersedes the scout wording." "$payload" \
+      "$mode: promoted worker did not receive the status protocol handoff"
+    assert_grep "Each status-file append wakes the supervisor and costs a full supervision turn." "$payload" \
+      "$mode: promoted worker did not receive the status wake-cost reminder"
+    # shellcheck disable=SC2016 # Backticks are literal generated delivery prose.
+    assert_grep 'Never append a `resolved:` echo of a firstmate steer; moving its message into `handled/` is the acknowledgement.' "$payload" \
+      "$mode: promoted worker did not receive the no-resolved-echo rule"
+    case "$mode" in
+      no-mistakes|direct-PR)
+        # shellcheck disable=SC2016 # Backticks are literal generated delivery prose.
+        assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.' "$payload" \
+          "$mode: promoted worker lost its allowed working phases" ;;
+      local-only)
+        # shellcheck disable=SC2016 # Backticks are literal generated delivery prose.
+        assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started or implementation committed and validation started.' "$payload" \
+          "local-only: promoted worker lost its PR-free working phases"
+        assert_no_grep 'implementation committed and validation started, or PR opened' "$payload" \
+          "local-only: promoted worker still permits a PR working phase" ;;
+    esac
 
     # Compare the public outputs of both real generation paths. The promoted
     # payload ends at its Definition of done, as does an ordinary generated
@@ -454,7 +473,7 @@ STUB
   payload="$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr"
   assert_grep "supersede the scout delivery rules and report-based Definition of done" "$payload" \
     "promoted worker retained the scout delivery contract"
-  assert_grep "status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule" "$payload" \
+  assert_grep "The instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule carry over unchanged" "$payload" \
     "promoted worker lost the scout protocols and safety rules that still apply"
 
   # The faster paths keep their own contracts rather than inheriting the pipeline's.

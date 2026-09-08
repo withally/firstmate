@@ -223,11 +223,94 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "## Captain's intent" "$brief" "$id: brief missing Captain's intent subsection"
     assert_grep "## Firstmate spec" "$brief" "$id: brief missing Firstmate spec subsection"
     assert_grep 'never a bare number such as "PR 108"' "$brief" "$id: brief missing the full-PR-URL rule"
-    assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
-      "$id: brief missing nonterminal working:/setup-complete gate protection"
+    assert_grep "mid-task \`working:\` line is nonterminal" "$brief" \
+      "$id: brief missing nonterminal working: gate protection"
+    assert_no_grep "working:\` line (including setup complete)" "$brief" \
+      "$id: brief still permits a setup-complete progress event"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+}
+
+test_status_protocol_is_phase_only() {
+  local home kind id brief content reminder reminder_count
+  home="$TMP_ROOT/status-protocol-home"
+  mkdir -p "$home/data"
+  reminder='Each status-file append wakes the supervisor and costs a full supervision turn.
+Append only when this protocol requires it; never use status as a progress log.'
+
+  for kind in ship scout secondmate; do
+    id="status-protocol-$kind"
+    case "$kind" in
+      ship)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+        ;;
+      scout)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_SECONDMATE_CHARTER='Handle routed domain work.' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    content=$(cat "$brief")
+    reminder_count=$(count_literal "$content" "$reminder")
+    [ "$reminder_count" = 1 ] \
+      || fail "$kind scaffold must carry the two-line wake-cost reminder exactly once, found $reminder_count"
+    # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+    assert_grep 'Never append a `resolved:` echo of a firstmate steer' "$brief" \
+      "$kind scaffold permits a resolved echo of a firstmate steer"
+    # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+    assert_grep 'moving its message into `handled/` is the acknowledgement' "$brief" \
+      "$kind scaffold lost inbox-move acknowledgement ownership"
+  done
+
+  brief="$home/data/status-protocol-ship/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.' "$brief" \
+    "ship scaffold lost the closed set of reportable working phases"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Never append `working:` for a sub-step, a verification pass, or the start of re-review.' "$brief" \
+    "ship scaffold permits chatty working events"
+  assert_no_grep 'done: {summary}' "$brief" \
+    "no-mistakes scaffold still permits a pre-pipeline done event"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'A local commit, local validation pass, or pipeline start is never a `done:` event.' "$brief" \
+    "no-mistakes scaffold does not forbid local done events"
+  assert_grep 'done: PR {url} checks green' "$brief" \
+    "no-mistakes scaffold lost its only terminal done form"
+
+  id="status-protocol-direct"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started, implementation committed and validation started, or PR opened.' "$brief" \
+    "direct-PR scaffold lost its mode-specific working rule"
+  assert_grep 'done: PR {url}' "$brief" \
+    "direct-PR scaffold lost its terminal done form"
+  assert_no_grep 'done: PR {url} checks green' "$brief" \
+    "direct-PR scaffold inherited the no-mistakes terminal form"
+
+  id="status-protocol-local-only"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: work started or implementation committed and validation started.' "$brief" \
+    "local-only scaffold lost its mode-specific working rule"
+  assert_no_grep 'implementation committed and validation started, or PR opened' "$brief" \
+    "local-only scaffold still permits a PR working phase"
+
+  brief="$home/data/status-protocol-scout/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Append `working:` only for a genuine phase change the supervisor would act on: starting the investigation, entering a distinct research phase, or beginning report writing.' "$brief" \
+    "scout scaffold lost its research/report phase-only working rule"
+  assert_no_grep 'implementation committed and validation started, or PR opened' "$brief" \
+    "scout scaffold still names ship-only working phases"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief prose.
+  assert_grep 'Only after the report exists and is complete, append `done: {one-line conclusion}`' "$brief" \
+    "scout scaffold permits done before its report exists"
+  pass "fm-brief.sh: generated status protocol wakes only for actionable phases and terminal outcomes"
 }
 
 # A blocked headless capture must route a Codex worker to the captain's signed-in
@@ -333,7 +416,7 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+  assert_grep "then run /no-mistakes to validate and ship a PR" "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
@@ -1051,6 +1134,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_status_protocol_is_phase_only
 test_ship_and_scout_briefs_render_browser_fallback_rule
 test_upstream_sync_template_renders_direct_pr_delivery
 test_ship_mode_is_required_and_closed_set

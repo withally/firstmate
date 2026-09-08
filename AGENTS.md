@@ -538,7 +538,7 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 
 ## 11. Crewmate briefs
 
-`bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
+`bin/fm-brief.sh` and its help own scaffold syntax and generated variants; `bin/fm-status-lib.sh` owns the shared generated status-protocol wording; `bin/fm-dod-lib.sh` owns delivery-mode definitions of done; and the relevant script headers own exact safety mechanics.
 Use its scaffold as the contract, then fill `## Captain's intent` (`{TASK}`) with the captain's own ask plus the context needed to read it, including the substance of any report, decision, or PR the ask refers to, and fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with Firstmate's build instructions.
 `bin/fm-dod-lib.sh` owns what a no-mistakes worker may pass as `--intent` and its rule that the string must be self-sufficient.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.

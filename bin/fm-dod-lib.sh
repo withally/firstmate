@@ -219,8 +219,8 @@ EOF
 # Definition of done
 Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+After committing the implementation, append \`working: implementation committed and validation started\` only if that phase change has not already been reported, then run /no-mistakes to validate and ship a PR.
+A local commit, local validation pass, or pipeline start is never a \`done:\` event.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.

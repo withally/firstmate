@@ -1866,6 +1866,92 @@ EOF
   pass "secondmate teardown refuses to hide failed leased-home return"
 }
 
+test_secondmate_receipt_backed_missing_homes_use_recorded_project() {
+  local fmroot home subhome missing fakebin log lease err rc
+  fmroot="$TMP_ROOT/receipt-missing-fmroot"
+  make_firstmate_git_root "$fmroot"
+
+  home="$TMP_ROOT/receipt-missing-direct-home"
+  missing="$TMP_ROOT/receipt-missing-direct-subhome"
+  mkdir -p "$home/state" "$home/data"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$missing
+project=$fmroot
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$missing
+projects=alpha
+EOF
+  printf '%s\n' '- domain - design domain (home: '"$missing"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  fm_write_meta "$home/state/domain.treehouse-lease" \
+    schema=fm-secondmate-treehouse-lease.v1 \
+    project="$fmroot" \
+    worktree="$missing" \
+    treehouse_lease_id=fixture-lease-domain \
+    treehouse_lease_holder=domain
+  fakebin=$(make_fake_tmux "$TMP_ROOT/receipt-missing-direct-fake")
+  log="$TMP_ROOT/receipt-missing-direct-fake/tmux.log"
+  lease="$TMP_ROOT/receipt-missing-direct-fake/lease"
+  err="$TMP_ROOT/receipt-missing-direct.err"
+  printf 'domain\n' > "$lease"
+  set +e
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/receipt-missing-direct-fake/pane.txt" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$missing" \
+    FM_FAKE_TREEHOUSE_RETURN_FAIL=1 "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "missing receipt-backed home succeeded despite provider return failure"
+  [ -e "$home/state/domain.meta" ] || fail "failed receipt-backed return removed primary metadata"
+  [ -e "$home/state/domain.treehouse-lease" ] || fail "failed receipt-backed return removed durable receipt"
+  [ -e "$lease" ] || fail "failed receipt-backed return removed provider lease evidence"
+
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/receipt-missing-direct-fake/pane.txt" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$missing" \
+    "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err" \
+    || fail "receipt-backed missing direct home did not recover on retry"
+  [ ! -e "$lease" ] || fail "successful receipt-backed retry left the lease held"
+  [ ! -e "$home/state/domain.treehouse-lease" ] || fail "successful receipt-backed retry left its receipt"
+
+  home="$TMP_ROOT/receipt-missing-nested-home"
+  subhome="$TMP_ROOT/receipt-missing-nested-subhome"
+  missing="$TMP_ROOT/receipt-missing-nested-child"
+  mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/data"
+  mark_firstmate_home "$subhome"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  printf '%s\n' '- nested - nested domain (home: '"$missing"'; scope: nested domain; projects: alpha; added 2026-06-22)' > "$subhome/data/secondmates.md"
+  fm_write_secondmate_meta "$home/state/domain.meta" "$subhome"
+  fm_write_secondmate_meta "$subhome/state/nested.meta" "$missing"
+  sed "s|^project=.*|project=$fmroot|" "$home/state/domain.meta" > "$home/state/domain.meta.next"
+  mv "$home/state/domain.meta.next" "$home/state/domain.meta"
+  sed "s|^project=.*|project=$fmroot|" "$subhome/state/nested.meta" > "$subhome/state/nested.meta.next"
+  mv "$subhome/state/nested.meta.next" "$subhome/state/nested.meta"
+  fm_write_meta "$subhome/state/nested.treehouse-lease" \
+    schema=fm-secondmate-treehouse-lease.v1 \
+    project="$fmroot" \
+    worktree="$missing" \
+    treehouse_lease_id=fixture-lease-nested \
+    treehouse_lease_holder=nested
+  fakebin=$(make_fake_tmux "$TMP_ROOT/receipt-missing-nested-fake")
+  log="$TMP_ROOT/receipt-missing-nested-fake/tmux.log"
+  lease="$TMP_ROOT/receipt-missing-nested-fake/lease"
+  printf 'nested\n' > "$lease"
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/receipt-missing-nested-fake/pane.txt" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$missing" \
+    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err" \
+    || fail "receipt-backed missing nested home did not recover: $(cat "$err")"
+  [ ! -e "$lease" ] || fail "nested receipt-backed retry left the lease held"
+  [ ! -e "$subhome/state/nested.treehouse-lease" ] || fail "nested retry left its durable receipt"
+  [ ! -e "$subhome/state/nested.meta" ] || fail "nested retry left child metadata"
+  pass "receipt-backed missing homes return through their recorded pool project"
+}
+
 test_legacy_secondmate_teardown_refuses_mismatched_holder() {
   local home subhome subhome_abs fmroot fakebin log err lease
   home="$TMP_ROOT/legacy-holder-mismatch-home"
@@ -2773,6 +2859,52 @@ EOF
   pass "force teardown refuses unregistered child worktree paths"
 }
 
+test_secondmate_force_teardown_retains_child_with_empty_lease_path() {
+  local home subhome childproj fakebin err log
+  home="$TMP_ROOT/empty-lease-path-home"
+  subhome="$TMP_ROOT/empty-lease-path-subhome"
+  childproj="$subhome/projects/alpha"
+  err="$TMP_ROOT/empty-lease-path.err"
+  mkdir -p "$home/state" "$home/data" "$subhome/state" "$childproj"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  cat > "$subhome/state/child.meta" <<EOF
+window=firstmate:fm-child
+worktree=
+project=$childproj
+harness=echo
+kind=ship
+mode=no-mistakes
+yolo=off
+treehouse_lease_id=fixture-lease-child
+treehouse_lease_holder=child
+EOF
+  fakebin=$(make_fake_tmux "$TMP_ROOT/empty-lease-path-fake")
+  log="$TMP_ROOT/empty-lease-path-fake/tmux.log"
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+      FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/empty-lease-path-fake/pane.txt" \
+      "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err"; then
+    fail "force teardown accepted a child lease without a worktree path"
+  fi
+  [ -e "$subhome/state/child.meta" ] || fail "empty-path child refusal removed child metadata"
+  [ -e "$home/state/domain.meta" ] || fail "empty-path child refusal removed parent metadata"
+  grep -F 'treehouse' "$log" >/dev/null && fail "empty-path child refusal invoked provider cleanup"
+  grep -F 'missing, empty, or ambiguous worktree identity' "$err" >/dev/null \
+    || fail "empty-path child refusal was not explained: $(cat "$err")"
+  pass "force teardown retains child lease evidence when its path is empty"
+}
+
 test_secondmate_idle_pane_is_not_stale() {
   local home fakebin out pid window
   home="$TMP_ROOT/watch-home"
@@ -3002,6 +3134,7 @@ test_secondmate_teardown_preserves_process_events_on_later_refusal
 test_secondmate_force_teardown_sweeps_nested_homes
 test_secondmate_force_teardown_preserves_nested_restore_status
 test_secondmate_teardown_refuses_failed_leased_home_return
+test_secondmate_receipt_backed_missing_homes_use_recorded_project
 test_legacy_secondmate_teardown_refuses_mismatched_holder
 test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return
 test_secondmate_force_teardown_discards_child_work
@@ -3020,6 +3153,7 @@ test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned
 test_secondmate_force_teardown_refuses_child_active_home_descendant
 test_secondmate_force_teardown_refuses_child_repo_descendant
 test_secondmate_force_teardown_refuses_unregistered_child_worktree
+test_secondmate_force_teardown_retains_child_with_empty_lease_path
 test_secondmate_teardown_path_boundary_matrix
 test_secondmate_idle_pane_is_not_stale
 test_secondmate_charter_brief_is_idle_by_default

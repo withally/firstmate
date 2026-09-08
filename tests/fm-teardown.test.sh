@@ -3019,6 +3019,85 @@ EOF
   pass "orphan recovery preserves dirty work and refuses a mismatched endpoint"
 }
 
+test_treehouse_identity_requires_authoritative_tuple_and_listing() {
+  local variant case_dir out rc
+  for variant in split malformed; do
+    case_dir=$(make_case "lease-identity-$variant")
+    write_meta "$case_dir" no-mistakes ship
+    cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  case "$variant" in
+    split)
+      printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"successor-lease","lease_holder":"successor-holder"},{"path":"$case_dir/other-wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+      ;;
+    malformed)
+      printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/other-wt","status":"leased"}]'
+      ;;
+  esac
+  exit 0
+fi
+if [ "\${1:-}" = return ]; then
+  printf '%s\n' "\$*" > "$case_dir/return.log"
+  exit 0
+fi
+exit 0
+SH
+    chmod +x "$case_dir/fakebin/treehouse"
+    rc=0
+    out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "$variant lease evidence was accepted"
+    [ -f "$case_dir/state/task-x1.meta" ] || fail "$variant lease refusal removed task metadata"
+    [ ! -e "$case_dir/return.log" ] || fail "$variant lease refusal attempted a provider return"
+  done
+  pass "treehouse lease cleanup rejects split identities and malformed listings"
+}
+
+test_backlog_identity_pair_requires_project() {
+  local case_dir other out rc
+  case_dir=$(make_case identity-project-pair)
+  write_meta "$case_dir" no-mistakes ship
+  other="$case_dir/other-project"
+  mkdir -p "$other"
+  cp "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  sed "s|^project=.*|project=$other|" "$case_dir/state/task-x1.meta.recovery" > "$case_dir/state/task-x1.meta.recovery.next"
+  mv "$case_dir/state/task-x1.meta.recovery.next" "$case_dir/state/task-x1.meta.recovery"
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "cross-project task evidence was accepted as one identity"
+  assert_contains "$out" "conflicting task identity" "cross-project refusal was not reported"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "cross-project refusal removed primary metadata"
+  [ -f "$case_dir/state/task-x1.meta.recovery" ] || fail "cross-project refusal removed recovery metadata"
+  pass "backlog publication pairs include the recorded project identity"
+}
+
+test_retirement_replay_rejects_malformed_pool_listing() {
+  local case_dir out rc
+  case_dir=$(make_case retirement-malformed-listing)
+  write_meta "$case_dir" no-mistakes ship
+  cp "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.retiring"
+  rm "$case_dir/state/task-x1.meta"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/other-wt","status":"leased"}]'
+  exit 0
+fi
+if [ "\${1:-}" = return ]; then
+  printf '%s\n' "\$*" > "$case_dir/return.log"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "retirement replay accepted a malformed pool listing"
+  [ -f "$case_dir/state/task-x1.retiring" ] || fail "malformed replay removed its transaction record"
+  [ ! -e "$case_dir/return.log" ] || fail "malformed replay attempted a provider return"
+  pass "retirement replay retains evidence until pool release is authoritative"
+}
+
 test_legacy_orphan_preserves_captain_hold() {
   local case_dir out rc
   case_dir=$(make_case orphan-legacy-held)
@@ -3131,6 +3210,9 @@ test_orphan_recovery_and_repeated_teardown
 test_orphan_recovery_allows_missing_endpoint
 test_orphan_recovery_preserves_ignored_work
 test_orphan_recovery_preserves_dirty_work_and_mismatched_endpoint
+test_treehouse_identity_requires_authoritative_tuple_and_listing
+test_backlog_identity_pair_requires_project
+test_retirement_replay_rejects_malformed_pool_listing
 
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself

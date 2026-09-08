@@ -1306,7 +1306,8 @@ signal_files_actionable() {  # <status-file> ...
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
     FM_SIGNAL_SURFACE_ENDPOINTS="${FM_SIGNAL_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
-    if [ "$rc" -eq 1 ] && status_span_is_working_only "$f" \
+    if [ "$rc" -eq 1 ] && ! status_file_is_secondmate "$f" \
+      && status_span_is_working_only "$f" \
       "$(fm_wake_signal_seen_size "$STATE" "$f")" "$endpoint" "$ident"; then
       FM_SIGNAL_WORKING_FILES="$FM_SIGNAL_WORKING_FILES $f"
     fi

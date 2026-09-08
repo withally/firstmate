@@ -1474,6 +1474,31 @@ test_secondmate_nonterminal_status_absorbed() {
   pass "routine secondmate progress is absorbed in attended supervision"
 }
 
+test_secondmate_status_with_turn_end_surfaces_routed_reply() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case secondmate-working-turn-end); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/mate.status"
+  printf 'kind=secondmate\n' > "$state/mate.meta"
+  printf 'working: routed reply must reach the parent drain\n' > "$status_file"
+  : > "$state/mate.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a secondmate status plus turn-end was absorbed"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the secondmate status plus turn-end did not surface"
+  [ "$(status_presentation_cursor_offset "$status_file")" = 0 ] \
+    || fail "the surfaced secondmate reply was acknowledged before the drain"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain after the secondmate status plus turn-end failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
+    || fail "the secondmate status plus turn-end did not create a queue row"
+  grep -F 'working: routed reply must reach the parent drain' "$drain_out" >/dev/null \
+    || fail "the parent drain omitted the routed secondmate reply"
+  unset FM_FAKE_CREW_STATE
+  pass "a secondmate working span with a turn-end remains parent-directed"
+}
+
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
   local dir state fakebin out drain_out status_file pid count
   dir=$(make_case resolved-open-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -4172,6 +4197,7 @@ test_turn_ended_invalid_churn_deadline_surfaced
 test_turn_ended_surfaced_batch_opens_no_partial_deadline
 test_working_note_not_working_surfaced
 test_secondmate_nonterminal_status_absorbed
+test_secondmate_status_with_turn_end_surfaces_routed_reply
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_mixed_pending_classifies_each_status_file
 test_actionable_signal_surfaced

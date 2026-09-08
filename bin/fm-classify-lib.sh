@@ -1870,6 +1870,17 @@ EOF
   return "$rc"
 }
 
+status_file_is_secondmate() {  # <status-file>
+  local f=$1 base dir task kind
+  base=${f##*/}
+  case "$base" in *.status) ;; *) return 1 ;; esac
+  dir=${f%/*}
+  [ "$dir" != "$f" ] || dir=.
+  task=${base%.status}
+  kind=$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ "$kind" = secondmate ]
+}
+
 # Positive progress proof for one captured span, independent of harness liveness.
 # Empty, mixed, unreadable, or replaced spans are not working-only evidence.
 status_span_is_working_only() {  # <file> <start> <endpoint> <identity>
@@ -1894,6 +1905,7 @@ status_span_is_working_only() {  # <file> <start> <endpoint> <identity>
 # or decision. Serialize with the drain and retain every other task's offsets.
 status_acknowledge_working_span() {  # <file> <endpoint> <identity>
   local f=$1 endpoint=$2 ident=$3 state lock offset snapshot row task size row_ident acknowledged='' rc=0
+  status_file_is_secondmate "$f" && return 0
   state=${f%/*}; lock="$state/.status-presentation-lock"
   fm_lock_acquire_wait_bounded "$lock" 2 || return 1
   offset=$(status_presentation_cursor_offset "$f") || rc=1
@@ -2098,7 +2110,7 @@ signal_crew_provably_working() {  # <file> ...
     [ -n "$task" ] || continue
     case "$base" in
       *.status)
-        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+        if status_file_is_secondmate "$f"; then
           return 1
         fi
         ;;

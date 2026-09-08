@@ -1507,17 +1507,29 @@ test_secondmate_status_with_turn_end_surfaces_routed_reply() {
 }
 
 test_working_span_without_valid_seen_marker_surfaces_turn_end() {
-  local marker_case dir state fakebin out status_file pid marker
-  for marker_case in missing malformed invalidated; do
+  local marker_case dir state fakebin out status_file pid marker raw reported ident
+  for marker_case in missing malformed invalidated misaligned; do
     dir=$(make_case "working-span-seen-$marker_case"); state="$dir/state"; fakebin="$dir/fakebin"
     out="$dir/watch.out"; status_file="$state/task.status"; marker="$state/.seen-task_status"
     printf 'kind=ship\n' > "$state/task.meta"
-    printf 'working: old progress already in the log\n' > "$status_file"
+    if [ "$marker_case" = misaligned ]; then
+      printf 'xworking: old progress already in the log\n' > "$status_file"
+    else
+      printf 'working: old progress already in the log\n' > "$status_file"
+    fi
     case "$marker_case" in
       missing) ;;
       malformed) printf '40' > "$marker" ;;
       invalidated) printf '0@old-identity' > "$marker" ;;
+      misaligned)
+        prime_status_seen "$state" "$status_file" || fail "could not seed the misaligned marker"
+        raw=$(cat "$marker")
+        reported=${raw#*$'\t'}; reported=${reported%%$'\t'*}
+        ident=$(_fm_open_decisions_file_ident "$status_file")
+        printf 'v2\t%s\t1@%s' "$reported" "$ident" > "$marker"
+        ;;
     esac
+    printf 'working: new progress after the marker\n' >> "$status_file"
     : > "$state/task.turn-ended"
     export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
     watch_bg "$state" "$fakebin" "$out"
@@ -1530,6 +1542,68 @@ test_working_span_without_valid_seen_marker_surfaces_turn_end() {
     pass "$marker_case seen marker preserves turn-end evidence"
   done
   unset FM_FAKE_CREW_STATE
+}
+
+test_working_ack_preserves_unreadable_sibling_cursor() {
+  local dir state target sibling target_ident sibling_ident snapshot endpoint
+  dir=$(make_case working-sibling-cursor); state="$dir/state"
+  target="$state/task.status"; sibling="$state/sibling.status"
+  printf 'kind=ship\n' > "$state/task.meta"
+  printf 'kind=ship\n' > "$state/sibling.meta"
+  printf 'note: baseline\n' > "$target"
+  printf 'note: sibling baseline\n' > "$sibling"
+  target_ident=$(_fm_open_decisions_file_ident "$target")
+  sibling_ident=$(_fm_open_decisions_file_ident "$sibling")
+  snapshot=$(printf 'task\t%s\t%s\nsibling\t%s\t%s\n' \
+    "$(size_of "$target")" "$target_ident" "$(size_of "$sibling")" "$sibling_ident")
+  status_commit_presentation_snapshot "$state" "$snapshot" \
+    || fail "could not seed sibling presentation cursor"
+  printf 'working: resumed compilation\n' >> "$target"
+  endpoint=$(size_of "$target")
+  mv "$sibling" "$dir/sibling.status.saved"
+  ln -s sibling.status.saved "$sibling"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    . "$2"
+    status_acknowledge_working_span "$3" "$4" "$5"
+  ' _ "$ROOT/bin/fm-classify-lib.sh" "$ROOT/bin/fm-wake-lib.sh" \
+    "$target" "$endpoint" "$target_ident" \
+    || fail "working acknowledgement failed with an unreadable sibling"
+  grep -F $'sibling\t' "$state/.status-presentation-cursor" >/dev/null \
+    || fail "working acknowledgement dropped the unreadable sibling cursor"
+  pass "working acknowledgement preserves unreadable sibling cursors"
+}
+
+test_afk_signal_skips_working_only_recheck() {
+  local dir state fakebin out status_file pid marker raw reported ident
+  dir=$(make_case afk-working-recheck); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
+  printf 'working: baseline\n' > "$status_file"
+  prime_status_seen "$state" "$status_file" || fail "could not seed AFK signal baseline"
+  marker="$state/.seen-task_status"
+  raw=$(cat "$marker")
+  reported=${raw#*$'\t'}; reported=${reported%%$'\t'*}
+  ident=$(_fm_open_decisions_file_ident "$status_file")
+  printf 'v2\t%s\t0@%s' "$reported" "$ident" > "$marker"
+  printf 'working: new progress\n' >> "$status_file"
+  : > "$state/.afk"
+  printf '0' > "$state/reader.count"
+  cat > "$fakebin/status-span-reader" <<SH
+#!/usr/bin/env bash
+count=\$(cat "$state/reader.count")
+printf '%s' "\$((count + 1))" > "$state/reader.count"
+dd if="\$1" bs=1 skip="\$2" count="\$3" 2>/dev/null
+SH
+  chmod +x "$fakebin/status-span-reader"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+  FM_STATUS_SPAN_READER="$fakebin/status-span-reader" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "AFK signal did not surface"
+  [ "$(cat "$state/reader.count")" = 1 ] \
+    || fail "AFK signal performed an unnecessary working-only reread"
+  unset FM_FAKE_CREW_STATE
+  pass "AFK signals skip the attended working-only reread"
 }
 
 test_working_span_with_unknown_metadata_surfaces_turn_end() {
@@ -4258,6 +4332,8 @@ test_working_note_not_working_surfaced
 test_secondmate_nonterminal_status_absorbed
 test_secondmate_status_with_turn_end_surfaces_routed_reply
 test_working_span_without_valid_seen_marker_surfaces_turn_end
+test_working_ack_preserves_unreadable_sibling_cursor
+test_afk_signal_skips_working_only_recheck
 test_working_span_with_unknown_metadata_surfaces_turn_end
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_mixed_pending_classifies_each_status_file

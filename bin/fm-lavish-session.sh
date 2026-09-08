@@ -215,12 +215,12 @@ mark_ended() {
   local task=$1 key=$2 ledger tmp lock
   ledger=$(ledger_path "$task")
   lock=$(ledger_lock_path "$task")
-  [ -f "$ledger" ] && [ ! -L "$ledger" ] || die "cannot find the Lavish ledger for $task"
-  fm_lock_acquire_wait "$lock" || die "cannot lock the Lavish ledger for $task"
+  [ -f "$ledger" ] && [ ! -L "$ledger" ] || return 1
+  fm_lock_acquire_wait "$lock" || return 1
   tmp=$(umask 077; mktemp "$STATE/.${task}.lavish-sessions.XXXXXX") \
-    || { fm_lock_release "$lock"; die "cannot stage the Lavish ledger"; }
+    || { fm_lock_release "$lock"; return 1; }
   KEY="$key" LEDGER="$ledger" node <<'NODE' > "$tmp" \
-    || { rm -f "$tmp"; fm_lock_release "$lock"; die "cannot record the ended Lavish session"; }
+    || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
 const fs = require("node:fs");
 const rows = fs.readFileSync(process.env.LEDGER, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
 let found = false;
@@ -233,9 +233,43 @@ NODE
   if ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$ledger"; then
     rm -f "$tmp"
     fm_lock_release "$lock"
-    die "cannot publish the ended Lavish ledger"
+    return 1
   fi
-  fm_lock_release "$lock" || die "cannot release the Lavish ledger lock"
+  fm_lock_release "$lock" || return 1
+}
+
+ledger_key_is_ended() {
+  local task=$1 key=$2 ledger lock status rc
+  ledger=$(ledger_path "$task")
+  ledger_is_safe "$ledger" || return 1
+  [ -f "$ledger" ] || return 1
+  lock=$(ledger_lock_path "$task")
+  fm_lock_acquire_wait "$lock" || return 1
+  status=$(KEY="$key" LEDGER="$ledger" node <<'NODE'
+const fs = require("node:fs");
+const rows = fs.readFileSync(process.env.LEDGER, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+const row = rows.find(item => item.key === process.env.KEY);
+process.stdout.write(row ? (row.ended_at ? "ended" : "active") : "missing");
+NODE
+  )
+  rc=$?
+  fm_lock_release "$lock" || return 1
+  [ "$rc" -eq 0 ] && [ "$status" = ended ]
+}
+
+canonical_existing_prefix() {
+  local path=$1 suffix='' component parent real
+  while [ ! -e "$path" ] && [ ! -L "$path" ]; do
+    component=${path##*/}
+    [ -n "$component" ] || return 1
+    suffix="/$component$suffix"
+    parent=${path%/*}
+    [ "$parent" != "$path" ] || return 1
+    path=$parent
+  done
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  real=$(canonical_file "$path") || return 1
+  printf '%s%s\n' "$real" "$suffix"
 }
 
 end_recorded_file() {
@@ -251,7 +285,12 @@ process.stdout.write(row?.status || "missing");
 NODE
   ) || die "cannot verify Lavish state after ending $real"
   [ "$status" = ended ] || die "Lavish key $key did not transition to ended (status=$status)"
-  mark_ended "$task" "$key"
+  if ! mark_ended "$task" "$key"; then
+    finalize_key_in_ledger "$task" "$key" \
+      || die "Lavish session ended but ledger finalization is pending: $key"
+  fi
+  ledger_key_is_ended "$task" "$key" \
+    || die "Lavish session ended but ledger finalization could not be verified: $key"
   printf 'ended: %s %s\n' "$key" "$real"
 }
 
@@ -296,7 +335,7 @@ touch_ledger_poll() {
   local task=$1 real=$2 ledger lock tmp rc
   ledger=$(ledger_path "$task")
   ledger_is_safe "$ledger" || return 1
-  [ -f "$ledger" ] || return 0
+  [ -f "$ledger" ] || return 2
   lock=$(ledger_lock_path "$task")
   fm_lock_acquire_wait "$lock" || return $?
   tmp=$(umask 077; mktemp "$STATE/.${task}.lavish-sessions.XXXXXX") || {
@@ -306,10 +345,17 @@ touch_ledger_poll() {
   ARTIFACT_REAL="$real" LEDGER="$ledger" node <<'NODE' > "$tmp"
 const fs = require("node:fs");
 const rows = fs.readFileSync(process.env.LEDGER, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
-for (const row of rows) if (!row.ended_at && row.artifact === process.env.ARTIFACT_REAL) row.last_polled_at = new Date().toISOString();
+const matches = rows.filter(row => !row.ended_at && row.artifact === process.env.ARTIFACT_REAL);
+if (matches.length !== 1) process.exit(2);
+matches[0].last_polled_at = new Date().toISOString();
 for (const row of rows) process.stdout.write(`${JSON.stringify(row)}\n`);
 NODE
   rc=$?
+  if [ "$rc" -eq 2 ]; then
+    rm -f "$tmp"
+    fm_lock_release "$lock"
+    return 2
+  fi
   if [ "$rc" -ne 0 ] || ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$ledger"; then
     rm -f "$tmp"
     fm_lock_release "$lock"
@@ -320,12 +366,17 @@ NODE
 
 cmd_poll_activity() {
   local artifact=${1-} task=${2-} real ledger name
+  local matched=0 rc
   [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
-  [ -f "$artifact" ] && [ ! -L "$artifact" ] || return 0
-  real=$(canonical_file "$artifact") || return 0
+  [ -f "$artifact" ] && [ ! -L "$artifact" ] || die "cannot record activity for missing Lavish artifact: $artifact"
+  real=$(canonical_file "$artifact")
   if [ -n "$task" ]; then
     validate_task_id "$task"
-    touch_ledger_poll "$task" "$real" || die "cannot refresh the Lavish poll activity ledger"
+    touch_ledger_poll "$task" "$real" || {
+      rc=$?
+      [ "$rc" -eq 2 ] && die "Lavish poll has no active ownership ledger row for $real"
+      die "cannot refresh the Lavish poll activity ledger"
+    }
     return 0
   fi
   for ledger in "$STATE"/*.lavish-sessions; do
@@ -333,8 +384,14 @@ cmd_poll_activity() {
     ledger_is_safe "$ledger" || die "Lavish ledger is not a safe regular file: $ledger"
     name=${ledger##*/}; name=${name%.lavish-sessions}
     validate_task_id "$name"
-    touch_ledger_poll "$name" "$real" || die "cannot refresh the Lavish poll activity ledger"
+    touch_ledger_poll "$name" "$real" || {
+      rc=$?
+      [ "$rc" -eq 2 ] && continue
+      die "cannot refresh the Lavish poll activity ledger"
+    }
+    matched=$((matched + 1))
   done
+  [ "$matched" -gt 0 ] || die "Lavish poll has no active ownership ledger row for $real"
 }
 
 guard_durable_end() {
@@ -527,19 +584,46 @@ cmd_finalize_key() {
 
 cmd_safe_park() {
   local task=${1-} source=${2-} durable=${3-} source_real durable_real old_id new_id origin='' url
+  local home_real data_root task_root task_root_real durable_parent durable_parent_real durable_name existing_real
   [ "$#" -eq 3 ] || usage
   validate_task_id "$task"
   source_real=$(canonical_file "$source")
   [ -f "$source_real" ] && [ ! -L "$source_real" ] || die "source artifact is not a regular file: $source"
+  case "$durable" in
+    *"/../"*|*"/.."|*"/./"*|*"/." ) die "durable artifact path contains traversal components" ;;
+  esac
   case "$durable" in "$FM_HOME/data/$task"/*) ;; *) die "durable artifact must be under $FM_HOME/data/$task" ;; esac
-  mkdir -p "$(dirname "$durable")" || die "cannot create the durable artifact directory"
-  if [ -e "$durable" ]; then
-    [ -f "$durable" ] && [ ! -L "$durable" ] || die "durable artifact target is unsafe: $durable"
-    cmp -s "$source_real" "$durable" || die "durable artifact already exists with different contents: $durable"
+  home_real=$(canonical_file "$FM_HOME")
+  data_root="$home_real/data"
+  if [ -e "$data_root" ] || [ -L "$data_root" ]; then
+    [ -d "$data_root" ] && [ ! -L "$data_root" ] || die "durable data directory is unsafe: $data_root"
   else
-    cp -p "$source_real" "$durable" || die "cannot copy the artifact to durable storage"
+    mkdir -p "$data_root" || die "cannot create the durable data directory"
   fi
-  durable_real=$(canonical_file "$durable")
+  task_root="$data_root/$task"
+  mkdir -p "$task_root" || die "cannot create the durable task directory"
+  [ -d "$task_root" ] && [ ! -L "$task_root" ] || die "durable task directory is unsafe: $task_root"
+  task_root_real=$(canonical_file "$task_root")
+  durable_parent=$(dirname "$durable")
+  durable_parent_real=$(canonical_existing_prefix "$durable_parent") \
+    || die "cannot resolve the durable artifact directory: $durable_parent"
+  mkdir -p "$durable_parent" || die "cannot create the durable artifact directory"
+  durable_parent_real=$(canonical_file "$durable_parent")
+  case "$durable_parent_real" in
+    "$task_root_real"|"$task_root_real"/*) ;;
+    *) die "durable artifact resolves outside its task directory: $durable" ;;
+  esac
+  durable_name=$(basename "$durable")
+  case "$durable_name" in ''|.|..) die "durable artifact target is not a file path: $durable" ;; esac
+  durable_real="$durable_parent_real/$durable_name"
+  if [ -e "$durable" ] || [ -L "$durable" ]; then
+    [ -f "$durable" ] && [ ! -L "$durable" ] || die "durable artifact target is unsafe: $durable"
+    existing_real=$(canonical_file "$durable")
+    [ "$existing_real" = "$durable_real" ] || die "durable artifact resolves outside its task directory: $durable"
+    cmp -s "$source_real" "$durable_real" || die "durable artifact already exists with different contents: $durable"
+  else
+    cp -p "$source_real" "$durable_real" || die "cannot copy the artifact to durable storage"
+  fi
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   lavish_cli "$durable_real" >/dev/null || die "cannot serve the durable Lavish artifact"
   cmd_register "$task" "$durable_real" durable-review >/dev/null || exit 1

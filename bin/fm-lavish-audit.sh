@@ -53,6 +53,13 @@ usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//';
 
 lavish_cli() { LAVISH_AXI_STATE_DIR="$LAVISH_STATE_DIR" command lavish-axi "$@"; }
 
+lavish_axi_port() {
+  local port=${LAVISH_AXI_PORT:-4387}
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+  printf '%s\n' "$port"
+}
+
 make_homes_file() {
   local out=$1 registry="$FM_HOME/data/secondmates.md" line home
   : > "$out" || die "cannot stage home inventory"
@@ -81,9 +88,11 @@ make_homes_file() {
 }
 
 run_audit_node() {
-  local mode=$1 homes_file=$2 freeze=${3-} guard_task=${4-} guard_file=${5-} guard_key=${6-} guard_home=${7-} guard_allow_source=${8-}
+  local mode=$1 homes_file=$2 freeze=${3-} guard_task=${4-} guard_file=${5-} guard_key=${6-} guard_home=${7-} guard_allow_source=${8-} port
+  port=$(lavish_axi_port) || return 1
   AUDIT_MODE="$mode" HOMES_FILE="$homes_file" FREEZE_FILE="$freeze" \
     LAVISH_STATE_FILE="$LAVISH_STATE_FILE" ATTACHED_FILE="${FM_LAVISH_ATTACHED_KEYS_FILE:-}" \
+    ACTIVE_PORT="$port" \
     EXPIRY_HOURS="${FM_LAVISH_IDLE_EXPIRY_HOURS:-48}" PRESERVE_PATHS_FILE="${FM_LAVISH_PRESERVE_PATHS_FILE:-}" \
     GUARD_TASK="$guard_task" GUARD_FILE="$guard_file" GUARD_KEY="$guard_key" GUARD_HOME="$guard_home" GUARD_ALLOW_SOURCE="$guard_allow_source" \
     node <<'NODE'
@@ -333,7 +342,7 @@ let browserConnections = 0;
 try {
   let lsof;
   try {
-    lsof = cp.execFileSync("lsof", ["-nP", "-iTCP:4387", "-sTCP:ESTABLISHED"], {encoding:"utf8"});
+    lsof = cp.execFileSync("lsof", ["-nP", `-iTCP:${process.env.ACTIVE_PORT}`, "-sTCP:ESTABLISHED"], {encoding:"utf8"});
   } catch (error) {
     if (error.status !== 1 || error.stdout === undefined) throw error;
     lsof = String(error.stdout);
@@ -549,6 +558,7 @@ cmd_guard() {
   [ -f "$real" ] && [ ! -L "$real" ] || die "artifact is not a safe regular file: $artifact"
   guard_home=$(canonical_file "$FM_HOME")
   homes=$(mktemp "${TMPDIR:-/tmp}/fm-lavish-homes.XXXXXX") || die "cannot stage home inventory"
+  # shellcheck disable=SC2064
   trap "rm -f -- '$homes'" EXIT
   make_homes_file "$homes"
   run_audit_node guard "$homes" '' "$task" "$real" "$key" "$guard_home" "$allow_source" >/dev/null \

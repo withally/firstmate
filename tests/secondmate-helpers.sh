@@ -61,9 +61,11 @@ case "${1:-}" in
     # and record the lease holder so tests can assert it is set and later cleared.
     shift
     holder=
+    json=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --lease) ;;
+        --json) json=1 ;;
         --lease-holder) shift; holder=${1:-} ;;
         --lease-holder=*) holder=${1#--lease-holder=} ;;
       esac
@@ -73,8 +75,22 @@ case "${1:-}" in
       mkdir -p "$FM_FAKE_TREEHOUSE_HOME"
       [ -n "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] && printf '%s\n' "$holder" > "$FM_FAKE_TREEHOUSE_LEASE_FILE"
       printf 'leased worktree for %s\n' "${holder:-unknown}" >&2
-      printf '%s\n' "$FM_FAKE_TREEHOUSE_HOME"
+      if [ "$json" -eq 1 ]; then
+        jq -n --arg path "$FM_FAKE_TREEHOUSE_HOME" --arg holder "$holder" \
+          '{path:$path,lease_id:("fixture-lease-" + $holder),lease_holder:$holder,status:"leased"}'
+      else
+        printf '%s\n' "$FM_FAKE_TREEHOUSE_HOME"
+      fi
     fi
+    exit 0
+    ;;
+  status)
+    path=${FM_FAKE_TREEHOUSE_STATUS_PATH:-${FM_FAKE_TREEHOUSE_HOME:-}}
+    holder=
+    [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || holder=$(cat "$FM_FAKE_TREEHOUSE_LEASE_FILE" 2>/dev/null || true)
+    [ -n "$path" ] && [ -n "$holder" ] || { printf '[]\n'; exit 0; }
+    jq -n --arg path "$path" --arg holder "$holder" \
+      '[{path:$path,status:"leased",lease_id:("fixture-lease-" + $holder),lease_holder:$holder}]'
     exit 0
     ;;
   return)

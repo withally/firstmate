@@ -288,6 +288,10 @@ test_home_seed_uses_treehouse_acquired_home() {
   grep -F 'treehouse get --lease --lease-holder dash' "$log" >/dev/null || fail "seed did not durably lease a home under the secondmate id"
   [ -f "$lease" ] || fail "seed did not record a treehouse lease"
   [ "$(cat "$lease")" = dash ] || fail "seed did not set the lease holder to the secondmate id"
+  assert_grep 'treehouse_lease_id=fixture-lease-dash' "$home/state/dash.treehouse-lease" \
+    "seed did not persist the exact treehouse lease id"
+  assert_grep 'treehouse_lease_holder=dash' "$home/state/dash.treehouse-lease" \
+    "seed did not persist the exact treehouse lease holder"
   [ -f "$acquired/.fm-secondmate-home" ] || fail "seed did not mark acquired home"
   [ "$(cat "$acquired/.fm-secondmate-home")" = dash ] || fail "seed wrote wrong acquired-home marker"
   [ -d "$acquired/projects/alpha/.git" ] || fail "seed did not clone project into acquired home"
@@ -316,7 +320,7 @@ test_home_seed_returns_treehouse_acquired_home_on_assignment_failure() {
     fail "seed reused an acquired home marked for another secondmate"
   fi
   grep -F 'already marked for other' "$err" >/dev/null || fail "seed did not explain acquired marked-home rejection"
-  grep -F "treehouse return --force $acquired_abs" "$log" >/dev/null \
+  grep -F "treehouse return --force" "$log" >/dev/null \
     || fail "failed acquired seed did not return the home through treehouse"
   if [ -f "$home/data/secondmates.md" ] && grep -F -- '- dash ' "$home/data/secondmates.md" >/dev/null; then
     fail "failed acquired seed left a registry route"
@@ -350,7 +354,7 @@ test_home_seed_warns_when_acquired_home_return_fails() {
   grep -F "warning: failed to return treehouse-acquired home $acquired_abs during seed rollback" "$err" >/dev/null \
     || fail "seed rollback did not warn when treehouse return failed"
   [ -f "$lease" ] || fail "failed rollback return did not preserve lease evidence"
-  grep -F "treehouse return --force $acquired_abs" "$log" >/dev/null \
+  grep -F "treehouse return --force" "$log" >/dev/null \
     || fail "failed rollback did not attempt to return the acquired home"
   pass "home seed rollback warns when treehouse-acquired return fails"
 }
@@ -1546,10 +1550,10 @@ EOF
   lease="$TMP_ROOT/teardown-fake/lease"
   printf 'domain\n' > "$lease"
   PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/teardown-fake/pane.txt" \
-    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$subhome_abs" \
     "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>/dev/null \
     || fail "teardown failed for empty secondmate home"
-  grep -F "treehouse return --force $subhome_abs" "$log" >/dev/null || fail "teardown did not release the secondmate home lease via treehouse return"
+  grep -F "treehouse return --force" "$log" >/dev/null || fail "teardown did not release the secondmate home lease via treehouse return"
   [ ! -e "$lease" ] || fail "teardown left the secondmate home lease held after retirement"
   [ ! -d "$subhome" ] || fail "teardown did not remove the retired secondmate home"
   [ ! -e "$home/state/domain.meta" ] || fail "teardown did not clear parent meta"
@@ -1791,7 +1795,7 @@ EOF
 }
 
 test_secondmate_teardown_refuses_failed_leased_home_return() {
-  local home subhome subhome_abs fakebin log fmroot err rc sweep_log rearm_log backup
+  local home subhome subhome_abs fakebin log fmroot err rc sweep_log rearm_log backup lease
   home="$TMP_ROOT/teardown-return-fail-home"
   subhome="$TMP_ROOT/teardown-return-fail-subhome"
   fmroot="$TMP_ROOT/teardown-return-fail-fmroot"
@@ -1822,17 +1826,20 @@ EOF
   printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
   fakebin=$(make_fake_tmux "$TMP_ROOT/teardown-return-fail-fake")
   log="$TMP_ROOT/teardown-return-fail-fake/tmux.log"
+  lease="$TMP_ROOT/teardown-return-fail-fake/lease"
+  printf 'domain\n' > "$lease"
 
   set +e
   PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/teardown-return-fail-fake/pane.txt" \
     FM_FAKE_PROCEVENT_SWEEP_LOG="$sweep_log" FM_FAKE_PROCEVENT_REARM_LOG="$rearm_log" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$subhome_abs" \
     FM_FAKE_TREEHOUSE_RETURN_FAIL=1 \
     "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err"
   rc=$?
   set -e
 
   [ "$rc" -ne 0 ] || fail "teardown succeeded despite failed treehouse return"
-  grep -F "treehouse return --force $subhome_abs" "$log" >/dev/null || fail "teardown did not try to return the leased home"
+  grep -F "treehouse return --force" "$log" >/dev/null || fail "teardown did not try to return the leased home"
   grep -F 'treehouse return failed for secondmate home' "$err" >/dev/null || fail "teardown did not report failed leased home return"
   [ -d "$subhome" ] || fail "teardown removed a leased home after return failed"
   [ ! -e "$subhome/.fm-secondmate-parent" ] \
@@ -1845,6 +1852,7 @@ EOF
   set +e
   PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/teardown-return-fail-fake/pane.txt" \
     FM_FAKE_PROCEVENT_SWEEP_LOG="$sweep_log" FM_FAKE_PROCEVENT_REARM_LOG="$rearm_log" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$subhome_abs" \
     FM_FAKE_TREEHOUSE_RETURN_FAIL=1 FM_FAKE_PROCEVENT_REARM_FAIL=1 \
     "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err"
   rc=$?
@@ -1856,6 +1864,48 @@ EOF
     -exec test -e '{}/source.source' \; -print -quit)
   [ -n "$backup" ] && [ -e "$backup/source.source" ] || fail "failed process-event restoration did not retain its registration backup"
   pass "secondmate teardown refuses to hide failed leased-home return"
+}
+
+test_legacy_secondmate_teardown_refuses_mismatched_holder() {
+  local home subhome subhome_abs fmroot fakebin log err lease
+  home="$TMP_ROOT/legacy-holder-mismatch-home"
+  subhome="$TMP_ROOT/legacy-holder-mismatch-subhome"
+  fmroot="$TMP_ROOT/legacy-holder-mismatch-fmroot"
+  err="$TMP_ROOT/legacy-holder-mismatch.err"
+  make_firstmate_git_root "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$subhome" HEAD
+  mkdir -p "$home/state" "$home/data" "$subhome/state"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/legacy-holder-mismatch-fake")
+  log="$TMP_ROOT/legacy-holder-mismatch-fake/tmux.log"
+  lease="$TMP_ROOT/legacy-holder-mismatch-fake/lease"
+  printf 'different-holder\n' > "$lease"
+
+  if PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/legacy-holder-mismatch-fake/pane.txt" \
+    FM_FAKE_TREEHOUSE_LEASE_FILE="$lease" FM_FAKE_TREEHOUSE_STATUS_PATH="$subhome_abs" \
+    "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err"; then
+    fail "legacy secondmate teardown accepted a mismatched lease holder"
+  fi
+  grep -F 'could not prove a unique lease' "$err" >/dev/null || fail "mismatched-holder refusal was not explained"
+  [ -d "$subhome" ] || fail "mismatched-holder refusal removed the home"
+  [ -e "$home/state/domain.meta" ] || fail "mismatched-holder refusal removed metadata"
+  [ -e "$lease" ] || fail "mismatched-holder refusal removed the foreign lease evidence"
+  grep -F 'treehouse return --force' "$log" >/dev/null && fail "mismatched-holder refusal attempted a lease return"
+  pass "legacy secondmate teardown refuses a mismatched lease holder"
 }
 
 test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return() {
@@ -2952,6 +3002,7 @@ test_secondmate_teardown_preserves_process_events_on_later_refusal
 test_secondmate_force_teardown_sweeps_nested_homes
 test_secondmate_force_teardown_preserves_nested_restore_status
 test_secondmate_teardown_refuses_failed_leased_home_return
+test_legacy_secondmate_teardown_refuses_mismatched_holder
 test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return
 test_secondmate_force_teardown_discards_child_work
 test_secondmate_force_teardown_preserves_child_on_unproven_lock

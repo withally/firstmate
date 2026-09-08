@@ -2862,7 +2862,7 @@ EOF
 
 test_child_recovery_pool_matrix() {
   local scenario fixture home subhome project worktree fakebin rc
-for scenario in leased available alias malformed unavailable partial conflicting exact unpooled; do
+for scenario in leased available alias malformed unknown relative unavailable partial conflicting exact unpooled; do
   fixture="$TMP_ROOT/$scenario"
   home="$fixture/home"
   subhome="$fixture/subhome"
@@ -2901,6 +2901,8 @@ SH
       jq -n --arg path "$fixture/alias" '[{path:$path,status:"available"}]' > "$fixture/listing"
       ;;
     malformed) printf '[{"status":"leased"}]\n' > "$fixture/listing" ;;
+    unknown) jq -n --arg path "$worktree" '[{path:$path,status:"corrupt",lease_id:"fixture-lease-child",lease_holder:"child"}]' > "$fixture/listing" ;;
+    relative) jq -n '[{path:"relative/child",status:"leased",lease_id:"fixture-lease-child",lease_holder:"child"}]' > "$fixture/listing" ;;
     *) printf '[]\n' > "$fixture/listing" ;;
   esac
   printf 'child\n' > "$fixture/fake/lease"

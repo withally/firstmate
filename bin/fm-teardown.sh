@@ -1012,6 +1012,29 @@ BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
+CLEANUP_RECOVERY=$(fm_meta_get "$META" cleanup_recovery)
+ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
+if [ "$BACKEND" = orca ] && [ -z "$WT" ]; then
+  [ "$CLEANUP_RECOVERY" = orca ] || {
+    echo "REFUSED: Orca task $ID has no recorded worktree path outside cleanup recovery; preserving metadata." >&2
+    exit 1
+  }
+  resolved_orca_worktree=$(fm_backend_worktree_path orca "$ORCA_WORKTREE_ID") || {
+    echo "REFUSED: cannot resolve Orca worktree id $ORCA_WORKTREE_ID to a path; preserving metadata." >&2
+    exit 1
+  }
+  case "$resolved_orca_worktree" in
+    /*) ;;
+    *)
+      echo "REFUSED: Orca worktree id $ORCA_WORKTREE_ID resolved to a non-absolute path; preserving metadata." >&2
+      exit 1
+      ;;
+  esac
+  WT=$(CDPATH='' cd -- "$resolved_orca_worktree" 2>/dev/null && pwd -P) || {
+    echo "REFUSED: Orca worktree id $ORCA_WORKTREE_ID resolved to an uninspectable path; preserving metadata." >&2
+    exit 1
+  }
+fi
 if [ -d "$WT" ]; then
   fm_treehouse_worktree_unowned "$STATE" "$WT" "$META" || exit 1
 fi
@@ -1029,7 +1052,6 @@ BUSY_GEN=$(fm_meta_get "$META" busy_gen)
 if [ -z "$BUSY_GEN" ]; then
   BUSY_GEN=$(cat "$STATE/$ID.busy-gen" 2>/dev/null || true)
 fi
-ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
 ORCA_PATH_MATCH_VERIFIED=0
 CLEANUP_RECOVERY=$TEARDOWN_CLEANUP_RECOVERY
 

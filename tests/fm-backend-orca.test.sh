@@ -506,6 +506,51 @@ test_spawn_preserves_orca_metadata_when_pathless_worktree_cleanup_fails() {
   pass "fm-spawn.sh --backend orca: preserves metadata when pathless cleanup fails"
 }
 
+test_teardown_replays_pathless_orca_cleanup_recovery() {
+  local proj wt data state config id out rc neutral
+  id="orcapathlessreplayz7"
+  proj="$TMP_ROOT/pathless-replay-project"
+  wt="$TMP_ROOT/pathless-replay-wt"
+  data="$TMP_ROOT/pathless-replay-data"
+  state="$TMP_ROOT/pathless-replay-state"
+  config="$TMP_ROOT/pathless-replay-config"
+  fm_git_init_commit "$proj"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  mkdir -p "$data/$id" "$state" "$config"
+  touch "$state/.last-watcher-beat"
+  fm_write_meta "$state/$id.meta" \
+    "window=fm-$id" "endpoint_task_id=$id" "cleanup_recovery=orca" "spawn_gen=fixture-$id" \
+    'worktree=' "project=$proj" "harness=claude" "kind=ship" "mode=local-only" "yolo=off" \
+    'backend=orca' 'orca_worktree_id=wt-pathless-replay'
+  orca_case pathless-replay
+  printf '{"ok":true,"result":{"worktree":{"id":"wt-pathless-replay","path":"%s"}}}\n' "$wt" > "$RESP/1.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"wt-pathless-replay","path":"%s"}}}\n' "$wt" > "$RESP/2.out"
+  printf '{"ok":true,"result":{}}\n' > "$RESP/3.out"
+  cat > "$FB/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = status ]; then
+  printf '%s\n' '[]'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$FB/treehouse"
+  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
+  set +e
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$neutral" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_TEARDOWN_GUARD_DONE=1 "$ROOT/bin/fm-teardown.sh" "$id" --force 2>&1 )
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "pathless Orca cleanup recovery did not replay: $out"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''show'$'\x1f''--worktree'$'\x1f''id:wt-pathless-replay'$'\x1f''--json' \
+    "pathless recovery did not resolve the exact Orca worktree id"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm'$'\x1f''--worktree'$'\x1f''id:wt-pathless-replay'$'\x1f''--force'$'\x1f''--json' \
+    "pathless recovery did not remove the resolved Orca worktree"
+  assert_absent "$state/$id.meta" "successful pathless Orca recovery left metadata behind"
+  pass "fm-teardown.sh replays the failed-spawn pathless Orca recovery shape"
+}
+
 test_spawn_writes_orca_metadata_and_launches_harness() {
   local proj wt data state config id out log
   id="orcaspawnz1"
@@ -1350,6 +1395,7 @@ test_json_get_ignores_undocumented_terminal_id_shapes
 test_worktree_and_terminal_helpers_parse_json
 test_worktree_create_removes_worktree_when_path_missing
 test_spawn_preserves_orca_metadata_when_pathless_worktree_cleanup_fails
+test_teardown_replays_pathless_orca_cleanup_recovery
 test_spawn_writes_orca_metadata_and_launches_harness
 test_spawn_refuses_orca_secondmate_before_home_mutation
 test_spawn_refuses_orca_when_runtime_not_ready

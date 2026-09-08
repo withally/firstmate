@@ -1201,14 +1201,16 @@ const rows = [undefined, false, false].map((silent, index) => ({
 }));
 const before = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
 writeFileSync(`${home}/state/branch-outcomes.jsonl`, before);
-for (let index = 0; index < 2; index++) {
-  writeFileSync(`${home}/state/branch-action/outcome-${index + 1}.json`, JSON.stringify({
-    version: "fm-branch-action-v1", wake_seq: null, outcome_seq: index + 1,
-    state: index === 0 ? "pending" : "started", task: rows[index].task,
-    verdict: "firstmate-action", summary: rows[index].summary, wake: "old signal", silent: false,
-  }) + "\n");
-}
-const markerBefore = readFileSync(`${home}/state/branch-action/outcome-1.json`, "utf8");
+writeFileSync(`${home}/state/.wake-queue`, "");
+writeFileSync(`${home}/state/branch-action/wake-41.json`, JSON.stringify({
+  version: "fm-branch-action-v1", wake_seq: 41, outcome_seq: 1, state: "pending", task: rows[0].task,
+  verdict: "firstmate-action", summary: rows[0].summary, wake: "old signal", silent: false,
+}) + "\n");
+writeFileSync(`${home}/state/branch-action/outcome-2.json`, JSON.stringify({
+  version: "fm-branch-action-v1", wake_seq: null, outcome_seq: 2, state: "started", task: rows[1].task,
+  verdict: "firstmate-action", summary: rows[1].summary, wake: "old signal", silent: false,
+}) + "\n");
+const markerBefore = readFileSync(`${home}/state/branch-action/wake-41.json`, "utf8");
 const replay = outcomeScript(["startup-replay"]);
 for (const row of rows) if (!replay.includes(row.summary)) throw new Error("shell startup skipped a legacy variant");
 writeFileSync(`${home}/state/.branch-outcomes-cursor`, "0\n");
@@ -1218,7 +1220,7 @@ const visible = sentToMain.filter((sent) => sent.message.customType === "fm-bran
 for (const row of rows) if (!visible.some((sent) => sent.message.content.includes(row.summary))) throw new Error(`Pi startup skipped ${row.summary}`);
 if (mainUserMessages.length || sentToMain.some((sent) => sent.options.triggerTurn || sent.message.details?.verdict === "firstmate-action")) throw new Error("legacy marker caused handoff");
 if (outcomeScript(["unread"])) throw new Error("legacy marker stranded the cursor");
-if (readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8") !== before || readFileSync(`${home}/state/branch-action/outcome-1.json`, "utf8") !== markerBefore) throw new Error("legacy replay mutated durable records");
+if (readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8") !== before || readFileSync(`${home}/state/branch-action/wake-41.json`, "utf8") !== markerBefore) throw new Error("legacy replay mutated durable records");
 process.exit(0);
 EOF
   result=$?
@@ -2764,8 +2766,8 @@ test_unsafe_store_refuses_branch_shell_and_preserves_status() {
   PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
-await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, home }; })()`);
-const { dispatch, home } = globalThis.__t;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, home, sentToMain }; })()`);
+const { dispatch, home, sentToMain } = globalThis.__t;
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 const paused = "paused: waiting for release\n";
 const held = "captain-held: review pending\n";
@@ -2788,7 +2790,16 @@ if (!failure) throw new Error("unsafe wake did not return settlement ownership t
 if (readFileSync(`${home}/state/branch-driver.status`, "utf8") !== paused || readFileSync(`${home}/state/held.status`, "utf8") !== held) throw new Error("unsafe store changed last task status line");
 if (!readFileSync(`${home}/state/.wake-queue`, "utf8").trim()) throw new Error("unsafe wake was acknowledged");
 if (existsSync(`${home}/state/.branch-eligible-rows`)) throw new Error("unsafe branch retained grant");
+const diagnostics = sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true);
+if (diagnostics.length !== 1 ||
+    !diagnostics[0].message.content.includes(`${home}/state/branch-outcomes.jsonl`) ||
+    !diagnostics[0].message.content.toLowerCase().includes("repair")) {
+  throw new Error(`unsafe store quarantine did not emit one repair diagnostic: ${JSON.stringify(sentToMain)}`);
+}
 if (dispatch("signal: must stay on main").accepted) throw new Error("quarantined branch accepted another wake");
+if (sentToMain.filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.display === true).length !== 1) {
+  throw new Error("quarantined branch repeated its health diagnostic");
+}
 process.exit(0);
 EOF
   result=$?
@@ -2835,7 +2846,7 @@ EOF
   pass "unwritable outcome storage blocks branch shell access before side effects"
 }
 
-test_stale_batch_keeps_latest_offer_and_all_ack_rows() {
+test_stale_batch_keeps_latest_queue_row_and_all_ack_rows() {
   local repo home out result
   repo="$TMP_ROOT/stale-batch-root"
   home="$TMP_ROOT/stale-batch-home"
@@ -2849,7 +2860,7 @@ const { bus, makeOffer, home } = globalThis.__t;
 import { writeFileSync, readFileSync } from "node:fs";
 writeFileSync(`${home}/state/.wake-queue`, "1\t1\tstale\tfm-branch-driver\told reason\n2\t2\tstale\tfm-branch-driver\tnew reason\n");
 globalThis.__fmOnBranchPrompt = async ({ session, text }) => {
-  if (text.includes("old reason") || !text.includes("new reason")) throw new Error(`stale offers not coalesced: ${text}`);
+  if (!text.includes("old reason") || text.includes("new reason")) throw new Error(`first stale offer was not delivered urgently: ${text}`);
   const bash = session.options.customTools.find((t) => t.name === "bash");
   const drain = await bash.execute("drain", { command: "bin/fm-wake-drain.sh" });
   if (drain.isError) throw new Error(JSON.stringify(drain));
@@ -2874,8 +2885,52 @@ process.exit(0);
 EOF
   result=$?
   out=$(cat "$TMP_ROOT/node-output")
-  expect_code 0 "$result" "stale batch must retain acknowledgement ownership: $out"
-  pass "stale offers coalesce before the model while all durable sequences are acknowledged"
+  expect_code 0 "$result" "stale queue deduplication must retain acknowledgement ownership: $out"
+  pass "the first stale offer is urgent while queue dedup keeps all durable acknowledgements"
+}
+
+test_first_stale_wake_bypasses_coalescing_delay() {
+  local repo home out result
+  repo="$TMP_ROOT/stale-urgent-root"
+  home="$TMP_ROOT/stale-urgent-home"
+  mkdir -p "$home/state"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_TEST_BRANCH_WAKE_COALESCE_MS=2000 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { bus, makeOffer, fire, defaultSessionCtx, home }; })()`);
+const { bus, makeOffer, fire, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+fire("session_start", {}, defaultSessionCtx);
+writeFileSync(`${home}/state/.wake-queue`, "1\t1\tstale\tfm-branch-driver\turgent reason\n");
+let releasePrompt;
+globalThis.__fmPromptGate = new Promise((resolve) => { releasePrompt = resolve; });
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const bash = session.options.customTools.find((tool) => tool.name === "bash");
+  const drain = await bash.execute("drain", { command: "bin/fm-wake-drain.sh" });
+  if (drain.isError) throw new Error(JSON.stringify(drain));
+  const output = drain.details.stdout;
+  const ack = `${output}\n${drain.details.stderr}`.split("\n").find((line) => line.startsWith("WAKE_ACK_REQUIRED:"));
+  if (!ack) throw new Error(`missing ack: ${output}`);
+  const acknowledged = await bash.execute("ack", { command: ack.slice(ack.indexOf("bin/fm-wake-drain.sh")) });
+  if (acknowledged.isError) throw new Error(JSON.stringify(acknowledged));
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  await report.execute("report", { task: "branch-driver", verdict: "routine", summary: "urgent stale checked" });
+};
+const first = makeOffer("stale: fm-branch-driver (urgent reason)");
+bus.emit("fm-branch-supervision:dispatch", first);
+if (!first.accepted) throw new Error("urgent stale wake was not accepted");
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (!globalThis.__fmPromptStarted) throw new Error("first stale wake waited for the coalescing delay");
+releasePrompt();
+await first.settlement;
+process.exit(0);
+EOF
+  result=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$result" "the first stale wake must bypass the coalescing delay: $out"
+  pass "first stale wake bypasses the coalescing delay"
 }
 
 test_deferred_stale_recheck_drains_after_active_wake() {
@@ -4843,7 +4898,8 @@ test_branch_mirror_filters_order_and_cursor
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation
 test_unsafe_store_refuses_branch_shell_and_preserves_status
 test_unwritable_outcome_store_blocks_branch_before_shell
-test_stale_batch_keeps_latest_offer_and_all_ack_rows
+test_stale_batch_keeps_latest_queue_row_and_all_ack_rows
+test_first_stale_wake_bypasses_coalescing_delay
 test_deferred_stale_recheck_drains_after_active_wake
 test_stale_recheck_is_rearmed_after_successful_settlement
 test_deferred_stale_recheck_clears_suppression_after_failure

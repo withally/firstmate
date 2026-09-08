@@ -139,6 +139,7 @@ const sessionPointer = join(state, ".branch-session");
 const mirrorCursorFile = join(state, ".branch-mirror-cursor");
 const promptScript = join(fmRoot, "bin", "fm-branch-prompt.sh");
 const outcomeScript = join(fmRoot, "bin", "fm-branch-outcome.sh");
+const outcomeStoreFile = join(state, "branch-outcomes.jsonl");
 const leaseScript = join(fmRoot, "bin", "fm-lease.sh");
 const wakeGrantScript = join(fmRoot, "bin", "fm-wake-grant.sh");
 const loadedMarker = join(state, ".pi-branch-extension-loaded");
@@ -929,9 +930,13 @@ export default function (pi: ExtensionAPI) {
   }
 
   function quarantineOutcomeStore(detail: string): void {
-    unsafeOutcomeStore = `supervision branch quarantined: outcome store is unsafe (${detail}); main owns the wake`;
+    const firstQuarantine = !unsafeOutcomeStore;
+    if (firstQuarantine) {
+      unsafeOutcomeStore = `supervision branch quarantined: outcome store ${outcomeStoreFile} is unsafe (${detail}); repair this store and its write prerequisites before retrying; main owns the wake`;
+    }
     branchBroken = unsafeOutcomeStore;
     providerRecovery = null;
+    if (firstQuarantine) deliverBranchHealthNote(unsafeOutcomeStore);
   }
 
   function requireSafeOutcomeStore(): void {
@@ -1757,7 +1762,7 @@ ${context.command}
       if (previous >= 0) pendingWakeMessages.splice(previous, 1);
     }
     if (!pendingWakeMessages.includes(message)) pendingWakeMessages.push(message);
-    if (urgentWake(message) && !staleWindow) {
+    if (urgentWake(message)) {
       flushPendingWakes();
       return settlement;
     }

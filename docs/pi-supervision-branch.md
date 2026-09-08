@@ -98,7 +98,7 @@ Mirrored dialog remains advisory context; durable task records and open decision
 New dialog continues to mirror incrementally after rollover, while main-session replacement retains its existing mirror re-anchor behavior.
 Earlier branch files remain on disk for diagnosis and are not loaded into the new conversation.
 
-Stale offers for the same endpoint coalesce to the latest offer during the existing short batch window before model invocation.
+After the first stale delivery, later offers for the same endpoint coalesce to the latest offer during the existing short batch window before model invocation.
 The drain's existing `fm_wake_print_deduped` owner likewise presents one latest stale row per endpoint while the eligible grant retains every underlying sequence for acknowledgement.
 Signal and check semantics, main-owned rows, and durable queue ownership are unchanged.
 
@@ -109,6 +109,7 @@ The extension validates the store before a wake, before each branch shell comman
 The branch cannot compensate with synthetic task status appends or shell acknowledgements after that boundary.
 It releases the eligible-row grant and branch leases while leaving unacknowledged queue rows durable for main.
 Later offers remain on main; after main repairs the store, a new main session or reload revalidates it before branch work resumes.
+The first quarantine in a main-session generation emits one visible health note naming the outcome store path and the repair needed; later wakes do not repeat it.
 Quarantine does not repair, rewrite, acknowledge, or delete outcome history, and it does not append anything to task status logs.
 The store command owns file safety and validation; shell access remains within the existing confused-agent-grade boundary, not an adversarial sandbox for a command deliberately corrupting the store itself.
 

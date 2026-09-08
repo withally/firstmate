@@ -40,10 +40,10 @@ test_store_validation_refuses_unsafe_paths_and_markers() {
 }
 
 test_store_validation_refuses_unwritable_write_prerequisites() {
-  local home task target
+  local home task target mode action_seq outside
   home="$TMP_ROOT/validate-write-home"
   task=write-check
-  mkdir -p "$home/state"
+  mkdir -p "$home/state" "$home/state/branch-action"
   printf 'project=/projects/write-check\n' > "$home/state/$task.meta"
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task "$task" --verdict routine --summary 'writeability probe' >/dev/null \
     || fail "writeability fixture append"
@@ -51,21 +51,40 @@ test_store_validation_refuses_unwritable_write_prerequisites() {
     || fail "writeability fixture cursor"
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" processed-init \
     || fail "writeability fixture processed marker"
+  action_seq=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append-action --task "$task" --wake-seq 41 --summary 'action writeability probe') \
+    || fail "writeability fixture action marker"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-read --through "$action_seq" \
+    || fail "writeability fixture action cursor"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" processed-init \
+    || fail "writeability fixture action indexes"
   for target in \
     "$home/state/branch-outcomes.jsonl" \
     "$home/state/.branch-outcomes-cursor" \
     "$home/state/.branch-outcomes-processed" \
     "$home/state/.branch-outcome-index-ready" \
-    "$home/state/.$task.branch-outcome-index"; do
+    "$home/state/.$task.branch-outcome-index" \
+    "$home/state/branch-action" \
+    "$home/state/branch-action/wake-41.json"; do
+    mode=0600
+    case "$target" in */branch-action) mode=0700 ;; esac
     chmod 0444 "$target"
     if FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null 2>&1; then
       fail "validation accepted read-only write prerequisite: $target"
     fi
-    chmod 0600 "$target"
+    chmod "$mode" "$target"
   done
+  outside="$TMP_ROOT/validate-action-target"
+  mkdir -p "$outside"
+  mv "$home/state/branch-action" "$home/state/branch-action-real"
+  ln -s "$outside" "$home/state/branch-action"
+  if FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null 2>&1; then
+    fail "validation accepted symlinked action directory"
+  fi
+  rm "$home/state/branch-action"
+  mv "$home/state/branch-action-real" "$home/state/branch-action"
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" validate >/dev/null \
     || fail "validation rejected restored write prerequisites"
-  pass "store validation refuses read-only outcome and sidecar files"
+  pass "store validation refuses read-only outcome, sidecar, and action files"
 }
 
 test_context_rebuild_is_read_only_and_bounded() {

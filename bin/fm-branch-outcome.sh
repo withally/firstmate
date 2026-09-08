@@ -94,8 +94,9 @@
 #     the nested acquire so drain's bounded lock wait remains the deadline.
 #   fm-branch-outcome.sh validate
 #     Validate the store and both cursor bounds without producing context or
-#     advancing markers. Store and cursor paths must be regular non-symlinks
-#     when present; every command refuses special files before reading them.
+#     advancing markers. Store, cursor, and action-marker paths must be regular
+#     non-symlinks when present; every command refuses special files before
+#     reading them.
 #   fm-branch-outcome.sh context
 #     Read-only recovery context: latest outcome per task (summary capped at
 #     512 characters), all unprocessed captain outcomes, and the authoritative
@@ -630,7 +631,7 @@ processed_init_locked() {
 }
 
 validate_write_prerequisites() {
-  local path probe
+  local path probe action_probe
   if [ ! -d "$STATE" ] || [ ! -w "$STATE" ] || [ ! -x "$STATE" ]; then
     echo "error: outcome store state directory is not writable" >&2
     return 1
@@ -641,6 +642,18 @@ validate_write_prerequisites() {
       return 1
     fi
   done
+  if [ -L "$ACTION_DIR" ] || { [ -e "$ACTION_DIR" ] && { [ ! -d "$ACTION_DIR" ] || [ ! -r "$ACTION_DIR" ] || [ ! -w "$ACTION_DIR" ] || [ ! -x "$ACTION_DIR" ]; }; }; then
+    echo "error: outcome store action-marker directory is not a writable regular directory: $ACTION_DIR" >&2
+    return 1
+  fi
+  if [ -d "$ACTION_DIR" ]; then
+    for path in "$ACTION_DIR"/wake-*.json "$ACTION_DIR"/outcome-*.json; do
+      if [ -L "$path" ] || { [ -e "$path" ] && { [ ! -f "$path" ] || [ ! -r "$path" ] || [ ! -w "$path" ]; }; }; then
+        echo "error: outcome store action marker is not a writable regular file: $path" >&2
+        return 1
+      fi
+    done
+  fi
   probe=$(mktemp "$STATE/.branch-outcome-write-probe.XXXXXX") || {
     echo "error: outcome store state directory cannot create a write probe" >&2
     return 1
@@ -649,6 +662,16 @@ validate_write_prerequisites() {
     echo "error: outcome store state directory cannot remove a write probe" >&2
     return 1
   }
+  if [ -d "$ACTION_DIR" ]; then
+    action_probe=$(mktemp "$ACTION_DIR/.branch-action-write-probe.XXXXXX") || {
+      echo "error: outcome store action-marker directory cannot create a write probe" >&2
+      return 1
+    }
+    rm -f -- "$action_probe" || {
+      echo "error: outcome store action-marker directory cannot remove a write probe" >&2
+      return 1
+    }
+  fi
 }
 
 held_lock_owned_by_ancestor() {
@@ -891,7 +914,16 @@ case "$CMD" in
       for MARKER in "$ACTION_DIR"/wake-*.json; do
         [ -f "$MARKER" ] || continue
         if jq -e 'type == "object" and .version == "fm-branch-action-v1" and .state == "pending" and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq == (.wake_seq | floor) and (.outcome_seq | type == "number") and .outcome_seq >= 1 and .outcome_seq == (.outcome_seq | floor) and .verdict == "firstmate-action" and (.task | type == "string") and (.summary | type == "string")' "$MARKER" >/dev/null 2>&1; then
-          jq -c '{outcome_seq, wake_seq, task, summary}' "$MARKER"
+          OUTCOME_SEQ=$(jq -r '.outcome_seq' "$MARKER")
+          WAKE_SEQ=$(jq -r '.wake_seq' "$MARKER")
+          RECORD=$(record_for_seq "$OUTCOME_SEQ" 2>/dev/null || true)
+          if [ -n "$RECORD" ] && printf '%s\n' "$RECORD" | jq -e \
+            --argjson outcome_seq "$OUTCOME_SEQ" \
+            --argjson wake_seq "$WAKE_SEQ" \
+            'type == "object" and .seq == $outcome_seq and .verdict == "firstmate-action" and (.wake_seq | type == "number") and .wake_seq >= 1 and .wake_seq <= 9007199254740991 and .wake_seq == (.wake_seq | floor) and .wake_seq == $wake_seq' \
+            >/dev/null 2>&1; then
+            printf '%s\n' "$RECORD" | jq -c '{outcome_seq: .seq, wake_seq, task, summary}'
+          fi
         fi
       done
     fi

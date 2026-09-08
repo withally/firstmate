@@ -2489,6 +2489,7 @@ cleanup_firstmate_home_children() {
   local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
+  preflight_firstmate_home_lavish_children "$home" || return 1
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
@@ -2578,6 +2579,34 @@ cleanup_firstmate_home_children() {
       "$sub_state/$child_id.cursor-session" "$sub_state/$child_id.reconcile-nudged" \
       "$sub_state/.$child_id.branch-outcome-index"
   done
+}
+
+preflight_firstmate_home_lavish_children() {
+  local home=$1 sub_state child_meta child_id child_kind child_wt child_home failures=''
+  sub_state="$home/state"
+  [ -d "$sub_state" ] || return 0
+  for child_meta in "$sub_state"/*.meta; do
+    [ -e "$child_meta" ] || continue
+    child_id=$(basename "$child_meta" .meta)
+    child_kind=$(meta_value "$child_meta" kind)
+    [ -n "$child_kind" ] || child_kind=ship
+    if ! FM_HOME="$home" FM_STATE_OVERRIDE="$sub_state" \
+        "$SCRIPT_DIR/fm-lavish-session.sh" end-ephemeral "$child_id" >/dev/null 2>&1; then
+      failures="$failures $child_id"
+    fi
+    if [ "$child_kind" = secondmate ]; then
+      child_wt=$(meta_value "$child_meta" worktree)
+      child_home=$(meta_value "$child_meta" home)
+      [ -n "$child_home" ] || child_home=$child_wt
+      if [ -n "$child_home" ] && ! preflight_firstmate_home_lavish_children "$child_home"; then
+        failures="$failures $child_id"
+      fi
+    fi
+  done
+  if [ -n "$failures" ]; then
+    echo "REFUSED: forced secondmate cleanup could not end every ephemeral Lavish session for child tasks:$failures" >&2
+    return 1
+  fi
 }
 
 remove_secondmate_registry_entry() {

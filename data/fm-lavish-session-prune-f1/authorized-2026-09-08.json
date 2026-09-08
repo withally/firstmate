@@ -1,0 +1,27 @@
+{
+  "schema": "fm-lavish-session-authority.v1",
+  "ruling_date": "2026-09-08",
+  "frozen_at": "2026-09-08",
+  "ruling": "Apply only captain-authorized ambiguous existing-path sessions, except the three links mentioned on 2026-09-08.",
+  "authorized": [],
+  "excluded": [
+    {
+      "key": "7f59a8c16dff9f19",
+      "url": "http://127.0.0.1:4387/session/7f59a8c16dff9f19",
+      "file": "/Users/ivan/Projects/firstmate/data/nancy-tennis-directions-board-b2/board/index.html",
+      "reason": "kept board named in the 2026-09-08 ruling"
+    },
+    {
+      "key": "6aba2ed4c6df33d3",
+      "url": "http://127.0.0.1:4387/session/6aba2ed4c6df33d3",
+      "file": "/Users/ivan/Projects/firstmate/data/nancy-direction-board-d1/board/index.html",
+      "reason": "kept board named in the 2026-09-08 ruling"
+    },
+    {
+      "key": "cc73671c247bff78",
+      "url": "http://127.0.0.1:4387/session/cc73671c247bff78",
+      "file": "/Users/ivan/Projects/firstmate/data/syd-board-b1/board/index.html",
+      "reason": "kept board named in the 2026-09-08 ruling"
+    }
+  ]
+}

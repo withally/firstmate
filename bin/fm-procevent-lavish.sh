@@ -134,6 +134,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+LAVISH_STATE_FILE="${FM_LAVISH_STATE_FILE:-${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}/state.json}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -144,6 +145,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
+
+lavish_state_dir() { printf '%s\n' "${LAVISH_STATE_FILE%/*}"; }
+lavish_cli() { LAVISH_AXI_STATE_DIR="$(lavish_state_dir)" command lavish-axi "$@"; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -179,8 +183,13 @@ cmd_arm() {
   # no --timeout-ms so completion is a server event, and absorbs only the exact
   # transient interruption. Registering raw poll output is what let that
   # interruption reach the runner as a captured result.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
-    -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  if [ -n "$task" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
+      -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" --task-id "$task" || exit 1
+  else
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
+      -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  fi
   if [ "${FM_LAVISH_LEDGER_TEST_BYPASS:-0}" != 1 ]; then
     if [ -n "$task" ]; then
       "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" "$task" >/dev/null
@@ -205,6 +214,7 @@ cmd_retire() {
 cmd_retire_and_end() {
   local task=${1-} artifact=${2-}
   [ "$#" -eq 2 ] || usage
+  "$SCRIPT_DIR/fm-lavish-session.sh" preflight-end "$task" "$artifact" || exit 1
   cmd_retire "$artifact" || exit 1
   "$SCRIPT_DIR/fm-lavish-session.sh" end "$task" "$artifact"
 }
@@ -286,10 +296,14 @@ poll_retry_delay() {
 }
 
 cmd_poll() {
-  local artifact=${1-} delay attempt=0 response cleanup_command rc filter_rc
+  local artifact=${1-} delay attempt=0 response cleanup_command rc filter_rc task=
   local pipeline_status
   [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
+  if [ "$#" -eq 3 ] && [ "$2" = --task-id ]; then
+    task=$3
+  elif [ "$#" -ne 1 ]; then
+    usage
+  fi
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   delay=$(poll_retry_delay) || exit 1
   response=$(mktemp "${TMPDIR:-/tmp}/fm-lavish-poll.XXXXXX") || die "cannot stage the poll response"
@@ -306,7 +320,14 @@ cmd_poll() {
     trap "$cleanup_command; trap - $signal; kill -$signal $$" "$signal"
   done
   while :; do
-    lavish-axi poll "$artifact" | poll_response_filter "$response"
+    if [ "${FM_LAVISH_LEDGER_TEST_BYPASS:-0}" != 1 ]; then
+      if [ -n "$task" ]; then
+        "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" "$task" || exit 1
+      else
+        "$SCRIPT_DIR/fm-lavish-session.sh" poll-activity "$artifact" || exit 1
+      fi
+    fi
+    lavish_cli poll "$artifact" | poll_response_filter "$response"
     pipeline_status=("${PIPESTATUS[@]}")
     rc=${pipeline_status[0]}
     filter_rc=${pipeline_status[1]}
@@ -356,7 +377,7 @@ cmd_acknowledge() {
   artifact=$(session_file "$file")
   [ -n "$artifact" ] || die "captured delivery has no session file"
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
-  lavish-axi poll "$artifact" --ack "$delivery_id" --timeout-ms 1 >/dev/null
+  lavish_cli poll "$artifact" --ack "$delivery_id" --timeout-ms 1 >/dev/null
 }
 
 # Read one field of the response's leading `session:` block. Those fields are

@@ -15,9 +15,26 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
-  mkdir -p "$home/state" "$home/data"
+  mkdir -p "$home/state" "$home/data" "$home/lavish"
   fakebin=$(fm_fakebin "$home")
-  fm_fake_exit0 "$fakebin" lavish-axi
+  cat > "$fakebin/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -f "${1:-}" ]; then
+  ARTIFACT="$1" STATE_FILE="${LAVISH_AXI_STATE_DIR}/state.json" node <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const file = fs.realpathSync(process.env.ARTIFACT);
+const state = fs.existsSync(process.env.STATE_FILE) ? JSON.parse(fs.readFileSync(process.env.STATE_FILE, 'utf8')) : {sessions:{}};
+const key = crypto.createHash('sha256').update(file).digest('hex').slice(0, 16);
+state.sessions[key] = {key,file,url:`http://127.0.0.1:4387/session/${key}`,status:'open',pending_prompts:0,prompts:[],updated_at:new Date().toISOString()};
+fs.mkdirSync(require('node:path').dirname(process.env.STATE_FILE), {recursive:true});
+fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state, null, 2));
+NODE
+fi
+exit 0
+SH
+  chmod +x "$fakebin/lavish-axi"
   printf '%s\n' "$home"
 }
 
@@ -26,6 +43,7 @@ run_board() {  # <home> <args...>
   shift
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_LAVISH_STATE_FILE="$home/lavish/state.json" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$BOARD" "$@"
 }
@@ -35,6 +53,7 @@ run_procevent() {  # <home> <command args...>
   shift
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_LAVISH_STATE_FILE="$home/lavish/state.json" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent.sh" "$@"
 }
@@ -286,6 +305,17 @@ SH
   cat > "$home/fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" != poll ]; then
+  ARTIFACT="$1" STATE_FILE="${LAVISH_AXI_STATE_DIR}/state.json" node <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const file = fs.realpathSync(process.env.ARTIFACT);
+const state = {sessions:{}};
+const key = crypto.createHash('sha256').update(file).digest('hex').slice(0, 16);
+state.sessions[key] = {key,file,url:`http://127.0.0.1:4387/session/${key}`,status:'open',pending_prompts:0,prompts:[],updated_at:new Date().toISOString()};
+fs.mkdirSync(path.dirname(process.env.STATE_FILE), {recursive:true});
+fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state, null, 2));
+NODE
   exit 0
 fi
 cat <<EOF
@@ -300,6 +330,7 @@ SH
 
   PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$runtime" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_LAVISH_STATE_FILE="$home/lavish/state.json" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     FM_BEARINGS_BOARD_TEMPLATE="$ROOT/.agents/skills/bearings/assets/board-template.html" \
     REAL_LAVISH_ADAPTER="$ROOT/bin/fm-procevent-lavish.sh" \

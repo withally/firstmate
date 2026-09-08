@@ -31,8 +31,10 @@ bin/fm-procevent-lavish.sh arm <artifact.html> --task-id <task-id>
 ```
 
 The adapter records the task's Lavish ownership ledger as part of arming.
+The fleet bearings board is home-owned and uses `--task-id home`.
 Use `bin/fm-lavish-session.sh safe-park <task-id> <worktree-artifact.html> <durable-artifact.html>` when a review must outlive its worktree; that command owns the copy, re-serve, binding transfer, live verification, and superseded-session end sequence.
 Use `bin/fm-procevent-lavish.sh retire-and-end <task-id> <artifact.html>` only when the durable review's owning lifecycle has reached its terminal event.
+That operation preflights the durable end guard before retiring the source, then verifies the end.
 Plain `retire` remains the correct narrow operation for a listener replacement that must leave the review open.
 
 When a source carries captain answers to captain-held tasks, bind it BEFORE arming it, so it can never produce an answer that has nowhere to go:

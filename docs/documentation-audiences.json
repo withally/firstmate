@@ -277,14 +277,6 @@
       "audience": "public-product"
     },
     {
-      "path": "data/fm-lavish-session-prune-f1/report.md",
-      "audience": "maintainer-verification"
-    },
-    {
-      "path": "data/fm-lavish-session-prune-f1/upstream-issue-draft.md",
-      "audience": "maintainer-verification"
-    },
-    {
       "path": "docs/agent-control.md",
       "audience": "maintainer-architecture"
     },

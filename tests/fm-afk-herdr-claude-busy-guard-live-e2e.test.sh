@@ -2,8 +2,8 @@
 # Live Herdr+Claude regression for the away-mode native-background busy guard.
 #
 # This opt-in test uses the real Claude native `/afk` path, so the daemon's
-# tracked background Bash remains visible to Herdr while Claude's foreground
-# composer returns idle.
+# tracked background Bash remains alive while Claude's foreground agent returns
+# to an idle native state and empty composer.
 # It fails naming the Claude and Herdr versions instead of silently replacing
 # the real harness with a fixture.
 # Every Herdr operation, including adapter calls, is routed through the named
@@ -13,6 +13,12 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AFK_LAUNCH="$ROOT/bin/fm-afk-launch.sh"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+CLAUDE_PERMISSION_MODE=${FM_AFK_HERDR_CLAUDE_PERMISSION_MODE:-auto}
+STABLE_IDLE_CAPTURES=3
+STABLE_IDLE_INTERVAL_SECS=1
+HOUSEKEEPING_TICK_SECS=1
+DELIVERY_SLACK_SECS=2
+DELIVERY_BOUND_SECS=$((STABLE_IDLE_CAPTURES * STABLE_IDLE_INTERVAL_SECS + HOUSEKEEPING_TICK_SECS + DELIVERY_SLACK_SECS))
 
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -27,9 +33,14 @@ for tool in herdr jq claude; do
 done
 [ -x "$HERDR_LAB_HELPER" ] \
   || fail "FM_AFK_HERDR_CLAUDE_LIVE=1 but the Herdr lab helper is not executable at $HERDR_LAB_HELPER"
+case "$CLAUDE_PERMISSION_MODE" in
+  auto) CLAUDE_FOOTER_MODE='auto mode' ;;
+  bypassPermissions) CLAUDE_FOOTER_MODE='bypass permissions' ;;
+  *) fail "unsupported FM_AFK_HERDR_CLAUDE_PERMISSION_MODE '$CLAUDE_PERMISSION_MODE' (expected auto or bypassPermissions)" ;;
+esac
 
 ORIGINAL_PATH=$PATH
-HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-claude-herdr-unreadable-wedge-f1) \
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-herdr-claude-live-guard-2-1-263-f1) \
   || fail "could not generate the isolated Herdr lab session name"
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-afk-herdr-claude-guard.XXXXXX") \
   || fail "could not create the live-test temporary root"
@@ -109,9 +120,9 @@ CLAUDE_TEST_SYSTEM_PROMPT="This is a live away-mode guard test. For an injected 
 printf '%s\n' 'Reply with the single word ready and stop.' > "$PROMPT_FILE"
 # shellcheck disable=SC2016 # The generated launcher expands $(cat ...) when it runs.
 printf -v CLAUDE_LAUNCHER_CONTENT \
-  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nstty cols 66 rows 39\nexec %q --dangerously-skip-permissions --append-system-prompt %q "$(cat %q)"\n' \
+  '#!/usr/bin/env bash\nset -euo pipefail\ncd %q\nexport PATH=%q\nexport FM_HOME=%q\nexport FM_STATE_OVERRIDE=%q\nexport FM_ROOT_OVERRIDE=%q\nexport HERDR_SESSION=%q\nexport FM_ESCALATE_BATCH_SECS=0\nexport FM_HOUSEKEEPING_TICK=1\nexport FM_POLL=1\nexport FM_SIGNAL_GRACE=1\nexport FM_HEARTBEAT=999999\nexport FM_CHECK_INTERVAL=999999\nexport FM_STALE_ESCALATE_SECS=999999\nexport FM_INJECT_CONFIRM_SLEEP=0.5\nexport FM_INJECT_CONFIRM_RETRIES=4\nexport CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\nexec %q --permission-mode %q --append-system-prompt %q "$(cat %q)"\n' \
   "$ROOT" "$FAKEBIN:$ORIGINAL_PATH" "$FM_HOME" "$STATE_DIR" "$ROOT" \
-  "$HERDR_LAB_SESSION" "$CLAUDE_BIN" "$CLAUDE_TEST_SYSTEM_PROMPT" "$PROMPT_FILE"
+  "$HERDR_LAB_SESSION" "$CLAUDE_BIN" "$CLAUDE_PERMISSION_MODE" "$CLAUDE_TEST_SYSTEM_PROMPT" "$PROMPT_FILE"
 printf '%s' "$CLAUDE_LAUNCHER_CONTENT" > "$CLAUDE_LAUNCHER"
 chmod +x "$CLAUDE_LAUNCHER"
 lab pane run "$PANE" "$CLAUDE_LAUNCHER" >/dev/null \
@@ -163,7 +174,7 @@ wait_for_initial_idle() {
           || return 1
         trust_accepted=1
         stable=0
-        sleep 1
+        sleep "$STABLE_IDLE_INTERVAL_SECS"
         continue
       fi
     fi
@@ -197,19 +208,44 @@ wait_for_afk_daemon() {
   return 1
 }
 
-wait_for_idle_native_working() {
-  local status composer busy
-  for _ in $(seq 1 60); do
+wait_for_stable_idle_daemon() {
+  local status composer busy capture caps rendered last_capture='' last_rendered='' stable=0
+  for _ in $(seq 1 120); do
     status=$(agent_status)
-    composer=$(composer_state)
+    if capture=$(fm_backend_herdr_capture_ansi "$TARGET" 40 2>/dev/null) && [ -n "$capture" ]; then
+      caps=$'styled=1\ncursor=0\nidentity=0\nrows=12'
+    else
+      caps=$'styled=0\ncursor=0\nidentity=0\nrows=12'
+      capture=$(fm_backend_capture herdr "$TARGET" 40 2>/dev/null) || {
+        stable=0
+        last_capture=''
+        last_rendered=''
+        sleep "$STABLE_IDLE_INTERVAL_SECS"
+        continue
+      }
+    fi
+    composer=$(fm_composer_classify_screen "$caps" "$capture")
     busy=1
     claude_pane_is_busy || busy=0
-    if [ "$status" = working ] && [ "$composer" = empty ] && [ "$busy" -eq 0 ]; then
-      return 0
+    rendered=$(printf '%s' "$capture" | grep -v '^[[:space:]]*$' | tail -5)
+    if { [ "$status" = idle ] || [ "$status" = 'done' ]; } \
+      && [ "$composer" = empty ] && [ "$busy" -eq 0 ] \
+      && [ "${FM_PANE_BUSY_REASON:-idle}" != unreadable ]; then
+      if [ -n "$last_capture" ] && [ "$capture" = "$last_capture" ] \
+        && [ "$rendered" = "$last_rendered" ]; then
+        stable=$((stable + 1))
+      else
+        stable=1
+      fi
+      [ "$stable" -ge "$STABLE_IDLE_CAPTURES" ] && return 0
+    else
+      stable=0
     fi
-    sleep 1
+    last_capture=$capture
+    last_rendered=$rendered
+    sleep "$STABLE_IDLE_INTERVAL_SECS"
   done
-  echo "away-idle diagnostics: status=$status composer=$composer rendered_busy=$busy" >&2
+  echo "away-idle diagnostics: status=$status composer=$composer rendered_busy=$busy stable=$stable" >&2
   echo "Claude pane:" >&2
   screen_text | tail -n 80 >&2
   return 1
@@ -250,6 +286,19 @@ token_count() {
   printf '%s\n' "$screen" | grep -F -c "$token" || true
 }
 
+wait_for_delivery_appearance() {
+  local token=$1
+  for _ in $(seq 1 "$((DELIVERY_BOUND_SECS * 4))"); do
+    [ "$(token_count "$token")" -eq 1 ] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+monotonic_ms() {
+  python3 -c 'import time; print(time.monotonic_ns() // 1000000)'
+}
+
 wait_for_single_delivery() {
   local token=$1 ack=$2 count ack_count composer screen native_status
   for _ in $(seq 1 60); do
@@ -259,38 +308,12 @@ wait_for_single_delivery() {
     composer=$(composer_state)
     native_status=$(agent_status)
     if [ "$count" -eq 1 ] && [ "$ack_count" -eq 1 ] \
-      && [ "$composer" = empty ] && [ "$native_status" = working ] \
+      && [ "$composer" = empty ] \
+      && { [ "$native_status" = idle ] || [ "$native_status" = 'done' ]; } \
       && ! delivery_has_undelivered "$STATE_DIR"; then
       return 0
     fi
     sleep 1
-  done
-  return 1
-}
-
-wait_for_wrapped_idle_background_footer() {
-  local screen
-  for _ in $(seq 1 30); do
-    screen=$(screen_text)
-    if printf '%s\n' "$screen" | awk '
-      { rows[NR] = $0 }
-      function previous_nonblank(from, row) {
-        for (row = from; row >= 1; row--)
-          if (rows[row] !~ /^[[:space:]]*$/) return row
-        return 0
-      }
-      END {
-        continuation = previous_nonblank(NR)
-        primary = previous_nonblank(continuation - 1)
-        if (continuation > 0 && primary > 0 \
-            && rows[continuation] ~ /^[[:space:]]*\/rc[[:space:]]*$/ \
-            && rows[primary] ~ /^[[:space:]]*⏵⏵ bypass permissions on[[:space:]]+·[[:space:]]+1 shell[[:space:]]+·[[:space:]]+←[[:space:]]+1 agent[[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage[[:space:]]*$/) exit 0
-        exit 1
-      }
-    '; then
-      return 0
-    fi
-    sleep 0.2
   done
   return 1
 }
@@ -411,23 +434,27 @@ if ! wait_for_afk_daemon; then
   screen_text | tail -n 80 >&2
   fail "the real Claude /afk path did not leave a live native daemon record"
 fi
-wait_for_idle_native_working \
-  || fail "Herdr did not report working with an idle Claude composer after the foreground /afk turn"
-wait_for_wrapped_idle_background_footer \
-  || fail "Claude Code ($CLAUDE_VERSION) did not render the captured narrow two-row background footer"
+wait_for_stable_idle_daemon \
+  || fail "Herdr did not report a stable idle Claude composer after the foreground /afk turn"
 emit_verdict_evidence idle-post-afk
 
 ESCALATION_ONE="FM_AFK_CLAUDE_GUARD_ONE_$$"
-DELIVERY_STARTED=$(date +%s)
+DELIVERY_STARTED_MS=$(monotonic_ms)
 printf 'done: %s https://example.test/afk-one\n' "$ESCALATION_ONE" > "$STATE_DIR/crew-one.status"
+wait_for_delivery_appearance "$ESCALATION_ONE" \
+  || {
+    sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
+    fail "the first escalation did not appear within the bounded housekeeping window"
+  }
+DELIVERY_ELAPSED_MS=$(( $(monotonic_ms) - DELIVERY_STARTED_MS ))
+DELIVERY_BOUND_MS=$((DELIVERY_BOUND_SECS * 1000))
+[ "$DELIVERY_ELAPSED_MS" -le "$DELIVERY_BOUND_MS" ] \
+  || fail "the first escalation took ${DELIVERY_ELAPSED_MS}ms; bound is ${DELIVERY_BOUND_MS}ms (${STABLE_IDLE_CAPTURES} stable captures x ${STABLE_IDLE_INTERVAL_SECS}s + ${HOUSEKEEPING_TICK_SECS}s housekeeping + ${DELIVERY_SLACK_SECS}s slack)"
 wait_for_single_delivery "$ESCALATION_ONE" "$AWAY_ACK_TOKEN" \
   || {
     sed -n '1,$p' "$STATE_DIR/.supervise-daemon.log" >&2 2>/dev/null || true
     fail "the first escalation was not confirmed exactly once while the native background job remained running"
   }
-DELIVERY_ELAPSED=$(( $(date +%s) - DELIVERY_STARTED ))
-[ "$DELIVERY_ELAPSED" -le 2 ] \
-  || fail "the first escalation took ${DELIVERY_ELAPSED}s to appear instead of one 1s housekeeping cadence"
 sleep 3
 if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ] || [ "$(token_count "$AWAY_ACK_TOKEN")" -ne 1 ]; then
   echo "first-delivery diagnostics: token-count=$(token_count "$ESCALATION_ONE") ack-count=$(token_count "$AWAY_ACK_TOKEN") agent_status=$(agent_status) composer=$(composer_state)" >&2
@@ -439,7 +466,7 @@ if [ "$(token_count "$ESCALATION_ONE")" -ne 1 ] || [ "$(token_count "$AWAY_ACK_T
 fi
 ! delivery_has_undelivered "$STATE_DIR" \
   || fail "the first escalation buffer did not clear after confirmed submission"
-pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: native working with rendered-idle empty composer submits once"
+pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION ($CLAUDE_FOOTER_MODE): native idle with rendered-idle empty composer submits once"
 
 FOREGROUND_TOKEN="FM_AFK_CLAUDE_GUARD_FOREGROUND_$$"
 send_line "Use Bash to run python3 -c 'import time; time.sleep(150)' and then reply exactly $FOREGROUND_TOKEN and nothing else." \
@@ -489,7 +516,7 @@ emit_verdict_evidence pending-human-text
 screen=$(screen_text)
 printf '%s\n' "$screen" | grep -Fq "$HUMAN_TEXT" \
   || fail "bright human text was modified or disappeared while the daemon deferred"
-pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION: rendered-busy and pending-composer deferrals preserve human text"
+pass "real Herdr $HERDR_VERSION + Claude $CLAUDE_VERSION ($CLAUDE_FOOTER_MODE): rendered-busy and pending-composer deferrals preserve human text"
 
-printf 'evidence: session=%s native=working rendered=idle composer=empty wrapped-footer=1 delivery-seconds=%s delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1\n' \
-  "$HERDR_LAB_SESSION" "$DELIVERY_ELAPSED"
+printf 'evidence: session=%s permission-mode=%s native=idle rendered=idle composer=empty stable-footer-composer=%s delivery-ms=%s delivery-bound-ms=%s delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1\n' \
+  "$HERDR_LAB_SESSION" "$CLAUDE_PERMISSION_MODE" "$STABLE_IDLE_CAPTURES" "$DELIVERY_ELAPSED_MS" "$DELIVERY_BOUND_MS"

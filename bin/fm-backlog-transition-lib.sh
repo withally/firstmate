@@ -472,11 +472,14 @@ fm_backlog_record_present() {
 # Publication keeps a write-ahead snapshot until both records exist; removal
 # validates the pair and removes all three, including after an interrupted unlink.
 fm_backlog_task_identity_complete() {
-  local meta=$1 key value lease_id lease_holder
-  for key in spawn_gen worktree window; do
+  local meta=$1 key value lease_id lease_holder worktree orca_worktree_id
+  for key in spawn_gen window; do
     value=$(fm_meta_get "$meta" "$key")
     [ -n "$value" ] || return 1
   done
+  worktree=$(fm_meta_get "$meta" worktree)
+  orca_worktree_id=$(fm_meta_get "$meta" orca_worktree_id)
+  [ -n "$worktree" ] || [ -n "$orca_worktree_id" ] || return 1
   lease_id=$(fm_meta_get "$meta" treehouse_lease_id)
   lease_holder=$(fm_meta_get "$meta" treehouse_lease_holder)
   [ -z "$lease_id" ] && [ -z "$lease_holder" ] || {
@@ -485,18 +488,40 @@ fm_backlog_task_identity_complete() {
 }
 
 fm_backlog_task_identity_matches() {
-  local old=$1 new=$2 key a b
+  local old=$1 new=$2 key a b old_worktree new_worktree old_orca new_orca
   fm_backlog_task_identity_complete "$old" || return 1
   fm_backlog_task_identity_complete "$new" || return 1
-  for key in spawn_gen worktree window; do
+  for key in spawn_gen window; do
     a=$(fm_meta_get "$old" "$key")
     b=$(fm_meta_get "$new" "$key")
     [ "$a" = "$b" ] || return 1
   done
+  old_worktree=$(fm_meta_get "$old" worktree)
+  new_worktree=$(fm_meta_get "$new" worktree)
+  old_orca=$(fm_meta_get "$old" orca_worktree_id)
+  new_orca=$(fm_meta_get "$new" orca_worktree_id)
+  if [ -n "$old_orca" ] || [ -n "$new_orca" ]; then
+    [ -n "$old_orca" ] && [ "$old_orca" = "$new_orca" ] || return 1
+  else
+    [ -n "$old_worktree" ] && [ "$old_worktree" = "$new_worktree" ] || return 1
+  fi
   for key in treehouse_lease_id treehouse_lease_holder; do
     a=$(fm_meta_get "$old" "$key")
     b=$(fm_meta_get "$new" "$key")
     [ -z "$a" ] && [ -z "$b" ] || [ -n "$a" ] && [ "$a" = "$b" ] || return 1
+  done
+}
+
+fm_backlog_task_pair_validate() {
+  local meta=$1 root=$2 peer
+  fm_backlog_record_present "$meta" "task record" "$root" || return 1
+  for peer in "$meta.recovery" "$meta.publication"; do
+    [ -e "$peer" ] || [ -L "$peer" ] || continue
+    fm_backlog_record_present "$peer" "task recovery record" "$root" || return 1
+    fm_backlog_task_identity_matches "$peer" "$meta" || {
+      FM_BACKLOG_TRANSITION_ERROR="conflicting task identity at $peer"
+      return 1
+    }
   done
 }
 

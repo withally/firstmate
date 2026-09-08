@@ -227,6 +227,7 @@ teardown_retirement_worktree_files() {
     fi
   fi
   rm -f "$worktree/.claude/settings.local.json" "$worktree/.opencode/plugins/fm-turn-end.js" \
+    "$worktree/.opencode/plugins/fm-busy-state.js" \
     "$worktree/.fm-grok-turnend" "$worktree/.fm-kimi-turnend"
 }
 
@@ -394,6 +395,12 @@ if [ -e "$STATE/$ID.retiring" ] || [ -L "$STATE/$ID.retiring" ] \
   rm -f "$STATE/$ID.retiring" || exit 1
   echo "already retired: $ID (completed retirement transaction)"
   exit 0
+fi
+if [ -e "$META" ] || [ -L "$META" ]; then
+  fm_backlog_task_pair_validate "$META" "$STATE" || {
+    echo "REFUSED: $FM_BACKLOG_TRANSITION_ERROR; retaining the task endpoint and all publication evidence" >&2
+    exit 1
+  }
 fi
 TEARDOWN_ORPHAN_RECOVERY=0
 if [ ! -e "$META" ] && [ ! -L "$META" ]; then
@@ -2331,9 +2338,22 @@ EOF
 }
 
 remove_firstmate_home() {
-  local home=$1 label=$2 expected_id=${3:-} abs_home_path process_event_backup
+  local home=$1 label=$2 expected_id=${3:-} identity_meta=${4:-$META}
+  local abs_home_path process_event_backup lease_id lease_holder recorded_home
   [ -n "$home" ] || return 0
-  [ -e "$home" ] || return 0
+  if [ ! -e "$home" ]; then
+    lease_id=$(meta_value "$identity_meta" treehouse_lease_id)
+    lease_holder=$(meta_value "$identity_meta" treehouse_lease_holder)
+    recorded_home=$(meta_value "$identity_meta" worktree)
+    if [ -n "$lease_id" ] || [ -n "$lease_holder" ]; then
+      [ -n "$lease_id" ] && [ -n "$lease_holder" ] && [ "$home" = "$recorded_home" ] || {
+        echo "REFUSED: missing $label has no complete identity-bound lease record" >&2
+        return 1
+      }
+      teardown_treehouse_return "$home" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" || return 1
+    fi
+    return 0
+  fi
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
@@ -2352,7 +2372,7 @@ remove_firstmate_home() {
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
     fi
-    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$META" "$expected_id" || {
+    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$identity_meta" "$expected_id" || {
       echo "error: treehouse return failed for $label $abs_home_path; lease may still be held" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
@@ -2826,9 +2846,11 @@ cleanup_firstmate_home_children() {
     if [ "$child_kind" = secondmate ]; then
       child_home=$(meta_value "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
-      if [ -n "$child_home" ] && [ -d "$child_home" ]; then
-        cleanup_firstmate_home_children "$child_home" || return $?
-        remove_firstmate_home "$child_home" "child firstmate home" "$child_id" || return $?
+      if [ -n "$child_home" ]; then
+        if [ -d "$child_home" ]; then
+          cleanup_firstmate_home_children "$child_home" || return $?
+        fi
+        remove_firstmate_home "$child_home" "child firstmate home" "$child_id" "$child_meta" || return $?
       fi
     elif [ "$child_backend" = orca ]; then
       if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
@@ -2837,24 +2859,30 @@ cleanup_firstmate_home_children() {
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
       fi
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
-    elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
-      validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
-      rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
-        "$child_wt/.opencode/plugins/fm-busy-state.js" \
-        "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
-      if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
-        if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree" "" "$child_meta"; then
-          :
-        else
-          child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ] \
-             || [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ]; then
-            return "$child_return_rc"
+    elif [ -n "$child_wt" ]; then
+      if [ -d "$child_wt" ]; then
+        validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+        rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
+          "$child_wt/.opencode/plugins/fm-busy-state.js" \
+          "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
+        if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
+          if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree" "" "$child_meta"; then
+            :
+          else
+            child_return_rc=$?
+            if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ] \
+               || [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LEASE_REFUSED" ]; then
+              return "$child_return_rc"
+            fi
+            safe_rm_rf_child_worktree "$child_wt" "$child_proj"
           fi
+        else
           safe_rm_rf_child_worktree "$child_wt" "$child_proj"
         fi
-      else
-        safe_rm_rf_child_worktree "$child_wt" "$child_proj"
+      elif [ -n "$(meta_value "$child_meta" treehouse_lease_id)" ] \
+        || [ -n "$(meta_value "$child_meta" treehouse_lease_holder)" ]; then
+        [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1 || return 1
+        teardown_treehouse_return "$child_wt" "$child_proj" "child worktree" "" "$child_meta" "$child_id" || return $?
       fi
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id" || return 1

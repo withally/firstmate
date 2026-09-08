@@ -2,7 +2,7 @@
 # Firstmate watcher.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
 # and keeps blocking; it queues and exits only for actionable wakes.
-# The no-verb signal and stale path is absorb-only-on-positive-evidence: a wake
+# Bare turn-end signals and the stale path are absorb-only-on-positive-evidence: a wake
 # is absorbed only when the crew shows it is still working through an actively
 # running no-mistakes step or a backend busy signal. A home that opts in with
 # config/turnend-churn-absorb lets a bare turn-end also use bounded pane churn
@@ -1280,12 +1280,13 @@ run_check_capture() {
 # just before it: the .seen-* marker advances either way, so an event absorbed
 # here is never re-read. Non-.status arguments (.turn-ended markers, which carry
 # no verb) are skipped. A 1 here is NOT "benign" on its own: a no-verb signal
-# still needs the authoritative working proof or the eligible opt-in bare
-# turn-end pane-churn proof before it is benign.
+# with a turn-end still needs execution proof unless the same task supplied a
+# fresh working-only span. Bare turn-ends retain the existing execution gate.
 signal_files_actionable() {  # <status-file> ...
   local f task record rest endpoint ident rc found=1
   FM_SIGNAL_SURFACE_ENDPOINTS=''
   FM_SIGNAL_ACTIONABLE_FILES=''
+  FM_SIGNAL_WORKING_FILES=''
   for f in "$@"; do
     case "$f" in *.status) ;; *) continue ;; esac
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -1305,6 +1306,10 @@ signal_files_actionable() {  # <status-file> ...
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
     FM_SIGNAL_SURFACE_ENDPOINTS="${FM_SIGNAL_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
+    if [ "$rc" -eq 1 ] && status_span_is_working_only "$f" \
+      "$(fm_wake_signal_seen_size "$STATE" "$f")" "$endpoint" "$ident"; then
+      FM_SIGNAL_WORKING_FILES="$FM_SIGNAL_WORKING_FILES $f"
+    fi
     if [ "$rc" -eq 0 ]; then
       found=0
       FM_SIGNAL_ACTIONABLE_FILES="${FM_SIGNAL_ACTIONABLE_FILES}${f}"$'\n'
@@ -1799,7 +1804,8 @@ EOF
     #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file gained a captain-relevant event since it was last
     #     classified (its whole new span, not merely its last line);
-    #   - or it is a no-verb wake (a bare turn-end, a working: note) with no
+    #   - or it carries a turn-end without a fresh working-only span from that
+    #     same task and with no
     #     positive evidence the crew is still executing - the crew stopped its turn
     #     with no actively-running pipeline and no busy pane, so it may be done
     #     (even via an interactive menu that wrote no done: status), waiting on a
@@ -1839,10 +1845,18 @@ EOF
     else
       turnend_files=''
       for f in $files; do
-        case "$f" in *.turn-ended) turnend_files="$turnend_files $f" ;; esac
+        case "$f" in
+          *.turn-ended)
+            case " $FM_SIGNAL_WORKING_FILES " in
+              *" ${f%.turn-ended}.status "*) ;;
+              *) turnend_files="$turnend_files $f" ;;
+            esac
+            ;;
+        esac
       done
       # A routine status append is self-describing progress and is absorbed
-      # without an expensive pane read. Bare turn-end markers retain the
+      # without an expensive pane read, including its paired turn-end.
+      # Bare turn-end markers and mixed spans retain the
       # evidence-driven working/churn gate.
       if [ -n "$turnend_files" ]; then
         # shellcheck disable=SC2086 # task paths carry no spaces.
@@ -1889,7 +1903,10 @@ EOF
         fm_wake_status_seen_commit "$STATE" "$f" "$surface_end" "$surface_ident" || true
         case " $surface_files " in
           *" $f "*) mark_surfaced "$f" "$surface_end" "$surface_ident" ;;
-          *) triage_log "absorbed benign signal: $f" ;;
+          *)
+            status_acknowledge_working_span "$f" "$surface_end" "$surface_ident" || true
+            triage_log "absorbed benign signal: $f"
+            ;;
         esac
       done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS
@@ -1906,6 +1923,8 @@ EOF
       while IFS=$(printf '\t') read -r f surface_end surface_ident; do
         [ -n "$f" ] || continue
         fm_wake_status_seen_commit "$STATE" "$f" "$surface_end" "$surface_ident" \
+          || signal_commit_error=1
+        status_acknowledge_working_span "$f" "$surface_end" "$surface_ident" \
           || signal_commit_error=1
       done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS

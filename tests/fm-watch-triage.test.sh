@@ -643,6 +643,55 @@ SH
 
 # --- benign attended signals are absorbed ------------------------------------
 
+# Replay routine progress with an unverifiable execution source, including the
+# same task's turn-end in the grace window. Neither may replay at a later drain.
+test_working_span_absorbed_without_live_proof() {
+  local paired dir state fakebin out pid
+  for paired in status paired; do
+    dir=$(make_case "working-span-$paired"); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+    printf 'working: committed fix round 2 and started re-review\nworking: local validation passed at 1440 and 390\n' > "$state/task.status"
+    [ "$paired" != paired ] || : > "$state/task.turn-ended"
+    export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+    watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    if ! wait_for_absorbed "$state" "$pid" 'absorbed benign signal:'; then
+      reap "$pid"; fail "$paired working span woke supervision: $(cat "$out")"
+    fi
+    [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$paired working span queued a wake"; }
+    reap "$pid"
+    [ "$(status_presentation_cursor_offset "$state/task.status")" = "$(size_of "$state/task.status")" ] \
+      || fail "$paired working span did not advance presentation cursor before drain"
+    printf 'done: trigger a later drain\n' >> "$state/task.status"
+    watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "$paired terminal follow-up did not wake"
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2>/dev/null || fail "working span drain failed"
+    if grep -F 'working:' "$dir/drain.out" >/dev/null; then
+      fail "$paired absorbed progress replayed at drain: $(cat "$dir/drain.out")"
+    fi
+  done
+  pass "working-only spans and their paired turn-ends absorb without live proof or unread replay"
+}
+
+test_working_ack_preserves_earlier_unread_note() {
+  local dir state fakebin out pid
+  dir=$(make_case working-after-note); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'note: earlier receipt must remain unread\n' > "$state/task.status"
+  prime_status_seen "$state" "$state/task.status" || fail "could not prime note baseline"
+  printf 'working: resumed compilation\n' >> "$state/task.status"
+  : > "$state/task.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_for_absorbed "$state" "$pid" 'absorbed benign signal:'; then
+    reap "$pid"; fail "working append after note failed to absorb"
+  fi
+  reap "$pid"
+  [ "$(status_presentation_cursor_offset "$state/task.status")" = 0 ] \
+    || fail "working acknowledgement crossed an earlier unread note"
+  pass "working acknowledgement preserves an earlier unread note"
+}
+
 test_nonterminal_signal_absorbed() {
   local dir state fakebin out status_file pid
   dir=$(make_case provably-working-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -1538,10 +1587,10 @@ test_mixed_pending_classifies_each_status_file() {
   if grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "routine.status" >/dev/null; then
     fail "the routine status was queued as a signal in a mixed batch"
   fi
-  grep -F 'UNREAD STATUS' "$drain_out" >/dev/null || fail "the mixed-batch drain omitted UNREAD STATUS"
-  grep -F 'routine working: still compiling' "$drain_out" >/dev/null \
-    || fail "the absorbed routine line was lost before the next drain"
-  pass "a mixed grace-window batch queues only the actionable status file and leaves the routine one for UNREAD STATUS"
+  if grep -F 'routine working: still compiling' "$drain_out" >/dev/null; then
+    fail "the absorbed routine line replayed at the mixed-batch drain"
+  fi
+  pass "a mixed grace-window batch queues only actionable status and acknowledges absorbed working progress"
 }
 
 # A captain-relevant line sits at the start of the log, followed by routine
@@ -4098,6 +4147,8 @@ test_crew_worktree_written_since_classifier
 test_empty_write_prune_widens_the_probe
 test_empty_write_prune_from_the_environment_widens_the_probe
 test_worktree_write_probe_is_wall_clock_bounded
+test_working_span_absorbed_without_live_proof
+test_working_ack_preserves_earlier_unread_note
 test_nonterminal_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_churning_pane_absorbed
@@ -4122,6 +4173,7 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline
 test_working_note_not_working_surfaced
 test_secondmate_nonterminal_status_absorbed
 test_self_announced_close_does_not_rewake_but_next_note_does
+test_mixed_pending_classifies_each_status_file
 test_actionable_signal_surfaced
 test_actionable_signal_survives_a_later_routine_append
 test_release_completion_survives_a_later_routine_append

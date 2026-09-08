@@ -1870,6 +1870,53 @@ EOF
   return "$rc"
 }
 
+# Positive progress proof for one captured span, independent of harness liveness.
+# Empty, mixed, unreadable, or replaced spans are not working-only evidence.
+status_span_is_working_only() {  # <file> <start> <endpoint> <identity>
+  local f=$1 start=$2 endpoint=$3 ident=$4 chunk line found=1 rc=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  case "$start:$endpoint" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  [ "$start" -lt "$endpoint" ] || return 1
+  [ "$(_fm_open_decisions_file_ident "$f")" = "$ident" ] || return 1
+  chunk=$(mktemp "${f}.working.XXXXXX") || return 1
+  _fm_status_read_span "$f" "$start" "$((endpoint - start))" > "$chunk" 2>/dev/null || rc=1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    [ "$(status_line_verb "$line")" = working ] || { rc=1; break; }
+    found=0
+  done < "$chunk"
+  rm -f "$chunk"
+  [ "$(_fm_open_decisions_file_ident "$f")" = "$ident" ] || return 1
+  [ "$rc" -eq 0 ] && [ "$found" -eq 0 ]
+}
+
+# Acknowledge absorbed working progress without crossing an earlier unread note
+# or decision. Serialize with the drain and retain every other task's offsets.
+status_acknowledge_working_span() {  # <file> <endpoint> <identity>
+  local f=$1 endpoint=$2 ident=$3 state lock offset snapshot row task size row_ident acknowledged='' rc=0
+  state=${f%/*}; lock="$state/.status-presentation-lock"
+  fm_lock_acquire_wait_bounded "$lock" 2 || return 1
+  offset=$(status_presentation_cursor_offset "$f") || rc=1
+  if [ "$rc" -eq 0 ] && status_span_is_working_only "$f" "$offset" "$endpoint" "$ident"; then
+    snapshot=$(status_presentation_snapshot "$state") || rc=1
+    while IFS=$(printf '\t') read -r task size row_ident; do
+      [ -n "$task" ] || continue
+      row="$state/$task.status"
+      if [ "$row" = "$f" ]; then
+        size=$endpoint; row_ident=$ident
+      else
+        size=$(status_presentation_cursor_offset "$row") || { rc=1; break; }
+      fi
+      acknowledged="${acknowledged}${task}"$'\t'"${size}"$'\t'"${row_ident}"$'\n'
+    done <<EOF
+$snapshot
+EOF
+    if [ "$rc" -eq 0 ]; then status_commit_presentation_snapshot "$state" "$acknowledged" || rc=1; fi
+  fi
+  fm_lock_release "$lock" || rc=1
+  return "$rc"
+}
+
 status_span_first_actionable() {  # <status-file> <start-offset>
   local record rc rest
   record=$(status_span_first_actionable_record "$1" "${2:-0}")

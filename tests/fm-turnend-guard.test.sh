@@ -184,9 +184,11 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
+  # shellcheck disable=SC2016 # Generated launcher expands these variables when invoked.
+  printf '#!/usr/bin/env bash\n: > "${FM_STATE_OVERRIDE:-$FM_HOME/state}/.afk-relaunch-attempt"\nexit 1\n' > "$dir/bin/fm-afk-launch.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
-  chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh"
+  chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh" "$dir/bin/fm-afk-launch.sh"
 }
 
 mark_codex_hook_root() {
@@ -1922,8 +1924,105 @@ test_hook_away_mode_blocks_on_dead_daemon() {
   record_daemon_lock "$dir" "$dead" "dead daemon identity"
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "a daemon lock left by a dead daemon must not satisfy supervision"
+  [ -e "$dir/state/.afk-relaunch-attempt" ] \
+    || fail "a dead away daemon must trigger the lifecycle launcher's recovery path"
   assert_contains "$out" "$AWAY_REQUIRED_REASON" "away-mode block must point at the daemon, not normal supervision"
-  pass "fm-turnend-guard: away mode blocks on a dead away-mode daemon"
+  pass "fm-turnend-guard: away mode attempts relaunch and blocks if dead-daemon recovery fails"
+}
+
+test_hook_away_mode_does_not_trust_live_watcher_when_daemon_dead() {
+  local dir dead pid identity out status
+  dir=$(make_away_home_between_cycles "$TMP_ROOT/hook-afk-dead-daemon-live-watcher")
+  dead=$(nonexistent_pid)
+  record_daemon_lock "$dir" "$dead" "dead daemon identity"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify live watcher holder"
+  }
+  record_watcher_lock "$dir" "$pid" "$identity"
+  out=$(run_hook "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a live watcher must not hide a dead away daemon"
+  [ -e "$dir/state/.afk-relaunch-attempt" ] \
+    || fail "a dead away daemon must trigger relaunch even when its watcher remains live"
+  assert_contains "$out" "$AWAY_REQUIRED_REASON" "away-mode block must point at the daemon, not normal supervision"
+  pass "fm-turnend-guard: dead away-daemon ownership is checked before a live watcher can allow"
+}
+
+test_hook_away_mode_relaunches_dead_daemon() {
+  local dir dead pid identity out status
+  dir=$(make_away_home_between_cycles "$TMP_ROOT/hook-afk-relaunch-dead-daemon")
+  dead=$(nonexistent_pid)
+  record_daemon_lock "$dir" "$dead" "dead daemon identity"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify replacement away-mode daemon holder"
+  }
+  printf '%s\n' "$pid" > "$dir/state/.replacement-daemon-pid"
+  printf '%s\n' "$identity" > "$dir/state/.replacement-daemon-identity"
+  # shellcheck disable=SC2016 # Generated launcher expands these variables when invoked.
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'state=${FM_STATE_OVERRIDE:-$FM_HOME/state}' \
+    ': > "$state/.afk-relaunch-attempt"' \
+    'mkdir -p "$state/.supervise-daemon.lock"' \
+    'cat "$state/.replacement-daemon-pid" > "$state/.supervise-daemon.lock/pid"' \
+    'cat "$state/.replacement-daemon-identity" > "$state/.supervise-daemon.lock/pid-identity"' \
+    'sleep 1' \
+    'touch "$state/.last-watcher-beat"' \
+    > "$dir/bin/fm-afk-launch.sh"
+  chmod +x "$dir/bin/fm-afk-launch.sh"
+
+  out=$(run_hook "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "a successful dead-daemon relaunch must restore away supervision"
+  [ -z "$out" ] || fail "successful away-daemon relaunch produced a block banner: $out"
+  [ -e "$dir/state/.afk-relaunch-attempt" ] \
+    || fail "the dead-daemon relaunch path did not invoke fm-afk-launch.sh"
+  pass "fm-turnend-guard: a turn boundary relaunches a dead away daemon through fm-afk-launch.sh"
+}
+
+test_hook_away_mode_blocks_until_relaunched_daemon_beats() {
+  local dir dead pid identity out status
+  dir=$(make_away_home_between_cycles "$TMP_ROOT/hook-afk-relaunch-no-beat")
+  dead=$(nonexistent_pid)
+  record_daemon_lock "$dir" "$dead" "dead daemon identity"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify replacement away-mode daemon holder"
+  }
+  printf '%s\n' "$pid" > "$dir/state/.replacement-daemon-pid"
+  printf '%s\n' "$identity" > "$dir/state/.replacement-daemon-identity"
+  # shellcheck disable=SC2016 # Generated launcher expands these variables when invoked.
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'state=${FM_STATE_OVERRIDE:-$FM_HOME/state}' \
+    ': > "$state/.afk-relaunch-attempt"' \
+    'mkdir -p "$state/.supervise-daemon.lock"' \
+    'cat "$state/.replacement-daemon-pid" > "$state/.supervise-daemon.lock/pid"' \
+    'cat "$state/.replacement-daemon-identity" > "$state/.supervise-daemon.lock/pid-identity"' \
+    > "$dir/bin/fm-afk-launch.sh"
+  chmod +x "$dir/bin/fm-afk-launch.sh"
+
+  out=$(run_hook "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a relaunched daemon without a post-launch heartbeat must block"
+  assert_contains "$out" "$AWAY_REQUIRED_REASON" "away-mode block must point at the daemon, not normal supervision"
+  pass "fm-turnend-guard: dead-daemon relaunch requires a post-launch heartbeat"
 }
 
 test_hook_away_mode_blocks_on_pid_reused_daemon() {
@@ -2149,6 +2248,9 @@ test_hook_away_daemon_allows_between_watcher_cycles
 test_hook_away_daemon_allows_over_dead_watcher_lock
 test_hook_away_mode_blocks_without_any_supervisor
 test_hook_away_mode_blocks_on_dead_daemon
+test_hook_away_mode_does_not_trust_live_watcher_when_daemon_dead
+test_hook_away_mode_relaunches_dead_daemon
+test_hook_away_mode_blocks_until_relaunched_daemon_beats
 test_hook_away_mode_blocks_on_pid_reused_daemon
 test_hook_away_mode_blocks_on_stale_beacon
 test_hook_daemon_lock_is_ignored_without_away_mode

@@ -541,6 +541,14 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "tests/fixtures/claude-2.1.263-herdr-composer/auto-mode-busy.txt",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/claude-2.1.263-herdr-composer/auto-mode-idle.txt",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "tests/fixtures/pi-0.85.0-calm-composer/herdr-calm-off-idle.ansi.txt",
       "audience": "maintainer-verification"
     },

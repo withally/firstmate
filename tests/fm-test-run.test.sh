@@ -1099,7 +1099,7 @@ SH
 }
 
 test_runner_reaps_registered_fixture_groups_after_failure_and_timeout() {
-  local tmp repo runner fixture mode rc pid pgid expected_exit
+  local tmp repo runner fixture mode rc pid pgid expected_exit expected_rc fixture_root
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-owned-child.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -1114,6 +1114,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 root=$(fm_test_tmproot fm-owned-child-fixture)
 stop="$root/stop"
+printf '%s\n' "$root" > "$FM_ROOT_REPORT"
 cat > "$root/child.sh" <<'CHILD'
 #!/usr/bin/env bash
 set -u
@@ -1141,22 +1142,29 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ -s "$FM_PID_REPORT" ] || exit 2
 trap - EXIT INT TERM
-[ "$FM_FIXTURE_MODE" != fail ] || exit 1
-sleep 600
+case "$FM_FIXTURE_MODE" in
+  success) exit 0 ;;
+  fail) exit 1 ;;
+  timeout) sleep 600 ;;
+  *) exit 2 ;;
+esac
 SH
   chmod +x "$runner" "$repo/$fixture"
 
-  for mode in fail timeout; do
+  for mode in success fail timeout; do
     set +e
-    FM_FIXTURE_MODE="$mode" FM_PID_REPORT="$tmp/$mode.pid" \
+    FM_FIXTURE_MODE="$mode" FM_PID_REPORT="$tmp/$mode.pid" FM_ROOT_REPORT="$tmp/$mode.root" \
       "$runner" --per-script-timeout-secs 2 "$fixture" >"$tmp/$mode.out" 2>"$tmp/$mode.err"
     rc=$?
     set -e
-    [ "$rc" -eq 1 ] || fail "$mode fixture run returned $rc instead of a bounded failure"
+    if [ "$mode" = success ]; then expected_rc=0; else expected_rc=1; fi
+    [ "$rc" -eq "$expected_rc" ] || fail "$mode fixture run returned $rc instead of $expected_rc"
     read -r pid pgid < "$tmp/$mode.pid"
     ! kill -0 "$pid" 2>/dev/null || fail "$mode fixture left registered pid $pid alive"
     ! kill -0 -- "-$pgid" 2>/dev/null || fail "$mode fixture left registered process group $pgid alive"
-    if [ "$mode" = fail ]; then expected_exit=1; else expected_exit=124; fi
+    fixture_root=$(cat "$tmp/$mode.root")
+    [ ! -e "$fixture_root" ] || fail "$mode fixture left its recorded temp root: $fixture_root"
+    if [ "$mode" = success ]; then expected_exit=0; elif [ "$mode" = fail ]; then expected_exit=1; else expected_exit=124; fi
     grep -Eq "FM_TEST_END .* exit=$expected_exit " "$tmp/$mode.out" \
       || fail "$mode fixture did not preserve its expected test result: $(cat "$tmp/$mode.out")"
     ! grep -Fq 'left a registered fixture process' "$tmp/$mode.out" \

@@ -1997,12 +1997,19 @@ declare -a WORKER_SCRIPTS=()
 # Invoked indirectly by the EXIT trap below.
 # shellcheck disable=SC2329
 cleanup_run() {
+  if [ "$RUN_CLEANUP_FAILED" -eq 1 ] ||
+    compgen -G "$RUN_TMP/cleanup-failed.*" >/dev/null 2>&1 ||
+    compgen -G "$RUN_TMP/owned.*/child.*" >/dev/null 2>&1; then
+    log "preserving owned-child cleanup evidence at $RUN_TMP"
+    return 0
+  fi
   rm -rf "$RUN_TMP"
 }
 
 trap cleanup_run EXIT
 
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
+RUN_CLEANUP_FAILED=0
 TOTAL=0
 FAILED=0
 SKIPPED_GATE=0
@@ -2081,7 +2088,10 @@ record_script_result() {
 run_script_bounded() {  # <script> <out> <stream> <id>
   local script=$1 out=$2 stream=$3 id=$4
   local rc cleanup_rc registry="$RUN_TMP/owned.$id"
-  mkdir -p "$registry"
+  if ! mkdir -p "$registry"; then
+    printf 'not ok - %s could not create its owned-child registry\n' "$script" >>"$out"
+    return 1
+  fi
   set +e
   if [ "$stream" -eq 1 ]; then
     if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
@@ -2118,6 +2128,8 @@ run_script_bounded() {  # <script> <out> <stream> <id>
     cleanup_rc=0
   fi
   if [ "$cleanup_rc" -ne 0 ]; then
+    RUN_CLEANUP_FAILED=1
+    : > "$RUN_TMP/cleanup-failed.$id"
     printf 'not ok - %s left a registered fixture process or process group alive\n' "$script" >>"$out"
     [ "$stream" -eq 1 ] && tail -1 "$out"
     [ "$rc" -ne 0 ] || rc=1

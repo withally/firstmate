@@ -76,7 +76,7 @@ fm_test_owned_group_live() {
 }
 
 fm_test_owned_child_register() { # <registry> <pid> <root> [release-or-stop-control...]
-  local registry=$1 pid=$2 root=$3 pgid identity record tmp control
+  local registry=$1 pid=$2 root=$3 pgid identity record tmp tmp_name control
   shift 3
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ -d "$registry" ] || return 1
@@ -84,16 +84,24 @@ fm_test_owned_child_register() { # <registry> <pid> <root> [release-or-stop-cont
   root=$(cd -P -- "$root" && pwd -P) || return 1
   pgid=$(fm_test_process_pgid "$pid") || return 1
   identity=$(fm_test_pid_identity "$pid") || return 1
-  record="$registry/child.$pid"
-  tmp="$registry/.child.$pid.$$"
   umask 077
-  {
+  tmp=$(mktemp "$registry/.child.$pid.XXXXXX") || return 1
+  tmp_name=${tmp##*/}
+  record="$registry/${tmp_name#.}"
+  if ! {
     printf '%s\n' "$pid" "$pgid" "$root" "$identity"
     for control in "$@"; do
       [ -n "$control" ] && printf '%s\n' "$control"
     done
-  } > "$tmp" || return 1
-  mv "$tmp" "$record"
+  } > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! ln "$tmp" "$record"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
 }
 
 fm_test_owned_group_wait_closed() { # <pgid> <iterations>
@@ -103,6 +111,28 @@ fm_test_owned_group_wait_closed() { # <pgid> <iterations>
     i=$((i + 1))
   done
   ! fm_test_owned_group_live "$pgid"
+}
+
+fm_test_owned_root_cleanup_if_unreferenced() {
+  local record=$1 root=$2 peer peer_root
+  [ -n "$root" ] || return 1
+  [ "$root" != "/" ] || return 1
+  for peer in "${record%/*}"/child.*; do
+    [ -f "$peer" ] || continue
+    [ "$peer" != "$record" ] || continue
+    peer_root=$(sed -n '3p' "$peer" 2>/dev/null) || peer_root=
+    [ "$peer_root" = "$root" ] && return 0
+  done
+  [ -e "$root" ] || return 0
+  [ -d "$root" ] || return 1
+  [ -f "$root/.fm-test-fixture" ] || return 1
+  rm -rf "$root" && [ ! -e "$root" ]
+}
+
+fm_test_owned_child_retire_record() {
+  local record=$1 root=$2
+  fm_test_owned_root_cleanup_if_unreferenced "$record" "$root" || return 1
+  rm -f "$record"
 }
 
 fm_test_owned_child_cleanup_record() { # <record>
@@ -124,7 +154,7 @@ fm_test_owned_child_cleanup_record() { # <record>
   fi
 
   if fm_test_owned_group_wait_closed "$pgid" 150; then
-    rm -f "$record"
+    fm_test_owned_child_retire_record "$record" "$root" || return 1
     return 0
   fi
 
@@ -140,7 +170,7 @@ fm_test_owned_child_cleanup_record() { # <record>
       peer_identity=$(sed -n '4p' "$peer" 2>/dev/null) || continue
       peer_current=$(fm_test_pid_identity "$peer_pid" 2>/dev/null) || continue
       if [ "$peer_current" = "$peer_identity" ]; then
-        rm -f "$record"
+        fm_test_owned_child_retire_record "$record" "$root" || return 1
         return 0
       fi
     done
@@ -154,7 +184,7 @@ fm_test_owned_child_cleanup_record() { # <record>
 
   kill -TERM -- "-$pgid" 2>/dev/null || true
   if fm_test_owned_group_wait_closed "$pgid" 50; then
-    rm -f "$record"
+    fm_test_owned_child_retire_record "$record" "$root" || return 1
     return 0
   fi
 
@@ -162,7 +192,7 @@ fm_test_owned_child_cleanup_record() { # <record>
   # transaction. Escalation stays scoped to that already-proven group.
   kill -KILL -- "-$pgid" 2>/dev/null || true
   if fm_test_owned_group_wait_closed "$pgid" 50; then
-    rm -f "$record"
+    fm_test_owned_child_retire_record "$record" "$root" || return 1
     return 0
   fi
   printf 'fm-test: owned fixture group survived KILL pid=%s pgid=%s root=%s\n' \

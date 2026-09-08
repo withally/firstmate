@@ -12,6 +12,13 @@ export FM_TEST_LONG_LIVED_FIXTURE_HELPER="$TMP_ROOT/long-lived-fixture.sh"
 [ "${FM_TEST_INJECT_UNRETIRED_FAILURE:-0}" != 1 ] || : > "$TMP_ROOT/inject-unretired-failure"
 cat > "$FM_TEST_LONG_LIVED_FIXTURE_HELPER" <<'SH'
 fm_fixture_init() {
+  if [ "${FM_TEST_LEGACY_UNRETIRED_FIXTURE:-0}" = 1 ]; then
+    if [ -n "${FM_TEST_LEGACY_PID_REPORT:-}" ]; then
+      fm_fixture_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]') || exit 97
+      printf '%s %s\n' "$$" "$fm_fixture_pgid" > "$FM_TEST_LEGACY_PID_REPORT" || exit 97
+    fi
+    return 0
+  fi
   bash "${FM_TEST_LIB:?}" owned-child-register \
     "${FM_TEST_OWNED_CHILD_REGISTRY:?}" "$$" "${FM_TEST_FIXTURE_ROOT:?}" "$@" || exit 97
   FM_FIXTURE_DEADLINE=$((SECONDS + 15))
@@ -19,14 +26,38 @@ fm_fixture_init() {
 
 fm_fixture_waiting() {
   local control=${1:-} mode=${2:-stop} parent
-  [ -d "$FM_TEST_FIXTURE_ROOT" ] || return 1
-  [ "$SECONDS" -lt "$FM_FIXTURE_DEADLINE" ] || return 1
+  FM_FIXTURE_WAIT_REASON=waiting
+  if [ "${FM_TEST_LEGACY_UNRETIRED_FIXTURE:-0}" = 1 ]; then
+    [ -n "$control" ] || return 0
+    if [ -e "$control" ]; then
+      FM_FIXTURE_WAIT_REASON=control
+      return 1
+    fi
+    return 0
+  fi
+  if [ ! -d "$FM_TEST_FIXTURE_ROOT" ]; then
+    FM_FIXTURE_WAIT_REASON=fixture-root
+    return 1
+  fi
+  if [ "$SECONDS" -ge "$FM_FIXTURE_DEADLINE" ]; then
+    FM_FIXTURE_WAIT_REASON=deadline
+    return 1
+  fi
   [ -n "$control" ] || return 0
   parent=${control%/*}
   [ "$parent" != "$control" ] || parent=.
-  [ -d "$parent" ] || return 1
-  [ "$mode" != observe ] || return 0
-  [ ! -e "$control" ]
+  if [ ! -d "$parent" ]; then
+    FM_FIXTURE_WAIT_REASON=control-parent
+    return 1
+  fi
+  if [ "$mode" = observe ]; then
+    return 0
+  fi
+  if [ -e "$control" ]; then
+    FM_FIXTURE_WAIT_REASON=control
+    return 1
+  fi
+  return 0
 }
 SH
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
@@ -1159,10 +1190,14 @@ if [ "$count" -eq 0 ]; then
   printf 'signal: synthetic wake\n'
   exit 0
 fi
-fm_fixture_terms=0
-trap 'fm_fixture_terms=$((fm_fixture_terms + 1)); [ "$fm_fixture_terms" -eq 1 ] || exit 0' TERM
-trap 'exit 0' INT
-trap 'printf "closed\n" > "${FM_CLOSE_FILE:?}"' EXIT
+if [ "${FM_TEST_LEGACY_UNRETIRED_FIXTURE:-0}" = 1 ]; then
+  trap '' TERM INT
+else
+  fm_fixture_terms=0
+  trap 'fm_fixture_terms=$((fm_fixture_terms + 1)); [ "$fm_fixture_terms" -eq 1 ] || exit 0' TERM
+  trap 'exit 0' INT
+  trap 'printf "closed\n" > "${FM_CLOSE_FILE:?}"' EXIT
+fi
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 . "$FM_TEST_LONG_LIVED_FIXTURE_HELPER"
 fm_fixture_init "$FM_RELEASE_FILE"
@@ -1220,22 +1255,63 @@ EOF
 }
 
 test_pi_unretired_successor_failure_cleanup() {
-  local registry root_report child_root out status
-  registry="$TMP_ROOT/pi-unretired-failure-registry"
-  root_report="$TMP_ROOT/pi-unretired-failure-root"
-  mkdir -p "$registry"
-  out=$(FM_TEST_OWNED_CHILD_REGISTRY="$registry" \
+  local old_registry old_root_report old_pid_report old_out fixed_registry fixed_root_report fixed_out
+  local old_status fixed_status child_root old_pid old_pgid old_leaked waited
+  old_registry="$TMP_ROOT/pi-unretired-legacy-registry"
+  old_root_report="$TMP_ROOT/pi-unretired-legacy-root"
+  old_pid_report="$TMP_ROOT/pi-unretired-legacy-pid"
+  fixed_registry="$TMP_ROOT/pi-unretired-fixed-registry"
+  fixed_root_report="$TMP_ROOT/pi-unretired-fixed-root"
+  mkdir -p "$old_registry" "$fixed_registry"
+  old_out=$(FM_TEST_OWNED_CHILD_REGISTRY="$old_registry" \
     FM_TEST_ONLY_PI_UNRETIRED_SUCCESSOR=1 \
     FM_TEST_INJECT_UNRETIRED_FAILURE=1 \
-    FM_TEST_TMP_ROOT_REPORT="$root_report" \
+    FM_TEST_LEGACY_UNRETIRED_FIXTURE=1 \
+    FM_TEST_TMP_ROOT_REPORT="$old_root_report" \
+    FM_TEST_LEGACY_PID_REPORT="$old_pid_report" \
     bash "$0" 2>&1)
-  status=$?
-  expect_code 1 "$status" "injected hostile fixture failure must fail its nested suite"
-  child_root=$(cat "$root_report")
-  [ ! -e "$child_root" ] || fail "injected hostile fixture failure left its temp root: $child_root"
-  bash "$FM_TEST_LIB" owned-children-assert-zero "$registry" \
-    || fail "injected hostile fixture failure left a registered process or group: $out"
-  pass "Pi hostile unretired successor is reaped on the failure path"
+  old_status=$?
+  expect_code 1 "$old_status" "legacy hostile fixture failure must fail its nested suite"
+  child_root=$(cat "$old_root_report")
+  [ ! -e "$child_root" ] || fail "legacy hostile fixture failure did not delete its temp root: $child_root"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$old_pid_report" ] && break
+    sleep 0.05
+  done
+  old_pid=
+  old_pgid=
+  if [ -s "$old_pid_report" ]; then
+    read -r old_pid old_pgid < "$old_pid_report"
+  fi
+  old_leaked=0
+  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null &&
+    kill -0 -- "-$old_pgid" 2>/dev/null; then
+    old_leaked=1
+    kill -TERM -- "-$old_pgid" 2>/dev/null || true
+    waited=0
+    while kill -0 -- "-$old_pgid" 2>/dev/null && [ "$waited" -lt 20 ]; do
+      sleep 0.05
+      waited=$((waited + 1))
+    done
+    if kill -0 -- "-$old_pgid" 2>/dev/null; then
+      kill -KILL -- "-$old_pgid" 2>/dev/null || true
+    fi
+  fi
+  [ "$old_leaked" -eq 1 ] || fail "legacy hostile fixture did not remain live after root deletion: $old_out"
+
+  fixed_out=$(FM_TEST_OWNED_CHILD_REGISTRY="$fixed_registry" \
+    FM_TEST_ONLY_PI_UNRETIRED_SUCCESSOR=1 \
+    FM_TEST_INJECT_UNRETIRED_FAILURE=1 \
+    FM_TEST_LEGACY_UNRETIRED_FIXTURE=0 \
+    FM_TEST_TMP_ROOT_REPORT="$fixed_root_report" \
+    bash "$0" 2>&1)
+  fixed_status=$?
+  expect_code 1 "$fixed_status" "injected repaired fixture failure must fail its nested suite"
+  child_root=$(cat "$fixed_root_report")
+  [ ! -e "$child_root" ] || fail "repaired hostile fixture failure left its temp root: $child_root"
+  bash "$FM_TEST_LIB" owned-children-assert-zero "$fixed_registry" \
+    || fail "repaired hostile fixture failure left a registered process or group: $fixed_out"
+  pass "Pi hostile unretired fixture distinguishes legacy leak from repaired cleanup"
 }
 
 test_pi_late_unretired_close_resumes_supervision() {
@@ -1266,7 +1342,9 @@ if [ "$count" -eq 2 ]; then
   . "$FM_TEST_LONG_LIVED_FIXTURE_HELPER"
 fm_fixture_init "$FM_RELEASE_FILE"
 while fm_fixture_waiting "$FM_RELEASE_FILE"; do sleep 0.02; done
-  [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
+  if [ "$FM_FIXTURE_WAIT_REASON" = control ] && [ "$FM_LATE_KIND" = actionable ]; then
+    printf 'signal: late wake\n'
+  fi
   exit 0
 fi
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
@@ -1470,6 +1548,7 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 . "$FM_TEST_LONG_LIVED_FIXTURE_HELPER"
 fm_fixture_init "$FM_RELEASE_FILE"
 while fm_fixture_waiting "$FM_RELEASE_FILE"; do sleep 0.02; done
+[ "$FM_FIXTURE_WAIT_REASON" = control ] || exit 0
 printf 'signal: lock handoff\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -2140,6 +2219,7 @@ trap 'exit 0' TERM INT
 . "$FM_TEST_LONG_LIVED_FIXTURE_HELPER"
 fm_fixture_init "$FM_TRIGGER_FILE.$count"
 while fm_fixture_waiting "$FM_TRIGGER_FILE.$count"; do sleep 0.02; done
+[ "$FM_FIXTURE_WAIT_REASON" = control ] || exit 0
 printf 'signal: streaming chain wake %s\n' "$count"
 exit 0
 SH
@@ -3334,7 +3414,9 @@ if [ "$count" -eq 2 ]; then
   . "$FM_TEST_LONG_LIVED_FIXTURE_HELPER"
 fm_fixture_init "$FM_RELEASE_FILE"
 while fm_fixture_waiting "$FM_RELEASE_FILE"; do sleep 0.02; done
-  [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
+  if [ "$FM_FIXTURE_WAIT_REASON" = control ] && [ "$FM_LATE_KIND" = actionable ]; then
+    printf 'signal: late wake\n'
+  fi
   exit 0
 fi
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
@@ -3539,11 +3621,12 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 . "$FM_TEST_LONG_LIVED_FIXTURE_HELPER"
 fm_fixture_init "$FM_RELEASE_FILE"
 while fm_fixture_waiting "$FM_RELEASE_FILE"; do sleep 0.02; done
+[ "$FM_FIXTURE_WAIT_REASON" = control ] || exit 0
 printf 'signal: lock handoff\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" fm_test_in_owned_process_group node 2>&1 <<'EOF'
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -3569,6 +3652,14 @@ for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
 }
 const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
+  const registered = spawnSync("bash", [
+    process.env.FM_TEST_LIB,
+    "owned-child-register",
+    process.env.FM_TEST_OWNED_CHILD_REGISTRY,
+    String(other.pid),
+    process.env.FM_TEST_FIXTURE_ROOT,
+  ]);
+  if (registered.status !== 0) throw new Error(`could not register lock-holder fixture pid ${other.pid}`);
   writeFileSync(lock, `${other.pid}\n`);
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
   await eventPromise;

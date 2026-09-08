@@ -1283,7 +1283,7 @@ run_check_capture() {
 # with a turn-end still needs execution proof unless the same task supplied a
 # fresh working-only span. Bare turn-ends retain the existing execution gate.
 signal_files_actionable() {  # <status-file> ...
-  local f task record rest endpoint ident rc found=1
+  local f task record rest endpoint ident start status_kind rc found=1
   FM_SIGNAL_SURFACE_ENDPOINTS=''
   FM_SIGNAL_ACTIONABLE_FILES=''
   FM_SIGNAL_WORKING_FILES=''
@@ -1291,8 +1291,10 @@ signal_files_actionable() {  # <status-file> ...
     case "$f" in *.status) ;; *) continue ;; esac
     [ -e "$f" ] || [ -L "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
+    start=$(status_presentation_marker_classified_offset \
+      "$(fm_wake_signal_seen_path "$STATE" "$f")" "$f" 2>/dev/null) || start=
     record=$(status_span_first_actionable_record "$f" \
-      "$(fm_wake_signal_seen_size "$STATE" "$f")")
+      "${start:-0}")
     rc=$?
     [ "$rc" -eq 1 ] && [ -z "$record" ] && continue
     if [ "$rc" -eq 2 ]; then
@@ -1306,11 +1308,15 @@ signal_files_actionable() {  # <status-file> ...
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
     FM_SIGNAL_SURFACE_ENDPOINTS="${FM_SIGNAL_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
-    if [ "$rc" -eq 1 ] && ! status_file_is_secondmate "$f" \
-      && status_span_is_working_only "$f" \
-      "$(fm_wake_signal_seen_size "$STATE" "$f")" "$endpoint" "$ident"; then
-      FM_SIGNAL_WORKING_FILES="$FM_SIGNAL_WORKING_FILES $f"
-    fi
+    status_kind=$(status_file_kind "$f" 2>/dev/null || true)
+    case "$status_kind" in
+      ship|scout)
+        if [ "$rc" -eq 1 ] && [ -n "$start" ] \
+          && status_span_is_working_only "$f" "$start" "$endpoint" "$ident"; then
+          FM_SIGNAL_WORKING_FILES="$FM_SIGNAL_WORKING_FILES $f"
+        fi
+        ;;
+    esac
     if [ "$rc" -eq 0 ]; then
       found=0
       FM_SIGNAL_ACTIONABLE_FILES="${FM_SIGNAL_ACTIONABLE_FILES}${f}"$'\n'

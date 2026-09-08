@@ -649,7 +649,13 @@ test_working_span_absorbed_without_live_proof() {
   local paired dir state fakebin out pid
   for paired in status paired; do
     dir=$(make_case "working-span-$paired"); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
-    printf 'working: committed fix round 2 and started re-review\nworking: local validation passed at 1440 and 390\n' > "$state/task.status"
+    printf 'kind=ship\n' > "$state/task.meta"
+    printf 'note: baseline already delivered\n' > "$state/task.status"
+    FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>/dev/null \
+      || fail "$paired working span could not seed its presentation baseline"
+    prime_status_seen "$state" "$state/task.status" \
+      || fail "$paired working span could not seed its signal baseline"
+    printf 'working: committed fix round 2 and started re-review\nworking: local validation passed at 1440 and 390\n' >> "$state/task.status"
     [ "$paired" != paired ] || : > "$state/task.turn-ended"
     export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
     watch_bg "$state" "$fakebin" "$out"
@@ -676,6 +682,7 @@ test_working_span_absorbed_without_live_proof() {
 test_working_ack_preserves_earlier_unread_note() {
   local dir state fakebin out pid
   dir=$(make_case working-after-note); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'note: earlier receipt must remain unread\n' > "$state/task.status"
   prime_status_seen "$state" "$state/task.status" || fail "could not prime note baseline"
   printf 'working: resumed compilation\n' >> "$state/task.status"
@@ -1499,6 +1506,56 @@ test_secondmate_status_with_turn_end_surfaces_routed_reply() {
   pass "a secondmate working span with a turn-end remains parent-directed"
 }
 
+test_working_span_without_valid_seen_marker_surfaces_turn_end() {
+  local marker_case dir state fakebin out status_file pid marker
+  for marker_case in missing malformed invalidated; do
+    dir=$(make_case "working-span-seen-$marker_case"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; status_file="$state/task.status"; marker="$state/.seen-task_status"
+    printf 'kind=ship\n' > "$state/task.meta"
+    printf 'working: old progress already in the log\n' > "$status_file"
+    case "$marker_case" in
+      missing) ;;
+      malformed) printf '40' > "$marker" ;;
+      invalidated) printf '0@old-identity' > "$marker" ;;
+    esac
+    : > "$state/task.turn-ended"
+    export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+    watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    wait_for_exit "$pid" 100 || {
+      reap "$pid"; fail "$marker_case seen marker let a paired turn-end disappear"
+    }
+    grep -F "$state/task.turn-ended" "$out" >/dev/null \
+      || fail "$marker_case seen marker did not surface the paired turn-end"
+    pass "$marker_case seen marker preserves turn-end evidence"
+  done
+  unset FM_FAKE_CREW_STATE
+}
+
+test_working_span_with_unknown_metadata_surfaces_turn_end() {
+  local metadata_case dir state fakebin out status_file pid
+  for metadata_case in missing malformed; do
+    dir=$(make_case "working-span-meta-$metadata_case"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; status_file="$state/task.status"
+    case "$metadata_case" in
+      missing) ;;
+      malformed) printf 'kind=not-a-task-kind\n' > "$state/task.meta" ;;
+    esac
+    printf 'working: routed progress with uncertain ownership\n' > "$status_file"
+    : > "$state/task.turn-ended"
+    export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+    watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    wait_for_exit "$pid" 100 || {
+      reap "$pid"; fail "$metadata_case metadata let a paired turn-end disappear"
+    }
+    grep -F "$state/task.turn-ended" "$out" >/dev/null \
+      || fail "$metadata_case metadata did not surface the paired turn-end"
+    pass "$metadata_case metadata preserves turn-end evidence"
+  done
+  unset FM_FAKE_CREW_STATE
+}
+
 test_keyed_resolved_wakes_only_when_it_closes_an_open_key() {
   local dir state fakebin out drain_out status_file pid count
   dir=$(make_case resolved-open-key); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -1593,6 +1650,8 @@ test_mixed_pending_classifies_each_status_file() {
   dir=$(make_case mixed-pending); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   routine_file="$state/routine.status"; terminal_file="$state/shipped.status"
+  printf 'kind=ship\n' > "$state/routine.meta"
+  printf 'kind=ship\n' > "$state/shipped.meta"
   printf 'working: still compiling\n' > "$routine_file"
   printf 'done: PR https://example.test/pr/7\n' > "$terminal_file"
   watch_bg "$state" "$fakebin" "$out"
@@ -4198,6 +4257,8 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline
 test_working_note_not_working_surfaced
 test_secondmate_nonterminal_status_absorbed
 test_secondmate_status_with_turn_end_surfaces_routed_reply
+test_working_span_without_valid_seen_marker_surfaces_turn_end
+test_working_span_with_unknown_metadata_surfaces_turn_end
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_mixed_pending_classifies_each_status_file
 test_actionable_signal_surfaced

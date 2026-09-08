@@ -1174,6 +1174,25 @@ status_presentation_marker_offset() {
   printf '%s' "$offset"
 }
 
+status_presentation_marker_classified_offset() {  # <marker> <status-file>
+  local marker=$1 f=$2 raw classified offset ident current size
+  raw=$(cat "$marker" 2>/dev/null) || return 1
+  status_presentation_marker_parse "$raw" || return 1
+  classified=$STATUS_PRESENTATION_CLASSIFIED
+  [ "$classified" != - ] || return 1
+  case "$classified" in *@*) ;; *) return 1 ;; esac
+  offset=${classified%%@*}; ident=${classified#*@}
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$ident" ] || return 1
+  current=$(_fm_open_decisions_file_ident "$f") || return 1
+  [ "$ident" = "$current" ] || return 1
+  size=$(_fm_status_file_size "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$offset" -le "$size" ] || return 1
+  printf '%s' "$offset"
+}
+
 status_presentation_marker_report() {
   local marker=$1 reported=$2 raw classified=-
   _status_presentation_signature_valid "$reported" || return 1
@@ -1870,15 +1889,19 @@ EOF
   return "$rc"
 }
 
-status_file_is_secondmate() {  # <status-file>
+status_file_kind() {  # <status-file>
   local f=$1 base dir task kind
   base=${f##*/}
-  case "$base" in *.status) ;; *) return 1 ;; esac
+  case "$base" in *.status) ;; *) return 2 ;; esac
   dir=${f%/*}
   [ "$dir" != "$f" ] || dir=.
   task=${base%.status}
+  [ -f "$dir/$task.meta" ] && [ -r "$dir/$task.meta" ] && [ ! -L "$dir/$task.meta" ] || return 2
   kind=$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-  [ "$kind" = secondmate ]
+  case "$kind" in
+    ship|scout|secondmate) printf '%s' "$kind" ;;
+    *) return 2 ;;
+  esac
 }
 
 # Positive progress proof for one captured span, independent of harness liveness.
@@ -1905,7 +1928,10 @@ status_span_is_working_only() {  # <file> <start> <endpoint> <identity>
 # or decision. Serialize with the drain and retain every other task's offsets.
 status_acknowledge_working_span() {  # <file> <endpoint> <identity>
   local f=$1 endpoint=$2 ident=$3 state lock offset snapshot row task size row_ident acknowledged='' rc=0
-  status_file_is_secondmate "$f" && return 0
+  case "$(status_file_kind "$f" 2>/dev/null || true)" in
+    ship|scout) ;;
+    *) return 0 ;;
+  esac
   state=${f%/*}; lock="$state/.status-presentation-lock"
   fm_lock_acquire_wait_bounded "$lock" 2 || return 1
   offset=$(status_presentation_cursor_offset "$f") || rc=1
@@ -2097,7 +2123,7 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
 signal_crew_provably_working() {  # <file> ...
-  local f base dir task seen=""
+  local f base dir task seen="" status_kind
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -2110,7 +2136,8 @@ signal_crew_provably_working() {  # <file> ...
     [ -n "$task" ] || continue
     case "$base" in
       *.status)
-        if status_file_is_secondmate "$f"; then
+        status_kind=$(status_file_kind "$f" 2>/dev/null || true)
+        if [ "$status_kind" != ship ] && [ "$status_kind" != scout ]; then
           return 1
         fi
         ;;

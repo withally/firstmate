@@ -3,9 +3,6 @@ state/
 data/*
 !data/fm-lavish-session-prune-f1/
 data/fm-lavish-session-prune-f1/*
-!data/fm-lavish-session-prune-f1/report.md
-!data/fm-lavish-session-prune-f1/authorized-2026-09-08.json
-!data/fm-lavish-session-prune-f1/upstream-issue-draft.md
 scratchpad*
 .no-mistakes/
 .lavish/

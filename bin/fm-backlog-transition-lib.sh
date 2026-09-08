@@ -471,12 +471,32 @@ fm_backlog_record_present() {
 # Task metadata and its recovery/publication records share one incarnation.
 # Publication keeps a write-ahead snapshot until both records exist; removal
 # validates the pair and removes all three, including after an interrupted unlink.
+fm_backlog_task_identity_complete() {
+  local meta=$1 key value lease_id lease_holder
+  for key in spawn_gen worktree window; do
+    value=$(fm_meta_get "$meta" "$key")
+    [ -n "$value" ] || return 1
+  done
+  lease_id=$(fm_meta_get "$meta" treehouse_lease_id)
+  lease_holder=$(fm_meta_get "$meta" treehouse_lease_holder)
+  [ -z "$lease_id" ] && [ -z "$lease_holder" ] || {
+    [ -n "$lease_id" ] && [ -n "$lease_holder" ]
+  }
+}
+
 fm_backlog_task_identity_matches() {
   local old=$1 new=$2 key a b
-  for key in spawn_gen worktree window treehouse_lease_id treehouse_lease_holder; do
+  fm_backlog_task_identity_complete "$old" || return 1
+  fm_backlog_task_identity_complete "$new" || return 1
+  for key in spawn_gen worktree window; do
     a=$(fm_meta_get "$old" "$key")
     b=$(fm_meta_get "$new" "$key")
-    [ -z "$a" ] || [ "$a" = "$b" ] || return 1
+    [ "$a" = "$b" ] || return 1
+  done
+  for key in treehouse_lease_id treehouse_lease_holder; do
+    a=$(fm_meta_get "$old" "$key")
+    b=$(fm_meta_get "$new" "$key")
+    [ -z "$a" ] && [ -z "$b" ] || [ -n "$a" ] && [ "$a" = "$b" ] || return 1
   done
 }
 
@@ -488,6 +508,11 @@ fm_backlog_record_remove() {
       for peer in "$path" "$path.recovery" "$path.publication"; do
         [ -e "$peer" ] || [ -L "$peer" ] || continue
         fm_backlog_record_present "$peer" "$label" "$root" || return 1
+        if [ "$peer" != "$path" ] && [ -z "$anchor" ]; then
+          fm_backlog_task_identity_complete "$peer" || {
+            FM_BACKLOG_TRANSITION_ERROR="incomplete task identity at $peer"; return 1;
+          }
+        fi
         if [ -n "$anchor" ] && ! fm_backlog_task_identity_matches "$peer" "$anchor"; then
           FM_BACKLOG_TRANSITION_ERROR="conflicting task identity at $peer"; return 1
         fi
@@ -538,6 +563,9 @@ fm_backlog_record_publish() {
   if [ "$label" = "task record" ]; then
     case "$target" in
       *.meta)
+        fm_backlog_task_identity_complete "$source" || {
+          FM_BACKLOG_TRANSITION_ERROR="incomplete task identity at $source"; return 1;
+        }
         for peer in "$target.recovery" "$target.publication"; do
           fm_backlog_record_parent_authorized "$peer" "task recovery record" "$root" || return 1
           if [ -e "$peer" ] || [ -L "$peer" ]; then

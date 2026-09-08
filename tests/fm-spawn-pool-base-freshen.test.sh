@@ -574,6 +574,26 @@ test_duplicate_pool_lease_refuses_without_partial_meta() {
   pass "duplicate pool allocation refuses without a partial task record or survivor cleanup"
 }
 
+test_partial_owner_record_blocks_allocation_with_receipt() {
+  local rec id out status partial_meta
+  id='pool-partial-owner'
+  rec=$(make_case partial-owner "$id")
+  read_case_record "$rec"
+  partial_meta="$HOME_DIR/state/unresolved-owner.meta"
+  cat > "$partial_meta" <<EOF
+window=firstmate:unresolved-owner
+spawn_gen=partial-generation
+EOF
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+  status=${status:-0}
+  [ "$status" -ne 0 ] || fail "spawn accepted an unresolved partial owner record"
+  assert_contains "$out" "has no worktree" "partial owner refusal was not fail-closed"
+  assert_present "$partial_meta" "partial owner evidence was removed"
+  assert_present "$HOME_DIR/state/$id.lease-acquisition" "partial owner refusal lost the lease receipt"
+  assert_present "$LEASE_FILE" "partial owner refusal released the unresolved lease"
+  pass "a partial owner record blocks allocation and retains exact lease evidence"
+}
+
 test_recovery_record_blocks_duplicate_pool_lease() {
   local rec id out status recovery_before
   id='pool-recovery-owner'
@@ -669,6 +689,7 @@ test_failed_allocation_response_reconciles_receipt
 test_publication_failure_preserves_identity
 
 test_duplicate_pool_lease_refuses_without_partial_meta
+test_partial_owner_record_blocks_allocation_with_receipt
 test_recovery_record_blocks_duplicate_pool_lease
 
 test_stale_pool_base_refreshes_before_branching

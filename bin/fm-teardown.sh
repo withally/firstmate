@@ -215,6 +215,21 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+
+teardown_retirement_worktree_files() {
+  local worktree=$1 backend=$2 kind=$3 branch
+  [ "$backend" != orca ] && [ "$kind" != secondmate ] || return 0
+  [ -d "$worktree" ] || return 0
+  branch=$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  if [ "$branch" != HEAD ]; then
+    if git -C "$worktree" checkout --detach -q 2>/dev/null; then
+      git -C "$worktree" branch -D "$branch" >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -f "$worktree/.claude/settings.local.json" "$worktree/.opencode/plugins/fm-turn-end.js" \
+    "$worktree/.fm-grok-turnend" "$worktree/.fm-kimi-turnend"
+}
+
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -329,6 +344,10 @@ if [ -e "$STATE/$ID.retiring" ] || [ -L "$STATE/$ID.retiring" ] \
   || { [ -e "$META" ] && [ -e "$STATE/$ID.retired" ]; }; then
   retirement_record="$STATE/$ID.retiring"
   [ ! -e "$STATE/$ID.retired" ] || retirement_record="$STATE/$ID.retired"
+  retirement_backend=$(fm_meta_get "$retirement_record" backend)
+  [ -n "$retirement_backend" ] || retirement_backend=tmux
+  retirement_kind=$(fm_meta_get "$retirement_record" kind)
+  [ -n "$retirement_kind" ] || retirement_kind=ship
   fm_backlog_record_present "$retirement_record" "retirement transaction" "$STATE" || exit 1
   fm_backlog_meta_spawn_gen "$retirement_record" "$STATE" || exit 1
   for retirement_peer in "$META" "$META.recovery" "$META.publication"; do
@@ -363,6 +382,7 @@ if [ -e "$STATE/$ID.retiring" ] || [ -L "$STATE/$ID.retiring" ] \
           echo "REFUSED: retirement retry found unlanded commits" >&2; exit 1;
         }
       fi
+      teardown_retirement_worktree_files "$retirement_wt" "$retirement_backend" "$retirement_kind" || exit 1
       fm_treehouse_lease_return "$retirement_project" "$retirement_wt" "$retirement_lease" "$retirement_holder" || exit 1
     fi
     retirement_tmp=$(mktemp "$STATE/.retired.XXXXXX") || exit 1
@@ -399,11 +419,29 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
     echo "already retired: $ID"
     exit 0
   fi
-  [ -n "$RECOVER_FROM" ] || RECOVER_FROM="$META.recovery"
+  if [ -z "$RECOVER_FROM" ]; then
+    if [ -e "$META.recovery" ] || [ -L "$META.recovery" ]; then
+      RECOVER_FROM="$META.recovery"
+    else
+      RECOVER_FROM="$META.publication"
+    fi
+  fi
   fm_backlog_record_present "$RECOVER_FROM" "orphan recovery record" "$STATE" || {
     echo "REFUSED: task record is absent; $FM_BACKLOG_TRANSITION_ERROR; supply --recover-from with retained exact task metadata" >&2
     exit 1
   }
+  recovery_pair=
+  case "$RECOVER_FROM" in
+    "$META.recovery") recovery_pair="$META.publication" ;;
+    "$META.publication") recovery_pair="$META.recovery" ;;
+  esac
+  if [ -n "$recovery_pair" ] && { [ -e "$recovery_pair" ] || [ -L "$recovery_pair" ]; }; then
+    fm_backlog_record_present "$recovery_pair" "paired task recovery record" "$STATE" || exit 1
+    fm_backlog_task_identity_matches "$RECOVER_FROM" "$recovery_pair" || {
+      echo "REFUSED: orphan recovery sidecars belong to different or incomplete incarnations" >&2
+      exit 1
+    }
+  fi
   recovery_spawn_gen=
   if fm_backlog_meta_spawn_gen "$RECOVER_FROM" "$STATE"; then
     recovery_spawn_gen=$FM_BACKLOG_META_SPAWN_GEN
@@ -453,13 +491,31 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
   git -C "$recovery_wt" fetch --all --quiet || exit 1
   recovery_unlanded=$(git -C "$recovery_wt" rev-list HEAD --not --remotes) || exit 1
   [ -z "$recovery_unlanded" ] || { echo "REFUSED: orphan branch is not remote-contained" >&2; exit 1; }
-  recovery_lease_identity=$(fm_treehouse_lease_identity_from_pool "$recovery_project" "$recovery_wt") || {
-    echo "REFUSED: orphan recovery could not re-derive the current treehouse lease identity for $recovery_wt" >&2
-    exit 1
-  }
-  IFS=$'\t' read -r recovery_lease_id recovery_lease_holder <<EOF
+  recovery_lease_id=$(fm_meta_get "$RECOVER_FROM" treehouse_lease_id)
+  recovery_lease_holder=$(fm_meta_get "$RECOVER_FROM" treehouse_lease_holder)
+  if [ -n "$recovery_lease_id" ] || [ -n "$recovery_lease_holder" ]; then
+    [ -n "$recovery_lease_id" ] && [ -n "$recovery_lease_holder" ] || {
+      echo "REFUSED: orphan recovery retained a partial treehouse lease identity" >&2
+      exit 1
+    }
+    fm_treehouse_lease_verify "$recovery_project" "$recovery_wt" \
+      "$recovery_lease_id" "$recovery_lease_holder" || {
+      echo "REFUSED: orphan recovery treehouse lease identity changed for $recovery_wt" >&2
+      exit 1
+    }
+  else
+    [ "$RECOVERY_EXPLICIT" = 1 ] || {
+      echo "REFUSED: orphan recovery without a lease identity requires explicit --recover-from legacy authorization" >&2
+      exit 1
+    }
+    recovery_lease_identity=$(fm_treehouse_lease_identity_from_pool "$recovery_project" "$recovery_wt") || {
+      echo "REFUSED: orphan recovery could not re-derive the current treehouse lease identity for $recovery_wt" >&2
+      exit 1
+    }
+    IFS=$'\t' read -r recovery_lease_id recovery_lease_holder <<EOF
 $recovery_lease_identity
 EOF
+  fi
   [ -n "$recovery_lease_id" ] && [ -n "$recovery_lease_holder" ] || {
     echo "REFUSED: orphan recovery could not prove a complete treehouse lease identity for $recovery_wt" >&2
     exit 1
@@ -1561,8 +1617,8 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return_command() {
-  local dir=$1 cd_dir=$2 identity_meta=${3:-$META}
-  local lease_id holder recorded_worktree
+  local dir=$1 cd_dir=$2 identity_meta=${3:-$META} expected_holder=${4:-}
+  local lease_id holder recorded_worktree lease_identity
   lease_id=$(fm_meta_get "$identity_meta" treehouse_lease_id)
   holder=$(fm_meta_get "$identity_meta" treehouse_lease_holder)
   recorded_worktree=$(fm_meta_get "$identity_meta" worktree)
@@ -1573,8 +1629,23 @@ teardown_treehouse_return_command() {
     fi
     fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
   else
-    echo "REFUSED: treehouse return for $dir has no identity-bound lease; use --recover-from with retained exact task metadata" >&2
-    return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    if [ "$(fm_meta_get "$identity_meta" kind)" != secondmate ] || [ -z "$expected_holder" ]; then
+      echo "REFUSED: treehouse return for $dir has no identity-bound lease; use --recover-from with retained exact task metadata" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    fi
+    [ "$dir" = "$recorded_worktree" ] || {
+      echo "REFUSED: legacy secondmate treehouse return path does not match its recorded home" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    }
+    lease_identity=$(fm_treehouse_lease_identity_from_pool "$cd_dir" "$dir" "$expected_holder") || {
+      echo "REFUSED: legacy secondmate treehouse return could not prove a unique lease for $dir and holder $expected_holder" >&2
+      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    }
+    IFS=$'\t' read -r lease_id holder <<EOF
+$lease_identity
+EOF
+    [ -n "$lease_id" ] && [ -n "$holder" ] || return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
+    fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
   fi
 }
 
@@ -2281,7 +2352,7 @@ remove_firstmate_home() {
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
     fi
-    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$META" || {
+    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" "" "$META" "$expected_id" || {
       echo "error: treehouse return failed for $label $abs_home_path; lease may still be held" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
       return 1
@@ -3172,6 +3243,10 @@ if [ "$KIND" = secondmate ]; then
       || echo "error: receiver wake restoration failed; recovery state remains at $HANDOFF_WAKE_RETIRE_STAGE" >&2
     exit "$rc"
   fi
+  rm -f "$STATE/$ID.treehouse-lease" || {
+    echo "error: secondmate treehouse lease receipt could not be retired; preserving the route for retry" >&2
+    exit 1
+  }
   handoff_wake_retire_stage_commit \
     || { echo "error: receiver wake cleanup failed; preserving the secondmate route for retry" >&2; exit 1; }
   remove_secondmate_registry_entry "$ID"
@@ -3200,17 +3275,7 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   retirement_tmp=$(mktemp "$STATE/.retiring.XXXXXX") || exit 1
   cat "$META" > "$retirement_tmp" || exit 1
   fm_backlog_record_publish "$retirement_tmp" "$STATE/$ID.retiring" "retirement transaction" "$STATE" || exit 1
-  if [ -d "$WT" ]; then
-  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-  if [ "$branch" != "HEAD" ]; then
-    if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
-    fi
-  fi
-  # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
-  rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
-    "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
-  fi
+  teardown_retirement_worktree_files "$WT" "$BACKEND" "$KIND"
   # Kills remaining processes in the worktree (including the agent), resets, returns
   # to pool. treehouse resolves the pool from the working directory, so run it from
   # the project. teardown_treehouse_return tolerates transient and stale git locks

@@ -2925,6 +2925,7 @@ test_orphan_recovery_and_repeated_teardown() {
   case_dir=$(make_case orphan-recovery)
   write_meta "$case_dir" local-only ship
   mv "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  cp "$case_dir/state/task-x1.meta.recovery" "$case_dir/state/task-x1.meta.publication"
   cat > "$case_dir/fakebin/tmux" <<EOF
 #!/usr/bin/env bash
 case "\$*" in

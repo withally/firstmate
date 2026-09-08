@@ -885,6 +885,7 @@ spawn_abort_preserve_meta() {
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null || true
   fm_backlog_record_publish "$tmp" "$meta" "task record" "$STATE" || { rm -f "$tmp"; return 1; }
+  rm -f "$STATE/$ID.lease-acquisition" || return 1
 }
 
 spawn_abort_return_worktree() {
@@ -987,7 +988,9 @@ spawn_abort_cleanup() {
       fi
     fi
   fi
-  if [ "$SPAWN_ACQUISITION_STARTED" = 1 ] && [ -z "${WT:-}" ]; then
+  if [ "$SPAWN_ACQUISITION_STARTED" = 1 ] \
+     && { [ -z "${WT:-}" ] || [ "$SPAWN_NORMAL_ABORT_CLEANUP" != 1 ] \
+          || [ "$SPAWN_NORMAL_ABORT_RETURN_ALLOWED" != 1 ]; }; then
     fm_treehouse_acquisition_reconcile "$STATE" "$ID" "$PROJ_ABS" ||
       echo "warning: acquisition receipt retained; retry spawn to reconcile its exact lease" >&2
   fi
@@ -1931,6 +1934,31 @@ if [ "$KIND" = secondmate ]; then
     SECONDMATE_PROJECTS=$SECONDMATE_REGISTRY_MATCH_PROJECTS
   fi
   WT="$PROJ_ABS"
+  secondmate_lease_record="$STATE/$ID.treehouse-lease"
+  if [ -e "$secondmate_lease_record" ] || [ -L "$secondmate_lease_record" ]; then
+    fm_backlog_record_present "$secondmate_lease_record" "secondmate lease record" "$STATE" || {
+      echo "error: secondmate lease record is unsafe: $FM_BACKLOG_TRANSITION_ERROR" >&2
+      exit 1
+    }
+    secondmate_lease_project=$(fm_meta_get "$secondmate_lease_record" project)
+    secondmate_lease_worktree=$(fm_meta_get "$secondmate_lease_record" worktree)
+    SPAWN_TREEHOUSE_LEASE_ID=$(fm_meta_get "$secondmate_lease_record" treehouse_lease_id)
+    SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$secondmate_lease_record" treehouse_lease_holder)
+    if [ "$(real_path_or_raw "$secondmate_lease_project")" != "$(real_path_or_raw "$FM_ROOT")" ] \
+      || [ "$(real_path_or_raw "$secondmate_lease_worktree")" != "$(real_path_or_raw "$PROJ_ABS")" ]; then
+      echo "error: secondmate lease record is bound to a different project or home" >&2
+      exit 1
+    fi
+    if [ -z "$SPAWN_TREEHOUSE_LEASE_ID" ] || [ -z "$SPAWN_TREEHOUSE_LEASE_HOLDER" ]; then
+      echo "error: secondmate lease record has no complete lease identity" >&2
+      exit 1
+    fi
+    fm_treehouse_lease_verify "$FM_ROOT" "$PROJ_ABS" \
+      "$SPAWN_TREEHOUSE_LEASE_ID" "$SPAWN_TREEHOUSE_LEASE_HOLDER" || {
+      echo "error: secondmate lease identity changed for $PROJ_ABS" >&2
+      exit 1
+    }
+  fi
   # Local-HEAD sync: before launch, fast-forward this secondmate's worktree to the
   # PRIMARY checkout's current default-branch commit, so a freshly spawned or
   # recovery-respawned secondmate always runs the primary's version (AGENTS.md
@@ -2837,11 +2865,20 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   SPAWN_ACQUISITION_STARTED=1
   lease_json=$(cd "$PROJ_ABS" && treehouse get --lease --json \
     --lease-holder "$SPAWN_TREEHOUSE_LEASE_HOLDER") || exit 1
-  # Bind the response only after proving its holder. The pre-call intent remains
-  # sufficient to reconcile a truncated or invalid response without adopting it.
-  if ! printf '%s' "$lease_json" | jq -e --arg holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" \
-    '.lease_holder == $holder and (.lease_id|type == "string") and (.path|type == "string")' >/dev/null; then
+  lease_receipt_tmp=$(mktemp "$STATE/.lease-receipt.XXXXXX") || exit 1
+  if ! printf '%s' "$lease_json" | jq -e --arg project "$PROJ_ABS" \
+    --arg holder "$SPAWN_TREEHOUSE_LEASE_HOLDER" \
+    'select(.lease_holder == $holder
+      and (.lease_id|type == "string") and (.lease_id|length) > 0
+      and (.path|type == "string") and (.path|startswith("/")))
+      | . + {schema:"fm-lease-acquisition.v1",project:$project}' \
+    > "$lease_receipt_tmp"; then
+    rm -f "$lease_receipt_tmp"
     echo "error: treehouse did not prove a fresh lease; receipt retained for reconciliation" >&2; exit 1
+  fi
+  if ! mv -f "$lease_receipt_tmp" "$lease_journal"; then
+    rm -f "$lease_receipt_tmp"
+    exit 1
   fi
   WT=$(printf '%s' "$lease_json" | jq -er '.path | select(type == "string" and startswith("/"))') || exit 1
   SPAWN_TREEHOUSE_LEASE_ID=$(printf '%s' "$lease_json" | jq -er '.lease_id | select(type == "string" and length > 0)') || {
@@ -2863,10 +2900,6 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     echo "error: could not prove fresh treehouse lease for $WT; refusing spawn" >&2
     exit 1
   fi
-  receipt_tmp=$(mktemp "$STATE/.lease-receipt.XXXXXX") || exit 1
-  printf '%s' "$lease_json" | jq --arg project "$PROJ_ABS" \
-    '. + {schema:"fm-lease-acquisition.v1",project:$project}' > "$receipt_tmp" \
-    && mv -f "$receipt_tmp" "$lease_journal" || exit 1
   printf -v worktree_cd 'cd -- %q' "$WT"
   spawn_send_text_line "$WT_TARGET" "$worktree_cd"
   worktree_entered=0

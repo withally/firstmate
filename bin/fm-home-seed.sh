@@ -49,6 +49,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-charter-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-treehouse-lease-lib.sh
+. "$SCRIPT_DIR/fm-treehouse-lease-lib.sh"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
@@ -388,16 +390,38 @@ seeded_origin_url() {
 }
 
 acquire_treehouse_home() {
-  local id=$1 home
-  # Durably lease a firstmate worktree from the pool. The lease persists with no
-  # live process and is skipped by later get/prune, so the home survives restarts
-  # until teardown or rollback returns it. treehouse prints only the worktree path
-  # to stdout (banners go to stderr), so command substitution captures the path.
-  home=$(cd "$FM_ROOT" && treehouse get --lease --lease-holder "$id") || {
+  local id=$1 home home_json lease_id lease_holder tmp
+  home_json=$(cd "$FM_ROOT" && treehouse get --lease --lease-holder "$id" --json) || {
     echo "error: treehouse get --lease failed to lease a firstmate home" >&2
     return 1
   }
-  [ -n "$home" ] || { echo "error: treehouse get --lease did not report a firstmate home" >&2; return 1; }
+  home=$(printf '%s' "$home_json" | jq -er --arg holder "$id" \
+    'select(.lease_holder == $holder and (.lease_id|type == "string") and (.lease_id|length) > 0 and (.path|type == "string") and (.path|startswith("/"))) | .path') || {
+    echo "error: treehouse get --lease did not report a complete firstmate home lease" >&2
+    return 1
+  }
+  home=$(cd "$home" && pwd -P) || {
+    echo "error: treehouse get --lease returned an unresolvable firstmate home" >&2
+    return 1
+  }
+  refuse_active_home_path "$home" || return 1
+  lease_id=$(printf '%s' "$home_json" | jq -er '.lease_id | select(type == "string" and length > 0)') || return 1
+  lease_holder=$(printf '%s' "$home_json" | jq -er --arg holder "$id" '.lease_holder | select(. == $holder)') || return 1
+  [ -n "$lease_id" ] && [ -n "$lease_holder" ] || {
+    echo "error: treehouse get --lease returned an incomplete lease identity for $home" >&2
+    return 1
+  }
+  SEED_TREEHOUSE_LEASE_ID=$lease_id
+  SEED_TREEHOUSE_LEASE_HOLDER=$lease_holder
+  tmp="$SEED_TREEHOUSE_LEASE_RECORD.tmp.${BASHPID:-$$}"
+  (umask 077; set -C; {
+    printf 'schema=fm-secondmate-treehouse-lease.v1\n'
+    printf 'project=%s\n' "$FM_ROOT"
+    printf 'worktree=%s\n' "$home"
+    printf 'treehouse_lease_id=%s\n' "$lease_id"
+    printf 'treehouse_lease_holder=%s\n' "$lease_holder"
+  } > "$tmp") || { rm -f "$tmp"; return 1; }
+  mv -f -- "$tmp" "$SEED_TREEHOUSE_LEASE_RECORD" || { rm -f "$tmp"; return 1; }
   printf '%s\n' "$home"
 }
 
@@ -519,6 +543,9 @@ seed_exit_cleanup() {
 SEED_HOME=
 SEED_HOME_ACQUIRED=0
 SEED_HOME_CREATED=0
+SEED_TREEHOUSE_LEASE_RECORD=
+SEED_TREEHOUSE_LEASE_ID=
+SEED_TREEHOUSE_LEASE_HOLDER=
 SEED_HOME_BACKED_UP=0
 SEED_BACKUP_DIR=
 SEED_CREATED_PROJECTS_FILE=
@@ -576,16 +603,38 @@ seed_rollback_target() {
 }
 
 seed_return_treehouse_home() {
-  local home=$1 abs_home
+  local home=$1 abs_home lease_id holder record_project
   abs_home=$(seed_rollback_target "$home" "treehouse-acquired home") || return 0
   if ! command -v treehouse >/dev/null 2>&1; then
     echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; treehouse command not found" >&2
     return 0
   fi
-  ( cd "$FM_ROOT" && treehouse return --force "$abs_home" >/dev/null ) || {
-    echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; lease may still be held" >&2
+  lease_id=${SEED_TREEHOUSE_LEASE_ID:-}
+  holder=${SEED_TREEHOUSE_LEASE_HOLDER:-}
+  record_project=$(seed_lease_field "$SEED_TREEHOUSE_LEASE_RECORD" project)
+  [ -n "$record_project" ] || record_project=$FM_ROOT
+  [ -n "$lease_id" ] || lease_id=$(seed_lease_field "$SEED_TREEHOUSE_LEASE_RECORD" treehouse_lease_id)
+  [ -n "$holder" ] || holder=$(seed_lease_field "$SEED_TREEHOUSE_LEASE_RECORD" treehouse_lease_holder)
+  if [ -z "$lease_id" ] || [ -z "$holder" ]; then
+    echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; exact lease identity is unavailable" >&2
     return 0
-  }
+  fi
+  if fm_treehouse_lease_return "$record_project" "$abs_home" "$lease_id" "$holder" >/dev/null; then
+    rm -f -- "$SEED_TREEHOUSE_LEASE_RECORD"
+  else
+    echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; lease may still be held" >&2
+  fi
+}
+
+seed_lease_field() {
+  local path=$1 key=$2 line value=
+  [ -f "$path" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key="*) value=${line#*=} ;;
+    esac
+  done < "$path" 2>/dev/null || true
+  printf '%s' "$value"
 }
 
 seed_remove_created_home() {
@@ -824,6 +873,11 @@ seed_home() {
   fi
 
   mkdir -p "$STATE" || return 1
+  SEED_TREEHOUSE_LEASE_RECORD="$STATE/$id.treehouse-lease"
+  [ ! -e "$SEED_TREEHOUSE_LEASE_RECORD" ] && [ ! -L "$SEED_TREEHOUSE_LEASE_RECORD" ] || {
+    echo "error: secondmate $id has an unresolved treehouse lease record at $SEED_TREEHOUSE_LEASE_RECORD" >&2
+    return 1
+  }
   SEED_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
   fm_lock_acquire_wait "$SEED_REGISTRY_LOCK" || return 1
   SEED_REGISTRY_LOCK_HELD=1
@@ -839,7 +893,8 @@ seed_home() {
   SEED_HOME=
   SEED_HOME_ACQUIRED=0
   SEED_HOME_CREATED=0
-  SEED_HOME_ACQUIRED=0
+  SEED_TREEHOUSE_LEASE_ID=
+  SEED_TREEHOUSE_LEASE_HOLDER=
   SEED_HOME_BACKED_UP=0
   SEED_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-home-seed.XXXXXX")
   SEED_CREATED_PROJECTS_FILE="$SEED_BACKUP_DIR/created-projects"

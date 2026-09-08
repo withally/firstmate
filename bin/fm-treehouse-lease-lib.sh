@@ -35,13 +35,24 @@ fm_treehouse_lease_return() { # <project> <worktree> <lease-id> <holder>
 
 fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]
   local state=$1 worktree=$2 excluded=${3:-} excluded_journal=${4:-} physical owner_meta owner_wt owner_real
-  local excluded_recovery excluded_primary
+  local excluded_recovery excluded_publication excluded_primary
   physical=$(cd "$worktree" && pwd -P) || return 1
   excluded_recovery=
+  excluded_publication=
   excluded_primary=
   case "$excluded" in
-    *.meta) excluded_recovery="$excluded.recovery" ;;
-    *.meta.recovery) excluded_primary=${excluded%.recovery} ;;
+    *.meta)
+      excluded_recovery="$excluded.recovery"
+      excluded_publication="$excluded.publication"
+      ;;
+    *.meta.recovery)
+      excluded_primary=${excluded%.recovery}
+      excluded_publication="$excluded_primary.publication"
+      ;;
+    *.meta.publication)
+      excluded_primary=${excluded%.publication}
+      excluded_recovery="$excluded_primary.recovery"
+      ;;
   esac
   for owner_meta in "$state"/*.lease-acquisition; do
     [ "$owner_meta" != "$excluded_journal" ] || continue
@@ -58,7 +69,7 @@ fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]
   for owner_meta in "$state"/*.meta "$state"/*.meta.recovery "$state"/*.meta.publication "$state"/*.retiring; do
     [ "$owner_meta" != "$excluded" ] || continue
     [ "$owner_meta" != "$excluded_recovery" ] || continue
-    [ "$owner_meta" != "$excluded.publication" ] || continue
+    [ "$owner_meta" != "$excluded_publication" ] || continue
     [ "$owner_meta" != "$excluded_primary" ] || continue
     [ -e "$owner_meta" ] || [ -L "$owner_meta" ] || continue
     if [ ! -f "$owner_meta" ] || [ -L "$owner_meta" ]; then
@@ -66,7 +77,10 @@ fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]
       return 1
     fi
     owner_wt=$(fm_meta_get "$owner_meta" worktree)
-    [ -n "$owner_wt" ] || continue
+    [ -n "$owner_wt" ] || {
+      echo "error: unresolved task ownership record $owner_meta has no worktree; reconcile before allocating" >&2
+      return 1
+    }
     owner_real=$(cd "$owner_wt" 2>/dev/null && pwd -P) || owner_real=$owner_wt
     if [ "$owner_real" = "$physical" ]; then
       echo "error: worktree $worktree is already recorded by $owner_meta; refusing duplicate lease" >&2

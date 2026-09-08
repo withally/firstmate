@@ -2,7 +2,7 @@
 # Lavish adapter for the generic process-to-event runner.
 #
 # Usage:
-#   fm-procevent-lavish.sh arm <artifact.html>
+#   fm-procevent-lavish.sh arm <artifact.html> [--task-id <task-id>]
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh source-acknowledgements
@@ -12,6 +12,7 @@
 #   fm-procevent-lavish.sh read <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
+#   fm-procevent-lavish.sh retire-and-end <task-id> <artifact.html>
 #   fm-procevent-lavish.sh poll <artifact.html>
 #
 # classify   Print the lifecycle state a handler should act on: feedback, ended,
@@ -162,9 +163,13 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local artifact=${1-} id real
+  local artifact=${1-} id real task=
   [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
+  if [ "$#" -eq 3 ] && [ "$2" = --task-id ]; then
+    task=$3
+  elif [ "$#" -ne 1 ]; then
+    usage
+  fi
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   poll_retry_delay >/dev/null
   id=$(cmd_source_id "$artifact") || exit 1
@@ -176,6 +181,16 @@ cmd_arm() {
   # interruption reach the runner as a captured result.
   "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
     -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  if [ "${FM_LAVISH_LEDGER_TEST_BYPASS:-0}" != 1 ]; then
+    if [ -n "$task" ]; then
+      "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" "$task" >/dev/null
+    else
+      "$SCRIPT_DIR/fm-lavish-session.sh" register-auto "$real" >/dev/null
+    fi || {
+      "$SCRIPT_DIR/fm-procevent.sh" retire "$id" >/dev/null 2>&1 || true
+      die "cannot record Lavish ownership for $real"
+    }
+  fi
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
 }
@@ -185,6 +200,13 @@ cmd_retire() {
   [ -n "$artifact" ] || usage
   id=$(cmd_source_id "$artifact") || exit 1
   "$SCRIPT_DIR/fm-procevent.sh" retire "$id"
+}
+
+cmd_retire_and_end() {
+  local task=${1-} artifact=${2-}
+  [ "$#" -eq 2 ] || usage
+  cmd_retire "$artifact" || exit 1
+  "$SCRIPT_DIR/fm-lavish-session.sh" end "$task" "$artifact"
 }
 
 # The bounded quiet retry described in the header. The bound is a constant
@@ -680,6 +702,7 @@ cmd_read() {
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
+  retire-and-end) shift; cmd_retire_and_end "$@" ;;
   poll)      shift; cmd_poll "$@" ;;
   source-acknowledgements) [ "$#" -eq 1 ] || usage ;;
   acknowledge) shift; cmd_acknowledge "$@" ;;

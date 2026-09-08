@@ -28,6 +28,7 @@ set -u
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
+export FM_LAVISH_STATE_FILE="$TMP_ROOT/no-lavish-state.json"
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
@@ -44,7 +45,8 @@ unset TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH \
 make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi
+  fm_fake_exit0 "$fakebin" tmux chrome-devtools-axi
+  ln -s "$(command -v node)" "$fakebin/node"
   fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
@@ -401,6 +403,37 @@ much older lavish-axi minor reports an upgrade^0.0.9^missing
 unparseable lavish-axi version reports an upgrade^lavish-axi development build^missing
 ROWS
   pass "bootstrap enforces lavish-axi minimum version"
+}
+
+test_lavish_registry_thresholds() {
+  local case_dir fakebin state out
+  case_dir="$TMP_ROOT/lavish-registry"
+  state="$case_dir/lavish-state.json"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  STATE_FILE="$state" COUNT=19 node <<'NODE'
+const fs=require("node:fs"); const sessions={};
+for(let i=0;i<Number(process.env.COUNT);i++) sessions[`key${i}`]={key:`key${i}`,file:`/missing/${i}.html`,status:"open",pending_prompts:0,prompts:[]};
+fs.writeFileSync(process.env.STATE_FILE,JSON.stringify({sessions}));
+NODE
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_LAVISH_STATE_FILE="$state" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "19 open Lavish rows should stay silent: $out"
+  STATE_FILE="$state" COUNT=50 node <<'NODE'
+const fs=require("node:fs"); const sessions={};
+for(let i=0;i<Number(process.env.COUNT);i++) sessions[`key${i}`]={key:`key${i}`,file:`/missing/${i}.html`,status:"open",pending_prompts:0,prompts:[]};
+fs.writeFileSync(process.env.STATE_FILE,JSON.stringify({sessions}));
+NODE
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_LAVISH_STATE_FILE="$state" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$(printf '%s\n' "$out" | grep -c '^LAVISH_REGISTRY_WARNING:')" -eq 1 ] \
+    || fail "50 open Lavish rows did not emit exactly one warning: $out"
+  assert_contains "$out" 'historical registry rows, not live connections' \
+    "Lavish bootstrap warning distinguishes registry rows from connections"
+  assert_contains "$out" 'run bin/fm-lavish-audit.sh audit' \
+    "Lavish bootstrap warning names the audit command"
+  pass "bootstrap stays silent below target and warns once from 50 open Lavish rows"
 }
 
 test_tasks_axi_min_version() {
@@ -1152,6 +1185,7 @@ test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
 test_lavish_axi_min_version
+test_lavish_registry_thresholds
 test_tasks_axi_min_version
 test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction

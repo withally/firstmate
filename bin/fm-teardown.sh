@@ -2762,6 +2762,14 @@ fi
 # dedicated process-event and firstmate-home removal machinery further below,
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
+  # Lavish's supported end command requires the source file to still exist.
+  # The ledger owner therefore closes and verifies every recorded ephemeral
+  # review before process reaping or worktree return can remove that file.
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-lavish-session.sh" end-ephemeral "$ID" || {
+      echo "error: could not end every recorded ephemeral Lavish session for $ID; preserving the worktree and task records" >&2
+      exit 1
+    }
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi

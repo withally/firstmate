@@ -44,6 +44,9 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Publication is deliberately best-effort, so it cannot change another session-start, spawn, teardown, or watcher-poll result, and the watcher runs it detached so a slow attempt cannot delay the liveness beacon.
   Read the named record for the recorded reasons, then reproduce with a direct `bin/fm-home-summary-refresh.sh` (no `--best-effort`, which is what keeps the failure quiet) so the refresh error reaches you.
   A recorded deadline means the complete refresh did not finish inside `FM_HOME_SUMMARY_TIMEOUT`, so inspect lock acquisition and producer completion before validation or publication, and fix the blocked phase rather than raising this load-bearing bound.
+- `LAVISH_REGISTRY_WARNING: <counts>; ... run bin/fm-lavish-audit.sh audit` - the historical Lavish registry has reached 50 open rows, or its read-only audit could not complete.
+  Run the named audit, preserve every ambiguous or actively owned review, and never treat registry-row count as live-connection count.
+  Bootstrap never prunes sessions.
 
 - `BOOTSTRAP_INFO: closed the backlog item for <id> after interrupted cleanup; its endpoint or local copy may remain and should be reconciled` - replay closed the item, but the durable transition says physical cleanup was interrupted.
   Verify process reaping, the local-copy return, and endpoint closure, then reconcile any surviving resource.

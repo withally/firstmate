@@ -11,6 +11,7 @@
 # Legacy responses without delivery_id keep the older source-side loss window,
 # while the runner's own capture-before-announcement guarantee applies to both.
 set -u
+export FM_LAVISH_LEDGER_TEST_BYPASS=1
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

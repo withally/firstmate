@@ -27,8 +27,13 @@ Use the adapter, not the generic runner, for a real source.
 For a Lavish review artifact produced by a worker (a live investigating scout should host its own loop and author revisions):
 
 ```sh
-bin/fm-procevent-lavish.sh arm <artifact.html>
+bin/fm-procevent-lavish.sh arm <artifact.html> --task-id <task-id>
 ```
+
+The adapter records the task's Lavish ownership ledger as part of arming.
+Use `bin/fm-lavish-session.sh safe-park <task-id> <worktree-artifact.html> <durable-artifact.html>` when a review must outlive its worktree; that command owns the copy, re-serve, binding transfer, live verification, and superseded-session end sequence.
+Use `bin/fm-procevent-lavish.sh retire-and-end <task-id> <artifact.html>` only when the durable review's owning lifecycle has reached its terminal event.
+Plain `retire` remains the correct narrow operation for a listener replacement that must leave the review open.
 
 When a source carries captain answers to captain-held tasks, bind it BEFORE arming it, so it can never produce an answer that has nowhere to go:
 

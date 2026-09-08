@@ -4,6 +4,7 @@
 # scratch directory, and its server uses an isolated ephemeral port. It never
 # invokes the globally installed lavish-axi or the shared server on port 4387.
 set -u
+export FM_LAVISH_LEDGER_TEST_BYPASS=1
 
 if [ "${FM_LAVISH_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_LAVISH_LIVE_E2E=1 to run the patched Lavish capture/ACK regression"

@@ -2,6 +2,7 @@
 # Behavior tests for Lavish delivery acknowledgement through the real
 # process-event capture path and a protocol-faithful fake lavish-axi.
 set -u
+export FM_LAVISH_LEDGER_TEST_BYPASS=1
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

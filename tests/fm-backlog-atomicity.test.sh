@@ -83,6 +83,41 @@ SH
   fm_git_add_origin "$case_dir/project" "$case_dir/project.origin.git"
   git -C "$case_dir/project" worktree add --quiet -b pooled "$case_dir/wt"
 
+  printf '[]\n' > "$case_dir/pool.json"
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+base=$(cd "$(dirname "$0")/.." && pwd -P)
+case "${1:-}" in
+  get)
+    shift
+    holder=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --lease-holder) holder=$2; shift ;; esac
+      shift
+    done
+    [ -n "$holder" ] || exit 1
+    jq -n --arg path "$base/wt" --arg holder "$holder" \
+      '[{path:$path,status:"leased",lease_id:$holder,lease_holder:$holder}]' > "$base/pool.json"
+    jq '.[0]' "$base/pool.json"
+    ;;
+  status) cat "$base/pool.json" ;;
+  return)
+    lease= holder=
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --if-lease-id) lease=$2; shift ;; --if-lease-holder) holder=$2; shift ;; esac
+      shift
+    done
+    jq -e --arg lease "$lease" --arg holder "$holder" \
+      'any(.[]; .lease_id==$lease and .lease_holder==$holder)' "$base/pool.json" >/dev/null || exit 1
+    printf '[]\n' > "$base/pool.json"
+    ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/treehouse"
+  cp "$fakebin/treehouse" "$fakebin/treehouse-base"
+
   printf '%s\n' "$case_dir"
 }
 
@@ -263,7 +298,7 @@ SH
   cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
 : > "$case_dir/local-copy-resource-action"
-exit 0
+exec "$case_dir/fakebin/treehouse-base" "\$@"
 SH
   chmod +x "$case_dir/fakebin/tmux" "$case_dir/fakebin/treehouse"
 }
@@ -279,7 +314,7 @@ if [ "\${1:-}" = return ] && [ ! -f "$case_dir/teardown-interrupted" ]; then
   kill -TERM "\$teardown_pid"
   kill -TERM "\$\$"
 fi
-exit 0
+exec "$case_dir/fakebin/treehouse-base" "\$@"
 SH
   chmod +x "$case_dir/fakebin/treehouse"
 }
@@ -383,12 +418,21 @@ write_task_meta() {  # <case-dir> <id> <kind> <mode> [extra-line...]
     "window=firstmate:fm-$id" \
     "endpoint_task_id=$id" \
     "worktree=$case_dir/absent-worktree" \
-    "project=$case_dir/absent-project" \
+    "project=$case_dir/project" \
+    "treehouse_lease_id=fixture-$id" \
+    "treehouse_lease_holder=fixture-$id" \
     "harness=claude" \
     "kind=$kind" \
     "mode=$mode" \
     "yolo=off" \
     "$@"
+  # These cases replace a complete lifecycle fixture, including its paired
+  # recovery evidence, rather than simulating a conflicting incarnation.
+  if [ -e "$(home_of "$case_dir")/state/$id.meta.recovery" ]; then
+    cp "$(home_of "$case_dir")/state/$id.meta" "$(home_of "$case_dir")/state/$id.meta.recovery"
+  fi
+  jq -n --arg path "$case_dir/absent-worktree" --arg lease "fixture-$id" \
+    '[{path:$path,status:"leased",lease_id:$lease,lease_holder:$lease}]' > "$case_dir/pool.json"
 }
 
 run_spawn() {  # <case-dir> <args...>
@@ -410,9 +454,8 @@ run_ship_spawn() {  # <case-dir> <id>
   run_spawn "$case_dir" "$id" "$case_dir/project" --mode no-mistakes --yolo off
 }
 
-# Teardown against a recorded worktree that no longer exists: the landed-work and
-# worktree-return steps are then no-ops, which keeps these cases about the
-# backlog transition rather than re-testing tests/fm-teardown.test.sh's matrix.
+# An absent checkout still has a durable pool lease; teardown must return that
+# exact lease before retiring the backlog record.
 run_teardown() {  # <case-dir> <id> [args...]
   local case_dir=$1
   shift

@@ -322,6 +322,59 @@ META="$STATE/$ID.meta"
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
+# Replay the final worktree-return transaction before ordinary live-lease checks.
+# The snapshot is published only after endpoint and auxiliary cleanup. It binds
+# return, completed receipt and metadata retirement to the same incarnation.
+if [ -e "$STATE/$ID.retiring" ] || [ -L "$STATE/$ID.retiring" ] \
+  || { [ -e "$META" ] && [ -e "$STATE/$ID.retired" ]; }; then
+  retirement_record="$STATE/$ID.retiring"
+  [ ! -e "$STATE/$ID.retired" ] || retirement_record="$STATE/$ID.retired"
+  fm_backlog_record_present "$retirement_record" "retirement transaction" "$STATE" || exit 1
+  fm_backlog_meta_spawn_gen "$retirement_record" "$STATE" || exit 1
+  for retirement_peer in "$META" "$META.recovery" "$META.publication"; do
+    [ -e "$retirement_peer" ] || [ -L "$retirement_peer" ] || continue
+    fm_backlog_record_present "$retirement_peer" "task record" "$STATE" || exit 1
+    fm_backlog_task_identity_matches "$retirement_peer" "$retirement_record" || {
+      echo "REFUSED: retirement transaction belongs to a different incarnation" >&2; exit 1;
+    }
+  done
+  if [ "$(fm_meta_get "$retirement_record" retirement_complete)" = 1 ] \
+    && [ "$(fm_meta_get "$retirement_record" retirement_task_id)" != "$ID" ]; then
+    echo "REFUSED: retirement receipt belongs to a different task" >&2; exit 1
+  fi
+  if [ "$(fm_meta_get "$retirement_record" retirement_complete)" != 1 ]; then
+    [ "$retirement_record" = "$STATE/$ID.retiring" ] || { echo "REFUSED: incomplete retirement receipt" >&2; exit 1; }
+    retirement_project=$(fm_meta_get "$retirement_record" project)
+    retirement_wt=$(fm_meta_get "$retirement_record" worktree)
+    retirement_lease=$(fm_meta_get "$retirement_record" treehouse_lease_id)
+    retirement_holder=$(fm_meta_get "$retirement_record" treehouse_lease_holder)
+    [ -n "$retirement_lease" ] && [ -n "$retirement_holder" ] || exit 1
+    retirement_pool=$(cd "$retirement_project" && treehouse status --json) || exit 1
+    retirement_matches=$(printf '%s' "$retirement_pool" | jq -er --arg lease "$retirement_lease" '
+      if type == "array" then [.[] | select(.status == "leased" and .lease_id == $lease)] | length else error("invalid pool") end') || exit 1
+    if [ "$retirement_matches" != 0 ]; then
+      fm_treehouse_lease_verify "$retirement_project" "$retirement_wt" "$retirement_lease" "$retirement_holder" || exit 1
+      if [ -d "$retirement_wt" ]; then
+        retirement_dirty=$(git -C "$retirement_wt" status --porcelain --untracked-files=all --ignored) || exit 1
+        [ -z "$retirement_dirty" ] || { echo "REFUSED: retirement retry found new unlanded work" >&2; exit 1; }
+        git -C "$retirement_wt" fetch --all --quiet || exit 1
+        retirement_unlanded=$(git -C "$retirement_wt" rev-list HEAD --not --remotes) || exit 1
+        [ -z "$retirement_unlanded" ] || {
+          echo "REFUSED: retirement retry found unlanded commits" >&2; exit 1;
+        }
+      fi
+      fm_treehouse_lease_return "$retirement_project" "$retirement_wt" "$retirement_lease" "$retirement_holder" || exit 1
+    fi
+    retirement_tmp=$(mktemp "$STATE/.retired.XXXXXX") || exit 1
+    { cat "$retirement_record"; printf 'retirement_task_id=%s\nretirement_complete=1\n' "$ID"; } > "$retirement_tmp" || exit 1
+    fm_backlog_record_publish "$retirement_tmp" "$STATE/$ID.retired" "retirement receipt" "$STATE" || exit 1
+  fi
+  fm_backlog_record_remove "$META" "task record" "$STATE" || exit 1
+  fm_backlog_close_marker_replay "$STATE" "$STATE/$ID.backlog-close" "$DATA" || exit 1
+  rm -f "$STATE/$ID.retiring" || exit 1
+  echo "already retired: $ID (completed retirement transaction)"
+  exit 0
+fi
 TEARDOWN_ORPHAN_RECOVERY=0
 if [ ! -e "$META" ] && [ ! -L "$META" ]; then
   if [ -e "$STATE/$ID.retired" ] || [ -L "$STATE/$ID.retired" ]; then
@@ -332,9 +385,17 @@ if [ ! -e "$META" ] && [ ! -L "$META" ]; then
       || [ "$(fm_meta_get "$STATE/$ID.retired" retirement_complete)" != 1 ]; then
       echo "REFUSED: retirement receipt identity mismatch for $ID" >&2; exit 1
     fi
+    for retirement_peer in "$META.recovery" "$META.publication"; do
+      [ -e "$retirement_peer" ] || [ -L "$retirement_peer" ] || continue
+      fm_backlog_record_present "$retirement_peer" "task recovery record" "$STATE" || exit 1
+      fm_backlog_task_identity_matches "$retirement_peer" "$STATE/$ID.retired" || {
+        echo "REFUSED: retirement receipt conflicts with retained recovery identity" >&2; exit 1;
+      }
+    done
     fm_backlog_close_marker_replay "$STATE" "$STATE/$ID.backlog-close" "$DATA" || {
       echo "REFUSED: $FM_BACKLOG_TRANSITION_ERROR" >&2; exit 1;
     }
+    fm_backlog_record_remove "$META" "task record" "$STATE" || exit 1
     echo "already retired: $ID"
     exit 0
   fi
@@ -1500,8 +1561,8 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return_command() {
-  local dir=$1 cd_dir=$2 identity_meta=${3:-$META} expected_holder=${4:-}
-  local lease_id holder identity recorded_worktree
+  local dir=$1 cd_dir=$2 identity_meta=${3:-$META}
+  local lease_id holder recorded_worktree
   lease_id=$(fm_meta_get "$identity_meta" treehouse_lease_id)
   holder=$(fm_meta_get "$identity_meta" treehouse_lease_holder)
   recorded_worktree=$(fm_meta_get "$identity_meta" worktree)
@@ -1512,19 +1573,8 @@ teardown_treehouse_return_command() {
     fi
     fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
   else
-    identity=$(fm_treehouse_lease_identity_from_pool "$cd_dir" "$dir" "$expected_holder" || true)
-    if [ -z "$identity" ]; then
-      echo "REFUSED: treehouse return for $dir has no identity-bound lease; use --recover-from with retained exact task metadata" >&2
-      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
-    fi
-    IFS=$'\t' read -r lease_id holder <<EOF
-$identity
-EOF
-    [ -n "$lease_id" ] && [ -n "$holder" ] || {
-      echo "REFUSED: treehouse return for $dir has no complete identity-bound lease tuple; use --recover-from with retained exact task metadata" >&2
-      return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
-    }
-    fm_treehouse_lease_return "$cd_dir" "$dir" "$lease_id" "$holder"
+    echo "REFUSED: treehouse return for $dir has no identity-bound lease; use --recover-from with retained exact task metadata" >&2
+    return "$TEARDOWN_TREEHOUSE_LEASE_REFUSED"
   fi
 }
 
@@ -3026,28 +3076,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
-elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
-  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-  if [ "$branch" != "HEAD" ]; then
-    if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
-    fi
-  fi
-  # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
-  rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
-    "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
-  # Kills remaining processes in the worktree (including the agent), resets, returns
-  # to pool. treehouse resolves the pool from the working directory, so run it from
-  # the project. teardown_treehouse_return tolerates transient and stale git locks
-  # left by a killed crew process; see the script header for retry and stale-lock proof.
-  post_lock_cleanup_check=
-  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
-    post_lock_cleanup_check=validate_worktree_teardown_safety
-  fi
-  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
-    echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
-    exit 1
-  }
+
 fi
 
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
@@ -3167,6 +3196,34 @@ rm -f "$STATE/$ID.lease-acquisition" "$STATE/$ID.turn-ended" \
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.
 rm -rf "$STATE/$ID.inbox"
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  retirement_tmp=$(mktemp "$STATE/.retiring.XXXXXX") || exit 1
+  cat "$META" > "$retirement_tmp" || exit 1
+  fm_backlog_record_publish "$retirement_tmp" "$STATE/$ID.retiring" "retirement transaction" "$STATE" || exit 1
+  if [ -d "$WT" ]; then
+  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  if [ "$branch" != "HEAD" ]; then
+    if git -C "$WT" checkout --detach -q 2>/dev/null; then
+      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+    fi
+  fi
+  # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
+  rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
+    "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
+  fi
+  # Kills remaining processes in the worktree (including the agent), resets, returns
+  # to pool. treehouse resolves the pool from the working directory, so run it from
+  # the project. teardown_treehouse_return tolerates transient and stale git locks
+  # left by a killed crew process; see the script header for retry and stale-lock proof.
+  post_lock_cleanup_check=
+  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
+    post_lock_cleanup_check=validate_worktree_teardown_safety
+  fi
+  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
+    echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
+    exit 1
+  }
+fi
 # Publish the completed physical cleanup identity before removing its metadata.
 # Pending backlog transitions remain replayable under the same meta lock.
 if [ "$KIND" != secondmate ]; then
@@ -3208,6 +3265,7 @@ fi
 if [ -d "$STATE" ]; then
   fm_backlog_record_remove "$META.recovery" "task recovery record" "$STATE" || exit 1
 fi
+rm -f "$STATE/$ID.retiring" || exit 1
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then

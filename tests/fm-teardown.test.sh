@@ -80,9 +80,12 @@ make_case() {
 
   # Mocks for the post-check teardown steps. Refuse logic exits before these
   # run; the ALLOW cases need them so the script can complete cleanly.
-  cat > "$fakebin/treehouse" <<'SH'
+  cat > "$fakebin/treehouse" <<SH
 #!/usr/bin/env bash
-# `treehouse return --force <wt>`: succeed silently.
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/child-a-wt","status":"leased","lease_id":"fixture-lease-child-a","lease_holder":"fixture-child-a"},{"path":"$case_dir/child-b-wt","status":"leased","lease_id":"fixture-lease-child-b","lease_holder":"fixture-child-b"}]'
+  exit 0
+fi
 exit 0
 SH
   cat > "$fakebin/tmux" <<'SH'
@@ -185,7 +188,9 @@ write_meta() {
     "project=$case_dir/project" \
     "kind=$kind" \
     "mode=$mode" \
-    "spawn_gen=teardown-test-task-x1"
+    "spawn_gen=teardown-test-task-x1" \
+    "treehouse_lease_id=fixture-lease-task-x1" \
+    "treehouse_lease_holder=teardown-test-task-x1"
 }
 
 # Commit something on the worktree's task branch. Args: case_dir [message]
@@ -319,14 +324,20 @@ add_lock_aware_treehouse() {
   local case_dir=$1
   cat > "$case_dir/fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = return ]; then
-  shift
-  wt=""
-  for a in "$@"; do
-    case "$a" in
+if [ "${1:-}" = status ]; then
+  printf '[{"path":"%s","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]\n' "${FM_FAKE_TREEHOUSE_STATUS_PATH:?}"
+  exit 0
+fi
+  if [ "${1:-}" = return ]; then
+    shift
+    wt=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
       --force) ;;
-      *) wt=$a ;;
+      --if-lease-id|--if-lease-holder) shift ;;
+      *) wt=$1 ;;
     esac
+    shift
   done
   lock=$(git -C "$wt" rev-parse --git-path index.lock 2>/dev/null || true)
   case "$lock" in
@@ -353,14 +364,20 @@ add_transient_lock_treehouse() {
   local case_dir=$1
   cat > "$case_dir/fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = return ]; then
-  shift
-  wt=""
-  for a in "$@"; do
-    case "$a" in
+if [ "${1:-}" = status ]; then
+  printf '[{"path":"%s","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]\n' "${FM_FAKE_TREEHOUSE_STATUS_PATH:?}"
+  exit 0
+fi
+  if [ "${1:-}" = return ]; then
+    shift
+    wt=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
       --force) ;;
-      *) wt=$a ;;
+      --if-lease-id|--if-lease-holder) shift ;;
+      *) wt=$1 ;;
     esac
+    shift
   done
   lock=$(git -C "$wt" rev-parse --git-path index.lock 2>/dev/null || true)
   case "$lock" in
@@ -398,14 +415,20 @@ add_persistent_lock_treehouse() {
   local case_dir=$1
   cat > "$case_dir/fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = return ]; then
-  shift
-  wt=""
-  for a in "$@"; do
-    case "$a" in
+if [ "${1:-}" = status ]; then
+  printf '[{"path":"%s","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]\n' "${FM_FAKE_TREEHOUSE_STATUS_PATH:?}"
+  exit 0
+fi
+  if [ "${1:-}" = return ]; then
+    shift
+    wt=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
       --force) ;;
-      *) wt=$a ;;
+      --if-lease-id|--if-lease-holder) shift ;;
+      *) wt=$1 ;;
     esac
+    shift
   done
   lock=$(git -C "$wt" rev-parse --git-path index.lock 2>/dev/null || true)
   case "$lock" in
@@ -528,6 +551,7 @@ run_teardown() {
   FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+  FM_FAKE_TREEHOUSE_STATUS_PATH="$case_dir/wt" \
     "$TEARDOWN" task-x1 "$@"
 }
 
@@ -1602,6 +1626,10 @@ test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes() {
   thlog="$case_dir/treehouse.log"; : > "$thlog"
   cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 printf '%s\n' "\$*" >> "$thlog"
 exit 0
 SH
@@ -1698,6 +1726,10 @@ assert_herdr_teardown_preflight_refuses_before_changes() {
   thlog="$case_dir/treehouse.log"; : > "$thlog"
   cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 printf '%s\n' "\$*" >> "$thlog"
 exit 0
 SH
@@ -1812,6 +1844,10 @@ test_forced_secondmate_herdr_child_preflight_refuses_before_changes() {
   : > "$log"; : > "$thlog"
   cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 printf '%s\n' "\$*" >> "$thlog"
 exit 0
 SH
@@ -1866,6 +1902,10 @@ exit 0
 SH
   cat > "$case_dir/fakebin/treehouse" <<SH
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"},{"path":"$case_dir/child-a-wt","status":"leased","lease_id":"fixture-lease-child-a","lease_holder":"fixture-child-a"},{"path":"$case_dir/child-b-wt","status":"leased","lease_id":"fixture-lease-child-b","lease_holder":"fixture-child-b"}]'
+  exit 0
+fi
 printf '%s\n' "\$*" >> "$case_dir/treehouse.log"
 exit 0
 SH
@@ -2302,6 +2342,10 @@ test_parked_own_run_refuses_when_abort_is_unconfirmed() {
 
   cat > "$case_dir/fakebin/treehouse" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 printf 'return\n' >> "$case_dir/treehouse.log"
 EOF
   chmod +x "$case_dir/fakebin/treehouse"
@@ -2472,6 +2516,10 @@ exit 1
 SH
   cat > "$case_dir/fakebin/treehouse" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 printf 'return\n' >> "$case_dir/treehouse.log"
 EOF
   chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/treehouse"
@@ -2698,6 +2746,10 @@ exec "$REAL_PS_FOR_TEST" "$@"
 SH
   cat > "$case_dir/fakebin/treehouse" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 printf 'returned\n' > "$case_dir/treehouse.log"
 EOF
   chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/ps" "$case_dir/fakebin/treehouse"
@@ -2734,6 +2786,10 @@ test_run_abort_precedes_process_reap_precedes_worktree_removal() {
   # real observed state, not a source-text or line-number correlation.
   cat > "$case_dir/fakebin/treehouse" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+  exit 0
+fi
 if [ -s "$abort_log" ]; then echo "abort-already-happened" >> "$case_dir/order.log"; fi
 if ! kill -0 $pid 2>/dev/null; then echo "reap-already-happened" >> "$case_dir/order.log"; fi
 exit 0
@@ -2771,6 +2827,97 @@ test_absent_and_exotic_records_are_distinct() {
   pass "absent and exotic task records have distinct refusal paths"
 }
 
+test_legacy_record_refuses_unguarded_treehouse_return() {
+  local case_dir out rc
+  case_dir=$(make_case legacy-no-lease)
+  write_meta "$case_dir" local-only ship
+  awk -F= '$1 != "treehouse_lease_id" && $1 != "treehouse_lease_holder"' \
+    "$case_dir/state/task-x1.meta" > "$case_dir/state/task-x1.meta.tmp"
+  mv "$case_dir/state/task-x1.meta.tmp" "$case_dir/state/task-x1.meta"
+  : > "$case_dir/treehouse.log"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/treehouse.log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "legacy-no-lease: teardown returned an unowned worktree"
+  assert_contains "$out" "--recover-from" \
+    "legacy-no-lease: refusal did not name identity-bound recovery"
+  [ -d "$case_dir/wt" ] || fail "legacy-no-lease: refusal removed the worktree"
+  [ ! -s "$case_dir/treehouse.log" ] || fail "legacy-no-lease: teardown returned a worktree without a lease proof"
+  pass "legacy metadata without a lease tuple refuses the unguarded return path"
+}
+
+test_legacy_teardown_serializes_fresh_spawn() {
+  local case_dir guard_root ready release teardown_pid spawn_out spawn_rc teardown_rc=0 waited=0
+  case_dir=$(make_case legacy-race)
+  write_meta "$case_dir" local-only ship
+  awk -F= '$1 != "treehouse_lease_id" && $1 != "treehouse_lease_holder"' \
+    "$case_dir/state/task-x1.meta" > "$case_dir/state/task-x1.meta.tmp"
+  mv "$case_dir/state/task-x1.meta.tmp" "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/data/fresh-task" "$case_dir/guard-root/bin" "$case_dir/user-home"
+  printf '%s\n' codex > "$case_dir/config/crew-harness"
+  cat > "$case_dir/data/fresh-task/brief.md" <<'EOF'
+# Fresh task
+
+## Captain's intent
+Exercise the task-set lock race.
+
+## Firstmate spec
+Keep the legacy worktree intact.
+EOF
+  cat > "$case_dir/guard-root/bin/fm-guard.sh" <<'SH'
+#!/usr/bin/env bash
+: > "${FM_RACE_GUARD_READY:?}"
+while [ ! -e "${FM_RACE_GUARD_RELEASE:?}" ]; do sleep 0.05; done
+exit 0
+SH
+  chmod +x "$case_dir/guard-root/bin/fm-guard.sh"
+  ready="$case_dir/guard-ready"
+  release="$case_dir/guard-release"
+  FM_ROOT_OVERRIDE="$case_dir/guard-root" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_RACE_GUARD_READY="$ready" FM_RACE_GUARD_RELEASE="$release" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" task-x1 > "$case_dir/teardown.stdout" 2> "$case_dir/teardown.stderr" &
+  teardown_pid=$!
+  while [ ! -e "$ready" ] && [ "$waited" -lt 100 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  [ -e "$ready" ] || {
+    : > "$release"
+    wait "$teardown_pid" 2>/dev/null || true
+    fail "legacy-race: teardown never held the task-set lock before the spawn"
+  }
+
+  set +e
+  spawn_out=$(FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" FM_PROJECTS_OVERRIDE="$case_dir/projects" \
+    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux HOME="$case_dir/user-home" \
+    PATH="$case_dir/fakebin:$PATH" \
+      "$ROOT/bin/fm-spawn.sh" fresh-task "$case_dir/project" --mode no-mistakes --yolo off 2>&1)
+  spawn_rc=$?
+  set -e
+  : > "$release"
+  wait "$teardown_pid" 2>/dev/null || teardown_rc=$?
+
+  [ "$spawn_rc" -ne 0 ] || fail "legacy-race: fresh spawn crossed the teardown task-set lock"
+  assert_contains "$spawn_out" "task set is locked" \
+    "legacy-race: spawn did not refuse while teardown owned the task set"
+  [ "$teardown_rc" -ne 0 ] || fail "legacy-race: legacy teardown unexpectedly returned without a lease proof"
+  [ -d "$case_dir/wt" ] || fail "legacy-race: fresh spawn/teardown race removed the legacy worktree"
+  [ ! -e "$case_dir/state/fresh-task.meta" ] \
+    || fail "legacy-race: blocked spawn published a task record"
+  pass "fresh spawn refuses under teardown's task-set lock and preserves legacy work"
+}
+
 test_orphan_recovery_and_repeated_teardown() {
   local case_dir out rc
   case_dir=$(make_case orphan-recovery)
@@ -2788,6 +2935,54 @@ EOF
   out=$(run_teardown "$case_dir" 2>&1) || fail "repeat teardown failed: $out"
   assert_contains "$out" "already retired: task-x1" "repeat must have a distinct verdict"
   pass "an exact clean orphan recovers and repeated teardown is idempotent"
+}
+
+test_orphan_recovery_allows_missing_endpoint() {
+  local case_dir out
+  case_dir=$(make_case orphan-missing-endpoint)
+  write_meta "$case_dir" local-only ship
+  mv "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *pane_current_path*) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  out=$(run_teardown "$case_dir" 2>&1) || fail "missing-endpoint recovery failed: $out"
+  assert_contains "$out" "orphan recovery: exact identity verified" \
+    "missing-endpoint recovery did not reach the identity-bound retirement"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "missing-endpoint recovery left the task record behind"
+  pass "a clean orphan with a conclusively missing endpoint still recovers"
+}
+
+test_orphan_recovery_preserves_ignored_work() {
+  local case_dir out rc ignore_file
+  case_dir=$(make_case orphan-ignored)
+  write_meta "$case_dir" local-only ship
+  mv "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *pane_current_path*) printf '%s\n' '$case_dir/wt' ;;
+esac
+EOF
+  chmod +x "$case_dir/fakebin/tmux"
+  ignore_file=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+  printf '%s\n' ignored-secret.txt >> "$ignore_file"
+  printf '%s\n' 'must survive' > "$case_dir/wt/ignored-secret.txt"
+  rc=0
+  out=$(run_teardown "$case_dir" --force 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "orphan-ignored: recovery discarded ignored work"
+  assert_contains "$out" "unlanded changes" \
+    "orphan-ignored: ignored work was not part of the recovery proof"
+  assert_present "$case_dir/wt/ignored-secret.txt" \
+    "orphan-ignored: ignored work disappeared"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "orphan-ignored: unsafe recovery published a task record"
+  pass "orphan recovery refuses ignored untracked work before return"
 }
 
 test_orphan_recovery_preserves_dirty_work_and_mismatched_endpoint() {
@@ -2825,7 +3020,8 @@ test_legacy_orphan_preserves_captain_hold() {
   local case_dir out rc
   case_dir=$(make_case orphan-legacy-held)
   write_meta "$case_dir" local-only ship
-  awk -F= '$1 != "spawn_gen"' "$case_dir/state/task-x1.meta" > "$case_dir/state/task-x1.legacy"
+  awk -F= '$1 != "spawn_gen" && $1 != "treehouse_lease_id" && $1 != "treehouse_lease_holder"' \
+    "$case_dir/state/task-x1.meta" > "$case_dir/state/task-x1.legacy"
   rm "$case_dir/state/task-x1.meta"
   seed_backlog_in_flight "$case_dir"
   FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
@@ -2852,7 +3048,11 @@ fi
 
 test_legacy_orphan_preserves_captain_hold
 test_absent_and_exotic_records_are_distinct
+test_legacy_record_refuses_unguarded_treehouse_return
+test_legacy_teardown_serializes_fresh_spawn
 test_orphan_recovery_and_repeated_teardown
+test_orphan_recovery_allows_missing_endpoint
+test_orphan_recovery_preserves_ignored_work
 test_orphan_recovery_preserves_dirty_work_and_mismatched_endpoint
 
 test_local_only_fork_remote_allows

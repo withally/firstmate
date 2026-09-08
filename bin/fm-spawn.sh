@@ -1333,6 +1333,19 @@ if [ "$RELAUNCH" -eq 1 ]; then
       exit 1
     }
   fi
+  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+    SPAWN_TREEHOUSE_LEASE_ID=$(fm_meta_get "$RELAUNCH_META" treehouse_lease_id)
+    SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$RELAUNCH_META" treehouse_lease_holder)
+    if [ -z "$SPAWN_TREEHOUSE_LEASE_ID" ] || [ -z "$SPAWN_TREEHOUSE_LEASE_HOLDER" ]; then
+      echo "error: task $ID has no complete treehouse lease identity; refusing to relaunch without proof of the recorded worktree lease" >&2
+      exit 1
+    fi
+    if ! fm_treehouse_lease_verify "$PROJ" "$RELAUNCH_WT" \
+      "$SPAWN_TREEHOUSE_LEASE_ID" "$SPAWN_TREEHOUSE_LEASE_HOLDER"; then
+      echo "error: task $ID's treehouse lease identity changed; refusing to relaunch the recorded worktree" >&2
+      exit 1
+    fi
+  fi
   if [ "$BACKEND" = herdr ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)

@@ -14,6 +14,18 @@ expect_code 2 "$rc" "task worktree must refuse implicit primary startup"
 assert_contains "$out" "crewmate task worktree has no FM_HOME" "refusal did not explain the boundary"
 assert_absent "$worktree/state" "startup mutated task state before refusing"
 assert_absent "$worktree/data" "startup mutated task data before refusing"
+outside="$TMP_ROOT/outside-linked-worktree"
+home="$TMP_ROOT/inherited-home"
+fm_git_worktree "$project" "$outside" inherited-boundary
+mkdir -p "$home/state" "$home/data" "$home/config"
+rc=0
+out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$outside" \
+  "$ROOT/bin/fm-session-start.sh" 2>&1) || rc=$?
+expect_code 2 "$rc" "an inherited FM_HOME must not authorize a linked task worktree"
+assert_contains "$out" "valid primary or marked secondmate home" \
+  "the topology refusal did not explain the primary-scope requirement"
+assert_absent "$home/state/.session-start-complete" \
+  "inherited-FM_HOME refusal mutated session state"
 rc=0
 out=$(FM_HOME="$TMP_ROOT/explicit-home" FM_ROOT_OVERRIDE="$worktree" \
   "$ROOT/bin/fm-session-start.sh" --help 2>&1) || rc=$?

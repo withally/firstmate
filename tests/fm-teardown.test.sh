@@ -579,7 +579,7 @@ backlog_row_state() {
 make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
+  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id jq ln \
     mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
@@ -1882,6 +1882,8 @@ configure_secondmate_with_tmux_children() {  # <case-dir>
       "worktree=$child_wt" \
       "project=$case_dir/project" \
       "kind=ship" \
+      "treehouse_lease_id=fixture-lease-$child" \
+      "treehouse_lease_holder=fixture-$child" \
       "mode=local-only"
     : > "$home/state/$child.status"
   done
@@ -2495,7 +2497,7 @@ EOF
   FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
-  expect_code 0 "$rc" "lsof-absent-process-group-reap: teardown should succeed"
+  expect_code 0 "$rc" "lsof-absent-process-group-reap: teardown should succeed: $(cat "$case_dir/stderr")"
   if kill -0 "$pid" 2>/dev/null; then
     kill -KILL "$pid" 2>/dev/null || true
     fail "lsof-absent-process-group-reap: tmux process group survived teardown"
@@ -2852,7 +2854,7 @@ SH
 }
 
 test_legacy_teardown_serializes_fresh_spawn() {
-  local case_dir guard_root ready release teardown_pid spawn_out spawn_rc teardown_rc=0 waited=0
+  local case_dir ready release teardown_pid spawn_out spawn_rc teardown_rc=0 waited=0
   case_dir=$(make_case legacy-race)
   write_meta "$case_dir" local-only ship
   awk -F= '$1 != "treehouse_lease_id" && $1 != "treehouse_lease_holder"' \
@@ -3041,11 +3043,85 @@ EOF
   pass "explicit legacy orphan recovery keeps the captain hold durable"
 }
 
+test_retirement_transaction_replays_after_return() {
+  local case_dir out rc=0
+  case_dir=$(make_case return-crash)
+  write_meta "$case_dir" no-mistakes ship
+  cp "$case_dir/state/task-x1.meta" "$case_dir/state/task-x1.meta.recovery"
+  # Fail receipt publication after the provider has accepted the return.
+  cat > "$case_dir/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in */task-x1.retired) exit 1 ;; esac
+done
+exec /bin/mv "$@"
+SH
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = return ]; then
+  touch "$case_dir/returned"
+  exit 0
+fi
+if [ -e "$case_dir/returned" ]; then
+  printf '%s\n' '[]'
+else
+  printf '%s\n' '[{"path":"$case_dir/wt","status":"leased","lease_id":"fixture-lease-task-x1","lease_holder":"teardown-test-task-x1"}]'
+fi
+SH
+  chmod +x "$case_dir/fakebin/mv" "$case_dir/fakebin/treehouse"
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "receipt failure did not interrupt teardown"
+  [ -f "$case_dir/returned" ] || fail "fixture never returned the lease"
+  [ -f "$case_dir/state/task-x1.retiring" ] || fail "return lost its transaction record"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "return lost recovery metadata"
+  rm "$case_dir/fakebin/mv"
+  printf 'successor work\n' > "$case_dir/wt/successor.txt"
+  out=$(run_teardown "$case_dir" 2>&1) || fail "retirement replay failed: $out"
+  assert_contains "$out" "already retired" "replay verdict missing"
+  [ -f "$case_dir/wt/successor.txt" ] || fail "replay touched the successor worktree"
+  assert_absent "$case_dir/state/task-x1.meta.recovery" "paired recovery record survived retirement"
+  assert_absent "$case_dir/state/task-x1.retiring" "transaction was not retired"
+  # Simulate the adjacent crash window: receipt published, primary unlink lost.
+  cp "$case_dir/state/task-x1.retired" "$case_dir/state/task-x1.meta"
+  cp "$case_dir/state/task-x1.retired" "$case_dir/state/task-x1.meta.recovery"
+  out=$(run_teardown "$case_dir" 2>&1) || fail "completed receipt with live metadata did not replay: $out"
+  assert_contains "$out" "already retired" "completed receipt replay verdict missing"
+  assert_absent "$case_dir/state/task-x1.meta" "completed receipt did not retire primary metadata"
+  assert_absent "$case_dir/state/task-x1.meta.recovery" "completed receipt did not retire paired metadata"
+  [ -f "$case_dir/wt/successor.txt" ] || fail "completed receipt replay touched successor work"
+  sed 's/^spawn_gen=.*/spawn_gen=successor-generation/' "$case_dir/state/task-x1.retired" > "$case_dir/state/task-x1.meta.recovery"
+  rc=0
+  out=$(run_teardown "$case_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "old receipt retired successor recovery evidence"
+  assert_present "$case_dir/state/task-x1.meta.recovery" "successor recovery record was removed"
+  pass "return-to-receipt interruption replays without touching successor work"
+}
+
+test_missing_worktree_returns_durable_lease() {
+  local case_dir out
+  case_dir=$(make_case missing-directory)
+  write_meta "$case_dir" no-mistakes ship
+  mv "$case_dir/wt" "$case_dir/moved-wt"
+  # Pool still reports the original path and exact lease; directory is absent.
+  mv "$case_dir/fakebin/treehouse" "$case_dir/fakebin/treehouse-base"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = return ]; then printf '%s\n' "\$*" > "$case_dir/return.log"; exit 0; fi
+exec "$case_dir/fakebin/treehouse-base" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  out=$(run_teardown "$case_dir" 2>&1) || fail "missing-directory teardown failed: $out"
+  assert_grep 'if-lease-id fixture-lease-task-x1' "$case_dir/return.log" "missing directory stranded lease"
+  pass "a missing directory does not strand its proven durable lease"
+}
+
 if [ "$#" -gt 0 ]; then
   for test_name in "$@"; do "$test_name"; done
   exit 0
 fi
 
+test_retirement_transaction_replays_after_return
+test_missing_worktree_returns_durable_lease
 test_legacy_orphan_preserves_captain_hold
 test_absent_and_exotic_records_are_distinct
 test_legacy_record_refuses_unguarded_treehouse_return

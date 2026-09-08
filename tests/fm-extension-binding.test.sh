@@ -361,6 +361,42 @@ section_enabled() {
   done
   return 1
 }
+
+example_terminal_retirement_capable() {
+  local probe_pid='' probe_pgid='' probe_attempt
+  command -v perl >/dev/null 2>&1 || return 1
+  [ -x /bin/ps ] || return 1
+  probe_pid=$(perl -e '
+    defined(my $pid = fork) or exit 1;
+    if ($pid == 0) {
+      setpgrp(0, 0) or exit 2;
+      close STDOUT;
+      close STDERR;
+      sleep 30;
+      exit 0;
+    }
+    print "$pid\n";
+    exit 0;
+  ' 2>/dev/null) || return 1
+  case "$probe_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  probe_pgid=$(/bin/ps -p "$probe_pid" -o pgid= 2>/dev/null | tr -d '[:space:]') || probe_pgid=
+  if [ "$probe_pgid" != "$probe_pid" ] || ! kill -0 -"$probe_pid" 2>/dev/null; then
+    kill -TERM -"$probe_pid" 2>/dev/null || true
+    kill -KILL -"$probe_pid" 2>/dev/null || true
+    return 1
+  fi
+  kill -TERM -"$probe_pid" 2>/dev/null || true
+  probe_attempt=0
+  while [ "$probe_attempt" -lt 20 ]; do
+    kill -0 -"$probe_pid" 2>/dev/null || return 0
+    sleep 0.01
+    probe_attempt=$((probe_attempt + 1))
+  done
+  kill -KILL -"$probe_pid" 2>/dev/null || true
+  return 1
+}
 publish_section_lane_result() {
   local result_file=$1 result=$2 temporary_file
   temporary_file="${result_file}.$$.tmp"
@@ -2134,6 +2170,10 @@ fi
 
 # --- shipped runnable example ------------------------------------------------
 if section_enabled example; then
+if ! example_terminal_retirement_capable; then
+  printf 'skip: shipped terminal retirement needs Perl setpgrp, /bin/ps pgid, and process-group signalling\n'
+  exit 0
+fi
 P_EXAMPLE="$PACKAGES/file-signal-example"
 cp -R "$ROOT/docs/examples/process-event-extension" "$P_EXAMPLE"
 chmod 0755 "$P_EXAMPLE" "$P_EXAMPLE/file-signal.mjs"

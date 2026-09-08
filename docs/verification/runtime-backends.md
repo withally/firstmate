@@ -775,8 +775,34 @@ Observed guarantees: pending composer input refused injection and raised one ale
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
 The daemon's delivered-once transcript witness is pinned portably by `tests/fm-daemon.test.sh`; refresh the real Herdr plus Pi path against an existing disposable pane, without lifecycle operations, with `FM_AFK_DELIVERY_WITNESS_LIVE=1 FM_AFK_DELIVERY_WITNESS_LIVE_TARGET='<named-session>:<pane-id>' FM_AFK_DELIVERY_WITNESS_LIVE_HOME='<pi-working-directory>' tests/fm-afk-delivery-witness-live-e2e.test.sh`.
 The current 2026-09-03 Herdr 0.8.2 plus Claude Code 2.1.259 wrapped-footer away-mode result is recorded in [supervision verification](supervision.md#herdrclaude-wrapped-away-mode-footer-2026-09-03).
-The live guard is refreshed from the repository root with `HERDR_LAB_HELPER="$(git rev-parse --show-toplevel)/bin/fm-herdr-lab.sh" FM_AFK_HERDR_CLAUDE_LIVE=1 tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh`.
-It proves the wrapped idle-footer parse, exactly-once delivery, repeated real foreground-turn deferral with exact spinner rows, and pending human-text preservation in one named non-default lab session.
+The newer permission-footer family was verified on 2026-09-08 with Herdr 0.8.2 and Claude Code 2.1.263 in both auto and bypass-permissions modes.
+The live guard now waits for three one-second byte-identical full-screen and footer/composer captures after the `/afk` foreground turn settles, because the prior one-sample readiness check could mistake a transient redraw for idle.
+Its first-delivery bound is the three-second stable-idle window plus one one-second housekeeping tick plus two seconds of slack, measured on a monotonic clock, for a total of 6,000 ms.
+
+```sh
+HERDR_LAB_HELPER=/Users/ivan/Projects/firstmate/bin/fm-herdr-lab.sh \
+  FM_AFK_HERDR_CLAUDE_LIVE=1 \
+  FM_AFK_HERDR_CLAUDE_PERMISSION_MODE=auto \
+  bin/fm-test-run.sh tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
+HERDR_LAB_HELPER=/Users/ivan/Projects/firstmate/bin/fm-herdr-lab.sh \
+  FM_AFK_HERDR_CLAUDE_LIVE=1 \
+  FM_AFK_HERDR_CLAUDE_PERMISSION_MODE=bypassPermissions \
+  bin/fm-test-run.sh tests/fm-afk-herdr-claude-busy-guard-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - real Herdr 0.8.2 + Claude 2.1.263 (Claude Code) (auto mode): native idle with rendered-idle empty composer submits once
+ok - real Herdr 0.8.2 + Claude 2.1.263 (Claude Code) (auto mode): rendered-busy and pending-composer deferrals preserve human text
+evidence: permission-mode=auto native=idle rendered=idle composer=empty stable-footer-composer=3 delivery-ms=4059 delivery-bound-ms=6000 delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1
+ok - real Herdr 0.8.2 + Claude 2.1.263 (Claude Code) (bypass permissions): native idle with rendered-idle empty composer submits once
+ok - real Herdr 0.8.2 + Claude 2.1.263 (Claude Code) (bypass permissions): rendered-busy and pending-composer deferrals preserve human text
+evidence: permission-mode=bypassPermissions native=idle rendered=idle composer=empty stable-footer-composer=3 delivery-ms=3784 delivery-bound-ms=6000 delivered_once=1 rendered-busy=1 native-state=working=1 composer=pending=1
+```
+
+Both named non-default lab sessions tore down with the default-session tripwire intact.
+The test-contract correction removed the stale foreground-settlement and two-second delivery assumptions; no production guard was weakened.
 
 ## Zellij
 

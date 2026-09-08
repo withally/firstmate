@@ -1788,7 +1788,7 @@ TS
     expected_notifications=$4
     local session_arg=${5:-}
     local shape=${6:-single}
-    local extensions
+    local extensions answer_count
 
     tmux -L "$TMUX_SOCKET" kill-session -t "$TMUX_SESSION" 2>/dev/null || true
     if [ "$calm_state" = absent ]; then
@@ -1836,7 +1836,20 @@ TS
     fi
 
     pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
-    [ "$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)" -eq 1 ] \
+    i=0
+    answer_count=0
+    while [ "$i" -lt 120 ]; do
+      answer_count=$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)
+      if [ "$answer_count" -eq 1 ]; then
+        sleep 0.1
+        pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
+        answer_count=$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)
+        [ "$answer_count" -eq 1 ] && break
+      fi
+      sleep 0.05
+      i=$((i + 1))
+    done
+    [ "$answer_count" -eq 1 ] \
       || fail "Pi follow-up $label case rendered a duplicate captain answer"
     assert_contains "$pane" "CAPTAIN_PROMPT_$label" "Pi follow-up $label case hid the genuine captain prompt"
     assert_contains "$pane" "MONITOR_HANDLED_${label}_ONE" "Pi follow-up $label case did not render the intended processing result"

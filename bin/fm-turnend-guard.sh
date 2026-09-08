@@ -32,9 +32,12 @@
 # primary checkout - the main home or a genuinely marked secondmate home - and
 # stay a silent, fast no-op inside child task worktrees.
 #
-# Away mode (state/.afk): the away-mode daemon owns supervision and runs the
-# watcher one-shot, restarting it after every wake, so the watch lock is
-# regularly unheld at a turn boundary with nothing wrong. A live
+# Away mode (state/.afk): this synchronous turn-boundary guard checks the
+# away-daemon owner before it trusts the ownership transfer. If the daemon's
+# identity-backed lock is dead or mismatched, it asks bin/fm-afk-launch.sh - the
+# terminal-lifecycle owner - to relaunch through its tracked native path. The
+# away daemon runs the watcher one-shot, restarting it after every wake, so the
+# watch lock is regularly unheld at a turn boundary with nothing wrong. A live
 # identity-matched daemon holding this home, plus the unchanged fresh-beacon
 # test, is what proves supervision there - see fm_afk_daemon_owns_supervision in
 # bin/fm-wake-lib.sh. The strict watcher predicate is unchanged everywhere else.
@@ -181,9 +184,38 @@ allow_supervised_stop() {
   exit 2
 }
 
-if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
-  allow_supervised_stop
-fi
+fm_afk_relaunch_heartbeat_mtime() {
+  local beat=$1
+  if [ "$(uname)" = Darwin ]; then
+    stat -f '%.9Fm' "$beat" 2>/dev/null
+  else
+    stat -c '%y' "$beat" 2>/dev/null | awk '{print $1 "T" $2}'
+  fi
+}
+
+fm_afk_relaunch_heartbeat_ready() {
+  local previous=$1 current
+  fm_afk_daemon_owns_supervision "$STATE" || return 1
+  current=$(fm_afk_relaunch_heartbeat_mtime "$STATE/.last-watcher-beat" || true)
+  [ -n "$current" ] || return 1
+  case "$previous" in
+    absent) ;;
+    ''|unreadable) return 1 ;;
+    *) [ "$current" \> "$previous" ] || return 1 ;;
+  esac
+  fm_supervision_status "$STATE" "$GRACE"
+  [ "$FM_SUP_WATCHER_FRESH" = true ]
+}
+
+fm_afk_wait_for_relaunch_heartbeat() {
+  local previous=$1 attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    attempt=$((attempt + 1))
+    fm_afk_relaunch_heartbeat_ready "$previous" && return 0
+    sleep 0.1
+  done
+  return 1
+}
 
 # Away mode transfers supervision ownership from the watcher to the away-mode
 # daemon, which runs the watcher one-shot and starts its replacement after every
@@ -194,7 +226,26 @@ fi
 # The beacon half of the predicate is deliberately unchanged: a daemon that
 # stops restarting its watcher still blocks once the beacon passes grace, and
 # a home with no daemon and no watcher blocks exactly as before.
-if [ "$FM_SUP_WATCHER_FRESH" = true ] && fm_afk_daemon_owns_supervision "$STATE"; then
+if [ -e "$STATE/.afk" ]; then
+  AFK_RELAUNCH_READY=0
+  if fm_afk_daemon_owns_supervision "$STATE"; then
+    AFK_RELAUNCH_READY=1
+  else
+    AFK_RELAUNCH_BEAT_PREVIOUS=absent
+    if [ -e "$STATE/.last-watcher-beat" ]; then
+      AFK_RELAUNCH_BEAT_PREVIOUS=$(fm_afk_relaunch_heartbeat_mtime "$STATE/.last-watcher-beat" || true)
+      [ -n "$AFK_RELAUNCH_BEAT_PREVIOUS" ] || AFK_RELAUNCH_BEAT_PREVIOUS=unreadable
+    fi
+    if "$SCRIPT_DIR/fm-afk-launch.sh" start >/dev/null 2>&1; then
+      fm_afk_wait_for_relaunch_heartbeat "$AFK_RELAUNCH_BEAT_PREVIOUS" && AFK_RELAUNCH_READY=1
+    fi
+  fi
+  if [ "$AFK_RELAUNCH_READY" -eq 1 ] \
+    && [ "$FM_SUP_WATCHER_FRESH" = true ] \
+    && fm_afk_daemon_owns_supervision "$STATE"; then
+    allow_supervised_stop
+  fi
+elif fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   allow_supervised_stop
 fi
 

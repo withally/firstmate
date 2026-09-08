@@ -315,11 +315,13 @@ fm_composer_strip_ghost() {
 # outside its composer and the composer verdict is therefore always `unknown`.
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
-FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|[^[:space:]]+[[:space:]]+[^[:space:]]+…[[:space:]]+\([0-9]+[smh]([[:space:]]+[·•][^)]*)?\))[[:space:]]*$'
+FM_DELIVERY_CLAUDE_CURRENT_FOOTER_REGEX='^[[:space:]]*(esc to interrupt|thinking\.\.\.[[:space:]]+esc to interrupt|([^[:space:]]+[[:space:]]+)?[^[:space:]]+…([[:space:]]+\([0-9]+[smh]([[:space:]]+[0-9]+[smh])?([[:space:]]+[·•][^)]*)?\)))[[:space:]]*$'
 FM_DELIVERY_CLAUDE_ACTIVE_COMPOSER_REGEX='Press up to edit queued messages'
 FM_DELIVERY_CLAUDE_ACTIVE_TOOL_REGEX='Running…[[:space:]]+\([0-9]+[smh].*timeout'
-FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass[[:space:]]+permissions[[:space:]]+on'
-FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX='^[[:space:]]*⏵⏵[[:space:]]+bypass[[:space:]]+permissions[[:space:]]+on([[:space:]]+[(]shift[+]tab[[:space:]]+to[[:space:]]+cycle[)]|[[:space:]]+·[[:space:]]+(←[[:space:]]+[[:digit:]]+[[:space:]]+agent([[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage)?|[[:digit:]]+[[:space:]]+shell([[:space:]]+·[[:space:]]+esc[[:space:]]+to[[:space:]]+interrupt)?[[:space:]]+·[[:space:]]+←[[:space:]]+[[:digit:]]+[[:space:]]+(agent|a…)([[:space:]]+·[[:space:]]+↓[[:space:]]+to[[:space:]]+manage)?))[[:space:]]*$'
+FM_DELIVERY_CLAUDE_PERMISSION_MODE_REGEX='(bypass[[:space:]]+permissions|auto[[:space:]]+mode|accept[[:space:]]+edits|plan[[:space:]]+mode)'
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX="^[[:space:]]*⏵⏵[[:space:]]+${FM_DELIVERY_CLAUDE_PERMISSION_MODE_REGEX}[[:space:]]+on"
+FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX="${FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX}([[:space:]]+[(]shift[+]tab[[:space:]]+to[[:space:]]+cycle[)])?([[:space:]]+·[[:space:]]+(←[[:space:]]+[[:digit:]]+[[:space:]]+(agents?|a…)|[[:digit:]]+[[:space:]]+shells?|↓[[:space:]]+to[[:space:]]+manage|esc[[:space:]]+to[[:space:]]+interrupt))*([[:space:]]+(/rc|●[[:space:]]+(low|medium|high)[[:space:]]+·[[:space:]]+/effort))?[[:space:]]*$"
+FM_DELIVERY_CLAUDE_STATUS_IDLE_REGEX='^[[:space:]]*[?][[:space:]]+for[[:space:]]+shortcuts[[:space:]]*$'
 FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX='^[[:space:]]*(/rc|●[[:space:]]+(low|medium|high)[[:space:]]+·[[:space:]]+/effort)[[:space:]]*$'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
@@ -378,6 +380,7 @@ fm_claude_current_footer_busy() {
   footer_shape=$(printf '%s\n' "$plain" | awk \
     -v primary="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_REGEX" \
     -v prefix="$FM_DELIVERY_CLAUDE_STATUS_PRIMARY_PREFIX_REGEX" \
+    -v idle="$FM_DELIVERY_CLAUDE_STATUS_IDLE_REGEX" \
     -v continuation="$FM_DELIVERY_CLAUDE_STATUS_CONTINUATION_REGEX" '
       { rows[NR]=$0 }
       function previous_nonblank(from, row) {
@@ -392,7 +395,7 @@ fm_claude_current_footer_busy() {
           count++
           row=previous_nonblank(row - 1)
         }
-        if (row > 0 && rows[row] ~ primary) print "valid:" row
+        if (row > 0 && (rows[row] ~ primary || rows[row] ~ idle)) print "valid:" row
         else if (count > 0 || (row > 0 && rows[row] ~ prefix)) print "invalid"
       }
     ')
@@ -711,9 +714,22 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # exact positive proof they require (`empty`), so unrecognized future verdicts
 # fail safe by default.
 
-# _fm_composer_pi_separator_row: a solid pi separator - nothing but `─`, at
+# _fm_composer_titled_rule_row: Claude's titled-rule composer boundary starts
+# with a long `─` run and includes non-rule title text, so it is distinct from
+# Pi's solid separator and still proves the adjacent bare composer shape.
+# _fm_composer_pi_separator_row: a solid Pi separator - nothing but `─`, at
 # least 8 columns wide. The width floor is a literal substring test so it is
 # byte-exact in every locale.
+_fm_composer_titled_rule_row() {  # <trimmed-row>
+  local row=$1
+  fm_composer_normalize_trim_var row
+  case "$row" in
+    '────────'*'─') ;;
+    *) return 1 ;;
+  esac
+  [ -n "${row//─/}" ]
+}
+
 _fm_composer_pi_separator_row() {  # <trimmed-row>
   local row=$1
   [ -n "$row" ] || return 1
@@ -1274,8 +1290,20 @@ _fm_composer_select_cursorless() {
   fi
   if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 0 ] \
      && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ]; then
-    FM_COMPOSER_SELECTED_KIND=
-    return 1
+    if [ "$FM_COMPOSER_SELECTED_KIND" = bare ] \
+       && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -eq $((FM_COMPOSER_SCAN_BARE_ROW + 1)) ] \
+       && [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt 0 ]; then
+      raw=$(_fm_composer_screen_row "$((FM_COMPOSER_SCAN_BARE_ROW - 1))" "$plain")
+      trimmed=$raw
+      fm_composer_normalize_trim_var trimmed
+      if ! _fm_composer_titled_rule_row "$trimmed"; then
+        FM_COMPOSER_SELECTED_KIND=
+        return 1
+      fi
+    else
+      FM_COMPOSER_SELECTED_KIND=
+      return 1
+    fi
   fi
   if [ "$FM_COMPOSER_SCAN_SHELL_ROW" -gt "$generic" ]; then
     FM_COMPOSER_SELECTED_KIND=

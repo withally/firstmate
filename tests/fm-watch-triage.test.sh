@@ -1574,9 +1574,9 @@ test_working_span_without_valid_seen_marker_surfaces_turn_end() {
   unset FM_FAKE_CREW_STATE
 }
 
-test_working_ack_preserves_unreadable_sibling_cursor() {
-  local dir state target sibling target_ident sibling_ident snapshot endpoint
-  dir=$(make_case working-sibling-cursor); state="$dir/state"
+test_working_absorb_preserves_unreadable_sibling_cursor() {
+  local dir state target sibling target_ident sibling_ident snapshot fakebin out pid
+  dir=$(make_case working-sibling-cursor); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   target="$state/task.status"; sibling="$state/sibling.status"
   printf 'kind=ship\n' > "$state/task.meta"
   printf 'kind=ship\n' > "$state/sibling.meta"
@@ -1588,20 +1588,21 @@ test_working_ack_preserves_unreadable_sibling_cursor() {
     "$(size_of "$target")" "$target_ident" "$(size_of "$sibling")" "$sibling_ident")
   status_commit_presentation_snapshot "$state" "$snapshot" \
     || fail "could not seed sibling presentation cursor"
+  prime_status_seen "$state" "$target" || fail "could not seed the working signal baseline"
   printf 'working: resumed compilation\n' >> "$target"
-  endpoint=$(size_of "$target")
   mv "$sibling" "$dir/sibling.status.saved"
   ln -s sibling.status.saved "$sibling"
-  FM_STATE_OVERRIDE="$state" bash -c '
-    . "$1"
-    . "$2"
-    status_acknowledge_working_span "$3" "$4" "$5"
-  ' _ "$ROOT/bin/fm-classify-lib.sh" "$ROOT/bin/fm-wake-lib.sh" \
-    "$target" "$endpoint" "$target_ident" \
-    || fail "working acknowledgement failed with an unreadable sibling"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_for_absorbed "$state" "$pid" 'absorbed benign signal:'; then
+    reap "$pid"; fail "working progress did not absorb with an unreadable sibling"
+  fi
   grep -F $'sibling\t' "$state/.status-presentation-cursor" >/dev/null \
-    || fail "working acknowledgement dropped the unreadable sibling cursor"
-  pass "working acknowledgement preserves unreadable sibling cursors"
+    || { reap "$pid"; fail "working absorb dropped the unreadable sibling cursor"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "working absorb preserves unreadable sibling cursors"
 }
 
 test_afk_signal_skips_working_only_recheck() {
@@ -4366,7 +4367,7 @@ test_secondmate_nonterminal_status_absorbed
 test_secondmate_status_with_turn_end_surfaces_routed_reply
 test_conflicting_duplicate_kind_metadata_surfaces_routed_reply
 test_working_span_without_valid_seen_marker_surfaces_turn_end
-test_working_ack_preserves_unreadable_sibling_cursor
+test_working_absorb_preserves_unreadable_sibling_cursor
 test_afk_signal_skips_working_only_recheck
 test_working_span_with_unknown_metadata_surfaces_turn_end
 test_self_announced_close_does_not_rewake_but_next_note_does

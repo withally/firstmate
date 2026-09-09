@@ -1371,51 +1371,6 @@ EOF
   mv -f "$tmp" "$state/.status-presentation-cursor" || { rm -f "$tmp"; return 1; }
 }
 
-status_update_presentation_cursor_row() {
-  local state=$1 task=$2 endpoint=$3 ident=$4 manifest tmp data row_task row_ident row_endpoint row_backstop extra current size backstop found=0
-  case "$endpoint" in ''|*[!0-9]*) return 1 ;; esac
-  [ -n "$ident" ] || return 1
-  local f="$state/$task.status"
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-  current=$(_fm_open_decisions_file_ident "$f") || return 1
-  [ "$current" = "$ident" ] || return 1
-  size=$(_fm_status_file_size "$f") || return 1
-  size=${size//[[:space:]]/}
-  case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$endpoint" -le "$size" ] || return 1
-  backstop=$(status_outcome_backstop_cursor_offset "$f") || return 1
-  case "$backstop" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$backstop" -le "$size" ] || return 1
-  manifest="$state/.status-presentation-cursor"
-  tmp="$manifest.tmp.$$"
-  data=
-  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
-    [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] || return 1
-    data=$(LC_ALL=C command cat "$manifest" 2>/dev/null) || return 1
-  fi
-  : > "$tmp" || return 1
-  while IFS=$(printf '\t') read -r row_task row_ident row_endpoint row_backstop extra; do
-    [ -n "$row_task" ] || continue
-    [ -z "$extra" ] && [ -n "$row_ident" ] || { rm -f "$tmp"; return 1; }
-    case "$row_endpoint:$row_backstop" in *[!0-9:]*) rm -f "$tmp"; return 1 ;; esac
-    [ -n "$row_endpoint" ] || { rm -f "$tmp"; return 1; }
-    row_backstop=${row_backstop:-0}
-    if [ "$row_task" = "$task" ]; then
-      [ "$found" -eq 0 ] || { rm -f "$tmp"; return 1; }
-      printf '%s\t%s\t%s\t%s\n' "$task" "$ident" "$endpoint" "$backstop" >> "$tmp" || { rm -f "$tmp"; return 1; }
-      found=1
-    else
-      printf '%s\t%s\t%s\t%s\n' "$row_task" "$row_ident" "$row_endpoint" "$row_backstop" >> "$tmp" || { rm -f "$tmp"; return 1; }
-    fi
-  done <<EOF
-$data
-EOF
-  if [ "$found" -eq 0 ]; then
-    printf '%s\t%s\t%s\t%s\n' "$task" "$ident" "$endpoint" "$backstop" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  fi
-  mv -f "$tmp" "$manifest" || { rm -f "$tmp"; return 1; }
-}
-
 scan_open_decisions_snapshot() {  # <state> <task-and-endpoint-snapshot>
   local state=$1 snapshot=$2 task endpoint ident f open line
   while IFS=$(printf '\t') read -r task endpoint ident; do
@@ -1975,25 +1930,6 @@ status_span_is_working_only() {  # <file> <start> <endpoint> <identity>
   rm -f "$chunk"
   [ "$(_fm_open_decisions_file_ident "$f")" = "$ident" ] || return 1
   [ "$rc" -eq 0 ] && [ "$found" -eq 0 ]
-}
-
-# Acknowledge absorbed working progress without crossing an earlier unread note
-# or decision. Serialize with the drain and retain every other task's offsets.
-status_acknowledge_working_span() {  # <file> <endpoint> <identity>
-  local f=$1 endpoint=$2 ident=$3 state lock offset task rc=0
-  case "$(status_file_kind "$f" 2>/dev/null || true)" in
-    ship|scout) ;;
-    *) return 0 ;;
-  esac
-  state=${f%/*}; lock="$state/.status-presentation-lock"
-  task=${f##*/}; task=${task%.status}
-  fm_lock_acquire_wait_bounded "$lock" 2 || return 1
-  offset=$(status_presentation_cursor_offset "$f") || rc=1
-  if [ "$rc" -eq 0 ]; then
-    status_span_is_working_only "$f" "$offset" "$endpoint" "$ident" || true
-  fi
-  fm_lock_release "$lock" || rc=1
-  return "$rc"
 }
 
 status_span_first_actionable() {  # <status-file> <start-offset>

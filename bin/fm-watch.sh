@@ -1922,7 +1922,6 @@ EOF
         case " $surface_files " in
           *" $f "*) mark_surfaced "$f" "$surface_end" "$surface_ident" ;;
           *)
-            status_acknowledge_working_span "$f" "$surface_end" "$surface_ident" || true
             triage_log "absorbed benign signal: $f"
             ;;
         esac
@@ -1937,25 +1936,13 @@ EOF
       done <<EOF
 $pending
 EOF
-      signal_commit_error=0
       while IFS=$(printf '\t') read -r f surface_end surface_ident; do
         [ -n "$f" ] || continue
         fm_wake_status_seen_commit "$STATE" "$f" "$surface_end" "$surface_ident" \
-          || signal_commit_error=1
-        status_acknowledge_working_span "$f" "$surface_end" "$surface_ident" \
-          || signal_commit_error=1
+          || true
       done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS
 EOF
-      if [ "$signal_commit_error" -ne 0 ]; then
-        while IFS=$(printf '\t') read -r sf sig f; do
-          [ -n "$sf" ] || continue
-          fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
-        done <<EOF
-$pending
-EOF
-        wake "$reason"
-      fi
       triage_log "absorbed benign $reason"
     fi
   fi

@@ -33,7 +33,7 @@ count_literal() {  # <text> <literal>
 
 test_current_generic_matrix() {
   local kind body encoded parsed stripped prefix_hex reply_rule rule_count
-  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: after any required status-file append, or immediately when no action is required, end the turn with no tool call and no assistant text. Ending the turn is the only correct way to wait. Never poll your inbox or run a no-op command such as true, sleep, or ls of your own inbox to wait. Re-check the inbox only when a doorbell line or firstmate instruction just arrived in this turn; every extra tool call is a full model turn replaying the whole cached context. "captain" is reserved for the main firstmate.'
   prefix_hex=$(printf '%s' "$FM_OPERATIONAL_PREFIX" | od -An -tx1 | tr -d ' \n')
   [ "$prefix_hex" = e281a346495253544d4154455f4f503a20 ] \
     || fail "current operational prefix lost the landed U+2063 FIRSTMATE_OP bytes: $prefix_hex"
@@ -113,7 +113,7 @@ test_default_main_and_explicit_worker_carriers() {
 
 test_current_from_firstmate_carrier() {
   local encoded parsed separator stripped reply_rule rule_count
-  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: after any required status-file append, or immediately when no action is required, end the turn with no tool call and no assistant text. Ending the turn is the only correct way to wait. Never poll your inbox or run a no-op command such as true, sleep, or ls of your own inbox to wait. Re-check the inbox only when a doorbell line or firstmate instruction just arrived in this turn; every extra tool call is a full model turn replaying the whole cached context. "captain" is reserved for the main firstmate.'
   separator=$(printf '\342\201\243')
   fm_message_mark_from_firstmate "corr=0123456789abcdef inspect the report" encoded secondmate
   [ "${encoded#"[fm-from-firstmate]$separator"}" != "$encoded" ] \

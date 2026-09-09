@@ -238,6 +238,16 @@ The bound is required rather than cosmetic because churn and pane staleness read
 The flag is a home-local supervision-noise preference and is not inherited by secondmate homes, which run their own crew mix.
 [`architecture.md`](architecture.md) owns the triage contract and `bin/fm-watch.sh`'s `signal_turnend_panes_churned` owns the exact evidence and fail-closed boundaries.
 
+## Secondmate Pi turn-rate threshold (config/secondmate-turn-rate-threshold)
+
+The attended watcher checks local Pi and pi-signed secondmates for more than 60 assistant events in a trailing 15-minute window with no user transcript row or durable inbox record in that window.
+Crossing the limit raises one signal-class wake for the episode; the guard stays quiet on later polls until activity returns below the limit or a fresh inbound event resets the episode.
+Set the optional local, gitignored `config/secondmate-turn-rate-threshold` file to one positive base-10 integer to override 60.
+An absent, empty, zero, or malformed value uses 60.
+The setting belongs to the parent home's attended watcher and is not inherited by secondmate homes.
+Remote secondmates and non-Pi harnesses are not inspected by this local transcript guard.
+`bin/fm-secondmate-turn-rate.sh` owns transcript resolution, the bounded 16 MiB tail scan, event classification, and episode marker mechanics.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true`, pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI, and pins `commands.test` to `bin/fm-test-run.sh --changed --exclude-family real-herdr-gated` so the gate's test baseline runs through the repository's own runner instead of a hand-chained walk of `bash tests/*.test.sh`.

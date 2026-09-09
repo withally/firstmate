@@ -140,6 +140,19 @@ mkdir -p "$STATE"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
 
+secondmate_turn_rate_check() {  # <task>
+  local task=$1 out rc=0
+  out=$("$SCRIPT_DIR/fm-secondmate-turn-rate.sh" "$task" 2>&1) || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    10) wake "$out" ;;
+    *)
+      echo "watcher: secondmate turn-rate check failed for $task: $out" >&2
+      exit 1
+      ;;
+  esac
+}
+
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
 WATCHER_DOWNTIME_MARKER="$STATE/.watcher-down"
@@ -1934,6 +1947,7 @@ EOF
     # Steering-inbox loss detection runs before the secondmate stale
     # exemption below, because a mate's steers land in an inbox too.
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
+    [ "$kind" != secondmate ] || secondmate_turn_rate_check "$task"
     key=$(window_key "$w")
     last=$(last_status_line "$STATE/$task.status")
     if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then

@@ -885,7 +885,7 @@ test_operational_inputs_are_silent_in_every_worker_scaffold() {
   local home kind id brief content reply_rule rule_count
   home="$TMP_ROOT/silent-operational-input-home"
   mkdir -p "$home/data"
-  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
+  reply_rule='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: after any required status-file append, or immediately when no action is required, end the turn with no tool call and no assistant text. Ending the turn is the only correct way to wait. Never poll your inbox or run a no-op command such as true, sleep, or ls of your own inbox to wait. Re-check the inbox only when a doorbell line or firstmate instruction just arrived in this turn; every extra tool call is a full model turn replaying the whole cached context. "captain" is reserved for the main firstmate.'
 
   for kind in ship scout secondmate; do
     id="silent-operational-input-$kind"
@@ -906,6 +906,12 @@ test_operational_inputs_are_silent_in_every_worker_scaffold() {
     rule_count=$(count_literal "$content" "$reply_rule")
     [ "$rule_count" = 1 ] \
       || fail "$kind scaffold must carry the silent operational-input rule exactly once, found $rule_count"
+    assert_contains "$content" 'Re-check the inbox only when a doorbell line or firstmate instruction just arrived in this turn' \
+      "$kind scaffold did not restrict inbox reads to fresh inbound instructions"
+    assert_not_contains "$content" 'at any natural checkpoint when you are unsure' \
+      "$kind scaffold still encouraged speculative inbox polling"
+    assert_not_contains "$content" 'empty assistant response' \
+      "$kind scaffold retained the ambiguous empty-assistant-response instruction"
   done
   pass "fm-brief.sh: every worker scaffold handles operational inputs without captain-voice chat"
 }

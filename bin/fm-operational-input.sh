@@ -30,7 +30,7 @@ FM_OPERATIONAL_VERSION=v1
 FM_OPERATIONAL_HEADER_PREFIX="${FM_OPERATIONAL_PREFIX}${FM_OPERATIONAL_VERSION} "
 FM_OPERATIONAL_KINDS='session-start watcher turn-end-guard away-supervisor launch-brief branch-outcome'
 FM_OPERATIONAL_WORKER_RECIPIENT_MARK=$'\xE2\x81\xA4'
-FM_OPERATIONAL_SILENT_REPLY_RULE='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: never emit assistant or chat text, including acknowledgements, summaries, or idle notices; after the required status-file append, or no action, end with an empty assistant response; "captain" is reserved for the main firstmate.'
+FM_OPERATIONAL_SILENT_REPLY_RULE='Handle FIRSTMATE_OP digests, doorbells, steers, and marked from-firstmate requests silently: after any required status-file append, or immediately when no action is required, end the turn with no tool call and no assistant text. Ending the turn is the only correct way to wait. Never poll your inbox or run a no-op command such as true, sleep, or ls of your own inbox to wait. Re-check the inbox only when a doorbell line or firstmate instruction just arrived in this turn; every extra tool call is a full model turn replaying the whole cached context. "captain" is reserved for the main firstmate.'
 FM_OPERATIONAL_SILENT_REPLY_CARRIER=" ${FM_OPERATIONAL_MARK}${FM_OPERATIONAL_SILENT_REPLY_RULE}"
 FM_OPERATIONAL_WORKER_CARRIER="${FM_OPERATIONAL_WORKER_RECIPIENT_MARK}${FM_OPERATIONAL_SILENT_REPLY_CARRIER}"
 

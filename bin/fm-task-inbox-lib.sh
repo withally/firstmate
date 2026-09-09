@@ -252,7 +252,7 @@ fm_task_inbox_body() {  # <record-path>
 fm_task_inbox_doorbell_line() {  # <record-path>
   local dir=${1%/*} abs
   abs=$(cd "$dir" 2>/dev/null && pwd) || abs=$dir
-  printf 'Firstmate instruction waiting: list %s/*.msg and, in numeric order, read and act on each, then mv each handled file to %s/handled/.%s' \
+  printf 'Firstmate instruction waiting: list %s/*.msg once because this doorbell arrived in this turn and, in numeric order, read and act on each, then mv each handled file to %s/handled/; never re-check this inbox speculatively.%s' \
     "$abs" "$abs" "$FM_OPERATIONAL_SILENT_REPLY_CARRIER"
 }
 

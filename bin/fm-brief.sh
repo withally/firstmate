@@ -233,12 +233,12 @@ STATUS_NO_RESOLVED_ECHO_RULE=$(fm_status_no_resolved_echo_rule)
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
 # owned by bin/fm-task-inbox-lib.sh; the doorbell itself is self-describing,
-# so this section is reinforcement for the natural-checkpoint habit, not the
-# only carrier of the instruction.
+# so this section reinforces its event-driven receive contract.
 IFS= read -r -d '' INBOX_SECTION <<EOF || true
 # Firstmate instruction inbox
 Firstmate steers you through durable message files in $INBOX_DIR.
-When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list $INBOX_DIR/*.msg, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
+Only when a doorbell line or firstmate instruction arrives in this turn, list $INBOX_DIR/*.msg, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
+Never list or re-check this inbox speculatively or as a way to wait.
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
 $STATUS_NO_RESOLVED_ECHO_RULE
 EOF

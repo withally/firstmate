@@ -1506,6 +1506,31 @@ test_secondmate_status_with_turn_end_surfaces_routed_reply() {
   pass "a secondmate working span with a turn-end remains parent-directed"
 }
 
+test_conflicting_duplicate_kind_metadata_surfaces_routed_reply() {
+  local dir state fakebin out drain_out status_file pid
+  dir=$(make_case conflicting-duplicate-kind); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/mate.status"
+  printf 'kind=secondmate\nkind=ship\n' > "$state/mate.meta"
+  printf 'working: ambiguous routed reply must reach the parent drain\n' > "$status_file"
+  : > "$state/mate.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a conflicting duplicate kind let a routed reply disappear"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "a conflicting duplicate kind did not surface the routed reply"
+  [ "$(status_presentation_cursor_offset "$status_file")" = 0 ] \
+    || fail "a conflicting duplicate kind acknowledged the routed reply before the drain"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain after a conflicting duplicate kind failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
+    || fail "a conflicting duplicate kind did not create a parent queue row"
+  grep -F 'working: ambiguous routed reply must reach the parent drain' "$drain_out" >/dev/null \
+    || fail "the parent drain omitted the ambiguous routed reply"
+  unset FM_FAKE_CREW_STATE
+  pass "conflicting duplicate kind metadata remains parent-directed"
+}
+
 test_working_span_without_valid_seen_marker_surfaces_turn_end() {
   local marker_case dir state fakebin out status_file pid marker raw reported ident
   for marker_case in missing malformed invalidated misaligned; do
@@ -4331,6 +4356,7 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline
 test_working_note_not_working_surfaced
 test_secondmate_nonterminal_status_absorbed
 test_secondmate_status_with_turn_end_surfaces_routed_reply
+test_conflicting_duplicate_kind_metadata_surfaces_routed_reply
 test_working_span_without_valid_seen_marker_surfaces_turn_end
 test_working_ack_preserves_unreadable_sibling_cursor
 test_afk_signal_skips_working_only_recheck

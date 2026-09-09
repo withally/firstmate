@@ -1940,14 +1940,17 @@ EOF
 }
 
 status_file_kind() {  # <status-file>
-  local f=$1 base dir task kind
+  local f=$1 base dir task kind kind_lines kind_count
   base=${f##*/}
   case "$base" in *.status) ;; *) return 2 ;; esac
   dir=${f%/*}
   [ "$dir" != "$f" ] || dir=.
   task=${base%.status}
   [ -f "$dir/$task.meta" ] && [ -r "$dir/$task.meta" ] && [ ! -L "$dir/$task.meta" ] || return 2
-  kind=$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  kind_lines=$(grep '^kind=' "$dir/$task.meta" 2>/dev/null || true)
+  kind_count=$(printf '%s\n' "$kind_lines" | awk '/^kind=/{count++} END {print count+0}')
+  [ "$kind_count" -eq 1 ] || return 2
+  kind=${kind_lines#kind=}
   case "$kind" in
     ship|scout|secondmate) printf '%s' "$kind" ;;
     *) return 2 ;;

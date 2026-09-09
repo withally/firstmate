@@ -8,6 +8,7 @@ set -u
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-startup-memory-budget)
+export FM_LAVISH_STATE_FILE="$TMP_ROOT/no-lavish-state.json"
 BUDGET="$ROOT/bin/fm-startup-memory-budget.sh"
 BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
 CONFIG_PUSH="$ROOT/bin/fm-config-push.sh"

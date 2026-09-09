@@ -54,7 +54,9 @@ MATE_HOME=$(cd "$MATE_HOME" 2>/dev/null && pwd -P) || exit 0
 THRESHOLD=$DEFAULT_THRESHOLD
 if [ -f "$CONFIG/secondmate-turn-rate-threshold" ]; then
   configured=$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' \
-    "$CONFIG/secondmate-turn-rate-threshold" 2>/dev/null | head -1 | tr -d '[:space:]')
+    "$CONFIG/secondmate-turn-rate-threshold" 2>/dev/null | head -1)
+  configured="${configured#"${configured%%[![:space:]]*}"}"
+  configured="${configured%"${configured##*[![:space:]]}"}"
   case "$configured" in
     ''|*[!0-9]*|0) ;;
     *) THRESHOLD=$configured ;;
@@ -131,15 +133,16 @@ if [ "$assistant_events" -le "$THRESHOLD" ] || [ "$inbound_events" -gt 0 ]; then
 fi
 
 [ -e "$MARKER" ] && exit 0
+
+reason="signal: secondmate turn-rate exceeded: mate=$ID assistant-events=$assistant_events window=${WINDOW_SECS}s inbound-events=0 threshold=$THRESHOLD"
+if ! fm_wake_append signal "secondmate-turn-rate:$ID" "$reason"; then
+  exit 2
+fi
+
 tmp="$MARKER.tmp.$$"
 if ! printf 'transcript=%s\nevents=%s\nstarted=%s\n' "$TRANSCRIPT" "$assistant_events" "$now" > "$tmp" \
   || ! mv "$tmp" "$MARKER"; then
   rm -f "$tmp"
-  exit 2
-fi
-reason="signal: secondmate turn-rate exceeded: mate=$ID assistant-events=$assistant_events window=${WINDOW_SECS}s inbound-events=0 threshold=$THRESHOLD"
-if ! fm_wake_append signal "secondmate-turn-rate:$ID" "$reason"; then
-  rm -f "$MARKER"
   exit 2
 fi
 printf '%s\n' "$reason"

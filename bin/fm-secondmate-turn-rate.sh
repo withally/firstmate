@@ -50,6 +50,7 @@ REMOTE_HOST=$(meta_value remote_host)
 case "$HARNESS" in pi|pi-signed) ;; *) exit 0 ;; esac
 [ -z "$REMOTE_HOST" ] && [ -d "$MATE_HOME" ] || exit 0
 MATE_HOME=$(cd "$MATE_HOME" 2>/dev/null && pwd -P) || exit 0
+SPAWN_GEN=$(meta_value spawn_gen)
 
 THRESHOLD=$DEFAULT_THRESHOLD
 if [ -f "$CONFIG/secondmate-turn-rate-threshold" ]; then
@@ -58,8 +59,9 @@ if [ -f "$CONFIG/secondmate-turn-rate-threshold" ]; then
   configured="${configured#"${configured%%[![:space:]]*}"}"
   configured="${configured%"${configured##*[![:space:]]}"}"
   case "$configured" in
-    ''|*[!0-9]*|0) ;;
-    *) THRESHOLD=$configured ;;
+    ''|*[!0-9]*) ;;
+    *[1-9]*) THRESHOLD=$configured ;;
+    *) ;;
   esac
 fi
 
@@ -132,7 +134,15 @@ if [ "$assistant_events" -le "$THRESHOLD" ] || [ "$inbound_events" -gt 0 ]; then
   exit 0
 fi
 
-[ -e "$MARKER" ] && exit 0
+if [ -e "$MARKER" ]; then
+  marker_transcript=$(sed -n 's/^transcript=//p' "$MARKER" 2>/dev/null | head -1)
+  marker_spawn_gen=$(sed -n 's/^spawn_gen=//p' "$MARKER" 2>/dev/null | head -1)
+  if [ "$marker_transcript" = "$TRANSCRIPT" ] \
+    && { [ -z "$SPAWN_GEN" ] || [ "$marker_spawn_gen" = "$SPAWN_GEN" ]; }; then
+    exit 0
+  fi
+  rm -f "$MARKER"
+fi
 
 reason="signal: secondmate turn-rate exceeded: mate=$ID assistant-events=$assistant_events window=${WINDOW_SECS}s inbound-events=0 threshold=$THRESHOLD"
 if ! fm_wake_append signal "secondmate-turn-rate:$ID" "$reason"; then
@@ -140,7 +150,8 @@ if ! fm_wake_append signal "secondmate-turn-rate:$ID" "$reason"; then
 fi
 
 tmp="$MARKER.tmp.$$"
-if ! printf 'transcript=%s\nevents=%s\nstarted=%s\n' "$TRANSCRIPT" "$assistant_events" "$now" > "$tmp" \
+if ! printf 'transcript=%s\nspawn_gen=%s\nevents=%s\nstarted=%s\n' \
+  "$TRANSCRIPT" "$SPAWN_GEN" "$assistant_events" "$now" > "$tmp" \
   || ! mv "$tmp" "$MARKER"; then
   rm -f "$tmp"
   exit 2

@@ -15,8 +15,10 @@ cleanup() {
 trap cleanup EXIT
 
 write_meta() {  # <parent-home> <mate-home>
+  local generation=${3:-test-generation}
   mkdir -p "$1/state" "$1/config" "$2"
-  printf 'kind=secondmate\nharness=pi\nhome=%s\nworktree=%s\n' "$2" "$2" \
+  printf 'kind=secondmate\nharness=pi\nspawn_gen=%s\nhome=%s\nworktree=%s\n' \
+    "$generation" "$2" "$2" \
     > "$1/state/mate.meta"
 }
 
@@ -118,6 +120,61 @@ test_internal_whitespace_threshold_uses_default() {
   pass "secondmate turn-rate: internal threshold whitespace falls back to the default"
 }
 
+test_zero_threshold_with_leading_zeros_uses_default() {
+  local parent mate sessions transcript now out
+  parent="$TMP_ROOT/zero-threshold-parent"
+  mate="$TMP_ROOT/zero-threshold-mate"
+  sessions="$TMP_ROOT/zero-threshold-agent/sessions"
+  write_meta "$parent" "$mate"
+  printf '00\n' > "$parent/config/secondmate-turn-rate-threshold"
+  transcript=$(session_path "$sessions" "$mate")
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  printf '%s\n' "{\"type\":\"session\",\"timestamp\":\"$now\",\"cwd\":\"$mate\"}" > "$transcript"
+  append_assistant_turn "$transcript" 1 "$now" "true"
+
+  out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
+  [ -z "$out" ] || fail "an all-zero threshold emitted a signal instead of using the default: $out"
+  [ ! -e "$parent/state/.wake-queue" ] || fail "an all-zero threshold queued a wake"
+  pass "secondmate turn-rate: leading-zero zero thresholds fall back to the default"
+}
+
+test_relaunch_does_not_reuse_episode_marker() {
+  local parent mate sessions transcript new_transcript now i out rows
+  parent="$TMP_ROOT/relaunch-parent"
+  mate="$TMP_ROOT/relaunch-mate"
+  sessions="$TMP_ROOT/relaunch-agent/sessions"
+  write_meta "$parent" "$mate" old-generation
+  transcript=$(session_path "$sessions" "$mate")
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  printf '%s\n' "{\"type\":\"session\",\"timestamp\":\"$now\",\"cwd\":\"$mate\"}" > "$transcript"
+  i=1
+  while [ "$i" -le 61 ]; do
+    append_assistant_turn "$transcript" "$i" "$now" "true"
+    i=$((i + 1))
+  done
+
+  out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
+  assert_contains "$out" 'signal: secondmate turn-rate exceeded: mate=mate' \
+    "the initial high-rate episode did not emit a signal"
+
+  new_transcript="${transcript%/*}/z-relaunch.jsonl"
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  printf '%s\n' "{\"type\":\"session\",\"timestamp\":\"$now\",\"cwd\":\"$mate\"}" > "$new_transcript"
+  i=1
+  while [ "$i" -le 61 ]; do
+    append_assistant_turn "$new_transcript" "$i" "$now" "true"
+    i=$((i + 1))
+  done
+  write_meta "$parent" "$mate" new-generation
+
+  out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
+  assert_contains "$out" 'signal: secondmate turn-rate exceeded: mate=mate' \
+    "a relaunch reused the old episode marker"
+  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 2 ] || fail "relaunch queued $rows signal rows instead of two"
+  pass "secondmate turn-rate: relaunches do not reuse an old episode marker"
+}
+
 test_wake_is_durable_before_episode_marker() {
   local parent mate sessions transcript now i fakebin marker real_mv rc out rows
   parent="$TMP_ROOT/marker-parent"
@@ -167,4 +224,6 @@ SH
 test_unprompted_pi_loop_signals_once_per_episode
 test_doorbell_driven_pi_turns_do_not_signal
 test_internal_whitespace_threshold_uses_default
+test_zero_threshold_with_leading_zeros_uses_default
+test_relaunch_does_not_reuse_episode_marker
 test_wake_is_durable_before_episode_marker

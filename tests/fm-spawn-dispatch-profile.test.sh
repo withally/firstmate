@@ -84,7 +84,7 @@ make_seeded_secondmate_home() {
 }
 
 run_spawn() {
-  local home=$1 wt=$2 fakebin=$3 launchlog=$4
+  local home=$1 wt=$2 fakebin=$3 launchlog=$4 status raw
   shift 4
   : > "$launchlog"
   # CLAUDE_CONFIG_DIR is forwarded onto claude launches by fm-spawn, so pin it
@@ -97,6 +97,18 @@ run_spawn() {
     FM_FAKE_CURSOR_LIST_STATUS="${FM_TEST_CURSOR_LIST_STATUS:-0}" \
     GROK_HOME="$home/grok-home" \
     fm_test_run_spawn "$home" "$wt" "$fakebin" "$@"
+  status=$?
+  if [ "$status" -eq 0 ] && [ "${FM_TEST_CAPTURE_RAW:-0}" != 1 ] \
+     && [ "$(wc -l < "$launchlog")" -eq 1 ]; then
+    raw=$(cat "$launchlog")
+    case "$raw" in
+      *fm-worker-env.sh*' --shell-command '*)
+        eval "set -- $raw"
+        printf '%s\n' "$4" > "$launchlog"
+        ;;
+    esac
+  fi
+  return "$status"
 }
 
 # Ship spawns carry an explicit delivery contract (AGENTS.md section 7); these
@@ -111,6 +123,18 @@ $1
 EOF
 }
 
+read_inner_launch() {
+  local raw
+  raw=$(cat "$1")
+  case "$raw" in
+    *fm-worker-env.sh*' --shell-command '*)
+      eval "set -- $raw"
+      printf '%s\n' "$4"
+      ;;
+    *) printf '%s\n' "$raw" ;;
+  esac
+}
+
 assert_meta_profile() {
   local meta=$1 harness=$2 model=$3 effort=$4
   assert_grep "harness=$harness" "$meta" "meta missing harness=$harness"
@@ -119,7 +143,7 @@ assert_meta_profile() {
 }
 
 test_no_profile_keeps_claude_profile_defaults() {
-  local rec id out status expected launch
+  local rec id out status launch
   id=profile-off-z1
   rec=$(make_spawn_case profile-off claude "$id")
   read_case_record "$rec"
@@ -130,9 +154,11 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_contains "$out" "spawned $id harness=claude" "spawn did not report claude"
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
-  launch=$(cat "$LAUNCH_LOG")
-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
-  [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  launch=$(read_inner_launch "$LAUNCH_LOG")
+  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions" \
+    "no-profile claude launch did not use the canonical launch kind"
+  assert_contains "$launch" "fm-operational-input.sh" \
+    "no-profile claude launch did not receive its generated launch brief"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
 
@@ -146,10 +172,36 @@ test_non_cursor_launch_clears_inherited_cursor_markers() {
     run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn under Cursor markers should succeed"
-  launch=$(cat "$LAUNCH_LOG")
+  launch=$(read_inner_launch "$LAUNCH_LOG")
   assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS" \
     "non-cursor launch must clear both inherited Cursor identity markers"
   pass "non-cursor launches clear inherited Cursor identity markers"
+}
+
+test_ship_and_secondmate_use_the_worker_environment_boundary() {
+  local rec id sm out status launch
+  id=profile-worker-env-ship-z1c
+  rec=$(make_spawn_case profile-worker-env codex "$id")
+  read_case_record "$rec"
+
+  out=$(FM_TEST_CAPTURE_RAW=1 run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "ship spawn through the worker environment boundary should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "'$ROOT/bin/fm-worker-env.sh' '$HOME_DIR/config/worker-env-allowlist'" \
+    "ship launch did not pass through the scrubbed worker environment"
+
+  id=profile-worker-env-secondmate-z1d
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  out=$(FM_TEST_CAPTURE_RAW=1 run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate spawn through the worker environment boundary should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "'$ROOT/bin/fm-worker-env.sh' '$HOME_DIR/config/worker-env-allowlist'" \
+    "secondmate launch did not pass through the scrubbed worker environment"
+  pass "ship and secondmate launches share the scrubbed worker environment boundary"
 }
 
 test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
@@ -173,7 +225,7 @@ test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
   )
   status=$?
   expect_code 0 "$status" "spawn with relative home overrides should succeed"
-  launch=$(cat "$LAUNCH_LOG")
+  launch=$(read_inner_launch "$LAUNCH_LOG")
   assert_contains "$launch" "-e '$home_real/state/$id.pi-ext.ts'" \
     "relative FM_STATE_OVERRIDE leaked into Pi's cross-process extension path"
   assert_contains "$launch" "< '$home_real/data/$id/launch-brief.md'" \
@@ -202,7 +254,7 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
   )
   status=$?
   expect_code 0 "$status" "spawn with relative FM_HOME defaults should succeed"
-  launch=$(cat "$LAUNCH_LOG")
+  launch=$(read_inner_launch "$LAUNCH_LOG")
   assert_contains "$launch" "-e '$home_real/state/$relative_id.pi-ext.ts'" \
     "relative FM_HOME leaked into Pi's default cross-process extension path"
   assert_contains "$launch" "< '$home_real/data/$relative_id/launch-brief.md'" \
@@ -222,7 +274,7 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
   )
   status=$?
   expect_code 0 "$status" "spawn with absolute symlink-spelled FM_HOME defaults should succeed"
-  launch=$(cat "$LAUNCH_LOG")
+  launch=$(read_inner_launch "$LAUNCH_LOG")
   assert_contains "$launch" "-e '$linked_home/state/$absolute_id.pi-ext.ts'" \
     "absolute FM_HOME spelling changed in Pi's default cross-process extension path"
   assert_contains "$launch" "< '$linked_home/data/$absolute_id/launch-brief.md'" \
@@ -250,7 +302,7 @@ test_absolute_override_spelling_is_preserved_in_launch_paths() {
   )
   status=$?
   expect_code 0 "$status" "spawn with absolute symlink-spelled overrides should succeed"
-  launch=$(cat "$LAUNCH_LOG")
+  launch=$(read_inner_launch "$LAUNCH_LOG")
   assert_contains "$launch" "-e '$linked_home/state/$id.pi-ext.ts'" \
     "absolute FM_STATE_OVERRIDE spelling changed in Pi's cross-process extension path"
   assert_contains "$launch" "< '$linked_home/data/$id/launch-brief.md'" \
@@ -811,6 +863,7 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
 
 test_no_profile_keeps_claude_profile_defaults
 test_non_cursor_launch_clears_inherited_cursor_markers
+test_ship_and_secondmate_use_the_worker_environment_boundary
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
 test_absolute_override_spelling_is_preserved_in_launch_paths

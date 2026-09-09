@@ -25,6 +25,22 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Worker launch environment (`config/worker-env-allowlist`)
+
+Every worker, scout, relaunch replacement, and secondmate starts behind the environment boundary owned by `bin/fm-worker-env.sh` and invoked by `bin/fm-spawn.sh`.
+The boundary keeps `PATH`, `HOME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TMPDIR`, task temporary and trace variables, `FM_*` contract variables, supported harness variables, and supported runtime-backend variables.
+It drops other ambient variables and always drops names ending in `API_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, or `KEY`, case-insensitively, unless the exact name is explicitly allowlisted.
+The launch logs only how many variable names were dropped and never logs their names or values.
+
+The optional gitignored `config/worker-env-allowlist` contains one exact environment variable name per line.
+Blank lines and lines beginning with `#` are ignored.
+Invalid variable names or an unreadable existing file fail the worker launch closed.
+An allowlisted name is passed only when it already exists in the launching environment.
+For example, a task that genuinely needs `GEMINI_API_KEY` can name only `GEMINI_API_KEY` in this file.
+
+The recommended practice is to keep credentials out of `~/.zshrc` and load them per tool from that tool's `.env` file.
+The allowlist is a narrow compatibility escape hatch, not an environment or secrets loader.
+
 ## Project registry (`data/projects.md`)
 
 `data/projects.md` is the private per-home registry of standing project delivery and merge-authority posture.

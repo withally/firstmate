@@ -166,6 +166,18 @@ run_muse_spawn() {  # <home> <proj> <wt> <fakebin> <id> [extra args...]
     "$SPAWN" "$id" "$proj" muse "$@" 2>&1
 }
 
+read_inner_launch() {
+  local raw
+  raw=$(cat "$1")
+  case "$raw" in
+    *fm-worker-env.sh*' --shell-command '*)
+      eval "set -- $raw"
+      printf '%s\n' "$4"
+      ;;
+    *) printf '%s\n' "$raw" ;;
+  esac
+}
+
 # --- detection --------------------------------------------------------------
 
 # The installed muse launcher execs a VERSION-SUFFIXED binary
@@ -264,7 +276,7 @@ EOF
   expect_code 0 "$status" "muse spawn should succeed"
   assert_contains "$out" "spawned $id harness=muse" "muse spawn did not report success"
 
-  launch=$(cat "$home/launch.log")
+  launch=$(read_inner_launch "$home/launch.log")
   # --yolo is what makes a crewmate pane viable at all: without it muse holds
   # every tool call for approval and sandboxes the network to proxy-only.
   assert_contains "$launch" ' --yolo ' "muse launch omitted --yolo"
@@ -309,7 +321,7 @@ EOF
     run_muse_spawn "$home" "$proj" "$wt" "$fakebin" "$id" \
       --mode no-mistakes --yolo off --model muse-spark-1.2 --effort "$effort" >/dev/null \
       || fail "muse spawn with effort $effort failed"
-    launch=$(cat "$home/launch.log")
+    launch=$(read_inner_launch "$home/launch.log")
     assert_contains "$launch" "$expect" "muse effort $effort did not map to '$expect'"
     assert_contains "$launch" "--model 'muse-spark-1.2'" "muse spawn dropped the model axis"
   done
@@ -321,7 +333,7 @@ $rec
 EOF
   run_muse_spawn "$home" "$proj" "$wt" "$fakebin" "$id" --mode no-mistakes --yolo off >/dev/null \
     || fail "muse spawn without an effort axis failed"
-  launch=$(cat "$home/launch.log")
+  launch=$(read_inner_launch "$home/launch.log")
   assert_not_contains "$launch" '--reasoning-effort' "muse spawn invented an effort when none was chosen"
   pass "muse maps the shared effort vocabulary and reaches ultra only via explicit max"
 }
@@ -394,7 +406,7 @@ EOF
     run_muse_spawn "$home" "$proj" "$wt" "$fakebin" "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "muse spawn with relative XDG roots should succeed: $out"
-  launch=$(cat "$home/launch.log")
+  launch=$(read_inner_launch "$home/launch.log")
   assert_contains "$launch" "XDG_CONFIG_HOME='$resolved_caller/cfg'" \
     "muse launch did not forward the resolved config root"
   assert_contains "$launch" "XDG_DATA_HOME='$resolved_caller/data'" \

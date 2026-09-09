@@ -3397,6 +3397,15 @@ if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
 fi
 
+# The pane shell may inherit a long-lived backend daemon's full login
+# environment. Put the complete launch expression behind one scrubbed child
+# boundary so command substitutions and every harness kind - including
+# secondmates and relaunch replacements - see only the worker environment.
+sq_worker_env=$(shell_quote "$FM_ROOT/bin/fm-worker-env.sh")
+sq_worker_allowlist=$(shell_quote "$CONFIG/worker-env-allowlist")
+sq_worker_launch=$(shell_quote "$LAUNCH")
+LAUNCH="$sq_worker_env $sq_worker_allowlist --shell-command $sq_worker_launch"
+
 spawn_record_traceparent() {
   local meta="$STATE/$ID.meta" status=0 acquired=0
   # Fresh publication still owns the lock. Relaunch deliberately uses a short

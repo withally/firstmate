@@ -871,6 +871,29 @@ EOF
   pass "fm-spawn/fm-promote: leftover Task placeholders are refused until both subsections are filled"
 }
 
+test_generated_briefs_forbid_retained_secret_environment_output() {
+  local rec home proj fakebin brief charter
+  rec=$(make_home brief-secret-evidence)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$BRIEF" \
+    brief-secret-evidence proj --mode no-mistakes >/dev/null
+  brief="$home/data/brief-secret-evidence/brief.md"
+
+  assert_grep "Never retain a raw environment dump or verbose build output as evidence." "$brief" \
+    "the generated ship brief did not forbid retaining high-risk raw output"
+  assert_grep "Redact any line that looks like NAME=value for a secret-shaped name before saving logs." "$brief" \
+    "the generated ship brief did not require secret-shaped assignments to be redacted"
+
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$BRIEF" \
+    brief-secret-secondmate --secondmate --no-projects >/dev/null
+  charter="$home/data/brief-secret-secondmate/brief.md"
+  assert_grep "Never retain a raw environment dump or verbose build output as evidence." "$charter" \
+    "the generated secondmate charter did not forbid retaining high-risk raw output"
+  pass "fm-brief: launched agents are instructed not to retain raw secret-bearing output"
+}
+
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
@@ -882,4 +905,5 @@ test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
 test_spawn_and_promote_require_filled_task_subsections
+test_generated_briefs_forbid_retained_secret_environment_output
 echo "# all fm-task-delivery tests passed"

@@ -52,6 +52,18 @@ assert_not_trusted() {  # <store> <path> <msg>
   return 0
 }
 
+read_inner_launch() {
+  local raw
+  raw=$(cat "$1")
+  case "$raw" in
+    *fm-worker-env.sh*' --shell-command '*)
+      eval "set -- $raw"
+      printf '%s\n' "$4"
+      ;;
+    *) printf '%s\n' "$raw" ;;
+  esac
+}
+
 # The store is the vendor's own persisted JSON, so preservation is asserted
 # against the parsed value at a key path rather than the serialized bytes.
 store_value() {  # <store> <key...> -> the JSON value at that key path
@@ -410,7 +422,7 @@ test_refused_spawn_leaves_no_task_state() {
 # worktree AND deliver the launch command carrying the brief, with no dialog to
 # answer and no human in the loop.
 test_claude_spawn_pretrusts_its_worktree_and_reaches_the_brief() {
-  local case_dir home proj wt config fakebin launch_log out
+  local case_dir home proj wt config fakebin launch_log launch out
   case_dir="$TMP_ROOT/spawn"
   home="$case_dir/home"
   proj="$case_dir/project"
@@ -429,13 +441,14 @@ test_claude_spawn_pretrusts_its_worktree_and_reaches_the_brief() {
   assert_trusted "$config/.claude.json" "$wt" \
     "the claude spawn did not pre-register trust for its worktree"
   assert_present "$launch_log" "the claude spawn sent no launch command"
-  assert_grep 'claude --dangerously-skip-permissions' "$launch_log" \
+  launch=$(read_inner_launch "$launch_log")
+  assert_contains "$launch" 'claude --dangerously-skip-permissions' \
     "the launch command was not the claude worker launch"
-  assert_grep "$home/data/trustspawn/launch-brief.md" "$launch_log" \
+  assert_contains "$launch" "$home/data/trustspawn/launch-brief.md" \
     "the launch command did not carry the brief the worker must read"
   # The worker must read the SAME store the registration wrote, or the trust
   # would land somewhere the pane never looks.
-  assert_grep "CLAUDE_CONFIG_DIR='$config'" "$launch_log" \
+  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$config'" \
     "the launch command did not point the worker at the store that was trusted"
   pass "fm-spawn.sh: a claude spawn pre-trusts its worktree and launches with the brief"
 }

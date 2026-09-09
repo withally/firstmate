@@ -1989,8 +1989,8 @@ status_acknowledge_working_span() {  # <file> <endpoint> <identity>
   task=${f##*/}; task=${task%.status}
   fm_lock_acquire_wait_bounded "$lock" 2 || return 1
   offset=$(status_presentation_cursor_offset "$f") || rc=1
-  if [ "$rc" -eq 0 ] && status_span_is_working_only "$f" "$offset" "$endpoint" "$ident"; then
-    status_update_presentation_cursor_row "$state" "$task" "$endpoint" "$ident" || rc=1
+  if [ "$rc" -eq 0 ]; then
+    status_span_is_working_only "$f" "$offset" "$endpoint" "$ident" || true
   fi
   fm_lock_release "$lock" || rc=1
   return "$rc"

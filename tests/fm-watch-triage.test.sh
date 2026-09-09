@@ -644,15 +644,18 @@ SH
 # --- benign attended signals are absorbed ------------------------------------
 
 # Replay routine progress with an unverifiable execution source, including the
-# same task's turn-end in the grace window. Neither may replay at a later drain.
+# same task's turn-end in the grace window. Neither may wake supervision, while
+# the progress remains reportable at a later real wake.
 test_working_span_absorbed_without_live_proof() {
-  local paired dir state fakebin out pid
+  local paired dir state fakebin out pid baseline_offset
   for paired in status paired; do
     dir=$(make_case "working-span-$paired"); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
     printf 'kind=ship\n' > "$state/task.meta"
     printf 'note: baseline already delivered\n' > "$state/task.status"
     FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>/dev/null \
       || fail "$paired working span could not seed its presentation baseline"
+    baseline_offset=$(status_presentation_cursor_offset "$state/task.status") \
+      || fail "$paired working span could not read its presentation baseline"
     prime_status_seen "$state" "$state/task.status" \
       || fail "$paired working span could not seed its signal baseline"
     printf 'working: committed fix round 2 and started re-review\nworking: local validation passed at 1440 and 390\n' >> "$state/task.status"
@@ -664,19 +667,17 @@ test_working_span_absorbed_without_live_proof() {
       reap "$pid"; fail "$paired working span woke supervision: $(cat "$out")"
     fi
     [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$paired working span queued a wake"; }
-    reap "$pid"
-    [ "$(status_presentation_cursor_offset "$state/task.status")" = "$(size_of "$state/task.status")" ] \
-      || fail "$paired working span did not advance presentation cursor before drain"
+    [ "$(status_presentation_cursor_offset "$state/task.status")" = "$baseline_offset" ] \
+      || fail "$paired working span advanced presentation cursor before drain"
     printf 'done: trigger a later drain\n' >> "$state/task.status"
-    watch_bg "$state" "$fakebin" "$out"
-    pid=$!
     wait_for_exit "$pid" 100 || fail "$paired terminal follow-up did not wake"
     FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2>/dev/null || fail "working span drain failed"
-    if grep -F 'working:' "$dir/drain.out" >/dev/null; then
-      fail "$paired absorbed progress replayed at drain: $(cat "$dir/drain.out")"
-    fi
+    grep -F 'working: committed fix round 2 and started re-review' "$dir/drain.out" >/dev/null \
+      || fail "$paired absorbed progress was unavailable at the later drain: $(cat "$dir/drain.out")"
+    grep -F 'working: local validation passed at 1440 and 390' "$dir/drain.out" >/dev/null \
+      || fail "$paired second absorbed progress line was unavailable at the later drain: $(cat "$dir/drain.out")"
   done
-  pass "working-only spans and their paired turn-ends absorb without live proof or unread replay"
+  pass "working-only spans absorb while preserving unread progress for later drains"
 }
 
 test_working_ack_preserves_earlier_unread_note() {
@@ -1775,10 +1776,9 @@ test_mixed_pending_classifies_each_status_file() {
   if grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "routine.status" >/dev/null; then
     fail "the routine status was queued as a signal in a mixed batch"
   fi
-  if grep -F 'routine working: still compiling' "$drain_out" >/dev/null; then
-    fail "the absorbed routine line replayed at the mixed-batch drain"
-  fi
-  pass "a mixed grace-window batch queues only actionable status and acknowledges absorbed working progress"
+  grep -F 'routine working: still compiling' "$drain_out" >/dev/null \
+    || fail "the absorbed routine line was unavailable at the mixed-batch drain"
+  pass "a mixed grace-window batch queues actionable status and preserves absorbed progress"
 }
 
 # A captain-relevant line sits at the start of the log, followed by routine

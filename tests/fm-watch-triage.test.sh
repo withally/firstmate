@@ -703,6 +703,7 @@ test_nonterminal_signal_absorbed() {
   local dir state fakebin out status_file pid
   dir=$(make_case provably-working-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'working: compiling step 2\n' > "$status_file"
   # A working line is nonterminal and therefore absorbed in attended mode.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
@@ -1446,6 +1447,7 @@ test_working_note_not_working_surfaced() {
   dir=$(make_case working-note-stopped); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
   status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'working [key=build]: compiling step 2\npaused: awaiting vendor window\nnote: routine receipt recorded\nresolved [key=not-open]: housekeeping only\n' > "$status_file"
   export FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling step 2'
   watch_bg "$state" "$fakebin" "$out"
@@ -1507,28 +1509,30 @@ test_secondmate_status_with_turn_end_surfaces_routed_reply() {
 }
 
 test_conflicting_duplicate_kind_metadata_surfaces_routed_reply() {
-  local dir state fakebin out drain_out status_file pid
-  dir=$(make_case conflicting-duplicate-kind); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/mate.status"
-  printf 'kind=secondmate\nkind=ship\n' > "$state/mate.meta"
-  printf 'working: ambiguous routed reply must reach the parent drain\n' > "$status_file"
-  : > "$state/mate.turn-ended"
-  export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
-  watch_bg "$state" "$fakebin" "$out"
-  pid=$!
-  wait_for_exit "$pid" 100 || fail "a conflicting duplicate kind let a routed reply disappear"
-  grep -F "signal: $status_file" "$out" >/dev/null \
-    || fail "a conflicting duplicate kind did not surface the routed reply"
-  [ "$(status_presentation_cursor_offset "$status_file")" = 0 ] \
-    || fail "a conflicting duplicate kind acknowledged the routed reply before the drain"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
-    || fail "drain after a conflicting duplicate kind failed"
-  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
-    || fail "a conflicting duplicate kind did not create a parent queue row"
-  grep -F 'working: ambiguous routed reply must reach the parent drain' "$drain_out" >/dev/null \
-    || fail "the parent drain omitted the ambiguous routed reply"
+  local paired dir state fakebin out drain_out status_file pid
+  for paired in status paired; do
+    dir=$(make_case "conflicting-duplicate-kind-$paired"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/mate.status"
+    printf 'kind=secondmate\nkind=ship\n' > "$state/mate.meta"
+    printf 'working: ambiguous routed reply must reach the parent drain\n' > "$status_file"
+    [ "$paired" != paired ] || : > "$state/mate.turn-ended"
+    export FM_FAKE_CREW_STATE='state: unknown · source: none · no live proof'
+    watch_bg "$state" "$fakebin" "$out"
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "$paired conflicting duplicate kind let a routed reply disappear"
+    grep -F "signal: $status_file" "$out" >/dev/null \
+      || fail "$paired conflicting duplicate kind did not surface the routed reply"
+    [ "$(status_presentation_cursor_offset "$status_file")" = 0 ] \
+      || fail "$paired conflicting duplicate kind acknowledged the routed reply before the drain"
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+      || fail "drain after a $paired conflicting duplicate kind failed"
+    grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
+      || fail "$paired conflicting duplicate kind did not create a parent queue row"
+    grep -F 'working: ambiguous routed reply must reach the parent drain' "$drain_out" >/dev/null \
+      || fail "the parent drain omitted the $paired ambiguous routed reply"
+  done
   unset FM_FAKE_CREW_STATE
-  pass "conflicting duplicate kind metadata remains parent-directed"
+  pass "conflicting duplicate kind metadata remains parent-directed with or without turn-end"
 }
 
 test_working_span_without_valid_seen_marker_surfaces_turn_end() {
@@ -1718,6 +1722,7 @@ test_absorbed_status_remains_unread_for_next_drain() {
   local dir state fakebin out drain_out status_file pid
   dir=$(make_case absorbed-status-unread); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'note: bootstrap cursor\n' > "$status_file"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>/dev/null || fail "could not prime unread-status cursor"
   prime_status_seen "$state" "$status_file" || fail "could not prime signal baseline"
@@ -1905,6 +1910,7 @@ test_routine_appends_after_a_classified_event_stay_absorbed() {
   dir=$(make_case actionable-classified); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
   status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   # The decision is BEHIND the classified position, so only the new routine line
   # is in the span. A supervisor that re-read the whole log would wake again here.
   printf 'working: setup\nneeds-decision: pick A or B\n' > "$status_file"
@@ -3836,6 +3842,7 @@ exit 127
 SH
   chmod +x "$fakebin/wc"
   status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'working: compiling step 2\n' > "$status_file"
   # The nonterminal signal is absorbed, which writes the triage log line under test.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
@@ -4211,6 +4218,7 @@ test_beacon_stays_fresh_while_absorbing() {
   local dir state fakebin out status_file pid m1 m2 now
   dir=$(make_case beacon-fresh); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   status_file="$state/task.status"
+  printf 'kind=ship\n' > "$state/task.meta"
   printf 'working: a\n' > "$status_file"
   # Provably working so the working: notes are absorbed (the path that must keep the
   # beacon fresh).

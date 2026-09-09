@@ -1318,6 +1318,14 @@ signal_files_actionable() {  # <status-file> ...
             FM_SIGNAL_WORKING_FILES="$FM_SIGNAL_WORKING_FILES $f"
           fi
           ;;
+        secondmate)
+          ;;
+        *)
+          if [ "$rc" -eq 1 ]; then
+            found=0
+            FM_SIGNAL_ACTIONABLE_FILES="${FM_SIGNAL_ACTIONABLE_FILES}${f}"$'\n'
+          fi
+          ;;
       esac
     fi
     if [ "$rc" -eq 0 ]; then

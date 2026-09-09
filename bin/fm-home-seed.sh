@@ -404,7 +404,16 @@ acquire_treehouse_home() {
   }
   home=$(printf '%s' "$home_json" | jq -er --arg holder "$id" \
     'select(.lease_holder == $holder and (.lease_id|type == "string") and (.lease_id|length) > 0 and (.path|type == "string") and (.path|startswith("/"))) | .path') || {
-    echo "error: treehouse get --lease did not report a complete firstmate home lease" >&2
+    foreign_holder=$(fm_treehouse_lease_foreign_holder "$home_json" "$id" || true)
+    fm_treehouse_acquisition_record_response "$journal" "$home_json" || {
+      echo "error: treehouse home lease response was not retained; acquisition evidence remains unresolved" >&2
+      return 1
+    }
+    if [ -n "$foreign_holder" ]; then
+      echo "error: treehouse returned a home lease for foreign holder $foreign_holder; raw response retained for reconciliation" >&2
+    else
+      echo "error: treehouse get --lease did not report a complete firstmate home lease; raw response retained for reconciliation" >&2
+    fi
     return 1
   }
   home=$(cd "$home" && pwd -P) || {
@@ -677,11 +686,14 @@ seed_reconcile_treehouse_home_acquisition() {
       ((.path // "") == "" or ((.path | type) == "string" and (.path | startswith("/")))) and
       ((.lease_id // "") == "" or ((.lease_id | type) == "string" and (.lease_id | length) > 0)) and
       ((.path // "") == "" or (.lease_id // "") != "") and
-      ((.lease_id // "") == "" or (.path // "") != "")
+      ((.lease_id // "") == "" or (.path // "") != "") and
+      ((has("provider_response") | not) or
+        ((.provider_response | type) == "string" and (.provider_response | length) > 0))
     ' "$journal" >/dev/null || return 1
     holder=$(jq -er '.lease_holder' "$journal") || return 1
     journal_wt=$(jq -r '.path // empty' "$journal") || return 1
     journal_lease=$(jq -r '.lease_id // empty' "$journal") || return 1
+    jq -e 'has("provider_response")' "$journal" >/dev/null && return 1
   fi
   if [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; then
     receipt_present=1
@@ -711,7 +723,7 @@ seed_reconcile_treehouse_home_acquisition() {
   else
     fm_treehouse_lease_holder_status "$FM_ROOT" "$holder" || return 1
     case "$FM_TREEHOUSE_HOLDER_STATUS" in
-      released) rm -f -- "$journal"; return 0 ;;
+      released) return 1 ;;
       conflict) return 1 ;;
     esac
     wt=$FM_TREEHOUSE_HOLDER_WORKTREE

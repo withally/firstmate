@@ -642,6 +642,46 @@ SH
   pass "allocation with a lost response releases its receipted lease and retries"
 }
 
+test_foreign_holder_refuses_and_retains_provider_response() {
+  local rec id out rc=0
+  id=foreign-holder-response
+  rec=$(make_case foreign-holder-response "$id")
+  read_case_record "$rec"
+  mv "$FAKEBIN_DIR/treehouse" "$FAKEBIN_DIR/treehouse-base"
+  cat > "$FAKEBIN_DIR/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  get)
+    jq -n --arg path "$FM_FAKE_PANE_PATH" \
+      '{path:$path,lease_id:"foreign-lease",lease_holder:"foreign-holder",status:"leased"}'
+    ;;
+  status)
+    jq -n --arg path "$FM_FAKE_PANE_PATH" \
+      '[{path:$path,lease_id:"foreign-lease",lease_holder:"foreign-holder",status:"leased"}]'
+    ;;
+  return)
+    printf 'return\n' >> "${FM_FAKE_TREEHOUSE_LOG:?}"
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$FAKEBIN_DIR/treehouse"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "spawn accepted a lease held by a foreign holder"
+  assert_contains "$out" "foreign-holder" "foreign-holder refusal did not name the provider holder"
+  assert_present "$HOME_DIR/state/$id.lease-acquisition" "foreign-holder evidence was discarded"
+  jq -e --arg holder foreign-holder \
+    '(.provider_response | fromjson).lease_holder == $holder' \
+    "$HOME_DIR/state/$id.lease-acquisition" >/dev/null \
+    || fail "foreign provider response was not retained in acquisition evidence"
+  if [ -e "$CASE_DIR/treehouse.log" ] && grep -F 'return' "$CASE_DIR/treehouse.log" >/dev/null; then
+    fail "foreign-holder refusal attempted an unconditional provider return"
+  fi
+  pass "a foreign treehouse holder refuses spawn and retains raw provider evidence"
+}
+
 test_publication_failure_preserves_identity() {
   local rec id out rc=0
   id=publication-failure
@@ -686,6 +726,7 @@ if [ "$#" -gt 0 ]; then
 fi
 test_pending_close_preserves_retirement_receipt
 test_failed_allocation_response_reconciles_receipt
+test_foreign_holder_refuses_and_retains_provider_response
 test_publication_failure_preserves_identity
 
 test_duplicate_pool_lease_refuses_without_partial_meta

@@ -225,6 +225,31 @@ fm_treehouse_worktree_unowned() { # <state> <worktree> [excluded-meta]
   done
 }
 
+fm_treehouse_lease_foreign_holder() { # <provider-response> <expected-holder>
+  local response=$1 expected_holder=$2
+  printf '%s' "$response" | jq -er --arg expected "$expected_holder" '
+    select((.lease_holder | type) == "string" and (.lease_holder | length) > 0
+      and .lease_holder != $expected
+      and (.lease_id | type) == "string" and (.lease_id | length) > 0
+      and (.path | type) == "string" and (.path | startswith("/")))
+    | .lease_holder
+  ' 2>/dev/null
+}
+
+fm_treehouse_acquisition_record_response() { # <journal> <provider-response>
+  local journal=$1 response=$2 tmp
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+  tmp=$(mktemp "${journal}.tmp.XXXXXX") || return 1
+  if ! jq --arg response "$response" '.provider_response=$response' "$journal" > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! mv -f -- "$tmp" "$journal"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
 # Acquisition intent is published before calling the provider. Its unique holder
 # lets a retry recover an allocation even when get returned no usable response.
 # A bound receipt never adopts a different lease. Ambiguous or unlanded work keeps
@@ -241,13 +266,16 @@ fm_treehouse_acquisition_reconcile() { # <state> <id> <project>
     ((.path // "") == "" or ((.path | type) == "string" and (.path | startswith("/")))) and
     ((.lease_id // "") == "" or ((.lease_id | type) == "string" and (.lease_id | length) > 0)) and
     ((.path // "") == "" or (.lease_id // "") != "") and
-    ((.lease_id // "") == "" or (.path // "") != "")
+    ((.lease_id // "") == "" or (.path // "") != "") and
+    ((has("provider_response") | not) or
+      ((.provider_response | type) == "string" and (.provider_response | length) > 0))
   ' "$journal" >/dev/null || return 1
   holder=$(jq -er --arg project "$project" --arg prefix "$state/$id:" '
     select(.schema == "fm-lease-acquisition.v1" and .project == $project)
     | .lease_holder | select(type == "string" and startswith($prefix) and length > ($prefix|length))' "$journal") || return 1
   old_path=$(jq -r '.path // empty' "$journal") || return 1
   old_id=$(jq -r '.lease_id // empty' "$journal") || return 1
+  jq -e 'has("provider_response")' "$journal" >/dev/null && return 1
   if [ -n "$old_path" ] || [ -n "$old_id" ]; then
     [ -n "$old_path" ] && [ -n "$old_id" ] || return 1
     case "$old_path" in /*) ;; *) return 1 ;; esac
@@ -261,7 +289,7 @@ fm_treehouse_acquisition_reconcile() { # <state> <id> <project>
   else
     fm_treehouse_lease_holder_status "$project" "$holder" || return 1
     case "$FM_TREEHOUSE_HOLDER_STATUS" in
-      released) rm -f "$journal"; return 0 ;;
+      released) return 1 ;;
       conflict) return 1 ;;
     esac
     wt=$FM_TREEHOUSE_HOLDER_WORKTREE

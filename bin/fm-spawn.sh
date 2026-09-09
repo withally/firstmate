@@ -2891,7 +2891,17 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       | . + {schema:"fm-lease-acquisition.v1",project:$project}' \
     > "$lease_receipt_tmp"; then
     rm -f "$lease_receipt_tmp"
-    echo "error: treehouse did not prove a fresh lease; receipt retained for reconciliation" >&2; exit 1
+    foreign_holder=$(fm_treehouse_lease_foreign_holder "$lease_json" "$SPAWN_TREEHOUSE_LEASE_HOLDER" || true)
+    fm_treehouse_acquisition_record_response "$lease_journal" "$lease_json" || {
+      echo "error: treehouse lease response was not retained; acquisition evidence remains unresolved" >&2
+      exit 1
+    }
+    if [ -n "$foreign_holder" ]; then
+      echo "error: treehouse returned a lease for foreign holder $foreign_holder; raw response retained for reconciliation" >&2
+    else
+      echo "error: treehouse did not prove a fresh lease; raw response retained for reconciliation" >&2
+    fi
+    exit 1
   fi
   if ! mv -f "$lease_receipt_tmp" "$lease_journal"; then
     rm -f "$lease_receipt_tmp"

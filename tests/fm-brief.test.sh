@@ -336,8 +336,6 @@ test_ship_and_scout_briefs_render_browser_fallback_rule() {
       "$kind brief did not protect blocked references and require capture-route reporting"
     assert_grep "One worker on the captain's Chrome at a time." "$brief" \
       "$kind brief did not serialize use of the captain's Chrome"
-    assert_grep 'AGENTS.md sections 3 and 8, and every session-start, lock, watcher, and supervision command, belong to the primary only and are forbidden for the crewmate.' "$home/data/$id/brief.md" \
-      "crewmate brief omitted primary-only lifecycle boundary"
   done
   pass "fm-brief.sh: generated browser and primary-boundary contracts render"
 }

@@ -611,6 +611,66 @@ test_secondmate_spawn_resolves_punctuated_registry_projects() {
   pass "secondmate spawn resolves home validation and projects from punctuated registry fields"
 }
 
+test_secondmate_spawn_refuses_foreign_treehouse_receipt() {
+  local home sub sub_abs fakebin log err receipt receipt_before
+  home="$TMP_ROOT/foreign-receipt-home"
+  sub="$TMP_ROOT/foreign-receipt-subhome"
+  err="$TMP_ROOT/foreign-receipt.err"
+  receipt="$home/state/domain.treehouse-lease"
+  receipt_before="$TMP_ROOT/foreign-receipt.before"
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  make_firstmate_git_root "$sub"
+  mkdir -p "$sub/data" "$sub/state" "$sub/config" "$sub/projects"
+  printf 'domain\n' > "$sub/.fm-secondmate-home"
+  printf '# Charter\n\nHandled work.\n' > "$sub/data/charter.md"
+  sub_abs=$(cd "$sub" && pwd -P)
+  printf -- '- domain - foreign lease route (home: %s; scope: test; projects: ; added 2026-07-30)\n' \
+    "$sub_abs" > "$home/data/secondmates.md"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/foreign-receipt-fake")
+  log="$TMP_ROOT/foreign-receipt-fake/tmux.log"
+  cat > "$fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  status)
+    jq -n --arg path "$sub_abs" \\
+      '[{path:\$path,status:"leased",lease_id:"foreign-lease",lease_holder:"foreign-holder"}]'
+    ;;
+  return)
+    printf '%s\n' "treehouse return \$*" >> "\${FM_FAKE_TMUX_LOG:?}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+SH
+  chmod +x "$fakebin/treehouse"
+  cat > "$receipt" <<EOF
+schema=fm-secondmate-treehouse-lease.v1
+project=$ROOT
+worktree=$sub_abs
+treehouse_lease_id=foreign-lease
+treehouse_lease_holder=foreign-holder
+EOF
+  cp "$receipt" "$receipt_before"
+
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/foreign-receipt-fake/pane.txt" \
+    "$ROOT/bin/fm-spawn.sh" domain "$sub" codex --secondmate >/dev/null 2>"$err"; then
+    fail "secondmate spawn accepted a foreign-holder treehouse receipt"
+  fi
+  assert_contains "$(cat "$err")" "malformed or disagrees" \
+    "foreign-holder receipt refusal did not explain the validation failure"
+  cmp -s "$receipt_before" "$receipt" \
+    || fail "foreign-holder receipt changed during spawn refusal"
+  ! grep -F 'new-window' "$log" >/dev/null \
+    || fail "foreign-holder receipt refusal created an endpoint"
+  ! grep -F 'treehouse return' "$log" >/dev/null \
+    || fail "foreign-holder receipt refusal returned the lease"
+  pass "secondmate spawn refuses foreign-holder receipts without launch or release"
+}
+
 test_secondmate_spawn_refuses_ambiguous_and_mismatched_registry_bindings() {
   local row case_name home sub other fakebin log err meta_before
   for row in duplicate-id unterminated-duplicate-id duplicate-home supplied-mismatch metadata-mismatch; do
@@ -3211,6 +3271,7 @@ test_home_seed_refuses_placeholder_charter
 test_home_seed_refuses_empty_charter_fields
 test_home_seed_no_projects_end_to_end
 test_secondmate_spawn_resolves_punctuated_registry_projects
+test_secondmate_spawn_refuses_foreign_treehouse_receipt
 test_secondmate_spawn_refuses_ambiguous_and_mismatched_registry_bindings
 test_home_seed_refuses_projectful_reused_charter_for_projectless_home
 test_home_seed_refuses_projectless_conversion_of_populated_home

@@ -1957,19 +1957,13 @@ if [ "$KIND" = secondmate ]; then
       echo "error: secondmate lease record is unsafe: $FM_BACKLOG_TRANSITION_ERROR" >&2
       exit 1
     }
-    secondmate_lease_project=$(fm_meta_get "$secondmate_lease_record" project)
-    secondmate_lease_worktree=$(fm_meta_get "$secondmate_lease_record" worktree)
-    SPAWN_TREEHOUSE_LEASE_ID=$(fm_meta_get "$secondmate_lease_record" treehouse_lease_id)
-    SPAWN_TREEHOUSE_LEASE_HOLDER=$(fm_meta_get "$secondmate_lease_record" treehouse_lease_holder)
-    if [ "$(real_path_or_raw "$secondmate_lease_project")" != "$(real_path_or_raw "$FM_ROOT")" ] \
-      || [ "$(real_path_or_raw "$secondmate_lease_worktree")" != "$(real_path_or_raw "$PROJ_ABS")" ]; then
-      echo "error: secondmate lease record is bound to a different project or home" >&2
+    if ! fm_treehouse_lease_receipt_read "$secondmate_lease_record" \
+      "$FM_ROOT" "$PROJ_ABS" "" "$ID"; then
+      echo "error: secondmate lease record is malformed or disagrees with the expected project, worktree, or holder" >&2
       exit 1
     fi
-    if [ -z "$SPAWN_TREEHOUSE_LEASE_ID" ] || [ -z "$SPAWN_TREEHOUSE_LEASE_HOLDER" ]; then
-      echo "error: secondmate lease record has no complete lease identity" >&2
-      exit 1
-    fi
+    SPAWN_TREEHOUSE_LEASE_ID=$FM_TREEHOUSE_RECORD_LEASE_ID
+    SPAWN_TREEHOUSE_LEASE_HOLDER=$FM_TREEHOUSE_RECORD_HOLDER
     fm_treehouse_lease_verify "$FM_ROOT" "$PROJ_ABS" \
       "$SPAWN_TREEHOUSE_LEASE_ID" "$SPAWN_TREEHOUSE_LEASE_HOLDER" || {
       echo "error: secondmate lease identity changed for $PROJ_ABS" >&2

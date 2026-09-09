@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # The secondmate turn-rate guard reads Pi's persisted session transcript and
-# emits one signal-class wake for an unprompted high-rate episode.
+# emits one check-class wake for an unprompted high-rate episode.
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 GUARD="$ROOT/bin/fm-secondmate-turn-rate.sh"
+DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-turn-rate-tests)
 
 cleanup() {
@@ -37,7 +38,7 @@ append_assistant_turn() {  # <file> <id> <timestamp> <command>
 }
 
 test_unprompted_pi_loop_signals_once_per_episode() {
-  local parent mate sessions transcript now recent old i out rows
+  local parent mate sessions transcript now recent old i out rows journal
   parent="$TMP_ROOT/loop-parent"
   mate="$TMP_ROOT/loop-mate"
   sessions="$TMP_ROOT/loop-agent/sessions"
@@ -60,16 +61,53 @@ test_unprompted_pi_loop_signals_once_per_episode() {
   done
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
-  assert_contains "$out" 'signal: secondmate turn-rate exceeded: mate=mate' \
-    "unprompted Pi loop did not emit the turn-rate signal"
-  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
-  [ "$rows" -eq 1 ] || fail "unprompted Pi loop queued $rows signal rows instead of one"
+  assert_contains "$out" 'check: secondmate turn-rate exceeded: mate=mate' \
+    "unprompted Pi loop did not emit the turn-rate check"
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 1 ] || fail "unprompted Pi loop queued $rows check rows instead of one"
+
+  FM_HOME="$parent" FM_STATE_OVERRIDE="$parent/state" \
+    bash -c '
+      . "$1"
+      handle_wake "$2" "$3"
+    ' _ "$DAEMON" "$out" "$parent/state" >/dev/null 2>&1 \
+    || fail "turn-rate check did not route through the away classifier"
+  journal="$parent/state/.subsuper-delivery.jsonl"
+  jq -s -e 'any(.[]; .kind == "escalation" and .state == "buffered" and (.text | startswith("check: secondmate turn-rate exceeded: mate=mate")))' \
+    "$journal" >/dev/null \
+    || fail "turn-rate check was not buffered as an away escalation"
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
   [ -z "$out" ] || fail "same high-rate episode emitted again: $out"
-  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
-  [ "$rows" -eq 1 ] || fail "same high-rate episode queued $rows signal rows instead of one"
-  pass "secondmate turn-rate: an unprompted true/inbox loop emits one signal per episode"
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 1 ] || fail "same high-rate episode queued $rows check rows instead of one"
+  pass "secondmate turn-rate: an unprompted true/inbox loop emits one check per episode"
+}
+
+test_primary_session_override_does_not_hide_mate() {
+  local parent mate sessions transcript primary now i out rows
+  parent="$TMP_ROOT/primary-override-parent"
+  mate="$TMP_ROOT/primary-override-mate"
+  sessions="$TMP_ROOT/primary-override-agent/sessions"
+  primary="$TMP_ROOT/primary-session"
+  write_meta "$parent" "$mate"
+  transcript=$(session_path "$sessions" "$mate")
+  mkdir -p "$primary"
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  printf '%s\n' "{\"type\":\"session\",\"timestamp\":\"$now\",\"cwd\":\"$mate\"}" > "$transcript"
+  i=1
+  while [ "$i" -le 61 ]; do
+    append_assistant_turn "$transcript" "$i" "$now" "true"
+    i=$((i + 1))
+  done
+
+  out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" \
+    PI_CODING_AGENT_SESSION_DIR="$primary" "$GUARD" mate 2>&1)
+  assert_contains "$out" 'check: secondmate turn-rate exceeded: mate=mate' \
+    "a custom primary session directory hid the mate transcript"
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 1 ] || fail "custom primary session directory queued $rows check rows instead of one"
+  pass "secondmate turn-rate: primary session overrides do not hide mate transcripts"
 }
 
 test_doorbell_driven_pi_turns_do_not_signal() {
@@ -91,7 +129,7 @@ test_doorbell_driven_pi_turns_do_not_signal() {
   done
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
-  [ -z "$out" ] || fail "doorbell-driven Pi turns emitted a signal: $out"
+  [ -z "$out" ] || fail "doorbell-driven Pi turns emitted a check: $out"
   [ ! -e "$parent/state/.wake-queue" ] || fail "doorbell-driven Pi turns queued a wake"
   pass "secondmate turn-rate: recent inbound activity suppresses a normal driven turn"
 }
@@ -113,10 +151,10 @@ test_internal_whitespace_threshold_uses_default() {
   done
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
-  assert_contains "$out" 'signal: secondmate turn-rate exceeded: mate=mate' \
+  assert_contains "$out" 'check: secondmate turn-rate exceeded: mate=mate' \
     "an internally spaced threshold disabled the default turn-rate guard"
-  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
-  [ "$rows" -eq 1 ] || fail "malformed threshold queued $rows signal rows instead of one"
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 1 ] || fail "malformed threshold queued $rows check rows instead of one"
   pass "secondmate turn-rate: internal threshold whitespace falls back to the default"
 }
 
@@ -133,9 +171,31 @@ test_zero_threshold_with_leading_zeros_uses_default() {
   append_assistant_turn "$transcript" 1 "$now" "true"
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
-  [ -z "$out" ] || fail "an all-zero threshold emitted a signal instead of using the default: $out"
+  [ -z "$out" ] || fail "an all-zero threshold emitted a check instead of using the default: $out"
   [ ! -e "$parent/state/.wake-queue" ] || fail "an all-zero threshold queued a wake"
   pass "secondmate turn-rate: leading-zero zero thresholds fall back to the default"
+}
+
+test_large_threshold_does_not_overflow() {
+  local parent mate sessions transcript now i out
+  parent="$TMP_ROOT/large-threshold-parent"
+  mate="$TMP_ROOT/large-threshold-mate"
+  sessions="$TMP_ROOT/large-threshold-agent/sessions"
+  write_meta "$parent" "$mate"
+  printf '999999999999999999999\n' > "$parent/config/secondmate-turn-rate-threshold"
+  transcript=$(session_path "$sessions" "$mate")
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  printf '%s\n' "{\"type\":\"session\",\"timestamp\":\"$now\",\"cwd\":\"$mate\"}" > "$transcript"
+  i=1
+  while [ "$i" -le 61 ]; do
+    append_assistant_turn "$transcript" "$i" "$now" "true"
+    i=$((i + 1))
+  done
+
+  out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
+  [ -z "$out" ] || fail "an oversized threshold overflowed into a false check: $out"
+  [ ! -e "$parent/state/.wake-queue" ] || fail "an oversized threshold queued a wake"
+  pass "secondmate turn-rate: oversized thresholds compare without integer overflow"
 }
 
 test_relaunch_does_not_reuse_episode_marker() {
@@ -154,8 +214,8 @@ test_relaunch_does_not_reuse_episode_marker() {
   done
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
-  assert_contains "$out" 'signal: secondmate turn-rate exceeded: mate=mate' \
-    "the initial high-rate episode did not emit a signal"
+  assert_contains "$out" 'check: secondmate turn-rate exceeded: mate=mate' \
+    "the initial high-rate episode did not emit a check"
 
   new_transcript="${transcript%/*}/z-relaunch.jsonl"
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -168,10 +228,10 @@ test_relaunch_does_not_reuse_episode_marker() {
   write_meta "$parent" "$mate" new-generation
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
-  assert_contains "$out" 'signal: secondmate turn-rate exceeded: mate=mate' \
+  assert_contains "$out" 'check: secondmate turn-rate exceeded: mate=mate' \
     "a relaunch reused the old episode marker"
-  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
-  [ "$rows" -eq 2 ] || fail "relaunch queued $rows signal rows instead of two"
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 2 ] || fail "relaunch queued $rows check rows instead of two"
   pass "secondmate turn-rate: relaunches do not reuse an old episode marker"
 }
 
@@ -211,19 +271,21 @@ SH
   set -u
   [ "$rc" -eq 143 ] || fail "marker crash fixture exited $rc instead of terminating after the marker rename"
   [ -e "$marker" ] || fail "marker crash fixture did not leave the episode marker"
-  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
   [ "$rows" -eq 1 ] || fail "marker crash lost the durable wake before suppression"
 
   out=$(FM_HOME="$parent" PI_CODING_AGENT_DIR="${sessions%/sessions}" "$GUARD" mate 2>&1)
   [ -z "$out" ] || fail "durable marker replay emitted an unexpected duplicate: $out"
-  rows=$(grep -c "$(printf '\tsignal\t')" "$parent/state/.wake-queue" || true)
-  [ "$rows" -eq 1 ] || fail "durable marker replay queued $rows signal rows instead of one"
+  rows=$(grep -c "$(printf '\tcheck\t')" "$parent/state/.wake-queue" || true)
+  [ "$rows" -eq 1 ] || fail "durable marker replay queued $rows check rows instead of one"
   pass "secondmate turn-rate: durable wake precedes episode suppression"
 }
 
 test_unprompted_pi_loop_signals_once_per_episode
+test_primary_session_override_does_not_hide_mate
 test_doorbell_driven_pi_turns_do_not_signal
 test_internal_whitespace_threshold_uses_default
 test_zero_threshold_with_leading_zeros_uses_default
+test_large_threshold_does_not_overflow
 test_relaunch_does_not_reuse_episode_marker
 test_wake_is_durable_before_episode_marker

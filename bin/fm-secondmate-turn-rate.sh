@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect an unprompted high-rate Pi secondmate episode from its persisted
-# session transcript and publish one signal wake for the episode.
+# session transcript and publish one check wake for the episode.
 #
 # Usage: fm-secondmate-turn-rate.sh <secondmate-task-id>
 #
@@ -9,7 +9,7 @@
 # message events allowed in the trailing 15 minutes without a user transcript
 # row or a newly written durable inbox record. The default is 60.
 #
-# Quiet/no-op cases exit 0. A newly published episode prints its signal reason
+# Quiet/no-op cases exit 0. A newly published episode prints its check reason
 # and exits 10 so the attended watcher can surface it. Invalid or unavailable
 # evidence stays quiet; a wake publication failure exits 2.
 set -u
@@ -65,15 +65,11 @@ if [ -f "$CONFIG/secondmate-turn-rate-threshold" ]; then
   esac
 fi
 
-if [ -n "${PI_CODING_AGENT_SESSION_DIR:-}" ]; then
-  case "$PI_CODING_AGENT_SESSION_DIR" in /*) SESSION_DIR=$PI_CODING_AGENT_SESSION_DIR ;; *) exit 0 ;; esac
-else
-  AGENT_DIR=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
-  case "$AGENT_DIR" in /*) ;; *) AGENT_DIR=$HOME/.pi/agent ;; esac
-  slug=${MATE_HOME#/}
-  slug=${slug//\//-}
-  SESSION_DIR="$AGENT_DIR/sessions/--$slug--"
-fi
+AGENT_DIR=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+case "$AGENT_DIR" in /*) ;; *) AGENT_DIR=$HOME/.pi/agent ;; esac
+slug=${MATE_HOME#/}
+slug=${slug//\//-}
+SESSION_DIR="$AGENT_DIR/sessions/--$slug--"
 [ -d "$SESSION_DIR" ] || exit 0
 
 file_mtime() {
@@ -129,7 +125,21 @@ for record in "$STATE/$ID.inbox"/*.msg "$STATE/$ID.inbox/handled"/*.msg; do
 done
 inbound_events=$((inbound_events + inbox_events))
 
-if [ "$assistant_events" -le "$THRESHOLD" ] || [ "$inbound_events" -gt 0 ]; then
+decimal_gt() {
+  local left=$1 right=$2
+  local LC_ALL=C
+  left="${left#"${left%%[!0]*}"}"
+  right="${right#"${right%%[!0]*}"}"
+  [ -n "$left" ] || left=0
+  [ -n "$right" ] || right=0
+  if [ "${#left}" -ne "${#right}" ]; then
+    [ "${#left}" -gt "${#right}" ]
+    return
+  fi
+  [[ "$left" > "$right" ]]
+}
+
+if ! decimal_gt "$assistant_events" "$THRESHOLD" || [ "$inbound_events" -gt 0 ]; then
   rm -f "$MARKER"
   exit 0
 fi
@@ -144,8 +154,8 @@ if [ -e "$MARKER" ]; then
   rm -f "$MARKER"
 fi
 
-reason="signal: secondmate turn-rate exceeded: mate=$ID assistant-events=$assistant_events window=${WINDOW_SECS}s inbound-events=0 threshold=$THRESHOLD"
-if ! fm_wake_append signal "secondmate-turn-rate:$ID" "$reason"; then
+reason="check: secondmate turn-rate exceeded: mate=$ID assistant-events=$assistant_events window=${WINDOW_SECS}s inbound-events=0 threshold=$THRESHOLD"
+if ! fm_wake_append check "secondmate-turn-rate:$ID" "$reason"; then
   exit 2
 fi
 

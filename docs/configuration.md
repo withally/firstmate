@@ -241,7 +241,7 @@ The flag is a home-local supervision-noise preference and is not inherited by se
 ## Secondmate Pi turn-rate threshold (config/secondmate-turn-rate-threshold)
 
 The attended watcher checks local Pi and pi-signed secondmates for more than 60 assistant events in a trailing 15-minute window with no user transcript row or durable inbox record in that window.
-Crossing the limit raises one signal-class wake for the episode; the guard stays quiet on later polls until activity returns below the limit or a fresh inbound event resets the episode.
+Crossing the limit raises one check-class wake for the episode; the guard stays quiet on later polls until activity returns below the limit or a fresh inbound event resets the episode.
 Set the optional local, gitignored `config/secondmate-turn-rate-threshold` file to one positive base-10 integer to override 60.
 An absent, empty, zero, or malformed value uses 60.
 The setting belongs to the parent home's attended watcher and is not inherited by secondmate homes.

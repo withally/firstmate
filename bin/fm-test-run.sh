@@ -1419,6 +1419,10 @@ families_for_changed_path() {
     .agents/skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit
       ;;
+    .agents/skills/*)
+      families_for_test_reference "$path" \
+        || printf '%s\n' pure-contract-unit
+      ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)
       printf '%s\n' pure-contract-unit
       printf '%s\n' real-herdr-gated

@@ -384,7 +384,9 @@ fm_busy_lines_match() {  # [harness]
 # fm_claude_current_footer_busy returns 0 for busy, 1 for idle, and 2 for
 # unreadable or structurally ambiguous state.
 fm_claude_current_footer_busy() {
-  local lines plain footer footer_row composer caps verdict
+  local lines plain footer footer_row composer caps verdict capture_caps screen
+  local screen_verdict active_rows preceding preceding_row footer_start
+  local active_hint=0 active_tool=0
   IFS= read -r -d '' lines || true
   [ -n "$lines" ] || return 2
   plain=$(printf '%s' "$lines" | fm_composer_strip_ansi) || return 2
@@ -399,6 +401,9 @@ fm_claude_current_footer_busy() {
   ')
   _fm_composer_scan_screen "$composer" ''
   _fm_composer_select_cursorless "$composer" || return 2
+  capture_caps=$(printf '%s\n' 'styled=0' 'cursor=0' 'identity=0' 'rows=12')
+  screen=$composer
+  footer_start=$footer_row
   screen_verdict=$(fm_composer_classify_screen "$capture_caps" "$screen")
   active_rows=$(printf '%s\n' "$composer" | awk \
     -v first="$FM_COMPOSER_SELECTED_FIRST" -v last="$FM_COMPOSER_SELECTED_LAST" \

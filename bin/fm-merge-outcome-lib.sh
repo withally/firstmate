@@ -79,22 +79,12 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   fi
 
   lock="$state/$id.pr-poll-merge-notified.lock"
-  if ! fm_lock_acquire_wait "$lock"; then
-    if [ "$parent_registry_lock_held" -eq 1 ]; then
-      fm_lock_release "$parent_registry_lock"
-      parent_registry_lock_held=0
-    fi
-    return 1
-  fi
+  fm_lock_acquire_wait "$lock" || return 1
   if fm_pr_poll_merge_already_notified "$state" "$id" \
     "$provider" "$host" "$path" "$number"; then
     # shellcheck disable=SC2034 # Public result consumed by sourcing callers.
     FM_MERGE_OUTCOME_ALREADY_RECORDED=true
     fm_lock_release "$lock"
-    if [ "$parent_registry_lock_held" -eq 1 ]; then
-      fm_lock_release "$parent_registry_lock"
-      parent_registry_lock_held=0
-    fi
     return 0
   fi
 
@@ -110,9 +100,5 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
       "$provider" "$host" "$path" "$number" || status=1
   fi
   fm_lock_release "$lock"
-  if [ "$parent_registry_lock_held" -eq 1 ]; then
-    fm_lock_release "$parent_registry_lock"
-    parent_registry_lock_held=0
-  fi
   return "$status"
 }
